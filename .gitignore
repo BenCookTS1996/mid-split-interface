@@ -1,0 +1,53 @@
+# ─────────────────────────── Python ───────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ─────────────────────── Virtual environments ─────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ────────────────────────── OS / editor ───────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ────────────────────────── Streamlit ─────────────────────────
+.streamlit/secrets.toml
+
+# ─────────────── Caches (regenerated automatically) ───────────
+.cache/
+data/cache/
+
+# ────────── Generated pipeline outputs (large; regenerated) ────
+data/outputs/
+data/exported_rules/
+
+# ─── Bundled Google Cloud SDK / installer (not project source) ─
+google-cloud-sdk/
+google-cloud-cli-*.tar.gz
+*.tar.gz
+
+# ─────────── Secrets / credentials (NEVER commit these) ────────
+*.pem
+*.key
+service-account*.json
+service_account*.json
+gcp-*.json
+*-credentials.json
+credentials*.json
+.env
+.env.*
+
+# ─────────────────────────── Logs ─────────────────────────────
+*.log

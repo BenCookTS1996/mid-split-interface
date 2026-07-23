@@ -1,0 +1,44 @@
+# VAMP forecast pipeline settings (consumed by src/vamp_pipeline via main-style run).
+# The Forecast tab writes this exact schema; edit here to run headless.
+run_settings:
+  company: "TotalAV"
+  month_var: "MAY"
+  month_0_start_date: "2026-05-01"
+  actuals_start_date: "2026-04-01"
+  actuals_end_date: "2026-05-01"
+  future_anchor_date: "2026-06-01"
+  blend_future_sheet_rules: false
+  use_chunked_csv_files: true
+  load_curves_from_cache: true
+
+paths:
+  cache_path: "data/cache/{month_var}/{company}/"
+  chunked_files_dir: "data/rules/{month_var}/{company}/"
+  output_dir: "data/outputs/{month_var}/{company}/"
+  split_rules_file: ""
+  mid_list_file: "data/mappings/Master_MID_List.csv"
+
+targets:
+  company_target_volume: 318077
+  company_rpgt_target_volumes:
+    Monthly Initial: 0
+    Annual Sub Sale: 0
+    Addon Sale: 0
+    Upgrades: 0
+    Monthly Renewal: 0
+    Annual Sub Renewal: 0
+    P6M Renewals: 0
+    Addon Renewal: 0
+
+actuarial_settings:
+  t0_lookback_months: 1
+  decay_factor: 0.5
+  thermometer_sample_months: 2
+
+# Loaded from config/inputs/*.json by the UI; inline here for headless runs.
+thermometer_config: {}
+gateway_volume_overrides: {}
+
+filters:
+  test_gateways_to_scrub: []
+  force_actuals_for_rpgts: []

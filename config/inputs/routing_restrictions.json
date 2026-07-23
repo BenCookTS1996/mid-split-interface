@@ -1,0 +1,18 @@
+{
+  "_comment": "Routing ban rules + capability restrictions. (1) 'rules': each rule names a target vampMid or gatewayFid that must receive ZERO traffic matching ALL listed field conditions. Fields enforced at the routing grain: rpgt, currency, bin (matched against the BIN-level bank). country is NOT enforceable as a ban (not part of the routing grain) and such rules are ignored with a warning. (2) 'usa_only_gateways': explicit list of gatewayFids that can ONLY process country='USA'. Enforced exactly like wallet capability (processWallet): the gateway keeps only the USA fraction of each Currency x Bank cell and its Non-USA portion is redistributed to the other eligible gateways in the cell. Add new USA-only gateways here by hand. Wallet capability itself is handled separately via the processWallet column in Master_MID_List.csv.",
+  "rules": [
+    {
+      "target": "Merrick - Total AV",
+      "match": {
+        "rpgt": ["Annual Sub Sale", "Addon Sale", "Addon Renewal", "P6M Renewal"]
+      }
+    }
+  ],
+  "usa_only_gateways": [
+    "adyen-usd-tav-na",
+    "adyen-usd-tdr-na",
+    "adyen-usd-tab-na"
+  ],
+  "_comment_explore": "gatewayFids to treat as eligible candidates even with NO 30-day attempts, so capable-but-untested gateways can earn exploration volume. They are added to every routing cell of their currency (from Master_MID_List), seeded at volume 0 / baseline 0, scored on the pooled prior success rate, and given the exploration floor. The VAMP cap and all other constraints still govern them. Empty = off (default).",
+  "explore_untested_gateways": []
+}

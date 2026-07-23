@@ -1,0 +1,521 @@
+gatewayFid,MIDActual,vampMid,mastercardMid,gateway,brand,currency,RDR Merchant Name,DBA,BIN,CAID,IsActive,isCrossBorder,processWallet,Duplicate ?
+play_store,EXCLUDED,EXCLUDED,play_store,play_store,EXCLUDED,EXCLUDED,EXCLUDED,EXCLUDED,EXCLUDED,EXCLUDED,FALSE,FALSE,FALSE,1
+adyen-usd-pango-armor,Adyen - Pango Armor - USD,Adyen - Pango Armor,Adyen - Pango Armor - USD,Adyen,Pango Armor,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-pango-fortress,Adyen - Pango Fortress - USD,Adyen_PangoFortress,Adyen_PangoFortress_US,Adyen,Pango Fortress,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-pango-sentinel,Adyen - Pango Sentinel - USD,Adyen_PangoSentinel,Adyen_PangoSentinel_US,Adyen,Pango Sentinel,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-pango-shield,Adyen - Pango Shield - USD,Adyen - Pango Shield,Adyen - Pango Shield - USD,Adyen,Pango Shield,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-aud-pcp,Adyen - PC Protect - AUD,Adyen_PCProtect,Adyen_PCProtect_US,Adyen,PC Protect,AUD,,,,,FALSE,FALSE,TRUE,1
+adyen-cad-pcp,Adyen - PC Protect - CAD,Adyen_PCProtect,Adyen_PCProtect_US,Adyen,PC Protect,CAD,,,,,FALSE,FALSE,TRUE,1
+adyen-eur-pcp,Adyen - PC Protect - EUR,Adyen_PCProtect,Adyen_PCProtect_EMEA,Adyen,PC Protect,EUR,PCProtect.com - 487530 - 487530001668557,PCProtect.com,487530,4.88E+14,FALSE,FALSE,TRUE,1
+adyen-gbp-pcp,Adyen - PC Protect - GBP,Adyen_PCProtect,Adyen_PCProtect_EMEA,Adyen,PC Protect,GBP,PCProtect.com - 487530 - 487530001668557,PCProtect.com,487530,4.88E+14,FALSE,FALSE,TRUE,1
+adyen-usd-pcp,Adyen - PC Protect - USD,Adyen_PCProtect,Adyen_PCProtect_US,Adyen,PC Protect,USD,,,479338,4.79E+14,FALSE,FALSE,TRUE,1
+authorize-usd-pcp,Authorize - PC Protect - USD,Authorize - PC Protect,Authorize - PC Protect,Authorize,PC Protect,USD,,,,,FALSE,FALSE,FALSE,1
+bancard-usd-pcp,Bancard - PC Protect - USD,Bancard - PC Protect,Bancard - PC Protect - USD,Bancard,PC Protect,USD,,,,,FALSE,FALSE,FALSE,1
+braintree-aud-pcp,Braintree - PC Protect - AUD,Braintree USA - PC Protect,Braintree USA - PC Protect AUD,Braintree,PC Protect,AUD,,,,,FALSE,FALSE,TRUE,1
+braintree-cad-pcp,Braintree - PC Protect - CAD,Braintree USA - PC Protect,Braintree USA - PC Protect CAD,Braintree,PC Protect,CAD,,,,,FALSE,FALSE,TRUE,1
+braintree-usd-pcp,Braintree - PC Protect - USD,Braintree USA - PC Protect,Braintree USA - PC Protect USD,Braintree,PC Protect,USD,,,,,FALSE,FALSE,TRUE,1
+merrick-usd-pcp,Merrick - PC Protect - USD,Merrick USA - PC Protect,Merrick USA - PC Protect USD,Merrick,PC Protect,USD,,,,,FALSE,TRUE,FALSE,1
+paysafe-aud-pcp,PaySafe - PC Protect - AUD,PaySafe - PC Protect,PaySafe UK - PC Protect AUD,PaySafe,PC Protect,AUD,ProtectedNet - 458518 - 00102833,ProtectedNet,458518,102833,FALSE,TRUE,TRUE,1
+paysafe-cad-pcp,PaySafe - PC Protect - CAD,PaySafe - PC Protect,PaySafe UK - PC Protect CAD,PaySafe,PC Protect,CAD,ProtectedNet - 458518 - 00102827,ProtectedNet,458518,102827,FALSE,FALSE,TRUE,1
+paysafe-cad-pcp-pcib,PaySafe - PC Protect - CAD,PaySafe - PC Protect,PaySafe - PC Protect - CAD,PaySafe,PC Protect,CAD,,,,,FALSE,FALSE,TRUE,1
+paysafe-eur-pcp,PaySafe - PC Protect - EUR,PaySafe - PC Protect,PaySafe UK - PC Protect EUR,PaySafe,PC Protect,EUR,ProtectedNet - 458518 - 00102830,ProtectedNet,458518,102830,FALSE,FALSE,FALSE,1
+paysafe-gbp-pcp,PaySafe - PC Protect - GBP,PaySafe - PC Protect,PaySafe UK - PC Protect GBP,PaySafe,PC Protect,GBP,ProtectedNet - 458518 - 00102858,ProtectedNet,458518,102858,FALSE,FALSE,FALSE,1
+paysafe-gbp-pcp-pcib,PaySafe - PC Protect - GBP,PaySafe - PC Protect,PaySafe - PC Protect - GBP,PaySafe,PC Protect,GBP,,,,,FALSE,FALSE,FALSE,1
+paysafe-usd-pcp,PaySafe - PC Protect - USD,PaySafe - PC Protect,PaySafe UK - PC Protect USD,PaySafe,PC Protect,USD,ProtectedNet - 458518 - 00102856,ProtectedNet,458518,102856,FALSE,TRUE,TRUE,1
+paysafe-usd-pcp-pcib,PaySafe - PC Protect - USD,PaySafe - PC Protect,PaySafe - PC Protect - USD,PaySafe,PC Protect,USD,,,,,FALSE,TRUE,TRUE,1
+paypal-gbp-pcp,Paypal,Paypal,Paypal,Paypal,PC Protect,GBP,,,,,FALSE,FALSE,FALSE,1
+paypal-eur-pcp,Paypal,Paypal,Paypal,Paypal,PC Protect,EUR,,,,,FALSE,FALSE,FALSE,1
+paypal-usd-pcp,Paypal,Paypal,Paypal,Paypal,PC Protect,USD,,,,,FALSE,FALSE,FALSE,1
+paypal-aud-pcp,Paypal,Paypal,Paypal,Paypal,PC Protect,AUD,,,,,FALSE,FALSE,FALSE,1
+paypal-cad-pcp,Paypal,Paypal,Paypal,Paypal,PC Protect,CAD,,,,,FALSE,FALSE,FALSE,1
+adyen-aud-scg,Adyen - Scanguard - AUD,Adyen_Scanguard,Adyen_Scanguard_US,Adyen,Scanguard,AUD,,,,,FALSE,FALSE,TRUE,1
+adyen-cad-scg,Adyen - Scanguard - CAD,Adyen_Scanguard,Adyen_Scanguard_US,Adyen,Scanguard,CAD,,,,,FALSE,FALSE,TRUE,1
+adyen-eur-scg,Adyen - Scanguard - EUR,Adyen_Scanguard,Adyen_Scanguard_EMEA,Adyen,Scanguard,EUR,Scanguard.com - 487530 - 487530001668565,Scanguard.com,487530,4.88E+14,FALSE,FALSE,TRUE,1
+adyen-gbp-scg,Adyen - Scanguard - GBP,Adyen_Scanguard,Adyen_Scanguard_EMEA,Adyen,Scanguard,GBP,Scanguard.com - 487530 - 487530001668565,Scanguard.com,487530,4.88E+14,FALSE,FALSE,TRUE,1
+adyen-usd-scg,Adyen - Scanguard - USD,Adyen_Scanguard,Adyen_Scanguard_US,Adyen,Scanguard,USD,,,479338,4.79E+14,FALSE,FALSE,TRUE,1
+bancard-usd-scg,Bancard - Scanguard - USD,Bancard - Scanguard,Bancard - Scanguard - USD,Bancard,Scanguard,USD,,,,,FALSE,FALSE,FALSE,1
+braintree-eur-sg,Braintree - Scanguard - EUR,Braintree EU - Scanguard,Braintree EU - Scanguard EUR,Braintree,Scanguard,EUR,,,,,FALSE,FALSE,TRUE,1
+merrick-usd-sg,Merrick - Scanguard - USD,Merrick USA - Scanguard,Merrick USA - Scanguard USD,Merrick,Scanguard,USD,ProtectedNet - 462585 - 482960100005052,ProtectedNet,462585,4.83E+14,FALSE,TRUE,FALSE,1
+paysafe-aud-sg,PaySafe - Scanguard - AUD,PaySafe - Scanguard,PaySafe UK - Scanguard AUD,PaySafe,Scanguard,AUD,ProtectedNet - 458518 - 00102832,ProtectedNet,458518,102832,FALSE,TRUE,TRUE,1
+paysafe-aud-sg-pcib,PaySafe - Scanguard - AUD,PaySafe - Scanguard,PaySafe - Scanguard - AUD,PaySafe,Scanguard,AUD,,,,,FALSE,TRUE,TRUE,1
+paysafe-cad-sg,PaySafe - Scanguard - CAD,PaySafe - Scanguard,PaySafe UK - Scanguard CAD,PaySafe,Scanguard,CAD,ProtectedNet - 458518 - 00102838,ProtectedNet,458518,102838,FALSE,FALSE,TRUE,1
+paysafe-cad-sg-pcib,PaySafe - Scanguard - CAD,PaySafe - Scanguard,PaySafe - Scanguard - CAD,PaySafe,Scanguard,CAD,,,,,FALSE,FALSE,TRUE,1
+paysafe-eur-sg,PaySafe - Scanguard - EUR,PaySafe - Scanguard,PaySafe UK - Scanguard EUR,PaySafe,Scanguard,EUR,ProtectedNet - 458518 - 00102837,ProtectedNet,458518,102837,FALSE,FALSE,FALSE,1
+paysafe-gbp-sg,PaySafe - Scanguard - GBP,PaySafe - Scanguard,PaySafe UK - Scanguard GBP,PaySafe,Scanguard,GBP,ProtectedNet - 458518 - 00102835,ProtectedNet,458518,102835,FALSE,FALSE,FALSE,1
+paysafe-gbp-sg-pcib,PaySafe - Scanguard - GBP,PaySafe - Scanguard,PaySafe - Scanguard - GBP,PaySafe,Scanguard,GBP,,,,,FALSE,FALSE,FALSE,1
+paysafe-usd-sg,PaySafe - Scanguard - USD,PaySafe - Scanguard,PaySafe UK - Scanguard USD,PaySafe,Scanguard,USD,ProtectedNet - 458518 - 00102829,ProtectedNet,458518,102829,FALSE,TRUE,TRUE,1
+paysafe-usd-sg-pcib,PaySafe - Scanguard - USD,PaySafe - Scanguard,PaySafe - Scanguard - USD,PaySafe,Scanguard,USD,,,,,FALSE,TRUE,TRUE,1
+braintree-eur-sg-pcib,Braintree - Scanguard - EUR,Braintree EU - Scanguard,Braintree EU - Scanguard EUR,Braintree,Scanguard,EUR,,,,,FALSE,FALSE,TRUE,1
+paypal-gbp-sg,Paypal,Paypal,Paypal,Paypal,ScanGuard,GBP,,,,,FALSE,FALSE,FALSE,1
+paypal-usd-sg,Paypal,Paypal,Paypal,Paypal,ScanGuard,USD,,,,,FALSE,FALSE,FALSE,1
+paypal-cad-sg,Paypal,Paypal,Paypal,Paypal,ScanGuard,CAD,,,,,FALSE,FALSE,FALSE,1
+paypal-eur-sg,Paypal,Paypal,Paypal,Paypal,ScanGuard,EUR,,,,,FALSE,FALSE,FALSE,1
+paypal-aud-sg,Paypal,Paypal,Paypal,Paypal,ScanGuard,AUD,,,,,FALSE,FALSE,FALSE,1
+adyen-aud-spc,Adyen - Speedy Cleaner - AUD,Adyen_SpeedyCleaner,Adyen_SpeedyCleaner_US,Adyen,Speedy Cleaner,AUD,,,,,FALSE,FALSE,TRUE,1
+adyen-cad-spc,Adyen - Speedy Cleaner - CAD,Adyen_SpeedyCleaner,Adyen_SpeedyCleaner_US,Adyen,Speedy Cleaner,CAD,,,,,FALSE,FALSE,TRUE,1
+adyen-eur-spc,Adyen - Speedy Cleaner - EUR,Adyen_SpeedyCleaner,Adyen_SpeedyCleaner_EMEA,Adyen,Speedy Cleaner,EUR,,,,,FALSE,FALSE,TRUE,1
+adyen-gbp-spc,Adyen - Speedy Cleaner - GBP,Adyen_SpeedyCleaner,Adyen_SpeedyCleaner_EMEA,Adyen,Speedy Cleaner,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-spc,Adyen - Speedy Cleaner - USD,Adyen_SpeedyCleaner,Adyen_SpeedyCleaner_US,Adyen,Speedy Cleaner,USD,,,,,FALSE,FALSE,TRUE,1
+authorize-usd-scg,Authorize - Speedy Cleaner - USD,Authorize - Speedy Cleaner,Authorize - Speedy Cleaner,Authorize,Speedy Cleaner,USD,,,,,FALSE,FALSE,FALSE,1
+bancard-usd-spc,Bancard - Speedy Cleaner - USD,Bancard - Speedy Cleaner,Bancard - Speedy Cleaner - USD,Bancard,Speedy Cleaner,USD,,,,,FALSE,FALSE,FALSE,1
+braintree-eur-spc,Braintree - Speedy Cleaner - EUR,Braintree EU - Speedy Cleaner,Braintree EU - Speedy Cleaner EUR,Braintree,Speedy Cleaner,EUR,,,,,FALSE,FALSE,TRUE,1
+braintree-gbp-spc,Braintree - Speedy Cleaner - GBP,Braintree EU - Speedy Cleaner,Braintree EU - Speedy Cleaner GBP,Braintree,Speedy Cleaner,GBP,,,,,FALSE,FALSE,TRUE,1
+braintree-usd-spc,Braintree - Speedy Cleaner - USD,Braintree EU - Speedy Cleaner,Braintree EU - Speedy Cleaner USD,Braintree,Speedy Cleaner,USD,,,,,FALSE,FALSE,TRUE,1
+cwams-usd-spc,Cardworks - Speedy Cleaner - USD,Cardworks - Speedy Cleaner,Cardworks - Speedy Cleaner,Cardworks,Speedy Cleaner,USD,,,,,FALSE,FALSE,FALSE,1
+paysafe-gbp-spc,PaySafe - Speedy Cleaner - GBP,PaySafe - Speedy Cleaner,PaySafe UK - Speedy Cleaner GBP,PaySafe,Speedy Cleaner,GBP,,,,,FALSE,FALSE,FALSE,1
+paysafe-gbp-spc-gp,PaySafe - Speedy Cleaner - GBP,PaySafe - Speedy Cleaner,PaySafe - Speedy Cleaner - GBP,PaySafe,Speedy Cleaner,GBP,,,,,FALSE,FALSE,FALSE,1
+paysafe-usd-spc,PaySafe - Speedy Cleaner - USD,PaySafe - Speedy Cleaner,PaySafe - Speedy Cleaner - USD,PaySafe,Speedy Cleaner,USD,,,,,FALSE,TRUE,TRUE,1
+paysafe-eur-spc,PaySafe - Speedy Cleaner - EUR,PaySafe - Speedy Cleaner,PaySafe - Speedy Cleaner - EUR,PaySafe,Speedy Cleaner,EUR,,,,,FALSE,FALSE,FALSE,1
+adyen-aud-tab,Adyen - Total Adblock - AUD,Adyen_TotalAdblock,Adyen_TotalAdblock_US,Adyen,Total Adblock,AUD,TOTALADBLOCK.COM - 479338 - 479338002117529,TOTALADBLOCK.COM,479338,4.79E+14,TRUE,FALSE,TRUE,1
+adyen-cad-tab,Adyen - Total Adblock - CAD,Adyen_TotalAdblock,Adyen_TotalAdblock_US,Adyen,Total Adblock,CAD,TOTALADBLOCK.COM - 479338 - 479338002117529,TOTALADBLOCK.COM,479338,4.79E+14,TRUE,FALSE,TRUE,1
+adyen-eur-tab,Adyen - Total Adblock - EUR,Adyen_TotalAdblock,Adyen_TotalAdblock_EMEA,Adyen,Total Adblock,EUR,TOTALADBLOCK.COM - 487530 - 487530001665017,TOTALADBLOCK.COM,487530,4.88E+14,TRUE,FALSE,TRUE,1
+adyen-eur-tab-us,Adyen - Total Adblock - EUR,Adyen_TotalAdblock,Adyen_TotalAdblock_US,Adyen,Total Adblock,EUR,TOTALADBLOCK.COM - 479338 - 479338002117529,TOTALADBLOCK.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-eur-tab-us-gp,Adyen - Total Adblock - EUR,Adyen_TotalAdblock,Adyen_TotalAdblock_US,Adyen,Total Adblock,EUR,TOTALADBLOCK.COM - 479338 - 479338002117529,TOTALADBLOCK.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-eur-tab-us-am,Adyen USA - Total Adblock,Adyen_TotalAdblock,Adyen_TotalAdblock_US,Adyen,Total Adblock,EUR,,,,,FALSE,FALSE,TRUE,1
+adyen-gbp-tab,Adyen - Total Adblock - GBP,Adyen_TotalAdblock,Adyen_TotalAdblock_EMEA,Adyen,Total Adblock,GBP,TOTALADBLOCK.COM - 487530 - 487530001665017,TOTALADBLOCK.COM,487530,4.88E+14,TRUE,FALSE,TRUE,1
+adyen-gbp-tab-online,Adyen EMEA - Total Adblock Online,Adyen_TotalAdblockOnline,Adyen_TotalAdblockOnline_EMEA,Adyen,Total Adblock,GBP,,,,,TRUE,FALSE,TRUE,1
+adyen-gbp-tab-pro,Adyen EMEA - Total Adblock Pro,Adyen_TotalAdblockPro,Adyen_TotalAdblockPro_EMEA,Adyen,Total Adblock,GBP,,,,,TRUE,FALSE,TRUE,1
+adyen-gbp-tab-us,Adyen USA - Total Adblock,Adyen_TotalAdblock,Adyen_TotalAdblock_US,Adyen,Total Adblock,GBP,TOTALADBLOCK.COM - 479338 - 479338002117529,TOTALADBLOCK.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-gbp-tab-us-gp,Adyen USA - Total Adblock,Adyen_TotalAdblock,Adyen_TotalAdblock_US,Adyen,Total Adblock,GBP,TOTALADBLOCK.COM - 479338 - 479338002117529,TOTALADBLOCK.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-gbp-tab-us-am,Adyen USA - Total Adblock,Adyen_TotalAdblock,Adyen_TotalAdblock_US,Adyen,Total Adblock,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-tab-us,Adyen USA - Total Adblock,Adyen_TotalAdblock,Adyen_TotalAdblock_US,Adyen,Total Adblock,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-tab,Adyen USA - Total Adblock,Adyen_TotalAdblock,Adyen_TotalAdblock_US,Adyen,Total Adblock,USD,TOTALADBLOCK.COM - 479338 - 479338002117529,TOTALADBLOCK.COM,479338,4.79E+14,TRUE,FALSE,TRUE,1
+adyen-usd-tab-emea,Adyen EU - Total Adblock,Adyen_TotalAdblock,Adyen_TotalAdblock_EMEA,Adyen,Total Adblock,USD,TOTALADBLOCK.COM - 487530 - 487530001665017,TOTALADBLOCK.COM,487530,4.88E+14,TRUE,TRUE,TRUE,1
+adyen-usd-tab-emea-cap1,Adyen EMEA - Total Adblock,Adyen_TotalAdblock,Adyen_TotalAdblock_EMEA,Adyen,Total Adblock,USD,,,,,FALSE,TRUE,TRUE,1
+adyen-usd-tab-online,Adyen USA - Total Adblock Online,Adyen_TotalAdblockOnline,Adyen_TotalAdblockOnline_US,Adyen,Total Adblock,USD,,,479338,4.79E+14,TRUE,FALSE,TRUE,1
+adyen-usd-tab-pro,Adyen - Total Adblock - USD,Adyen_TotalAdblockPro,Adyen_TotalAdblockPro_US,Adyen,Total Adblock,USD,,,479338,4.79E+14,TRUE,FALSE,TRUE,1
+adyen-gbp-tsc-x-tab,Adyen - Total Adblock - GBP,Adyen_TotalSecurity,Adyen_TotalSecurity_EMEA,Adyen,Total Adblock,GBP,www.totalsecurity.co - 487530 - 487530005335658,www.totalsecurity.co ,487530,4.88E+14,FALSE,FALSE,TRUE,1
+adyen-usd-tsc-x-tab,Adyen - Total Adblock - USD,Adyen_TotalSecurity,Adyen_TotalSecurity_US,Adyen,Total Adblock,USD,www.totalsecurity.co - 479338 - 479338002117479,www.totalsecurity.co,479338,4.79E+14,TRUE,FALSE,TRUE,1
+authorize-usd-tab,Authorize - Total Adblock - USD,Authorize - Total Adblock,Authorize - Total Adblock,Authorize,Total Adblock,USD,,,469216,6.85E+14,TRUE,FALSE,FALSE,1
+bancard-usd-tab,Bancard - Total Adblock - USD,Bancard - Total Adblock,Bancard - Total Adblock,Bancard,Total Adblock,USD,TotalSec*SpeedyClean - 403481 - A0000000000GSBK,TotalSec*SpeedyClean,403481,A0000000000GSBK,TRUE,FALSE,FALSE,1
+braintree-aud-tab,Braintree - Total Adblock - AUD,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,AUD,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,TRUE,FALSE,TRUE,1
+braintree-aud-tab-gp,Braintree - Total Adblock - AUD,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,AUD,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,FALSE,FALSE,TRUE,1
+braintree-aud-totaladblockaud,Braintree - Total Adblock - AUD,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,AUD,,,,,FALSE,FALSE,TRUE,1
+braintree-cad-tab,Braintree - Total Adblock - CAD,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,CAD,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,TRUE,FALSE,TRUE,1
+braintree-cad-tab-gp,Braintree - Total Adblock - CAD,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,CAD,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,FALSE,FALSE,TRUE,1
+braintree-cad-totaladblockcad,Braintree - Total Adblock - CAD,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,CAD,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,FALSE,FALSE,TRUE,1
+braintree-eur-tab,Braintree - Total Adblock - EUR,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,EUR,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,TRUE,FALSE,TRUE,1
+braintree-eur-tab-gp,Braintree - Total Adblock - EUR,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,EUR,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,FALSE,FALSE,TRUE,1
+braintree-eur-totaladblockeur,Braintree - Total Adblock - EUR,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,EUR,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,FALSE,FALSE,TRUE,1
+braintree-gbp-tab,Braintree - Total Adblock - GBP,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,GBP,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,TRUE,FALSE,TRUE,1
+braintree-gbp-tab-gp,Braintree - Total Adblock - GBP,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,GBP,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,FALSE,FALSE,TRUE,1
+braintree-gbp-totaladblockgbp,Braintree - Total Adblock - GBP,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,GBP,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,FALSE,FALSE,TRUE,1
+braintree-usd-tab,Braintree - Total Adblock - USD,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,USD,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,TRUE,FALSE,TRUE,1
+braintree-usd-tab-gp,Braintree - Total Adblock - USD,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,USD,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,FALSE,FALSE,TRUE,1
+braintree-usd-totaladblockusd,Braintree - Total Adblock - USD,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,USD,TOTALADBLOCK - 465737 - 020405688,TOTALADBLOCK,465737,20405688,FALSE,FALSE,TRUE,1
+cwams-usd-tab,Cardworks - Total Adblock - USD,Cardworks - Total Adblock,Cardworks - Total Adblock,Cardworks,Total Adblock,USD,TOTALADBLOCK.COM - 411859 - 419100095848,TOTALADBLOCK.COM,411859,4.19E+14,TRUE,FALSE,FALSE,1
+cwams-usd-tab-monthly,Cardworks - Total Adblock - USD,Cardworks - Total Adblock,Cardworks - Total Adblock,Cardworks,Total Adblock,USD,,,,,FALSE,FALSE,FALSE,1
+checkout-aud-tab,Checkout - Total Adblock - AUD,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,AUD,,,,,FALSE,FALSE,TRUE,1
+checkout-aud-tab-gp,Checkout - Total Adblock - AUD,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,AUD,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,FALSE,FALSE,TRUE,1
+checkout-aud-tab-new,Checkout - Total Adblock - AUD,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,AUD,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,TRUE,FALSE,TRUE,1
+checkout-tab-aud,Checkout - Total Adblock - AUD,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,AUD,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,FALSE,FALSE,TRUE,1
+checkout-cad-tab,Checkout - Total Adblock - CAD,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,CAD,,,,,FALSE,FALSE,TRUE,1
+checkout-cad-tab-gp,Checkout - Total Adblock - CAD,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,CAD,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,FALSE,FALSE,TRUE,1
+checkout-cad-tab-new,Checkout - Total Adblock - CAD,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,CAD,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,TRUE,FALSE,TRUE,1
+checkout-tab-cad,Checkout - Total Adblock - CAD,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,CAD,,,,,FALSE,FALSE,TRUE,1
+checkout-eur-tab,Checkout - Total Adblock - EUR,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,EUR,,,,,FALSE,FALSE,TRUE,1
+checkout-eur-tab-gp,Checkout - Total Adblock - EUR,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,EUR,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,FALSE,FALSE,TRUE,1
+checkout-eur-tab-new,Checkout - Total Adblock - EUR,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,EUR,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,TRUE,FALSE,TRUE,1
+checkout-tab-eur,Checkout - Total Adblock - EUR,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,EUR,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,FALSE,FALSE,TRUE,1
+checkout-gbp-tab,Checkout - Total Adblock - GBP,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,GBP,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,FALSE,FALSE,TRUE,1
+checkout-gbp-tab-gp,Checkout - Total Adblock - GBP,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,GBP,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,FALSE,FALSE,TRUE,1
+checkout-gbp-tab-new,Checkout - Total Adblock - GBP,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,GBP,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,TRUE,FALSE,TRUE,1
+checkout-tab-gbp,Checkout - Total Adblock - GBP,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,GBP,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,FALSE,FALSE,TRUE,1
+checkout-tab-usd,Checkout - Total Adblock - USD,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,USD,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,FALSE,FALSE,TRUE,1
+checkout-usd-tab,Checkout - Total Adblock - USD,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,USD,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,FALSE,TRUE,TRUE,1
+checkout-usd-tab-gp,Checkout - Total Adblock - USD,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,USD,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,FALSE,TRUE,TRUE,1
+checkout-usd-tab-new,Checkout - Total Adblock - USD,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,USD,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,TRUE,TRUE,TRUE,1
+epx-usd-tab,EPX - Total Adblock - USD,EPX USA - Total Adblock,EPX USA - Total Adblock,EPX,Total Adblock,USD,,ProtectedNet,429128,A0000000000N5B9,FALSE,FALSE,TRUE,1
+paysafe-aud-1002963944,PaySafe - Total Adblock - AUD,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,AUD,,,,,FALSE,TRUE,TRUE,1
+paysafe-aud-tab,PaySafe - Total Adblock - AUD,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,AUD,TOTALADBLOCK - 458518 - 00260822,TOTALADBLOCK,458518,260822,TRUE,TRUE,TRUE,1
+paysafe-aud-1003023904-ap,PaySafe - Total Adblock - AUD - AP,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,AUD,TOTALADBLOCK - 458518 - 00267242,TOTALADBLOCK,458518,267242,FALSE,TRUE,TRUE,1
+paysafe-aud-1002715422-gp,PaySafe - Total Adblock - AUD - GP,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,AUD,,,458518,270542,FALSE,TRUE,TRUE,1
+paysafe-cad-1002963924,PaySafe - Total Adblock - CAD,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,CAD,,,,,FALSE,FALSE,TRUE,1
+paysafe-cad-tab,PaySafe - Total Adblock - CAD,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,CAD,TOTALADBLOCK - 458518 - 00260802,TOTALADBLOCK,458518,260802,TRUE,FALSE,TRUE,1
+paysafe-cad-1003023914-ap,PaySafe - Total Adblock - CAD - AP,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,CAD,TOTALADBLOCK - 458518 - 00267632,TOTALADBLOCK,458518,267632,FALSE,FALSE,TRUE,1
+paysafe-cad-1002715262-gp,PaySafe - Total Adblock - CAD - GP,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,CAD,TOTALADBLOCK - 458518 - 00270382,TOTALADBLOCK,458518,270382,FALSE,FALSE,TRUE,1
+paysafe-eur-1002963914,PaySafe - Total Adblock - EUR,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,EUR,,,,,FALSE,FALSE,FALSE,1
+paysafe-eur-tab,PaySafe - Total Adblock - EUR,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,EUR,TOTALADBLOCK - 458518 - 00260792,TOTALADBLOCK,458518,260792,TRUE,FALSE,FALSE,1
+paysafe-eur-1003023924-ap,PaySafe - Total Adblock - EUR - AP,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,EUR,TOTALADBLOCK - 458518 - 00267262,TOTALADBLOCK,458518,267262,FALSE,FALSE,FALSE,1
+paysafe-eur-1002715372-gp,PaySafe - Total Adblock - EUR - GP,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,EUR,TOTALADBLOCK - 458518 - 00270492,TOTALADBLOCK,458518,270492,FALSE,FALSE,FALSE,1
+paysafe-gbp-1002963894,PaySafe - Total Adblock - GBP,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,GBP,,,,,FALSE,FALSE,FALSE,1
+paysafe-gbp-tab,PaySafe - Total Adblock - GBP,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,GBP,TOTALADBLOCK - 458518 - 00260782,TOTALADBLOCK,458518,260782,TRUE,FALSE,FALSE,1
+paysafe-gbp-1003023814-ap,PaySafe - Total Adblock - GBP - AP,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,GBP,TOTALADBLOCK - 458518 - 00267222,TOTALADBLOCK,458518,267222,FALSE,FALSE,FALSE,1
+paysafe-gbp-1002715322-gp,PaySafe - Total Adblock - GBP - GP,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,GBP,TOTALADBLOCK - 458518 - 00270452,TOTALADBLOCK,458518,270452,FALSE,FALSE,FALSE,1
+paysafe-usd-1002963934,PaySafe - Total Adblock - USD,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,USD,TOTALADBLOCK - 458518 - 00260812,TOTALADBLOCK,458518,260812,FALSE,TRUE,TRUE,1
+paysafe-usd-tab,PaySafe - Total Adblock - USD,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,USD,TOTALADBLOCK - 458518 - 00260812,TOTALADBLOCK,458518,260812,TRUE,TRUE,TRUE,1
+paysafe-usd-1003024344-ap,PaySafe - Total Adblock - USD - AP,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,USD,TOTALADBLOCK - 458518 - 00267272,TOTALADBLOCK,458518,267272,FALSE,TRUE,TRUE,1
+paysafe-usd-1002715392-gp,PaySafe - Total Adblock - USD - GP,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,USD,TOTALADBLOCK - 458518 - 00270522,TOTALADBLOCK,458518,270522,FALSE,TRUE,TRUE,1
+trustpayments-aud-tab,TrustPayments - Total Adblock - AUD,TrustPayments - Total Adblock,TrustPayments - Total Adblock - AUD,TrustPayments,Total Adblock,AUD,,,,,FALSE,FALSE,FALSE,1
+trustpayments-cad-tab,TrustPayments - Total Adblock - CAD,TrustPayments - Total Adblock,TrustPayments - Total Adblock - CAD,TrustPayments,Total Adblock,CAD,,,,,FALSE,FALSE,FALSE,1
+trustpayments-eur-tab,TrustPayments - Total Adblock - EUR,TrustPayments - Total Adblock,TrustPayments - Total Adblock - EUR,TrustPayments,Total Adblock,EUR,,,,,FALSE,FALSE,FALSE,1
+trustpayments-gbp-tab,TrustPayments - Total Adblock - GBP,TrustPayments - Total Adblock,TrustPayments - Total Adblock - GBP,TrustPayments,Total Adblock,GBP,,,,,FALSE,FALSE,FALSE,1
+trustpayments-usd-tab,TrustPayments - Total Adblock - USD,TrustPayments - Total Adblock,TrustPayments - Total Adblock - USD,TrustPayments,Total Adblock,USD,,,,,FALSE,FALSE,FALSE,1
+worldpay-usd-tab,WorldPay - Total Adblock - USD,WorldPay - Total Adblock,WorldPay - Total Adblock,WorldPay,Total Adblock,USD,,,,,FALSE,FALSE,TRUE,1
+worldpay-usd-tab-nt,WorldPay - Total Adblock - USD,WorldPay - Total Adblock,WorldPay - Total Adblock,WorldPay,Total Adblock,USD,,,,,TRUE,FALSE,TRUE,1
+adyen-usd-tab-mobile,Adyen US - Total Adblock Mobile,Adyen_TotalAdblockMobile,Adyen_TotalAdblockMobile_US,Adyen,Total Adblock,USD,,,,,TRUE,FALSE,TRUE,1
+adyen-usd-tab-blockerpro,Adyen_TotalAdblockerPro_US,Adyen_TotalAdblockerPro,Adyen_TotalAdblockerPro_US,Adyen,Total Adblock,USD,,,,,TRUE,FALSE,TRUE,1
+woodforest-usd-tab,WoodForest - Total Adblock - USD,WoodForest - Total Adblock,WoodForest - Total Adblock,WoodForest,Total Adblock,USD,,,,,TRUE,FALSE,FALSE,1
+paypal-gbp-tab,Paypal,Paypal,Paypal,Paypal,Total Adblock,GBP,,,,,FALSE,FALSE,FALSE,1
+adyen-usd-tab-mobile-x,Adyen US - Total Adblock Mobile,Adyen_TotalAdblockMobile,Adyen_TotalAdblockMobile_US,Adyen,Total Adblock,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-tab-pro-x,Adyen - Total Adblock - USD,Adyen_TotalAdblockPro,Adyen_TotalAdblockPro_US,Adyen,Total Adblock,USD,,,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-usd-tab-x,Adyen USA - Total Adblock,Adyen_TotalAdblock,Adyen_TotalAdblock_US,Adyen,Total Adblock,USD,TOTALADBLOCK.COM - 479338 - 479338002117529,TOTALADBLOCK.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+cwams-usd-tab-x,Cardworks - Total Adblock - USD,Cardworks - Total Adblock,Cardworks - Total Adblock,Cardworks,Total Adblock,USD,TOTALADBLOCK.COM - 411859 - 419100095848,TOTALADBLOCK.COM,411859,4.19E+14,FALSE,FALSE,FALSE,1
+adyen-usd-tab-online-x,Adyen USA - Total Adblock Online,Adyen_TotalAdblockOnline,Adyen_TotalAdblockOnline_US,Adyen,Total Adblock,USD,,,479338,4.79E+14,FALSE,FALSE,TRUE,1
+paysafe-usd-tab-x,PaySafe - Total Adblock - USD,PaySafe - Total Adblock,PaySafe - Total Adblock,PaySafe,Total Adblock,USD,TOTALADBLOCK - 458518 - 00260812,TOTALADBLOCK,458518,260812,FALSE,TRUE,TRUE,1
+braintree-usd-tab-x,Braintree - Total Adblock - USD,Braintree EU - Total Adblock,Braintree EU - Total Adblock,Braintree,Total Adblock,USD,,,,,FALSE,FALSE,TRUE,1
+checkout-tab-cad-new,Checkout - Total Adblock - CAD,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,CAD,,,,,FALSE,FALSE,TRUE,1
+checkout-tab-eur-new,Checkout - Total Adblock - EUR,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,EUR,,,,,FALSE,FALSE,TRUE,1
+checkout-tab-gbp-new,Checkout - Total Adblock - GBP,Checkout - Total Adblock,Checkout - Total Adblock,Checkout,Total Adblock,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-aud-tav,Adyen - Total AV - AUD,Adyen_TotalAV,Adyen_TotalAV_US,Adyen,Total AV,AUD,TOTALAV.COM - 479338 - 479338002167730,TOTALAV.COM,479338,4.79E+14,TRUE,FALSE,TRUE,1
+adyen-aud-tav-emea,Adyen - Total AV - AUD,Adyen_TotalAV,Adyen_TotalAV_EMEA,Adyen,Total AV,AUD,TOTALAV.COM - 487530 - 487530001594241,TOTALAV.COM,487530,4.88E+14,FALSE,TRUE,TRUE,1
+adyen-cad-tav,Adyen - Total AV - CAD,Adyen_TotalAV,Adyen_TotalAV_US,Adyen,Total AV,CAD,TOTALAV.COM - 479338 - 479338002167730,TOTALAV.COM,479338,4.79E+14,TRUE,FALSE,TRUE,1
+adyen-cad-tav-emea,Adyen - Total AV - CAD,Adyen_TotalAV,Adyen_TotalAV_EMEA,Adyen,Total AV,CAD,TOTALAV.COM - 487530 - 487530001594241,TOTALAV.COM,487530,4.88E+14,FALSE,TRUE,TRUE,1
+adyen-eur-tav,Adyen - Total AV - EUR,Adyen_TotalAV,Adyen_TotalAV_EMEA,Adyen,Total AV,EUR,TOTALAV.COM - 487530 - 487530001594241,TOTALAV.COM,487530,4.88E+14,TRUE,FALSE,TRUE,1
+adyen-eur-tav-test,Adyen EMEA - Total AV,Adyen_TotalAV,Adyen_TotalAV_EMEA,Adyen,Total AV,EUR,,,,,FALSE,FALSE,TRUE,1
+adyen-eur-tav-us,Adyen - Total AV - EUR,Adyen_TotalAV,Adyen_TotalAV_US,Adyen,Total AV,EUR,TOTALAV.COM - 479338 - 479338002167730,TOTALAV.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-eur-tav-us-gp,Adyen - Total AV - EUR,Adyen_TotalAV,Adyen_TotalAV_US,Adyen,Total AV,EUR,TOTALAV.COM - 479338 - 479338002167730,TOTALAV.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-eur-tav-us-am,Adyen USA - Total AV,Adyen_TotalAV,Adyen_TotalAV_US,Adyen,Total AV,EUR,,,,,FALSE,FALSE,TRUE,1
+adyen-gbp-tav,Adyen - Total AV - GBP,Adyen_TotalAV,Adyen_TotalAV_EMEA,Adyen,Total AV,GBP,TOTALAV.COM - 487530 - 487530001594241,TOTALAV.COM,487530,4.88E+14,TRUE,FALSE,TRUE,1
+adyen-gbp-tav-prem,Adyen EMEA - Total AV Premium,Adyen_TotalAVPremium,Adyen_TotalAVPremium_EMEA,Adyen,Total AV,GBP,,,,,TRUE,FALSE,TRUE,1
+adyen-gbp-tav-pro,Adyen - Total AV - GBP,Adyen_TotalAVPro,Adyen_TotalAVPro_EMEA,Adyen,Total AV,GBP,,,,,TRUE,FALSE,TRUE,1
+adyen-gbp-tav-test,Adyen EMEA - Total AV,Adyen_TotalAV,Adyen_TotalAV_EMEA,Adyen,Total AV,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-gbp-tav-ultimate,Adyen EMEA - Total AV Ultimate,Adyen_TotalAVUltimate,Adyen_TotalAVUltimate_EMEA,Adyen,Total AV,GBP,,,,,TRUE,FALSE,TRUE,1
+adyen-gbp-tav-us,Adyen - Total AV - GBP,Adyen_TotalAV,Adyen_TotalAV_US,Adyen,Total AV,GBP,TOTALAV.COM - 479338 - 479338002167730,TOTALAV.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-gbp-tav-us-gp,Adyen - Total AV - GBP,Adyen_TotalAV,Adyen_TotalAV_US,Adyen,Total AV,GBP,TOTALAV.COM - 479338 - 479338002167730,TOTALAV.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-gbp-tav-us-am,Adyen USA - Total AV,Adyen_TotalAV,Adyen_TotalAV_US,Adyen,Total AV,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-tav,Adyen - Total AV - USD,Adyen_TotalAV,Adyen_TotalAV_US,Adyen,Total AV,USD,TOTALAV.COM - 479338 - 479338002167730,TOTALAV.COM,479338,4.79E+14,TRUE,FALSE,TRUE,1
+adyen-usd-tav-emea,Adyen - Total AV - USD,Adyen_TotalAV,Adyen_TotalAV_EMEA,Adyen,Total AV,USD,TOTALAV.COM - 487530 - 487530001594241,TOTALAV.COM,487530,4.88E+14,FALSE,TRUE,TRUE,1
+adyen-usd-tav-prem,Adyen USA - Total AV Premium,Adyen_TotalAVPremium,Adyen_TotalAVPremium_US,Adyen,Total AV,USD,,,,,TRUE,FALSE,TRUE,1
+adyen-usd-tav-pro,Adyen USA - Total AV Pro,Adyen_TotalAVPro,Adyen_TotalAVPro_US,Adyen,Total AV,USD,,,479338,4.79E+14,TRUE,FALSE,TRUE,1
+adyen-usd-tav-test,Adyen USA - Total AV,Adyen_TotalAV,Adyen_TotalAV_US,Adyen,Total AV,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-tav-ultimate,Adyen USA - Total AV Ultimate,Adyen_TotalAVUltimate,Adyen_TotalAVUltimate_US,Adyen,Total AV,USD,,,479338,4.79E+14,TRUE,FALSE,TRUE,1
+adyen-usd-tcl-x-tav,Adyen - Total AV - USD,Adyen_TotalCleaner,Adyen_TotalCleaner_US,Adyen,Total AV,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-gbp-tsc-x-tav,Adyen - Total AV - GBP,Adyen_TotalSecurity,Adyen_TotalSecurity_EMEA,Adyen,Total AV,GBP,www.totalsecurity.co - 487530 - 487530005335658,www.totalsecurity.co ,487530,4.88E+14,FALSE,FALSE,TRUE,1
+adyen-usd-tsc,Adyen - Total AV - USD,Adyen_TotalSecurity,Adyen_TotalSecurity_US,Adyen,Total AV,USD,www.totalsecurity.co - 479338 - 479338002117479,www.totalsecurity.co,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-usd-tsc-x-tav,Adyen - Total AV - USD,Adyen_TotalSecurity,Adyen_TotalSecurity_US,Adyen,Total AV,USD,www.totalsecurity.co - 479338 - 479338002117479,www.totalsecurity.co,479338,4.79E+14,TRUE,FALSE,TRUE,1
+authorize-usd-tav,Authorize - Total AV - USD,Authorize - Total AV,Authorize - Total AV,Authorize,Total AV,USD,,,469216,6.85E+14,TRUE,FALSE,FALSE,1
+bancard-gbp-tav,Bancard - Total AV - GBP,Bancard - Total AV,Bancard - Total AV,Bancard,Total AV,GBP,,,,,FALSE,FALSE,FALSE,1
+bancard-usd-tav,Bancard - Total AV - USD,Bancard - Total AV,Bancard - Total AV,Bancard,Total AV,USD,TotalSec*SpeedyClean - 403481 - A0000000000GSBK,TotalSec*SpeedyClean,403481,A0000000000GSBK,FALSE,FALSE,FALSE,1
+braintree-aud-tav,Braintree - Total AV - AUD,Braintree USA - Total AV,Braintree USA - Total AV,Braintree,Total AV,AUD,TOTALAV.COM - 411641 - 526448900880,TOTALAV.COM,411641,5.26E+11,TRUE,FALSE,TRUE,1
+braintree-aud-totalavaud,Braintree - Total AV - AUD,Braintree USA - Total AV,Braintree USA - Total AV,Braintree,Total AV,AUD,,,,,FALSE,FALSE,TRUE,1
+braintree-cad-tav,Braintree - Total AV - CAD,Braintree USA - Total AV,Braintree USA - Total AV,Braintree,Total AV,CAD,TOTALAV.COM - 411641 - 526412311882,TOTALAV.COM,411641,5.26E+11,TRUE,FALSE,TRUE,1
+braintree-eur-tav,Braintree - Total AV - EUR,Braintree EU - Total AV,Braintree EU - Total AV,Braintree,Total AV,EUR,TOTALAV - 465737 - 020154324,TOTALAV,465737,20154324,TRUE,FALSE,TRUE,1
+braintree-eur-totalaveur,Braintree - Total AV - EUR,Braintree EU - Total AV,Braintree EU - Total AV,Braintree,Total AV,EUR,,,,,FALSE,FALSE,TRUE,1
+braintree-gbp-tav,Braintree - Total AV - GBP,Braintree EU - Total AV,Braintree EU - Total AV,Braintree,Total AV,GBP,TOTALAV - 465737 - 020154324,TOTALAV,465737,20154324,TRUE,FALSE,TRUE,1
+braintree-gbp-totalavgbp,Braintree - Total AV - GBP,Braintree EU - Total AV,Braintree EU - Total AV,Braintree,Total AV,GBP,,ProtectedNet,,,FALSE,FALSE,TRUE,1
+braintree-usd-tav,Braintree - Total AV - USD,Braintree USA - Total AV,Braintree USA - Total AV,Braintree,Total AV,USD,TOTALAV.COM - 411641 - 526448392880,TOTALAV.COM,411641,5.26E+11,TRUE,FALSE,TRUE,1
+braintree-usd-tav-gp,Braintree - Total AV - USD,Braintree USA - Total AV,Braintree USA - Total AV,Braintree,Total AV,USD,TOTALAV.COM - 411641 - 526448392880,TOTALAV.COM,411641,5.26E+11,FALSE,FALSE,TRUE,1
+cwams-usd-tav,Cardworks - Total AV - USD,Cardworks - Total AV,Cardworks - Total AV,Cardworks,Total AV,USD,TOTALAV.COM - 411859 - 419100090647000,TOTALAV.COM,411859,4.19E+14,FALSE,FALSE,FALSE,1
+cwams-usd-tav-monthly,Cardworks - Total AV - USD,Cardworks - Total AV,Cardworks - Total AV,Cardworks,Total AV,USD,,,,,FALSE,FALSE,FALSE,1
+checkout-aud-tav,Checkout - Total AV - AUD,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,AUD,,,,,FALSE,FALSE,TRUE,1
+checkout-aud-tav-new,Checkout - Total AV - AUD,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,AUD,totalav.com - 402121 - 000000000206184,totalav.com,402121,206184,FALSE,FALSE,TRUE,1
+checkout-tav-aud-new,Checkout - Total AV - AUD,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,AUD,,ProtectedNet,,,FALSE,FALSE,TRUE,1
+checkout-tav-aud,Checkout - Total AV - AUD,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,AUD,,ProtectedNet,,,FALSE,FALSE,TRUE,1
+checkout-cad-tav,Checkout - Total AV - CAD,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,CAD,,,,,FALSE,FALSE,TRUE,1
+checkout-cad-tav-new,Checkout - Total AV - CAD,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,CAD,totalav.com - 402121 - 000000000206184,totalav.com,402121,206184,FALSE,FALSE,TRUE,1
+checkout-tav-cad-new,Checkout - Total AV - CAD,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,CAD,totalav.com - 402121 - 000000000206184,totalav.com,402121,206184,FALSE,FALSE,TRUE,1
+checkout-tav-cad,Checkout - Total AV - CAD,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,CAD,totalav.com - 402121 - 000000000206184,totalav.com,402121,206184,FALSE,FALSE,TRUE,1
+checkout-eur-tav,Checkout - Total AV - EUR,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,EUR,,,,,FALSE,FALSE,TRUE,1
+checkout-eur-tav-new,Checkout - Total AV - EUR,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,EUR,totalav.com - 402121 - 000000000206184,totalav.com,402121,206184,TRUE,FALSE,TRUE,1
+checkout-tav-eur,Checkout - Total AV - EUR,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,EUR,,ProtectedNet,,,FALSE,FALSE,TRUE,1
+checkout-gbp-tav,Checkout - Total AV - GBP,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,GBP,totalav.com - 402121 - 000000000206184,totalav.com,402121,206184,FALSE,FALSE,TRUE,1
+checkout-gbp-tav-new,Checkout - Total AV - GBP,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,GBP,totalav.com - 402121 - 000000000206184,totalav.com,402121,206184,TRUE,FALSE,TRUE,1
+checkout-tav-gbp-new,Checkout - Total AV - GBP,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,GBP,totalav.com - 402121 - 000000000206184,totalav.com,402121,206184,FALSE,FALSE,TRUE,1
+checkout-tav-gbp,Checkout - Total AV - GBP,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,GBP,totalav.com - 402121 - 000000000206184,totalav.com,402121,206184,FALSE,FALSE,TRUE,1
+checkout-tav-usd,Checkout - Total AV - USD,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,USD,totalav.com - 402121 - 000000000206184,totalav.com,402121,206184,FALSE,FALSE,TRUE,1
+checkout-usd-tav,Checkout - Total AV - USD,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,USD,totalav.com - 402121 - 000000000206184,totalav.com,402121,206184,FALSE,TRUE,TRUE,1
+checkout-usd-tav-new,Checkout - Total AV - USD,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,USD,totalav.com - 402121 - 000000000206184,totalav.com,402121,206184,FALSE,TRUE,TRUE,1
+epx-usd-tav,EPX - Total AV - USD,EPX USA - Total AV,EPX USA - Total AV,EPX,Total AV,USD,,ProtectedNet,429128,A0000000000N5AV,FALSE,FALSE,TRUE,1
+merrick-usd-1002515114,Merrick - Total AV - USD,Merrick USA - Total AV,Merrick USA - Total AV,Merrick,Total AV,USD,,,,,FALSE,TRUE,FALSE,1
+merrick-usd-tav,Merrick - Total AV - USD,Merrick USA - Total AV,Merrick USA - Total AV,Merrick,Total AV,USD,ProtectedNet - 462585 - 482960100005053,ProtectedNet,462585,4.83E+14,FALSE,TRUE,FALSE,1
+paysafe-aud-1002449024,PaySafe - Total AV - AUD,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,AUD,ProtectedNet - 458518 - 00102839,ProtectedNet,458518,102839,FALSE,TRUE,TRUE,1
+paysafe-aud-tav,PaySafe - Total AV - AUD,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,AUD,ProtectedNet - 458518 - 00102839,ProtectedNet,458518,102839,FALSE,TRUE,TRUE,1
+paysafe-aud-tvn-ap,PaySafe - Total AV - AUD - AP,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,AUD,,,,,FALSE,TRUE,TRUE,1
+paysafe-cad-1002449044,PaySafe - Total AV - CAD,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,CAD,,,,,FALSE,FALSE,TRUE,1
+paysafe-cad-tav,PaySafe - Total AV - CAD,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,CAD,ProtectedNet - 458518 - 00102840,ProtectedNet,458518,102840,FALSE,FALSE,TRUE,1
+paysafe-cad-tvn-ap,PaySafe - Total AV - CAD - AP,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,CAD,,,,,FALSE,FALSE,TRUE,1
+paysafe-eur-1002449064,PaySafe - Total AV - EUR,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,EUR,,,,,FALSE,FALSE,FALSE,1
+paysafe-eur-tav,PaySafe - Total AV - EUR,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,EUR,ProtectedNet - 458518 - 00102841,ProtectedNet,458518,102841,TRUE,FALSE,FALSE,1
+paysafe-eur-tvn,PaySafe - Total AV - EUR,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,EUR,,,,,FALSE,FALSE,FALSE,1
+paysafe-eur-tvn-ap,PaySafe - Total AV - EUR - AP,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,EUR,,,,,FALSE,FALSE,FALSE,1
+paysafe-eur-tvn-gp,PaySafe - Total AV - EUR - GP,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,EUR,,,,,FALSE,FALSE,FALSE,1
+paysafe-gbp-1002448994,PaySafe - Total AV - GBP,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,GBP,ProtectedNet - 458518 - 00102834,ProtectedNet,458518,102834,FALSE,FALSE,FALSE,1
+paysafe-gbp-tav,PaySafe - Total AV - GBP,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,GBP,ProtectedNet - 458518 - 00102834,ProtectedNet,458518,102834,TRUE,FALSE,FALSE,1
+paysafe-gbp-tvn-ap,PaySafe - Total AV - GBP - AP,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,GBP,,,,,FALSE,FALSE,FALSE,1
+paysafe-usd-1002449004,PaySafe - Total AV - USD,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,USD,ProtectedNet - 458518 - 00102836,ProtectedNet,458518,102836,FALSE,TRUE,TRUE,1
+paysafe-usd-tav,PaySafe - Total AV - USD,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,USD,ProtectedNet - 458518 - 00102836,ProtectedNet,458518,102836,FALSE,TRUE,TRUE,1
+paysafe-usd-tvn-ap,PaySafe - Total AV - USD - AP,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,USD,,,,,FALSE,TRUE,TRUE,1
+paysafe-usd-tvn-gp,PaySafe - Total AV - USD - GP,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,USD,,,,,FALSE,TRUE,TRUE,1
+trustpayments-aud-tav,TrustPayments - Total AV - AUD,TrustPayments - Total AV,TrustPayments - Total AV - AUD,TrustPayments,Total AV,AUD,,,,,FALSE,FALSE,FALSE,1
+trustpayments-cad-tav,TrustPayments - Total AV - CAD,TrustPayments - Total AV,TrustPayments - Total AV - CAD,TrustPayments,Total AV,CAD,,,,,FALSE,FALSE,FALSE,1
+trustpayments-gbp-tav,TrustPayments - Total AV - GBP,TrustPayments - Total AV,TrustPayments - Total AV - GBP,TrustPayments,Total AV,GBP,,,,,FALSE,FALSE,FALSE,1
+trustpayments-usd-tav,TrustPayments - Total AV - USD,TrustPayments - Total AV,TrustPayments - Total AV - USD,TrustPayments,Total AV,USD,,,,,FALSE,FALSE,FALSE,1
+worldpay-aud-4237625,WorldPay - Total AV - AUD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,AUD,ProtectedNet - 490641 - 395704237625,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpay-aud-tav,WorldPay - Total AV - AUD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,AUD,,,,,FALSE,FALSE,TRUE,1
+worldpay-aud-tav-nt,WorldPay - Total AV - AUD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,AUD,ProtectedNet - 490641 - 395704237625,ProtectedNet,490641,3.96E+11,TRUE,FALSE,TRUE,1
+worldpay-aud-tav-nt-ap,WorldPay - Total AV - AUD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,AUD,ProtectedNet - 490641 - 395704237625,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpay-aud-tav-nt-gp,WorldPay - Total AV - AUD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,AUD,ProtectedNet - 490641 - 395704237625,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpayapplepay-aud-4237625,WorldPay - Total AV - AUD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,AUD,ProtectedNet - 490641 - 395704237625,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpaygooglepay-aud-4237625,WorldPay - Total AV - AUD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,AUD,ProtectedNet - 490641 - 395704237625,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpay-cad-4237627,WorldPay - Total AV - CAD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,CAD,,,,,FALSE,FALSE,TRUE,1
+worldpay-cad-tav,WorldPay - Total AV - CAD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,CAD,,,,,FALSE,FALSE,TRUE,1
+worldpay-cad-tav-nt,WorldPay - Total AV - CAD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,CAD,ProtectedNet - 490641 - 395704237627,ProtectedNet,490641,3.96E+11,TRUE,FALSE,TRUE,1
+worldpay-cad-tav-nt-ap,WorldPay - Total AV - CAD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,CAD,ProtectedNet - 490641 - 395704237627,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpay-cad-tav-nt-gp,WorldPay - Total AV - CAD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,CAD,ProtectedNet - 490641 - 395704237627,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpayapplepay-cad-4237627,WorldPay - Total AV - CAD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,CAD,ProtectedNet - 490641 - 395704237627,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpaygooglepay-cad-4237627,WorldPay - Total AV - CAD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,CAD,ProtectedNet - 490641 - 395704237627,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpay-eur-4237628,WorldPay - Total AV - EUR,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,EUR,,,,,FALSE,TRUE,TRUE,1
+worldpay-eur-tav,WorldPay - Total AV - EUR,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,EUR,,,,,FALSE,TRUE,TRUE,1
+worldpay-eur-tav-nt,WorldPay - Total AV - EUR,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,EUR,ProtectedNet - 490641 - 395704237628,ProtectedNet,490641,3.96E+11,FALSE,TRUE,TRUE,1
+worldpay-eur-tav-nt-ap,WorldPay - Total AV - EUR,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,EUR,ProtectedNet - 490641 - 395704237628,ProtectedNet,490641,3.96E+11,FALSE,TRUE,TRUE,1
+worldpay-eur-tav-nt-gp,WorldPay - Total AV - EUR,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,EUR,ProtectedNet - 490641 - 395704237628,ProtectedNet,490641,3.96E+11,FALSE,TRUE,TRUE,1
+worldpayapplepay-eur-4237628,WorldPay - Total AV - EUR,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,EUR,ProtectedNet - 490641 - 395704237628,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpaygooglepay-eur-4237628,WorldPay - Total AV - EUR,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,EUR,ProtectedNet - 490641 - 395704237628,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpay-gbp-4237734,WorldPay - Total AV - GBP,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,GBP,ProtectedNet - 490641 - 395704237734,ProtectedNet,490641,3.96E+11,FALSE,TRUE,TRUE,1
+worldpay-gbp-tav,WorldPay - Total AV - GBP,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,GBP,,,,,FALSE,TRUE,TRUE,1
+worldpay-gbp-tav-nt,WorldPay - Total AV - GBP,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,GBP,ProtectedNet - 490641 - 395704237734,ProtectedNet,490641,3.96E+11,FALSE,TRUE,TRUE,1
+worldpay-gbp-tav-nt-ap,WorldPay - Total AV - GBP,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,GBP,ProtectedNet - 490641 - 395704237734,ProtectedNet,490641,3.96E+11,FALSE,TRUE,TRUE,1
+worldpay-gbp-tav-nt-gp,WorldPay - Total AV - GBP,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,GBP,ProtectedNet - 490641 - 395704237734,ProtectedNet,490641,3.96E+11,FALSE,TRUE,TRUE,1
+worldpayapplepay-gbp-4237734,WorldPay - Total AV - GBP,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,GBP,ProtectedNet - 490641 - 395704237734,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpaygooglepay-gbp-4237734,WorldPay - Total AV - GBP,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,GBP,ProtectedNet - 490641 - 395704237734,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpay-usd-4237735,WorldPay - Total AV - USD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,USD,ProtectedNet - 490641 - 395704237735,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpay-usd-tav,WorldPay - Total AV - USD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,USD,ProtectedNet - 490641 - 395704237735,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpay-usd-tav-nt,WorldPay - Total AV - USD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,USD,ProtectedNet - 490641 - 395704237735,ProtectedNet,490641,3.96E+11,TRUE,FALSE,TRUE,1
+worldpay-usd-tav-nt-ap,WorldPay - Total AV - USD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,USD,ProtectedNet - 490641 - 395704237735,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpay-usd-tav-nt-gp,WorldPay - Total AV - USD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,USD,ProtectedNet - 490641 - 395704237735,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpay-usd-tav-nt-gp-test,WorldPay - Total AV - USD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,USD,,,,,FALSE,FALSE,TRUE,1
+worldpay-usd-tav-prtctd-ap,WorldPay - Total AV - USD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,USD,,ProtectedNet,,,FALSE,FALSE,TRUE,1
+worldpay-usd-tav-prtctd-gp,WorldPay - Total AV - USD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,USD,,ProtectedNet,,,FALSE,FALSE,TRUE,1
+worldpayapplepay-usd-4237735,WorldPay - Total AV - USD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,USD,ProtectedNet - 490641 - 395704237735,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+worldpaygooglepay-usd-4237735,WorldPay - Total AV - USD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,USD,ProtectedNet - 490641 - 395704237735,ProtectedNet,490641,3.96E+11,FALSE,FALSE,TRUE,1
+adyen-usd-tav-secure,Adyen USA - Total AV Secure,Adyen_TotalAVSecure,Adyen_TotalAVSecure_US,Adyen,Total AV,USD,,,,,TRUE,FALSE,TRUE,1
+adyen-usd-tav-avonline,Adyen USA - Total AntivirusOnline,Adyen_TotalAntivirusOnline,Adyen_TotalAntivirusOnline_US,Adyen,Total AV,USD,,,,,TRUE,FALSE,TRUE,1
+woodforest-usd-tav,WoodForest - Total AV - USD,WoodForest - Total AV,WoodForest - Total AV,WoodForest,Total AV,USD,,,,,TRUE,FALSE,FALSE,1
+paypal-gbp-tav,Paypal,Paypal,Paypal,Paypal,Total AV,GBP,,,,,FALSE,FALSE,FALSE,1
+cwams-usd-tav-x,Cardworks - Total AV - USD,Cardworks - Total AV,Cardworks - Total AV,Cardworks,Total AV,USD,,,,,FALSE,FALSE,FALSE,1
+adyen-usd-tav-prem-x,Adyen USA - Total AV Premium,Adyen_TotalAVPremium,Adyen_TotalAVPremium_US,Adyen,Total AV,USD,,,,,FALSE,FALSE,TRUE,1
+worldpay-usd-tav-nt-x,WorldPay - Total AV - USD,WorldPay - Total AV,WorldPay - Total AV,WorldPay,Total AV,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-tav-x,Adyen - Total AV - USD,Adyen_TotalAV,Adyen_TotalAV_US,Adyen,Total AV,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-tav-pro-x,Adyen USA - Total AV Pro,Adyen_TotalAVPro,Adyen_TotalAVPro_US,Adyen,Total AV,USD,,,,,FALSE,FALSE,TRUE,1
+paysafe-usd-tav-x,PaySafe - Total AV - USD,PaySafe - Total AV,PaySafe - Total AV,Paysafe,Total AV,USD,,,,,FALSE,TRUE,TRUE,1
+checkout-usd-tav-new-x,Checkout - Total AV - USD,Checkout - Total AV,Checkout - Total AV,Checkout,Total AV,USD,,,,,FALSE,TRUE,TRUE,1
+bancard-usd-tav-x,Bancard - Total AV - USD,Bancard - Total AV,Bancard - Total AV,Bancard,Total AV,USD,TotalSec*SpeedyClean - 403481 - A0000000000GSBK,TotalSec*SpeedyClean,403481,A0000000000GSBK,FALSE,FALSE,FALSE,1
+cwams-usd-tav-monthly-x,Cardworks - Total AV - USD,Cardworks - Total AV,Cardworks - Total AV,Cardworks,Total AV,USD,,,,,FALSE,FALSE,FALSE,1
+merrick-usd-tav-x,Merrick - Total AV - USD,Merrick USA - Total AV,Merrick USA - Total AV,Merrick,Total AV,USD,ProtectedNet - 462585 - 482960100005053,ProtectedNet,462585,4.83E+14,FALSE,TRUE,FALSE,1
+braintree-usd-tav-x,Braintree - Total AV - USD,Braintree USA - Total AV,Braintree USA - Total AV,Braintree,Total AV,USD,TOTALAV.COM - 411641 - 526448392880,TOTALAV.COM,411641,5.26E+11,FALSE,FALSE,TRUE,1
+adyen-usd-tav-ultimate-x,Adyen USA - Total AV Ultimate,Adyen_TotalAVUltimate,Adyen_TotalAVUltimate_US,Adyen,Total AV,USD,,,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-usd-tav-emea-x,Adyen - Total AV - USD,Adyen_TotalAV,Adyen_TotalAV_EMEA,Adyen,Total AV,USD,TOTALAV.COM - 487530 - 487530001594241,TOTALAV.COM,487530,4.88E+14,FALSE,TRUE,TRUE,1
+authorize-usd-tav-x,Authorize - Total AV - USD,Authorize - Total AV,Authorize - Total AV,Authorize,Total AV,USD,,,,,FALSE,FALSE,FALSE,1
+woodforest-usd-tav-x,WoodForest - Total AV - USD,WoodForest - Total AV,WoodForest - Total AV,WoodForest,Total AV,USD,,,,,FALSE,FALSE,FALSE,1
+adyen-aud-tcl,Adyen - Total Cleaner - AUD,Adyen_TotalCleaner,Adyen_TotalCleaner_US,Adyen,Total Cleaner,AUD,,,,,FALSE,FALSE,TRUE,1
+adyen-cad-tcl,Adyen - Total Cleaner - CAD,Adyen_TotalCleaner,Adyen_TotalCleaner_US,Adyen,Total Cleaner,CAD,,,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-eur-tcl,Adyen - Total Cleaner - EUR,Adyen_TotalCleaner,Adyen_TotalCleaner_EMEA,Adyen,Total Cleaner,EUR,,ProtectedNet,,,FALSE,FALSE,TRUE,1
+adyen-gbp-tcl,Adyen - Total Cleaner - GBP,Adyen_TotalCleaner,Adyen_TotalCleaner_EMEA,Adyen,Total Cleaner,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-gbp-tcl-us,Adyen - Total Cleaner - GBP,Adyen_TotalCleaner,Adyen_TotalCleaner_US,Adyen,Total Cleaner,GBP,,,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-usd-tcl,Adyen - Total Cleaner - USD,Adyen_TotalCleaner,Adyen_TotalCleaner_US,Adyen,Total Cleaner,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-tcl-x-tab,Adyen - Total Cleaner - USD,Adyen_TotalCleaner,Adyen_TotalCleaner_US,Adyen,Total Cleaner,USD,,,,,FALSE,FALSE,TRUE,1
+bancard-usd-tcl,Bancard - Total Cleaner - USD,Bancard - Total Cleaner,Bancard - Total Cleaner,Bancard,Total Cleaner,USD,,ProtectedNet,,,FALSE,FALSE,FALSE,1
+cwams-usd-tcl,Cardworks - Total Cleaner - USD,Cardworks - Total Cleaner,Cardworks - Total Cleaner,Cardworks,Total Cleaner,USD,,,,,FALSE,FALSE,FALSE,1
+epx-usd-tcl,EPX - Total Cleaner - USD,EPX USA - Total Cleaner,EPX USA - Total Cleaner,EPX,Total Cleaner,USD,,ProtectedNet,429128,A0000000000N5BB,FALSE,FALSE,TRUE,1
+paysafe-gbp-tcl,PaySafe - Total Cleaner - GBP,PaySafe - Total Cleaner,PaySafe - Total Cleaner,PaySafe,Total Cleaner,GBP,,,,,FALSE,FALSE,FALSE,1
+paysafe-usd-tcl,PaySafe - Total Cleaner - USD,PaySafe - Total Cleaner,PaySafe - Total Cleaner,PaySafe,Total Cleaner,USD,,,,,FALSE,TRUE,TRUE,1
+paysafe-eur-tcl,PaySafe - Total Cleaner - EUR,PaySafe - Total Cleaner,PaySafe - Total Cleaner,PaySafe,Total Cleaner,EUR,,,,,FALSE,FALSE,FALSE,1
+braintree-usd-tcl,Braintree - Total Cleaner - USD,Braintree - Total Cleaner,Braintree - Total Cleaner,Braintree,Total Cleaner,USD,,,,,FALSE,FALSE,TRUE,1
+braintree-cad-tcl,Braintree - Total Cleaner - CAD,Braintree - Total Cleaner,Braintree - Total Cleaner,Braintree,Total Cleaner,CAD,,,,,FALSE,FALSE,TRUE,1
+braintree-aud-tcl,Braintree - Total Cleaner - AUD,Braintree - Total Cleaner,Braintree - Total Cleaner,Braintree,Total Cleaner,AUD,,,,,FALSE,FALSE,TRUE,1
+paypal-gbp-tcl,Paypal,Paypal,Paypal,Paypal,Total Cleaner,GBP,,,,,FALSE,FALSE,FALSE,1
+braintree-gbp-tcl,Braintree - Total Cleaner - GBP,Braintree - Total Cleaner,Braintree - Total Cleaner,Braintree,Total Cleaner,GBP,,,,,FALSE,FALSE,TRUE,1
+braintree-eur-tcl,Braintree - Total Cleaner - EUR,Braintree - Total Cleaner,Braintree - Total Cleaner,Braintree,Total Cleaner,EUR,,,,,FALSE,FALSE,TRUE,1
+paypal-usd-tcl,Paypal,Paypal,Paypal,Paypal,Total Cleaner,USD,,,,,FALSE,FALSE,FALSE,1
+paypal-eur-tcl,Paypal,Paypal,Paypal,Paypal,Total Cleaner,EUR,,,,,FALSE,FALSE,FALSE,1
+paypal-aud-tcl,Paypal,Paypal,Paypal,Paypal,Total Cleaner,AUD,,,,,FALSE,FALSE,FALSE,1
+paypal-cad-tcl,Paypal,Paypal,Paypal,Paypal,Total Cleaner,CAD,,,,,FALSE,FALSE,FALSE,1
+adyen-aud-tdr,Adyen - Total Drive - AUD,Adyen_TotalDrive,Adyen_TotalDrive_US,Adyen,Total Drive,AUD,totaldrive - 479338 - 479338002174116,totaldrive,479338,4.79E+14,TRUE,FALSE,TRUE,1
+adyen-cad-tdr,Adyen - Total Drive - CAD,Adyen_TotalDrive,Adyen_TotalDrive_US,Adyen,Total Drive,CAD,totaldrive - 479338 - 479338002174116,totaldrive,479338,4.79E+14,TRUE,FALSE,TRUE,1
+adyen-eur-tdr,Adyen - Total Drive - EUR,Adyen_TotalDrive,Adyen_TotalDrive_EMEA,Adyen,Total Drive,EUR,TotalDrive.com - 487530 - 487530001668599,TotalDrive.com,487530,4.88E+14,TRUE,FALSE,TRUE,1
+adyen-gbp-mc-tdr,Adyen - Total Drive - GBP,Adyen_TotalDrive,Adyen_TotalDrive_EMEA,Adyen,Total Drive,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-gbp-tdr,Adyen - Total Drive - GBP,Adyen_TotalDrive,Adyen_TotalDrive_EMEA,Adyen,Total Drive,GBP,TotalDrive.com - 487530 - 487530001668599,TotalDrive.com,487530,4.88E+14,TRUE,FALSE,TRUE,1
+adyen-gbp-tdr-test,Adyen EMEA - Total Drive,Adyen_TotalDrive,Adyen_TotalDrive_EMEA,Adyen,Total Drive,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-tdr,Adyen - Total Drive - USD,Adyen_TotalDrive,Adyen_TotalDrive_US,Adyen,Total Drive,USD,totaldrive - 479338 - 479338002174116,totaldrive,479338,4.79E+14,TRUE,FALSE,TRUE,1
+adyen-usd-tdr-cap1,Adyen - Total Drive - USD,Adyen_TotalDrive,Adyen_TotalDrive_US,Adyen,Total Drive,USD,,,,,FALSE,FALSE,TRUE,1
+authorize-usd-tdr,Authorize - Total Drive - USD,Authorize - Total Drive,Authorize - Total Drive,Authorize,Total Drive,USD,,,469216,6.87E+14,TRUE,FALSE,FALSE,1
+braintree-aud-tdr,Braintree - Total Drive - AUD,Braintree EU - Total Drive,Braintree EU - Total Drive,Braintree,Total Drive,AUD,Total Drive - 465737 - 020484101,Total Drive,465737,20484101,TRUE,FALSE,TRUE,1
+braintree-cad-tdr,Braintree - Total Drive - CAD,Braintree EU - Total Drive,Braintree EU - Total Drive,Braintree,Total Drive,CAD,Total Drive - 465737 - 020484101,Total Drive,465737,20484101,TRUE,FALSE,TRUE,1
+braintree-eur-tdr,Braintree - Total Drive - EUR,Braintree EU - Total Drive,Braintree EU - Total Drive,Braintree,Total Drive,EUR,Total Drive - 465737 - 020484101,Total Drive,465737,20484101,TRUE,FALSE,TRUE,1
+braintree-gbp-tdr,Braintree - Total Drive - GBP,Braintree EU - Total Drive,Braintree EU - Total Drive,Braintree,Total Drive,GBP,Total Drive - 465737 - 020484101,Total Drive,465737,20484101,TRUE,FALSE,TRUE,1
+braintree-gbp-tdr-gp,Braintree - Total Drive - GBP,Braintree EU - Total Drive,Braintree EU - Total Drive,Braintree,Total Drive,GBP,Total Drive - 465737 - 020484101,Total Drive,465737,20484101,FALSE,FALSE,TRUE,1
+braintree-usd-tdr,Braintree - Total Drive - USD,Braintree EU - Total Drive,Braintree EU - Total Drive,Braintree,Total Drive,USD,Total Drive - 465737 - 020484101,Total Drive,465737,20484101,TRUE,FALSE,TRUE,1
+braintree-usd-tdr-gp,Braintree - Total Drive - USD,Braintree EU - Total Drive,Braintree EU - Total Drive,Braintree,Total Drive,USD,,,,,FALSE,FALSE,TRUE,1
+worldpay-usd-tdr-nt,WorldPay - Total Drive - USD,WorldPay - Total Drive,WorldPay - Total Drive,WorldPay,Total Drive,USD,,,490641,3.96E+11,TRUE,FALSE,TRUE,1
+worldpay-usd-tdr,WorldPay - Total Drive - USD,WorldPay - Total Drive,WorldPay - Total Drive,WorldPay,Total Drive,USD,,,490641,3.96E+11,FALSE,FALSE,TRUE,1
+epx-usd-tdr,EPX - Total Drive - USD,EPX - Total Drive,EPX - Total Drive,EPX,Total Drive,USD,,,429128,A0000000000NXRB,FALSE,FALSE,TRUE,1
+adyen-gbp-tdr-us,Adyen USA - Total Drive,Adyen_TotalDrive,Adyen_TotalDrive_US,Adyen,Total Drive,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-eur-tdr-us,Adyen USA - Total Drive,Adyen_TotalDrive,Adyen_TotalDrive_US,Adyen,Total Drive,EUR,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-tdr-backup,Adyen USA - Total Drive Backup,Adyen_TotalDriveBackup,Adyen_TotalDriveBackup_US,Adyen,Total Drive,USD,,,,,TRUE,FALSE,TRUE,1
+adyen-usd-tdr-secure,Adyen USA - Total Drive Secure,Adyen_TotalDriveSecure,Adyen_TotalDriveSecure_US,Adyen,Total Drive,USD,,,,,TRUE,FALSE,TRUE,1
+woodforest-usd-tdr,WoodForest - Total Drive - USD,WoodForest - Total Drive,WoodForest - Total Drive,WoodForest,Total Drive,USD,,,,,TRUE,FALSE,FALSE,1
+paypal-gbp-tdr,Paypal,Paypal,Paypal,Paypal,Total Drive,GBP,,,,,FALSE,FALSE,FALSE,1
+adyen-gbp-tdr-backup,Adyen EMEA - Total Drive Backup,Adyen_TotalDriveBackup,Adyen_TotalDriveBackup_EMEA,Adyen,Total Drive,GBP,,,,,TRUE,FALSE,TRUE,1
+adyen-gbp-tdr-secure,Adyen EMEA - Total Drive Secure,Adyen_TotalDriveSecure,Adyen_TotalDriveSecure_EMEA,Adyen,Total Drive,GBP,,,,,TRUE,FALSE,TRUE,1
+adyen-tpw-emea,Adyen - Total Password - ,Adyen_TotalPassword,Adyen_TotalPassword_EMEA,Adyen,Total Password,,,,,,FALSE,TRUE,TRUE,1
+adyen-aud-tpw,Adyen - Total Password - AUD,Adyen_TotalPassword,Adyen_TotalPassword_US,Adyen,Total Password,AUD,TOTALPASSWORD.COM - 479338 - 479338002174124,TOTALPASSWORD.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-cad-tpw,Adyen - Total Password - CAD,Adyen_TotalPassword,Adyen_TotalPassword_US,Adyen,Total Password,CAD,TOTALPASSWORD.COM - 479338 - 479338002174124,TOTALPASSWORD.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-eur-tpw,Adyen - Total Password - EUR,Adyen_TotalPassword,Adyen_TotalPassword_EMEA,Adyen,Total Password,EUR,TOTALPASSWORD.COM - 487530 - 487530001668615,TOTALPASSWORD.COM,487530,4.88E+14,FALSE,FALSE,TRUE,1
+adyen-gbp-tpw,Adyen - Total Password - GBP,Adyen_TotalPassword,Adyen_TotalPassword_EMEA,Adyen,Total Password,GBP,TOTALPASSWORD.COM - 487530 - 487530001668615,TOTALPASSWORD.COM,487530,4.88E+14,FALSE,FALSE,TRUE,1
+adyen-tpw-us,Adyen - Total Password - USD,Adyen_TotalPassword,Adyen_TotalPassword_US,Adyen,Total Password,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-tpw,Adyen - Total Password - USD,Adyen_TotalPassword,Adyen_TotalPassword_US,Adyen,Total Password,USD,TOTALPASSWORD.COM - 479338 - 479338002174124,TOTALPASSWORD.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-usd-tpw-x-tab,Adyen - Total Password - USD,Adyen_TotalPassword,Adyen_TotalPassword_US,Adyen,Total Password,USD,TOTALPASSWORD.COM - 479338 - 479338002174124,TOTALPASSWORD.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-usd-tpw-x-tav,Adyen - Total Password - USD,Adyen_TotalPassword,Adyen_TotalPassword_US,Adyen,Total Password,USD,TOTALPASSWORD.COM - 479338 - 479338002174124,TOTALPASSWORD.COM,479338,4.79E+14,FALSE,FALSE,TRUE,1
+bancard-usd-tpw,Bancard - Total Password - USD,Bancard - Total Password,Bancard - Total Password,Bancard,Total Password,USD,,,,,FALSE,FALSE,FALSE,1
+braintree-aud-tpw,Braintree - Total Password - AUD,Braintree EU - Total Password,Braintree EU - Total Password AUD,Braintree,Total Password,AUD,Total Password - 465737 - 020455482,Total Password,465737,20455482,FALSE,FALSE,TRUE,1
+braintree-aud-tpw-gp,Braintree - Total Password - AUD,Braintree EU - Total Password,Braintree EU - Total Password AUD,Braintree,Total Password,AUD,Total Password - 465737 - 020455482,Total Password,465737,20455482,FALSE,FALSE,TRUE,1
+braintree-cad-tpw,Braintree - Total Password - CAD,Braintree EU - Total Password,Braintree EU - Total Password CAD,Braintree,Total Password,CAD,Total Password - 465737 - 020455482,Total Password,465737,20455482,FALSE,FALSE,TRUE,1
+braintree-cad-tpw-gp,Braintree - Total Password - CAD,Braintree USA - Total Password,Braintree USA - Total Password CAD,Braintree,Total Password,CAD,,ProtectedNet,,,FALSE,FALSE,TRUE,1
+braintree-eur-tpw,Braintree - Total Password - EUR,Braintree EU - Total Password,Braintree EU - Total Password EUR,Braintree,Total Password,EUR,Total Password - 465737 - 020455482,Total Password,465737,20455482,FALSE,FALSE,TRUE,1
+braintree-eur-tpw-gp,Braintree - Total Password - EUR,Braintree EU - Total Password,Braintree EU - Total Password EUR,Braintree,Total Password,EUR,Total Password - 465737 - 020455482,Total Password,465737,20455482,FALSE,FALSE,TRUE,1
+braintree-gbp-tpw,Braintree - Total Password - GBP,Braintree EU - Total Password,Braintree EU - Total Password GBP,Braintree,Total Password,GBP,Total Password - 465737 - 020455482,Total Password,465737,20455482,FALSE,FALSE,TRUE,1
+braintree-gbp-tpw-gp,Braintree - Total Password - GBP,Braintree EU - Total Password,Braintree EU - Total Password GBP,Braintree,Total Password,GBP,Total Password - 465737 - 020455482,Total Password,465737,20455482,FALSE,FALSE,TRUE,1
+braintree-usd-tpw,Braintree - Total Password - USD,Braintree EU - Total Password,Braintree EU - Total Password USD,Braintree,Total Password,USD,Total Password - 465737 - 020455482,Total Password,465737,20455482,FALSE,FALSE,TRUE,1
+braintree-usd-tpw-gp,Braintree - Total Password - USD,Braintree EU - Total Password,Braintree EU - Total Password USD,Braintree,Total Password,USD,Total Password - 465737 - 020455482,Total Password,465737,20455482,FALSE,FALSE,TRUE,1
+cwams-usd-tpw,Cardworks - Total Password - USD,Cardworks - Total Password,Cardworks - Total Password,Cardworks,Total Password,USD,TOTALPASSWORD.COM - 411859 - 419100095937000,TOTALPASSWORD.COM,411859,4.19E+14,FALSE,FALSE,FALSE,1
+paysafe-aud-tpw,PaySafe - Total Password - AUD,PaySafe - Total Password,PaySafe UK - Total Password AUD,PaySafe,Total Password,AUD,TotalPassword - 458518 - 00291652,TotalPassword,458518,291652,FALSE,TRUE,TRUE,1
+paysafe-aud-tpw-gp,PaySafe - Total Password - AUD - GP,PaySafe - Total Password,PaySafe UK - Total Password AUD,PaySafe,Total Password,AUD,TotalPassword - 458518 - 00291652,TotalPassword,458518,291652,FALSE,TRUE,TRUE,1
+paysafe-cad-tpw,PaySafe - Total Password - CAD,PaySafe - Total Password,PaySafe UK - Total Password CAD,PaySafe,Total Password,CAD,TotalPassword - 458518 - 00291662,TotalPassword,458518,291662,FALSE,FALSE,TRUE,1
+paysafe-cad-tpw-gp,PaySafe - Total Password - CAD,PaySafe - Total Password,PaySafe - Total Password - CAD,PaySafe,Total Password,CAD,,,,,FALSE,FALSE,TRUE,1
+paysafe-eur-tpw,PaySafe - Total Password - EUR,PaySafe - Total Password,PaySafe UK - Total Password EUR,PaySafe,Total Password,EUR,,,,,FALSE,FALSE,FALSE,1
+paysafe-gbp-tpw,PaySafe - Total Password - GBP,PaySafe - Total Password,PaySafe UK - Total Password GBP,PaySafe,Total Password,GBP,,,458518,291672,FALSE,FALSE,FALSE,1
+paysafe-gbp-tpw-gp,PaySafe - Total Password - GBP,PaySafe - Total Password,PaySafe - Total Password - GBP,PaySafe,Total Password,GBP,,,,,FALSE,FALSE,FALSE,1
+paysafe-usd-tpw,PaySafe - Total Password - USD,PaySafe - Total Password,PaySafe UK - Total Password USD,PaySafe,Total Password,USD,TotalPassword - 458518 - 00291682,TotalPassword,458518,291682,FALSE,TRUE,TRUE,1
+paysafe-usd-tpw-gp,PaySafe - Total Password - USD,PaySafe - Total Password,PaySafe - Total Password - USD,PaySafe,Total Password,USD,,,,,FALSE,TRUE,TRUE,1
+trustpayments-usd-tpw,TrustPayments - Total Password - USD,TrustPayments - Total Password,TrustPayments - Total Password - USD,TrustPayments,Total Password,USD,,,,,FALSE,FALSE,FALSE,1
+paypal-gbp-tpw,Paypal,Paypal,Paypal,Paypal,Total Password,GBP,,,,,FALSE,FALSE,FALSE,1
+paypal-usd-tpw,Paypal,Paypal,Paypal,Paypal,Total Password,USD,,,,,FALSE,FALSE,FALSE,1
+paypal-aud-tpw,Paypal,Paypal,Paypal,Paypal,Total Password,AUD,,,,,FALSE,FALSE,FALSE,1
+paypal-eur-tpw,Paypal,Paypal,Paypal,Paypal,Total Password,EUR,,,,,FALSE,FALSE,FALSE,1
+paypal-cad-tpw,Paypal,Paypal,Paypal,Paypal,Total Password,CAD,,,,,FALSE,FALSE,FALSE,1
+worldpay-usd-tsc-x-tvn,WorldPay - Total Security - USD,WorldPay - Total Security,WorldPay - Total Security,WorldPay,Total Security,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-aud-tvn,Adyen - Total VPN - AUD,Adyen_TotalVPN,Adyen_TotalVPN_US,Adyen,Total VPN,AUD,,,,,FALSE,FALSE,TRUE,1
+adyen-cad-tvn,Adyen - Total VPN - CAD,Adyen_TotalVPN,Adyen_TotalVPN_US,Adyen,Total VPN,CAD,,,,,FALSE,FALSE,TRUE,1
+adyen-eur-tvn,Adyen - Total VPN - EUR,Adyen_TotalVPN,Adyen_TotalVPN_EMEA,Adyen,Total VPN,EUR,TotalVPN.com - 487530 - 487530001780741,TotalVPN.com,487530,4.88E+14,FALSE,FALSE,TRUE,1
+adyen-eur-tvn-us-gp,Adyen - Total VPN - EUR,Adyen_TotalVPN,Adyen_TotalVPN_US,Adyen,Total VPN,EUR,,,,,FALSE,FALSE,TRUE,1
+adyen-gbp-tvn,Adyen - Total VPN - GBP,Adyen_TotalVPN,Adyen_TotalVPN_EMEA,Adyen,Total VPN,GBP,TotalVPN.com - 487530 - 487530001780741,TotalVPN.com,487530,4.88E+14,FALSE,FALSE,TRUE,1
+adyen-gbp-tvn-test,Adyen - Total VPN - GBP,Adyen_TotalVPN,Adyen_TotalVPN_EMEA,Adyen,Total VPN,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-gbp-tvn-us-gp,Adyen - Total VPN - GBP,Adyen_TotalVPN,Adyen_TotalVPN_US,Adyen,Total VPN,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-tvn,Adyen - Total VPN - USD,Adyen_TotalVPN,Adyen_TotalVPN_US,Adyen,Total VPN,USD,,,479338,4.79E+14,FALSE,FALSE,TRUE,1
+adyen-usd-tvn-test,Adyen - Total VPN - USD,Adyen_TotalVPN,Adyen_TotalVPN_US,Adyen,Total VPN,USD,,,,,FALSE,FALSE,TRUE,1
+authorize-usd-tvn,Authorize - Total VPN - USD,Authorize - Total VPN,Authorize - Total VPN,Authorize,Total VPN,USD,,,,,FALSE,FALSE,FALSE,1
+braintree-aud-tvn,Braintree - Total VPN - AUD,Braintree EU - Total VPN,Braintree EU - Total VPN AUD,Braintree,Total VPN,AUD,Total VPN - 465737 - 020484094,Total VPN,465737,20484094,FALSE,FALSE,TRUE,1
+braintree-aud-tvn-gp,Braintree - Total VPN - AUD,Braintree EU - Total VPN,Braintree EU - Total VPN AUD,Braintree,Total VPN,AUD,Total VPN - 465737 - 020484094,Total VPN,465737,20484094,FALSE,FALSE,TRUE,1
+braintree-cad-tvn,Braintree - Total VPN - CAD,Braintree EU - Total VPN,Braintree EU - Total VPN CAD,Braintree,Total VPN,CAD,Total VPN - 465737 - 020484094,Total VPN,465737,20484094,FALSE,FALSE,TRUE,1
+braintree-cad-tvn-gp,Braintree - Total VPN - CAD,Braintree EU - Total VPN,Braintree EU - Total VPN CAD,Braintree,Total VPN,CAD,Total VPN - 465737 - 020484094,Total VPN,465737,20484094,FALSE,FALSE,TRUE,1
+braintree-eur-tvn,Braintree - Total VPN - EUR,Braintree EU - Total VPN,Braintree EU - Total VPN EUR,Braintree,Total VPN,EUR,Total VPN - 465737 - 020484094,Total VPN,465737,20484094,FALSE,FALSE,TRUE,1
+braintree-eur-tvn-gp,Braintree - Total VPN - EUR,Braintree EU - Total VPN,Braintree EU - Total VPN EUR,Braintree,Total VPN,EUR,Total VPN - 465737 - 020484094,Total VPN,465737,20484094,FALSE,FALSE,TRUE,1
+braintree-gbp-tvn,Braintree - Total VPN - GBP,Braintree EU - Total VPN,Braintree EU - Total VPN GBP,Braintree,Total VPN,GBP,Total VPN - 465737 - 020484094,Total VPN,465737,20484094,FALSE,FALSE,TRUE,1
+braintree-gbp-tvn-gp,Braintree - Total VPN - GBP,Braintree EU - Total VPN,Braintree EU - Total VPN GBP,Braintree,Total VPN,GBP,Total VPN - 465737 - 020484094,Total VPN,465737,20484094,FALSE,FALSE,TRUE,1
+braintree-usd-tvn,Braintree - Total VPN - USD,Braintree EU - Total VPN,Braintree EU - Total VPN USD,Braintree,Total VPN,USD,Total VPN - 465737 - 020484094,Total VPN,465737,20484094,FALSE,FALSE,TRUE,1
+braintree-usd-tvn-gp,Braintree - Total VPN - USD,Braintree EU - Total VPN,Braintree EU - Total VPN USD,Braintree,Total VPN,USD,Total VPN - 465737 - 020484094,Total VPN,465737,20484094,FALSE,FALSE,TRUE,1
+cwams-usd-tvn,Cardworks - Total VPN - USD,Cardworks - Total VPN,Cardworks - Total VPN,Cardworks,Total VPN,USD,,,,,FALSE,FALSE,FALSE,1
+epx-usd-tvn,EPX - Total VPN - USD,EPX USA - Total VPN,EPX USA - Total VPN,EPX,Total VPN,USD,,ProtectedNet,429128,A0000000000N5B5,FALSE,FALSE,TRUE,1
+merrick-usd-tvn,Merrick - Total VPN - USD,Merrick - Total VPN,Merrick - Total VPN - USD,Merrick,Total VPN,USD,,,,,FALSE,TRUE,FALSE,1
+paysafe-aud-tvn,PaySafe - Total VPN - AUD,PaySafe - Total VPN,PaySafe - Total VPN - AUD,PaySafe,Total VPN,AUD,,,,,FALSE,TRUE,TRUE,1
+paysafe-aud-tvn-gp,PaySafe - Total VPN - AUD,PaySafe - Total VPN,PaySafe - Total VPN - AUD,PaySafe,Total VPN,AUD,,,,,FALSE,TRUE,TRUE,1
+paysafe-cad-tvn,PaySafe - Total VPN - CAD,PaySafe - Total VPN,PaySafe - Total VPN - CAD,PaySafe,Total VPN,CAD,,,,,FALSE,FALSE,TRUE,1
+paysafe-cad-tvn-gp,PaySafe - Total VPN - CAD,PaySafe - Total VPN,PaySafe - Total VPN - CAD,PaySafe,Total VPN,CAD,,,,,FALSE,FALSE,TRUE,1
+paysafe-gbp-tvn,PaySafe - Total VPN - GBP,PaySafe - Total VPN,PaySafe - Total VPN - GBP,PaySafe,Total VPN,GBP,,,,,FALSE,FALSE,FALSE,1
+paysafe-gbp-tvn-gp,PaySafe - Total VPN - GBP,PaySafe - Total VPN,PaySafe - Total VPN - GBP,PaySafe,Total VPN,GBP,,,,,FALSE,FALSE,FALSE,1
+paysafe-usd-tvn,PaySafe - Total VPN - USD,PaySafe - Total VPN,PaySafe - Total VPN - USD,PaySafe,Total VPN,USD,,,,,FALSE,TRUE,TRUE,1
+worldpay-aud-tvn,WorldPay - Total VPN - AUD,WorldPay - Total VPN,WorldPay - Total VPN,WorldPay,Total VPN,AUD,,,,,FALSE,FALSE,TRUE,1
+worldpay-cad-tvn,WorldPay - Total VPN - CAD,WorldPay - Total VPN,WorldPay - Total VPN,WorldPay,Total VPN,CAD,,,,,FALSE,FALSE,TRUE,1
+worldpay-eur-tvn,WorldPay - Total VPN - EUR,WorldPay - Total VPN,WorldPay - Total VPN,WorldPay,Total VPN,EUR,,,,,FALSE,TRUE,TRUE,1
+worldpay-gbp-tvn,WorldPay - Total VPN - GBP,WorldPay - Total VPN,WorldPay - Total VPN,WorldPay,Total VPN,GBP,,,,,FALSE,TRUE,TRUE,1
+worldpay-usd-tvn,WorldPay - Total VPN - USD,WorldPay - Total VPN,WorldPay - Total VPN,WorldPay,Total VPN,USD,,,490641,3.96E+11,FALSE,FALSE,TRUE,1
+epx-usd-tvn-v2,EPX - Total VPN - USD,EPX - Total VPN,EPX - Total VPN,EPX,Total VPN,USD,,,,,FALSE,FALSE,TRUE,1
+woodforest-usd-tvn,WoodForest - Total VPN - USD,WoodForest - Total VPN,WoodForest - Total VPN,WoodForest,Total VPN,USD,,,,,FALSE,FALSE,FALSE,1
+paypal-gbp-tvn,Paypal,Paypal,Paypal,Paypal,Total VPN,GBP,,,,,FALSE,FALSE,FALSE,1
+paypal-usd-tvn,Paypal,Paypal,Paypal,Paypal,Total VPN,USD,,,,,FALSE,FALSE,FALSE,1
+paypal-aud-tvn,Paypal,Paypal,Paypal,Paypal,Total VPN,AUD,,,,,FALSE,FALSE,FALSE,1
+paypal-eur-tvn,Paypal,Paypal,Paypal,Paypal,Total VPN,EUR,,,,,FALSE,FALSE,FALSE,1
+paypal-cad-tvn,Paypal,Paypal,Paypal,Paypal,Total VPN,CAD,,,,,FALSE,FALSE,FALSE,1
+adyen-aud-tws,Adyen - Total Webshield - AUD,Adyen_Totalwebshield,Adyen_Totalwebshield_US,Adyen,Total Webshield,AUD,,,,,FALSE,FALSE,TRUE,1
+adyen-cad-tws,Adyen - Total Webshield - CAD,Adyen_Totalwebshield,Adyen_Totalwebshield_US,Adyen,Total Webshield,CAD,,,,,FALSE,FALSE,TRUE,1
+adyen-eur-tws,Adyen - Total Webshield - EUR,Adyen_Totalwebshield,Adyen_Totalwebshield_EMEA,Adyen,Total Webshield,EUR,,,,,FALSE,FALSE,TRUE,1
+adyen-gbp-mc-tws,Adyen - Total Webshield - GBP,Adyen_Totalwebshield,Adyen_Totalwebshield_EMEA,Adyen,Total Webshield,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-gbp-tws,Adyen - Total Webshield - GBP,Adyen_Totalwebshield,Adyen_Totalwebshield_EMEA,Adyen,Total Webshield,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-gbp-vi-tws,Adyen - Total Webshield - GBP,Adyen_Totalwebshield,Adyen_Totalwebshield_EMEA,Adyen,Total Webshield,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-tws,Adyen - Total Webshield - USD,Adyen_Totalwebshield,Adyen_Totalwebshield_US,Adyen,Total Webshield,USD,,,479338,4.79E+14,FALSE,FALSE,TRUE,1
+bancard-usd-tws,Bancard - Total Webshield - USD,Bancard - Total Webshield,Bancard - Total Webshield,Bancard,Total Webshield,USD,,,,,FALSE,FALSE,FALSE,1
+braintree-aud-tws-pcib,Braintree - Total Webshield - AUD,Braintree EU - Total Webshield,Braintree EU - Total Webshield AUD,Braintree,Total Webshield,AUD,Total Webshield - 465737 - 020421036,Total Webshield,465737,20421036,FALSE,FALSE,TRUE,1
+braintree-cad-tws-pcib,Braintree - Total Webshield - CAD,Braintree EU - Total Webshield,Braintree EU - Total Webshield CAD,Braintree,Total Webshield,CAD,Total Webshield - 465737 - 020421036,Total Webshield,465737,20421036,FALSE,FALSE,TRUE,1
+braintree-eur-tws-pcib,Braintree - Total Webshield - EUR,Braintree EU - Total Webshield,Braintree EU - Total Webshield EUR,Braintree,Total Webshield,EUR,Total Webshield - 465737 - 020421036,Total Webshield,465737,20421036,FALSE,FALSE,TRUE,1
+braintree-gbp-tws-pcib,Braintree - Total Webshield - GBP,Braintree EU - Total Webshield,Braintree EU - Total Webshield GBP,Braintree,Total Webshield,GBP,Total Webshield - 465737 - 020421036,Total Webshield,465737,20421036,FALSE,FALSE,TRUE,1
+braintree-usd-tws-pcib,Braintree - Total Webshield - USD,Braintree EU - Total Webshield,Braintree EU - Total Webshield USD,Braintree,Total Webshield,USD,Total Webshield - 465737 - 020421036,Total Webshield,465737,20421036,FALSE,FALSE,TRUE,1
+cwams-usd-tws,Cardworks - Total Webshield - USD,Cardworks - Total Webshield,Cardworks - Total Webshield,Cardworks,Total Webshield,USD,TOTALWEBSHIELD.COM - 411859 - 419100095955000,TOTALWEBSHIELD.COM,411859,4.19E+14,FALSE,FALSE,FALSE,1
+checkout-aud-tws-pcib,Checkout - Total Webshield - AUD,Checkout - Total Webshield,Checkout - Total Webshield,Checkout,Total Webshield,AUD,totalwebshield.com - 402121 - 000000000211228,totalwebshield.com,402121,211228,FALSE,FALSE,TRUE,1
+checkout-cad-tws-pcib,Checkout - Total Webshield - CAD,Checkout - Total Webshield,Checkout - Total Webshield,Checkout,Total Webshield,CAD,totalwebshield.com - 402121 - 000000000211228,totalwebshield.com,402121,211228,FALSE,FALSE,TRUE,1
+checkout-eur-tws-pcib,Checkout - Total Webshield - EUR,Checkout - Total Webshield,Checkout - Total Webshield,Checkout,Total Webshield,EUR,totalwebshield.com - 402121 - 000000000211228,totalwebshield.com,402121,211228,FALSE,FALSE,TRUE,1
+checkout-gbp-tws-pcib,Checkout - Total Webshield - GBP,Checkout - Total Webshield,Checkout - Total Webshield,Checkout,Total Webshield,GBP,totalwebshield.com - 402121 - 000000000211228,totalwebshield.com,402121,211228,FALSE,FALSE,TRUE,1
+checkout-usd-tws-pcib,Checkout - Total Webshield - USD,Checkout - Total Webshield,Checkout - Total Webshield,Checkout,Total Webshield,USD,totaladblock.com - 402121 - 000000000211227,totaladblock.com,402121,211227,FALSE,TRUE,TRUE,1
+paysafe-aud-tws-pcib,PaySafe - Total Webshield - AUD,PaySafe - Total Webshield,PaySafe UK - Total Webshield AUD,PaySafe,Total Webshield,AUD,,,458518,267492,FALSE,TRUE,TRUE,1
+paysafe-cad-tws-pcib,PaySafe - Total Webshield - CAD,PaySafe - Total Webshield,PaySafe UK - Total Webshield CAD,PaySafe,Total Webshield,CAD,TOTALWEBSHIELD - 458518 - 00267502,TOTALWEBSHIELD,458518,267502,FALSE,FALSE,TRUE,1
+paysafe-eur-tws-pcib,PaySafe - Total Webshield - EUR,PaySafe - Total Webshield,PaySafe UK - Total Webshield EUR,PaySafe,Total Webshield,EUR,TOTALWEBSHIELD - 458518 - 00267512,TOTALWEBSHIELD,458518,267512,FALSE,FALSE,FALSE,1
+paysafe-gbp-tws-pcib,PaySafe - Total Webshield - GBP,PaySafe - Total Webshield,PaySafe UK - Total Webshield GBP,PaySafe,Total Webshield,GBP,TOTALWEBSHIELD - 458518 - 00267482,TOTALWEBSHIELD,458518,267482,FALSE,FALSE,FALSE,1
+paysafe-usd-1003031054,PaySafe - Total Webshield - USD,PaySafe - Total Webshield,PaySafe - Total Webshield - USD,PaySafe,Total Webshield,USD,,,,,FALSE,TRUE,TRUE,1
+paysafe-usd-tws-pcib,PaySafe - Total Webshield - USD,PaySafe - Total Webshield,PaySafe UK - Total Webshield USD,PaySafe,Total Webshield,USD,TOTALWEBSHIELD - 458518 - 00267522,TOTALWEBSHIELD,458518,267522,FALSE,TRUE,TRUE,1
+trustpayments-cad-tws,TrustPayments - Total Webshield - CAD,TrustPayments - Total Webshield,TrustPayments - Total Webshield - CAD,TrustPayments,Total Webshield,CAD,,,,,FALSE,FALSE,FALSE,1
+trustpayments-usd-tws,TrustPayments - Total Webshield - USD,TrustPayments - Total Webshield,TrustPayments - Total Webshield - USD,TrustPayments,Total Webshield,USD,,,,,FALSE,FALSE,FALSE,1
+paypal-gbp-tws,Paypal,Paypal,Paypal,Paypal,Total Webshield,GBP,,,,,FALSE,FALSE,FALSE,1
+paypal-aud-tws,Paypal,Paypal,Paypal,Paypal,Total Webshield,AUD,,,,,FALSE,FALSE,FALSE,1
+paypal-eur-tws,Paypal,Paypal,Paypal,Paypal,Total Webshield,EUR,,,,,FALSE,FALSE,FALSE,1
+paypal-usd-tws,Paypal,Paypal,Paypal,Paypal,Total Webshield,USD,,,,,FALSE,FALSE,FALSE,1
+paypal-cad-tws,Paypal,Paypal,Paypal,Paypal,Total Webshield,CAD,,,,,FALSE,FALSE,FALSE,1
+braintree-usd-totalavinstant,Braintree USA - Total AV,Braintree USA - Total AV,Braintree USA - Total AV,Braintree,totalavinstant,USD,TOTALAV.COM - 411641 - 526448392880,TOTALAV.COM,411641,5.26E+11,FALSE,FALSE,TRUE,1
+adyen-usd-pango,Adyen - Ultra Antivirus - USD,Adyen - Ultra Antivirus,Adyen USA - Ultra Antivirus USD,Adyen,Ultra Antivirus,USD,,PANGO,,,FALSE,FALSE,TRUE,1
+adyen-usd-tav-pango,Adyen - Ultra Antivirus - USD,Adyen - Ultra Antivirus,Adyen - Ultra Antivirus - USD,Adyen,Ultra Antivirus,USD,Get From PANGO,,,,FALSE,FALSE,TRUE,1
+adyen-usd-tpw-x-pango,Adyen - Ultra Antivirus - USD,Adyen - Ultra Antivirus,Adyen - Ultra Antivirus - USD,Adyen,Ultra Antivirus,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-pango-hyphen,Adyen - Ultra-Antivirus - USD,Adyen - Ultra-Antivirus,Adyen USA - Ultra-Antivirus USD,Adyen,Ultra Antivirus,USD,,PANGO,,,FALSE,FALSE,TRUE,1
+adyen-usd-pango-premium,Adyen - Ultraavpremium - USD,Adyen - Ultraavpremium,Adyen - Ultraavpremium - USD,Adyen,Ultra Antivirus,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-pango-secure,Adyen - Ultraavsecure - USD,Adyen - Ultraavsecure,Adyen - Ultraavsecure - USD,Adyen,Ultra Antivirus,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-pango-security,Adyen - Ultraavsecure - USD,Adyen - Ultraavsecurity,Adyen - Ultraavsecure - USD,Adyen,Ultra Antivirus,USD,,,,,FALSE,FALSE,TRUE,1
+authorize-usd-pango,Authorize - Ultra Antivirus - USD,Authorize - Ultra Antivirus,Authorize - Ultra Antivirus,Authorize,Ultra Antivirus,USD,,,,,FALSE,FALSE,FALSE,1
+braintree-usd-pango,Braintree - Ultra Antivirus - USD,Braintree USA - Ultra Antivirus,Braintree USA - Ultra Antivirus,Braintree,Ultra Antivirus,USD,,PANGO,,,FALSE,FALSE,TRUE,1
+braintree-usd-tav-pango,Braintree - Ultra Antivirus - USD,Braintree USA - Ultra Antivirus,Braintree USA - Ultra Antivirus,Braintree,Ultra Antivirus,USD,,,,,FALSE,FALSE,TRUE,1
+epx-usd-pango,EPX - Ultra Antivirus - USD,EPX USA - Ultra Antivirus,EPX USA - Ultra Antivirus,EPX,Ultra Antivirus,USD,,PANGO,,,FALSE,FALSE,TRUE,1
+paysafe-usd-pango,PaySafe - Ultra Antivirus - USD,PaySafe - Ultra Antivirus,PaySafe USA - Ultra Antivirus USD,PaySafe,Ultra Antivirus,USD,,PANGO,,,FALSE,TRUE,TRUE,1
+worldpay-usd-pango,WorldPay - Ultra Antivirus - USD,WorldPay - Ultra Antivirus,WorldPay - Ultra Antivirus,WorldPay,Ultra Antivirus,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-pango-defender,Adyen - Ultraavdefender - USD,Adyen - Ultraavdefender,Adyen - Ultraavdefender - USD,Adyen,Ultraavdefender,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-pango-defense,Adyen - Ultraavdefense - USD,Adyen - Ultraavdefense,Adyen - Ultraavdefense - USD,Adyen,Ultraavdefense,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-pango-pro,Adyen - Ultraavpro - USD,Adyen - Ultraavpro,Adyen - Ultraavpro - USD,Adyen,Ultraavpro,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-pango-protection,Adyen - Ultraavprotection - USD,Adyen - Ultraavprotection,Adyen - Ultraavprotection - USD,Adyen,Ultraavprotection,USD,,,,,FALSE,FALSE,TRUE,1
+paypal-usd-tdr,Paypal - Total Drive - USD,Paypal - Total Drive,Paypal - Total Drive - USD,Paypal,Total Drive,USD,,,,,FALSE,FALSE,FALSE,1
+paypal-cad-tdr,Paypal - Total Drive - CAD,Paypal - Total Drive,Paypal - Total Drive - CAD,Paypal,Total Drive,CAD,,,,,FALSE,FALSE,FALSE,1
+paypal-aud-tdr,Paypal - Total Drive - AUD,Paypal - Total Drive,Paypal - Total Drive - AUD,Paypal,Total Drive,AUD,,,,,FALSE,FALSE,FALSE,1
+paypal-eur-tdr,Paypal - Total Drive - EUR,Paypal - Total Drive,Paypal - Total Drive - EUR,Paypal,Total Drive,EUR,,,,,FALSE,FALSE,FALSE,1
+adyen-eur-tav-za,Adyen EMEA - Total AV,Adyen_TotalAV,Adyen_TotalAV_EMEA,Adyen,Total AV,EUR,,,,,FALSE,FALSE,TRUE,1
+adyen-gbp-betternet,Adyen - BetterNet - GBP,Adyen - BetterNet,Adyen - BetterNet - GBP,Adyen,BetterNet,GBP,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-betternet,Adyen - BetterNet - USD,Adyen - BetterNet,Adyen - BetterNet - USD,Adyen,BetterNet,USD,,,,,FALSE,FALSE,TRUE,1
+adyen-eur-betternet,Adyen - BetterNet - EUR,Adyen - BetterNet,Adyen - BetterNet - EUR,Adyen,BetterNet,EUR,,,,,FALSE,FALSE,TRUE,1
+paypal-usd-hss,Paypal - Hotspot Shield - USD,Paypal - Hotspot Shield,Paypal - Hotspot Shield - USD,Paypal,Hotspot Shield,USD,,,,,FALSE,FALSE,FALSE,1
+adyen-usd-hss,Adyen - Hotspot Shield - USD,Adyen - Hotspot Shield,Adyen - Hotspot Shield - USD,Adyen,Hotspot Shield,USD,,,,,FALSE,FALSE,TRUE,1
+paypal-gbp-betternet,Paypal - BetterNet - GBP,Paypal - BetterNet,Paypal - BetterNet - GBP,Paypal,BetterNet,GBP,,,,,FALSE,FALSE,FALSE,1
+braintree-usd-tws,Braintree - Total Webshield - USD,Braintree - Total Webshield,Braintree - Total Webshield - USD,Braintree,Total Webshield,USD,,,,,FALSE,FALSE,TRUE,1
+braintree-gbp-tws,Braintree - Total Webshield - GBP,Braintree - Total Webshield,Braintree - Total Webshield - GBP,Braintree,Total Webshield,GBP,,,,,FALSE,FALSE,TRUE,1
+braintree-cad-totalavcad,Braintree - TotalAV - CAD,Braintree - TotalAV,Braintree - TotalAV - CAD,Braintree,Total AV,CAD,,,,,FALSE,FALSE,TRUE,1
+adyen-usd-pango-guardian,Adyen - Guradian - USD,Adyen - Guradian,Adyen - Guradian - USD,Adyen,Guradian,USD,,,,,FALSE,FALSE,TRUE,1
+paypal-usd-betternet,Paypal - BetterNet - USD,Paypal - BetterNet,Paypal - BetterNet - USD,Paypal,BetterNet,USD,,,,,FALSE,FALSE,FALSE,1
+adyen-aud-betternet,Adyen - BetterNet - AUD,Adyen - BetterNet,Adyen - BetterNet - AUD,Adyen,BetterNet,AUD,,,,,FALSE,FALSE,TRUE,1
+adyen-cad-betternet,Adyen - BetterNet - CAD,Adyen - BetterNet,Adyen - BetterNet - CAD,Adyen,BetterNet,CAD,,,,,FALSE,FALSE,TRUE,1
+paypal-eur-betternet,Paypal - BetterNet - EUR,Paypal - BetterNet,Paypal - BetterNet - EUR,Paypal,BetterNet,EUR,,,,,FALSE,FALSE,FALSE,1
+paypal-cad-betternet,Paypal - BetterNet - CAD,Paypal - BetterNet,Paypal - BetterNet - CAD,Paypal,BetterNet,CAD,,,,,FALSE,FALSE,FALSE,1
+paypal-usd-vpn360,Paypal - VPN360 - USD,Paypal - VPN360,Paypal - VPN360 - USD,Paypal,VPN360,USD,,,,,FALSE,FALSE,FALSE,1
+adyen-usd-vpn360,Adyen - VPN360 - USD,Adyen - VPN360,Adyen - VPN360 - USD,Adyen,VPN360,USD,,,,,FALSE,FALSE,TRUE,1
+paypal-gbp-hss,Paypal - Hotspot Shield - GBP,Paypal - Hotspot Shield,Paypal - Hotspot Shield - GBP,Paypal,Hotspot Shield,GBP,,,,,FALSE,FALSE,FALSE,1
+adyen-usd-tav-na,Adyen - TotalAV - USD,Adyen - TotalAV - NA,Adyen - TotalAV - USD,Adyen,Total AV,USD,,,,,TRUE,FALSE,TRUE,1
+adyen-usd-tdr-na,Adyen - Total Drive - USD,Adyen - Total Drive - NA,Adyen - Total Drive - USD,Adyen,Total Drive,USD,,,,,TRUE,FALSE,TRUE,1
+adyen-usd-tab-na,Adyen - Total Adblock - USD,Adyen - Total Adblock - NA,Adyen - Total Adblock - USD,Adyen,Total Adblock,USD,,,,,TRUE,FALSE,TRUE,1
+adyen-usd-tvn-na,Adyen - Total VPN - USD,Adyen - Total VPN - NA,Adyen - Total VPN - USD,Adyen,Total VPN,USD,,,,,TRUE,FALSE,TRUE,1
+adyen-usd-tcl-na,Adyen - Total Cleaner - USD,Adyen - Total Cleaner - NA,Adyen - Total Cleaner - USD,Adyen,Total Cleaner,USD,,,,,TRUE,FALSE,TRUE,1
+adyen-gbp-hss,Adyen - Hotspot Shield - GBP,Adyen - Hotspot Shield,Adyen - Hotspot Shield - GBP,Adyen,Hotspot Shield,GBP,,,,,FALSE,FALSE,TRUE,1
+stripe-betternet,Stripe - BetterNet - USD,Stripe - BetterNet,Stripe - BetterNet - USD,Stripe,BetterNet,USD,,,,,FALSE,FALSE,FALSE,1
+paypal-aud-betternet,Paypal - BetterNet - AUD,Paypal - BetterNet,Paypal - BetterNet - AUD,Paypal,BetterNet,AUD,,,,,FALSE,FALSE,FALSE,1
+stripe-vpn360,Stripe - VPN360 - USD,Stripe - VPN360,Stripe - VPN360 - USD,Stripe,VPN360,USD,,,,,FALSE,FALSE,FALSE,1
