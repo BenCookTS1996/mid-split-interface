@@ -3,6 +3,7 @@ pandas>=2.0
 numpy>=1.24
 scipy>=1.10
 scikit-learn>=1.3
+joblib>=1.3          # parallel multi-seed genetic engine (loky backend)
 pyyaml>=6.0
 openpyxl>=3.1
 
@@ -10,8 +11,8 @@ openpyxl>=3.1
 streamlit>=1.32
 plotly>=5.18
 
-# Optional: run the .sql extracts against BigQuery and cache to parquet.
-# Without these (or credentials) the app falls back to the bundled sample CSV.
+# BigQuery: run the .sql extracts and cache to parquet. Required for live forecast
+# runs ("Run VAMP pipeline"); not needed if you only load previously-run outputs.
 google-cloud-bigquery>=3.0
 db-dtypes>=1.1
 pyarrow>=14.0

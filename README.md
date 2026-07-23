@@ -46,21 +46,96 @@ VAMP cap `sum(share x risk) <= cap`, banned/forced gateways.
 **Soft** (penalised, not forced): exploration floor, stability, gateway
 preferences.
 
-## Install & run
+## First-time setup
+
+Tested on macOS with **Python 3.8+** (also runs on Linux). Steps 1–3 get the UI
+running against previously-run outputs; steps 4–5 are only needed to pull fresh
+data from BigQuery.
+
+### 1. Get the code
 
 ```bash
+git clone <YOUR_REPO_URL> routing_optimiser
+cd routing_optimiser
+```
+
+### 2. Create a Python environment and install dependencies
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
+```
 
-# 1) The UI (five tabs: Forecast -> Routing engine -> Split/outputs/impact
-#    -> K-means compression -> Generate configs)
+### 3. Run the UI
+
+```bash
 streamlit run app/streamlit_app.py
+```
 
-# 2) Headless end-to-end (also a smoke test)
-python scripts/run_pipeline.py \
-    --success data/example_attempts_success_data.csv \
-    --engine entropy --weight 0.7 --outdir out
+Opens at <http://localhost:8501>. You can use Tabs 3–6 (routing engine, impact,
+k-means compression, config generator) **without BigQuery** — on the Forecast
+tab choose **"Load a previously-run baseline"** and point it at a folder under
+`data/outputs/<MONTH>/<COMPANY>/`. (These output folders are gitignored, so on a
+fresh clone you'll need to run the pipeline once — steps 4–5 — or copy an
+existing outputs folder in.)
 
-# 3) Sanity tests
+### 4. Install the Google Cloud SDK (only for live BigQuery runs)
+
+The forecast and attempts extracts read from BigQuery (project
+`sapient-tangent-172609`), so a **live** run needs the `gcloud` CLI. The SDK is
+**not** committed to this repo (it's gitignored) — install your own:
+
+```bash
+# macOS (Homebrew)
+brew install --cask google-cloud-sdk
+
+# …or the official installer (macOS / Linux)
+curl https://sdk.cloud.google.com | bash
+exec -l $SHELL                       # reload your shell so `gcloud` is on PATH
+
+gcloud --version                     # verify it's installed
+```
+
+### 5. Authenticate to BigQuery
+
+```bash
+gcloud auth login                                                # your Google account
+gcloud auth application-default login                            # creds the Python client uses
+gcloud config set project sapient-tangent-172609
+gcloud auth application-default set-quota-project sapient-tangent-172609
+```
+
+The Python BigQuery client uses the **Application Default Credentials** created
+by `gcloud auth application-default login`. You need access to the
+`sapient-tangent-172609` project — if a query returns a 403, ask your admin to
+grant BigQuery access.
+
+A live forecast now works: on the Forecast tab pick **"Run VAMP pipeline"**, or
+run it headless (writes to `data/outputs/<MONTH>/<COMPANY>/`):
+
+```bash
+python main.py
+```
+
+Extracts are cached to parquet under `data/cache/`, so subsequent runs only
+re-query BigQuery on a cache miss (e.g. a new month or company).
+
+### 6. After changing any backend code
+
+Streamlit reuses compiled bytecode, and stale `.pyc` files are the most common
+cause of "it still looks wrong after my edit". Clear the cache and fully restart
+(Ctrl+C the process — closing the browser tab is not enough):
+
+```bash
+find . -name __pycache__ -type d -exec rm -rf {} +
+streamlit run app/streamlit_app.py
+```
+
+### Optional: sanity test the engines
+
+```bash
 python scripts/test_engines.py
 ```
 
