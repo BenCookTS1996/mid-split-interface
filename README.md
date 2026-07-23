@@ -25,6 +25,73 @@ The key design point: **every engine reads the same input and writes the same
 output** (a table of gateway percentages per cell), so you can switch methods
 from a dropdown and nothing downstream changes.
 
+## How it all ties together (diagrams)
+
+> These render as diagrams on GitHub (Mermaid). If you're viewing in a plain text
+> editor you'll just see the code — that's fine.
+
+### End-to-end flow
+
+From raw data to deployable routing configs:
+
+```mermaid
+flowchart TD
+    BQ["BigQuery extracts<br/>forecast + attempts/success"]
+    MID["Master MID list<br/>+ config JSON<br/>caps, overrides, restrictions"]
+    BQ -->|"cached to parquet (data/cache)"| PIPE["VAMP forecast pipeline<br/>Extract - Actuarial - Allocate - Export"]
+    PIPE --> BASE["Baseline forecast<br/>volume, risk rate, current split<br/>per Bank x Currency x RPGT"]
+    BQ --> SR["30-day success rates<br/>empirical-Bayes smoothed"]
+    BASE --> ENG["Routing engine<br/>4 methods + conversion-risk slider"]
+    SR --> ENG
+    MID --> ENG
+    ENG --> ENF["Enforcement<br/>VAMP cap, per-MID caps,<br/>max-share, eligibility, back-fill"]
+    ENF --> SPLIT["Proposed split<br/>gateway percent per cell"]
+    SPLIT --> IMP["Impact dashboard<br/>risk, success rate, revenue"]
+    SPLIT --> KM["k-means compression<br/>cut the config count"]
+    KM --> CFG["JSON routing configs<br/>ConnectorPool per BIN"]
+    SPLIT --> EXP["Exports<br/>splits, charts, summary"]
+```
+
+### The two grains (why the decision and the projection live at different levels)
+
+The routing **decision** is made at parent-bank grain (fewer cells, more data per
+cell), but the risk projection and the deployed configs are per **BIN**, so the
+split is exploded to BIN level and then collapsed back for the display tables.
+
+```mermaid
+flowchart LR
+    DEC["OPTIMISATION grain<br/>parent Bank x Currency x RPGT<br/>the routing DECISION"]
+    DEP["PROJECTION / DEPLOYMENT grain<br/>BIN x Currency x RPGT<br/>real VAMP risk + deployed configs"]
+    VIEW["Bank-grain views<br/>impact, revenue, shares"]
+    DEC -->|"explode to BINs"| DEP
+    DEP -->|"collapse via bin_to_bank<br/>renormalise per cell"| VIEW
+```
+
+### How one split is computed
+
+```mermaid
+flowchart TD
+    REF["Engine reference<br/>slider = 100 (max conversion)"]
+    REF --> SWEEP["Slider sweep 100 to 0<br/>conversion to risk"]
+    SWEEP --> EXPL["Explode to BIN grain"]
+    EXPL --> VAMP["Apply VAMP cap"]
+    VAMP --> MIDC["Apply per-MID caps / targets"]
+    MIDC --> WALL["Wallet / USA-only / back-fill rules"]
+    WALL --> VAR["Variations<br/>one split per slider position"]
+    VAR --> PICK["Pick a slider position on tab 3"]
+```
+
+### The app at a glance (4 tabs)
+
+```mermaid
+flowchart LR
+    T1["1 - Baseline & Validate<br/>build baseline / validate a split"]
+    T2["2 - Routing engine<br/>pick engine + slider + constraints,<br/>compute variations"]
+    T3["3 - Split, outputs & impact<br/>Risk, Financial, Risk Detail,<br/>Mid, Bank, Engine Workings"]
+    T4["4 - Generate configs<br/>k-means compress, JSON configs"]
+    T1 --> T2 --> T3 --> T4
+```
+
 ## The four engines (the dropdown)
 
 Every engine decides the same thing — how to divide each cell's payments between
