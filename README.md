@@ -13,7 +13,7 @@ A **cell** = one `RPGT (transaction type) x Currency x Bank` combination.
 
 ```
 Pre-forecast (baseline)
-   -> Split engine   [dropdown of 6 methods + conversion<->risk slider]
+   -> Split engine   [dropdown of 4 methods + conversion<->risk slider]
    -> Normalised split table   (profile key -> gateway %, the shared output)
    -> Impact dashboard         (risk + success-rate / revenue charts)
    -> Volume-weighted k-means  (compress the config count)
@@ -25,19 +25,41 @@ The key design point: **every engine reads the same input and writes the same
 output** (a table of gateway percentages per cell), so you can switch methods
 from a dropdown and nothing downstream changes.
 
-## The six engines (the dropdown)
+## The four engines (the dropdown)
 
-| Key | Method | Character |
-|-----|--------|-----------|
-| `lp` | Linear programming | Optimal but concentrates on the single best gateway (corner solution) |
-| `lp_floor` | LP + exploration floor | LP, but every gateway keeps a minimum share so you never go blind |
-| `softmax` | Softmax allocation | Spreads traffic in proportion to how good each gateway looks |
-| `entropy` | Entropy-penalised optimisation | **Recommended default** — diversified interior split, still respects the VAMP cap |
-| `thompson` | Thompson / bandit | Allocates by each gateway's probability of being best; keeps re-testing the uncertain ones |
-| `portfolio` | Mean-variance | Diversifies like an investment portfolio; slider = risk appetite |
+Every engine decides the same thing — how to divide each cell's payments between
+its gateways — and they all read the same inputs and produce the same kind of
+output, so you can switch between them from the dropdown. The **conversion ↔ risk
+slider** works with all of them: slide toward `1.0` to chase the most approved
+payments, toward `0.0` to play it safest.
 
-The **conversion <-> risk slider** (`weight` in `[0, 1]`) is shared by all
-engines: `1.0` = maximise conversion, `0.0` = minimise risk.
+Think of each gateway as a different door you can send a payment through. Some
+doors let more payments succeed; some are riskier (more chargebacks). The engine
+decides how many payments go through each door.
+
+### Genetic algorithm — the default (what we run in production)
+
+- Tries out loads of different ways to split the traffic between the doors.
+- Keeps the ones that work best, then mixes and tweaks them and tries again — a bit like breeding for the strongest result over many rounds.
+- Best at obeying *all* the rules at once (risk caps, per-bank targets), which is why it's the default.
+
+### Softmax allocation
+
+- Sends more payments to the doors that are better at getting approved.
+- But never puts everything on one door — it always keeps some spread.
+- Like picking your strongest players but not benching everyone else.
+
+### Thompson (bandit)
+
+- Sends most traffic to whichever door is *probably* the best right now.
+- Keeps giving the newer / less-tested doors a few tries, in case one turns out great.
+- Like mostly playing your favourite game but trying new ones too, so you don't miss a hidden winner.
+
+### Portfolio (mean-CVaR)
+
+- Works like spreading your pocket money across different piggy banks.
+- Picks good performers but avoids the unpredictable ones that could suddenly go bad (a chargeback spike).
+- Gives up a tiny bit of success rate in exchange for fewer nasty surprises.
 
 ## Constraints
 
@@ -198,7 +220,8 @@ src/routing_optimiser/
   sql_runner.py        run .sql extracts against BigQuery, cache to parquet
   forecast_pipeline.py adapter: UI settings -> pipeline config; run it; read pre
   data_loader.py       load forecast (real pipeline pre or synthesised) -> cells
-  engines/             base + 6 pluggable engines + registry
+  engines/             base + engines (softmax, thompson, portfolio; genetic_ref reference) + registry
+                       (genetic is dispatched separately via genetic_global)
   optimiser.py         run an engine across all cells; slider sweep
   impact.py            revenue uplift, key contributors, gateway volume shift
   kmeans_compress.py   volume-weighted k-means compression
