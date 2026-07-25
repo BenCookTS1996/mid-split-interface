@@ -521,7 +521,7 @@ st.markdown("""<style>
     div[data-testid="stAppViewContainer"] > section.main { margin-left: 0 !important; }
 </style>""", unsafe_allow_html=True)
 
-APP_BUILD = "2026-07-23l"  # ROOT FIX: renormalise eval-frame share/baseline_share per cell at source → undoes BIN-volume dilution consistently (shares 100%, ΣExpected=ΣRaw, Post Revenue/$ Impact un-diluted everywhere)
+APP_BUILD = "2026-07-24l"  # Post Volume now = cell_volume × routed share (same basis as $ Impact/Δ Share) — no more 0s
 st.markdown(f"""
 <div class="tav-header">
   <div class="tav-badge">
@@ -687,7 +687,11 @@ def _impact_eval_frame(split, cache, by_rpgt=False):
 
     # Volume basis = forecast routed volume (cell_volume × share). Post uses the
     # summed 'volume' when present (identical), pre derives from baseline_share.
-    ev["post_vol"] = pd.to_numeric(ev.get("volume"), errors="coerce").fillna(_cv * ev["share"])
+    # Post/Pre volume = forecast routed volume (cell_volume × share), computed from the
+    # SAME routed share the revenue uses — so Volume and $ Impact always move together.
+    # (The old code read a separate summed 'volume' column that could arrive as 0 and
+    # zero out Post Volume while $ Impact / Δ Share still showed a gain.)
+    ev["post_vol"] = _cv * ev["share"]
     ev["pre_vol"] = _cv * ev["baseline_share"]
     ev["vol_delta"] = ev["post_vol"] - ev["pre_vol"]
     
@@ -1415,13 +1419,17 @@ with tab_eng:
                             help="Empirical Bayes (default): estimate the smoothing strength per Bank x Currency "
                                  "from how much the gateways' success rates vary. Fixed Number: one set value for all.")
                         use_eb = (bayes_method == "Empirical Bayes")
-                        # Always render the input — inside a form, hiding it behind the selectbox
-                        # above wouldn't reveal it until submit. It's simply ignored under Empirical
-                        # Bayes (which estimates the smoothing volume per Bank×Currency).
-                        _shrink_in = st.number_input(
-                            "Bayesian Smoothing Volume", min_value=0, max_value=100_000, value=300, step=50,
-                            help="Pseudo-attempts applied to every gateway under Fixed Number smoothing "
-                                 "(ignored under Empirical Bayes, which estimates it per Bank×Currency).")
+                        # Show the smoothing-volume input ONLY for Fixed Number (it's meaningless under
+                        # Empirical Bayes, which estimates the volume per Bank×Currency). These live in
+                        # the compute form, so the selectbox commits on submit — the input therefore
+                        # reveals/hides when you pick the method and click "Compute split variations",
+                        # exactly like the engine-specific settings. Default keeps `shrink` defined
+                        # while the input is hidden.
+                        _shrink_in = 300
+                        if not use_eb:
+                            _shrink_in = st.number_input(
+                                "Bayesian Smoothing Volume", min_value=0, max_value=100_000, value=300, step=50,
+                                help="Pseudo-attempts applied to every gateway under Fixed Number smoothing.")
                         shrink = 300 if use_eb else int(_shrink_in)
 
         # Section 3 (Risk constraints + per-MID editor) on the LEFT, Section 4 (Run Log)
@@ -5674,7 +5682,7 @@ with tab_imp:
                 # per-vampMid bridge below), so every bridge has the SAME format. X-axis: min =
                 # lower of Current/Proposed − $20k; max = Current + all increases + $20k. Y labels
                 # show the FULL name (automargin + a wide left margin), never truncated.
-                def _rev_bridge_waterfall(pre, post, names, deltas):
+                def _rev_bridge_waterfall(pre, post, names, deltas, money=True):
                     if not HAS_PLOTLY:
                         return None
                     import plotly.graph_objects as _gwf
@@ -5685,12 +5693,18 @@ with tab_imp:
                     _labs = [pre] + _dl + [post]
                     _meas = ["absolute"] + ["relative"] * len(_dl) + ["total"]
                     _incsum = sum(d for d in _dl if d > 0)
-                    _lo = min(pre, post) - 20000.0
-                    _hi = pre + _incsum + 20000.0
+                    _span = max(abs(pre), abs(post), abs(pre + _incsum), 1.0)
+                    _pad = 0.06 * _span
+                    _lo = min(pre, post) - _pad
+                    _hi = pre + _incsum + _pad
                     if _hi <= _lo:
                         _hi = _lo + 1.0
-                    _text = [(f"${_v/1e6:,.2f}M" if (_i == 0 or _i == len(_labs) - 1) else f"${_v/1e3:,.1f}k")
-                             for _i, _v in enumerate(_labs)]
+
+                    def _fmt(_v):
+                        if money:
+                            return (f"${_v/1e6:,.2f}M" if abs(_v) >= 1e6 else f"${_v/1e3:,.1f}k")
+                        return (f"{_v/1e6:,.2f}M" if abs(_v) >= 1e6 else f"{_v:,.0f}")
+                    _text = [_fmt(_v) for _v in _labs]
                     _wf = _gwf.Figure(_gwf.Waterfall(
                         orientation="h", measure=_meas, y=_xs, x=_ys,
                         text=_text, textposition="outside", textfont=dict(size=8, color='#0B1F3A'),
@@ -5702,12 +5716,39 @@ with tab_imp:
                         height=560, margin=dict(l=170, r=40, t=14, b=10),   # wide left margin for full names
                         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                         font=dict(color='#0B1F3A', family="inherit"))
-                    _wf.update_xaxes(range=[_lo, _hi], showgrid=True, gridcolor='lightgrey', tickprefix="$",
+                    _wf.update_xaxes(range=[_lo, _hi], showgrid=True, gridcolor='lightgrey',
+                                     tickprefix=("$" if money else ""),
                                      tickfont=dict(color='#0B1F3A', size=8), title=None)
                     _wf.update_yaxes(type="category", autorange="reversed", showgrid=False,
                                      tickfont=dict(color='#0B1F3A', size=8), title=None, automargin=True,
                                      tickmode="array", tickvals=_xs, ticktext=[str(s) for s in _xs])  # full names
                     return _wf
+
+                def _bridge_items(_df, _name_col, _pre_col, _post_col, _sort_mode, _other="Other"):
+                    """Pick the movers for a bridge given a sort mode; roll the rest into one bar.
+                    Returns (pre_total, post_total, names, deltas) or None."""
+                    _d = _df[[_name_col, _pre_col, _post_col]].copy()
+                    _d.columns = ["_n", "_p", "_q"]
+                    _d["_p"] = pd.to_numeric(_d["_p"], errors="coerce").fillna(0.0)
+                    _d["_q"] = pd.to_numeric(_d["_q"], errors="coerce").fillna(0.0)
+                    _d["_dd"] = _d["_q"] - _d["_p"]
+                    _d = _d[(_d["_p"].abs() + _d["_q"].abs()) > 0]
+                    if _d.empty:
+                        return None
+                    if _sort_mode == "Top decreases":
+                        _sel = _d[_d["_dd"] < 0].sort_values("_dd", ascending=True).head(7)
+                    elif _sort_mode == "Top absolute movers":
+                        _sel = _d.reindex(_d["_dd"].abs().sort_values(ascending=False).index).head(7)
+                    else:  # "Top increases"
+                        _sel = _d[_d["_dd"] > 0].sort_values("_dd", ascending=False).head(7)
+                    _sel = _sel.sort_values("_dd", ascending=False)
+                    _pre_t = float(_d["_p"].sum())
+                    _post_t = float(_d["_q"].sum())
+                    _has_other = len(_d) > len(_sel)
+                    _o = (_post_t - _pre_t) - float(_sel["_dd"].sum())
+                    _names = _sel["_n"].astype(str).tolist() + ([_other] if _has_other else [])
+                    _deltas = _sel["_dd"].tolist() + ([_o] if _has_other else [])
+                    return _pre_t, _post_t, _names, _deltas
 
                 # Revenue bridge across the top 10 most-impacted Bank×Currency cells.
                 _bank_wf = None
@@ -6391,6 +6432,13 @@ with tab_imp:
 
                     # Revenue bridges (by vampMid / by RPGT) — reserved ABOVE the SR / share charts,
                     # filled later from the pre/post section once _evv / _rp are computed.
+                    # Shared controls: metric (Revenue $ / Transactions) + which movers to show.
+                    _bmc = st.columns([1, 2])
+                    _br_metric = _bmc[0].radio("Bridge metric", ["Revenue", "Transactions"],
+                                               horizontal=True, key="tab_imp_br_metric")
+                    _br_sort = _bmc[1].radio("Show", ["Top increases", "Top decreases", "Top absolute movers"],
+                                             horizontal=True, key="tab_imp_br_sort")
+                    _br_money = (_br_metric == "Revenue")
                     _brc1, _brc2 = st.columns(2)
                     _vmbr_slot = _brc1.container()
                     _rpgtbr_slot = _brc2.container()
@@ -6464,30 +6512,26 @@ with tab_imp:
                 # per-vampMid pre/post revenue (as the per-vampMid bank table does); the RPGT bridge
                 # uses the per-RPGT revenue table (_rp), so each reconciles to its own table.
                 if HAS_PLOTLY:
+                    _bpre, _bpost = ("pre_rev", "post_rev") if _br_money else ("pre_vol", "post_vol")
                     _vmbr = _evv.groupby("_vmid", as_index=False).agg(
-                        pre_rev=("pre_rev", "sum"), post_rev=("post_rev", "sum"))
-                    _vmbr["delta"] = _vmbr["post_rev"] - _vmbr["pre_rev"]
-                    _vmbr = _vmbr[(_vmbr["pre_rev"].abs() + _vmbr["post_rev"].abs()) > 0]
+                        pre_rev=("pre_rev", "sum"), post_rev=("post_rev", "sum"),
+                        pre_vol=("pre_vol", "sum"), post_vol=("post_vol", "sum"))
                     _vm_wf_all = None
-                    if not _vmbr.empty:
-                        # Top 7 increases + top 7 decreases; the rest roll into 'Other vampMids'.
-                        _vinc = _vmbr[_vmbr["delta"] > 0].sort_values("delta", ascending=False).head(7)
-                        _vdec = _vmbr[_vmbr["delta"] < 0].sort_values("delta", ascending=True).head(7)
-                        _vtop = pd.concat([_vinc, _vdec]).sort_values("delta", ascending=False)
-                        _vpre = float(_vmbr["pre_rev"].sum()); _vpost = float(_vmbr["post_rev"].sum())
-                        _vother = (_vpost - _vpre) - float(_vtop["delta"].sum())
-                        _vhas = len(_vmbr) > len(_vtop)
-                        _vnames_a = _vtop["_vmid"].astype(str).tolist() + (["Other vampMids"] if _vhas else [])
-                        _vdeltas_a = _vtop["delta"].tolist() + ([_vother] if _vhas else [])
-                        _vm_wf_all = _rev_bridge_waterfall(_vpre, _vpost, _vnames_a, _vdeltas_a)
-                    # RPGT bridge from the per-RPGT revenue table (_rp: rpgt / pre / post / delta).
+                    _vbi = _bridge_items(_vmbr, "_vmid", _bpre, _bpost, _br_sort, "Other vampMids")
+                    if _vbi is not None:
+                        _vm_wf_all = _rev_bridge_waterfall(*_vbi, money=_br_money)
+                    # RPGT bridge from the per-RPGT revenue table (_rp) + per-RPGT volume from _ev.
                     _rpgt_wf_all = None
                     try:
                         if _rp is not None and not _rp.empty:
-                            _rpb = _rp.sort_values("delta", ascending=False)
-                            _rpgt_wf_all = _rev_bridge_waterfall(
-                                float(_rpb["pre"].sum()), float(_rpb["post"].sum()),
-                                _rpb["rpgt"].astype(str).tolist(), _rpb["delta"].tolist())
+                            _rpx = _rp.rename(columns={"pre": "pre_rev", "post": "post_rev"}).copy()
+                            _rpx["_rl"] = _rpx["rpgt"].astype(str).str.strip().str.lower()
+                            _rpvol = (_ev.assign(_rl=_ev["rpgt"].astype(str).str.strip().str.lower())
+                                      .groupby("_rl").agg(pre_vol=("pre_vol", "sum"), post_vol=("post_vol", "sum")))
+                            _rpx = _rpx.merge(_rpvol, on="_rl", how="left").fillna({"pre_vol": 0.0, "post_vol": 0.0})
+                            _rbi = _bridge_items(_rpx, "rpgt", _bpre, _bpost, _br_sort, "Other RPGTs")
+                            if _rbi is not None:
+                                _rpgt_wf_all = _rev_bridge_waterfall(*_rbi, money=_br_money)
                     except NameError:
                         _rpgt_wf_all = None
                     # Render into the slots reserved above the SR / gateway-share charts
@@ -6500,10 +6544,138 @@ with tab_imp:
                 _gopts = sorted(_evv["_vmid"].dropna().astype(str).unique().tolist())
                 with _md_bank_slot:
                     if _gopts:
-                        _gf1, _gf2 = st.columns([1, 5])   # picker ≈ 1/6 width (~75% narrower than before)
-                        _gsel = _gf1.selectbox("vampMid", _gopts, key="tab_imp_vm_sel", label_visibility="collapsed")
-                        _grows = 10   # 'Rows to show' filter removed — fixed at 10 rows
-                        # FULL per-vampMid per-bank agg (drives BOTH the table's top-10 and the bridge's
+                        _gf1, _gf2, _gf3 = st.columns([1, 1, 4])   # picker + top-N banks control
+                        _gsel = _gf1.selectbox("Mid", _gopts, key="tab_imp_vm_sel")
+                        _topn = int(_gf2.number_input("Top banks", min_value=5, max_value=200, value=30,
+                                                      step=5, key="tab_imp_tm_topn",
+                                                      help="Treemap shows the N banks with the most raw 30D attempts."))
+                        # ---- Bank treemap (top of tab, just below the filter; FULL-row width) ----
+                        # finviz-style: box size = raw 30D attempts, colour = this MID's engine score
+                        # vs the TOP MID at each bank (green = this MID is the best choice there).
+                        _bank_tm = None
+                        try:
+                            _agg_tm = ss.get("agg_sr")
+                            if (HAS_PLOTLY and _agg_tm is not None and not _agg_tm.empty
+                                    and {"bank", "gateway", "attempts", "success_rate"}.issubset(_agg_tm.columns)):
+                                _b2b_tm = ss.get("bin_to_bank", {})
+                                _tm = _agg_tm.copy()
+                                _tm["_vm"] = _tm["gateway"].astype(str).str.strip().str.lower().map(_f2v_bi).astype(str)
+                                _tm["parent"] = _tm["bank"].map(
+                                    lambda b: _b2b_tm.get(b, _b2b_tm.get(str(b).strip().lower(), b))).astype(str).str.upper()
+                                _tm["attempts"] = pd.to_numeric(_tm["attempts"], errors="coerce").fillna(0.0)
+                                _tm["success_rate"] = pd.to_numeric(_tm["success_rate"], errors="coerce").fillna(0.0)
+                                _tm["_wsr"] = _tm["success_rate"] * _tm["attempts"]
+                                _gmid = _tm.groupby(["parent", "_vm"], as_index=False).agg(att=("attempts", "sum"), wsr=("_wsr", "sum"))
+                                _gmid["score"] = np.where(_gmid["att"] > 0, _gmid["wsr"] / _gmid["att"], np.nan)
+                                _selg = _gmid[_gmid["_vm"] == _gsel].set_index("parent")
+                                _topg = _gmid.groupby("parent")["score"].max()
+                                # vampMid holding the top engine score at each bank (for the tooltip)
+                                _gvalid = _gmid.dropna(subset=["score"])
+                                _top_mid = (_gvalid.loc[_gvalid.groupby("parent")["score"].idxmax()]
+                                            .set_index("parent")["_vm"]) if not _gvalid.empty else pd.Series(dtype=object)
+                                _all_banks = [b for b in _selg.index if float(_selg.loc[b, "att"]) > 0]
+                                # There can be thousands of banks/BINs → an unreadable single green
+                                # blob. Show only the TOP-N by raw 30D attempts (finviz style: the
+                                # biggest banks get the biggest tiles).
+                                _all_banks.sort(key=lambda b: float(_selg.loc[b, "att"]), reverse=True)
+                                _banks = _all_banks[:_topn]
+                                if _banks:
+                                    _this = np.array([float(_selg.loc[b, "score"]) for b in _banks])
+                                    _att = np.array([float(_selg.loc[b, "att"]) for b in _banks])
+                                    _top = np.array([float(_topg.loc[b]) for b in _banks])
+                                    _topnm = [str(_top_mid.get(b, _gsel)) for b in _banks]
+                                    _gap = (_this - _top) * 100.0                    # ≤ 0 (top MID is the max)
+                                    _M = float(np.nanmax(np.abs(_gap))) if np.isfinite(_gap).any() else 1.0
+                                    _M = _M if (np.isfinite(_M) and _M > 1e-9) else 1.0
+                                    # tile size = raw 30D attempts; colour = how THIS MID's engine score
+                                    # compares to the BEST MID at that bank (green = at/near best, red =
+                                    # well below). px builds the tree; per-node arrays are aligned to px's
+                                    # own node list so the hidden root gets blank text.
+                                    _df_tm = pd.DataFrame({
+                                        "Bank": list(_banks),
+                                        "Attempts": [float(a) for a in _att],
+                                        "gap": [float(g) for g in _gap],
+                                    })
+                                    _bank_tm = px.treemap(
+                                        _df_tm, path=[px.Constant("Banks"), "Bank"], values="Attempts",
+                                        color="gap", color_continuous_scale="RdYlGn", range_color=[-_M, 0.0])
+                                    _lab = list(_bank_tm.data[0].labels)
+                                    # Badge each tile by ranking THIS MID against ALL MIDs at that bank
+                                    # (by engine score): 👑 best · 🥄 worst · 🥈 2nd · 🥉 3rd. Priority:
+                                    # crown, then wooden spoon (worst always flagged), then silver/bronze.
+                                    _gm_v = _gmid.dropna(subset=["score"])
+                                    _gm_v = _gm_v[_gm_v["parent"].isin(_banks)]
+                                    _score_lists = _gm_v.groupby("parent")["score"].apply(lambda s: s.to_numpy())
+                                    _icon_map = {}
+                                    for b, ts in zip(_banks, _this):
+                                        _arr = _score_lists.get(b, np.array([float(ts)], dtype=float))
+                                        _n = int(_arr.size)
+                                        _r = int(np.sum(_arr > float(ts) + 1e-12)) + 1     # 1 = best
+                                        _is_worst = float(ts) <= float(np.min(_arr)) + 1e-12
+                                        if _r == 1:
+                                            _icon_map[b] = "👑"
+                                        elif _n > 1 and _is_worst:
+                                            _icon_map[b] = "🥄"
+                                        elif _r == 2:
+                                            _icon_map[b] = "🥈"
+                                        elif _r == 3:
+                                            _icon_map[b] = "🥉"
+                                        else:
+                                            _icon_map[b] = ""
+                                    # word-wrap long bank names onto multiple rows so they don't overflow
+                                    def _wrap(_s, _w=16):
+                                        _lines, _cur = [], ""
+                                        for _wd in str(_s).split():
+                                            if _cur and len(_cur) + 1 + len(_wd) > _w:
+                                                _lines.append(_cur)
+                                                _cur = _wd
+                                            else:
+                                                _cur = (_cur + " " + _wd) if _cur else _wd
+                                        if _cur:
+                                            _lines.append(_cur)
+                                        return "<br>".join(_lines)
+                                    _txt_map = {
+                                        b: "<b>%s%s<br>%.2f%% vs %.2f%%</b>" % (
+                                            (_icon_map[b] + "<br>") if _icon_map[b] else "", _wrap(b), t * 100, tp * 100)
+                                        for b, t, tp in zip(_banks, _this, _top)
+                                    }
+                                    _num_map = {b: [float(a), float(t) * 100.0, float(tp) * 100.0, float(g)]
+                                                for b, a, t, tp, g in zip(_banks, _att, _this, _top, _gap)}
+                                    _nm_map = {b: str(nm) for b, nm in zip(_banks, _topnm)}
+                                    _node_text = [_txt_map.get(l, "") for l in _lab]          # root -> "" (no header)
+                                    _node_cd = [_num_map.get(l, [0.0, 0.0, 0.0, 0.0]) for l in _lab]
+                                    _node_hov = [_nm_map.get(l, "") for l in _lab]
+                                    # Colour tiles ourselves as literal hex so we control the ROOT too:
+                                    # leaves by gap (RdYlGn), the "Banks" parent pinned to dark ink so it
+                                    # never shows up green. (px's continuous scale otherwise colours the root.)
+                                    from plotly.colors import sample_colorscale as _samp
+                                    _gapmap = {b: float(g) for b, g in zip(_banks, _gap)}
+                                    _node_colors = [
+                                        (_samp("RdYlGn", [max(0.0, min(1.0, (_gapmap[l] + _M) / _M))])[0]
+                                         if (l in _gapmap and np.isfinite(_gapmap[l]))
+                                         else ("#808080" if l in _gapmap else "#0B1F3A"))
+                                        for l in _lab
+                                    ]
+                                    _bank_tm.update_traces(
+                                        text=_node_text, texttemplate="%{text}", textposition="middle center",
+                                        insidetextfont=dict(color="white"),
+                                        marker=dict(colors=_node_colors, line=dict(width=0), coloraxis=None),
+                                        customdata=_node_cd, hovertext=_node_hov,
+                                        hovertemplate="%{label}<br>Raw 30D attempts: %{customdata[0]:,.0f}"
+                                                      "<br>This MID engine score: %{customdata[1]:.2f}%"
+                                                      "<br>Top MID at bank: %{hovertext} (%{customdata[2]:.2f}%)"
+                                                      "<br>Gap: %{customdata[3]:+.2f} pp<extra></extra>")
+                                    _bank_tm.update_layout(margin=dict(t=4, l=2, r=2, b=2), height=945,
+                                                           coloraxis_showscale=False,       # no colour scale
+                                                           paper_bgcolor="#0B1F3A",         # dark ink behind tiles
+                                                           plot_bgcolor="#0B1F3A")
+                        except Exception:  # noqa: BLE001
+                            _bank_tm = None
+                        if _bank_tm is not None:
+                            st.plotly_chart(_bank_tm, use_container_width=True)
+                        else:
+                            st.caption("Bank treemap unavailable for this vampMid.")
+                        # FULL per-vampMid per-bank agg (drives BOTH the sortable table and the bridge's
                         # Current/Proposed totals + 'Other banks' roll-up).
                         _gfull = _evv[_evv["_vmid"].astype(str) == _gsel].groupby("bank", as_index=False).agg(
                             pre_vol=("pre_vol", "sum"), post_vol=("post_vol", "sum"),
@@ -6511,52 +6683,45 @@ with tab_imp:
                             pre_rev=("pre_rev", "sum"), post_rev=("post_rev", "sum"),
                             pre_share=("baseline_share", "mean"), post_share=("share", "mean"))
                         _gfull["share_delta_pp"] = (_gfull["post_share"] - _gfull["pre_share"]) * 100.0
-                        _gt = _gfull.sort_values("rev_delta", ascending=False).head(_grows)
+                        _gt = _gfull.sort_values("rev_delta", ascending=False)
                         if _gt.empty:
                             st.info("No banks for this vampMid.")
                         else:
-                            # Widened table (readable font, FULL Bank names) + green↑/red↓ on 30D $ Impact.
-                            _gmax = float(np.nanmax(np.abs(_gt["rev_delta"].to_numpy(dtype=float))))
+                            # Sortable table (click any header). green↑/red↓ shading on 30D $ Impact.
+                            _disp = _gt[["bank", "rev_delta", "share_delta_pp", "vol_delta",
+                                         "pre_vol", "post_vol"]].copy()
+                            _disp.columns = ["Bank", "30D $ Impact", "Δ Share (pp)",
+                                             "Δ Volume (txns)", "Pre Volume", "Post Volume"]
+                            _gmax = float(np.nanmax(np.abs(_disp["30D $ Impact"].to_numpy(dtype=float)))) if len(_disp) else 1.0
                             _gmax = _gmax if _gmax > 1e-9 else 1.0
-                            _gcols = ["Bank", "30D $ Impact", "Δ Share (pp)", "Δ Volume (txns)", "Pre Volume", "Post Volume"]
-                            _gh = ['<div style="box-shadow:0 4px 12px rgba(0,0,0,0.08); border-radius:0; overflow:auto; '
-                                   'width:100%; background:var(--tav-card); border:1px solid var(--tav-line);">']
-                            _gh.append('<table style="width:100%; border-collapse:collapse; font-size:0.62rem; line-height:1.15;"><tr>')
-                            for _c in _gcols:
-                                _al = "left" if _c == "Bank" else "right"
-                                _gh.append(f'<th style="background:var(--tav-red); color:#FFF; font-weight:bold; '
-                                           f'padding:3px 8px; text-align:{_al}; white-space:nowrap;">{_c}</th>')
-                            _gh.append('</tr>')
-                            for _, _r in _gt.iterrows():
-                                _rd = float(_r["rev_delta"])
-                                _frac = max(-1.0, min(1.0, _rd / _gmax))
-                                _bg = (f"background-color: rgba(34,195,107,{0.75 * _frac:.3f});" if _frac >= 0
-                                       else f"background-color: rgba(230,55,72,{0.75 * abs(_frac):.3f});")
-                                _gh.append('<tr>')
-                                _gh.append(f'<td style="padding:3px 8px; text-align:left; color:#000; white-space:nowrap;">{_r["bank"]}</td>')
-                                _gh.append(f'<td style="padding:3px 8px; text-align:right; color:#000; {_bg} white-space:nowrap;">${_rd:,.0f}</td>')
-                                _gh.append(f'<td style="padding:3px 8px; text-align:right; color:#000; white-space:nowrap;">{float(_r["share_delta_pp"]):+.2f}</td>')
-                                _gh.append(f'<td style="padding:3px 8px; text-align:right; color:#000; white-space:nowrap;">{float(_r["vol_delta"]):+,.0f}</td>')
-                                _gh.append(f'<td style="padding:3px 8px; text-align:right; color:#000; white-space:nowrap;">{float(_r["pre_vol"]):,.0f}</td>')
-                                _gh.append(f'<td style="padding:3px 8px; text-align:right; color:#000; white-space:nowrap;">{float(_r["post_vol"]):,.0f}</td>')
-                                _gh.append('</tr>')
-                            _gh.append('</table></div>')
-                            # Per-vampMid revenue bridge (same format as the top-of-tab bridge).
+
+                            def _impact_bg(_col):
+                                _out = []
+                                for _v in _col:
+                                    _f = max(-1.0, min(1.0, float(_v) / _gmax))
+                                    _rgba = ("rgba(34,195,107,%.3f)" % (0.75 * _f) if _f >= 0
+                                             else "rgba(230,55,72,%.3f)" % (0.75 * abs(_f)))
+                                    _out.append("background-color: %s; color:#000" % _rgba)
+                                return _out
+                            _fmt_map = {"30D $ Impact": "${:,.0f}", "Δ Share (pp)": "{:+.2f}",
+                                        "Δ Volume (txns)": "{:+,.0f}", "Pre Volume": "{:,.0f}",
+                                        "Post Volume": "{:,.0f}"}
+                            # Per-vampMid bridge (uses the shared metric + sort controls above;
+                            # read from session_state so it's independent of local scope).
+                            _gb_money = (ss.get("tab_imp_br_metric", "Revenue") == "Revenue")
+                            _gb_sort = ss.get("tab_imp_br_sort", "Top increases")
+                            _gbpre, _gbpost = ("pre_rev", "post_rev") if _gb_money else ("pre_vol", "post_vol")
                             _vm_wf = None
-                            _gpre = float(_gfull["pre_rev"].sum()); _gpost = float(_gfull["post_rev"].sum())
-                            _bfi = _gfull[(_gfull["pre_rev"].abs() + _gfull["post_rev"].abs()) > 0].copy()
-                            _binc = _bfi[_bfi["rev_delta"] > 0].sort_values("rev_delta", ascending=False).head(7)
-                            _bdec = _bfi[_bfi["rev_delta"] < 0].sort_values("rev_delta", ascending=True).head(7)
-                            _bfi = pd.concat([_binc, _bdec]).sort_values("rev_delta", ascending=False)
-                            if not _bfi.empty:
-                                _hoth = len(_gfull) > len(_bfi)
-                                _oth = (_gpost - _gpre) - float(_bfi["rev_delta"].sum())
-                                _vnames = _bfi["bank"].astype(str).tolist() + (["Other banks"] if _hoth else [])
-                                _vdeltas = _bfi["rev_delta"].tolist() + ([_oth] if _hoth else [])
-                                _vm_wf = _rev_bridge_waterfall(_gpre, _gpost, _vnames, _vdeltas)
-                            # Table (left, width −60%: 3→1.2 with a trailing spacer) + revenue bridge.
-                            _btc, _bwc, _bsp = st.columns([1.2, 2, 1.8])
-                            _btc.markdown("".join(_gh), unsafe_allow_html=True)
+                            _gbi = _bridge_items(_gfull, "bank", _gbpre, _gbpost, _gb_sort, "Other banks")
+                            if _gbi is not None:
+                                _vm_wf = _rev_bridge_waterfall(*_gbi, money=_gb_money)
+                            # Sortable table beside the bridge (the bank treemap is at the TOP of the tab).
+                            _btc, _bwc = st.columns([1, 1])
+                            try:
+                                _btc.dataframe(_disp.style.format(_fmt_map).apply(_impact_bg, subset=["30D $ Impact"]),
+                                               use_container_width=True, hide_index=True, height=560)
+                            except Exception:  # jinja2/Styler unavailable → plain sortable table
+                                _btc.dataframe(_disp, use_container_width=True, hide_index=True, height=560)
                             if _vm_wf is not None:
                                 _bwc.plotly_chart(_vm_wf, use_container_width=True)
                     else:
@@ -6957,132 +7122,154 @@ with tab_imp:
                         workings_view["Reference Share (waterfall)"] *= 100
                         workings_view["Final Share"] *= 100
 
-                    st.dataframe(
-                        workings_view,
-                        use_container_width=True,
-                        hide_index=True,
-                        column_config={
-                            _SR: st.column_config.NumberColumn(format="%.2f%%"),
-                            "Engine Score (Smoothed SR)": st.column_config.NumberColumn(format="%.2f%%"),
-                            "Raw 30D Success Rate": st.column_config.NumberColumn(format="%.2f%%"),
-                            "Current Share": st.column_config.NumberColumn(format="%.2f%%"),
-                            "Proposed Share": st.column_config.NumberColumn(format="%.2f%%"),
-                            "Shift (pp)": st.column_config.NumberColumn(format="%+.2f pp"),
-                            "Pre Revenue (Adj)": st.column_config.NumberColumn(format="$%.0f", help="ACTUAL raw 30D successes valued at the per-RPGT avg ticket (Σ over RPGTs of raw successes × per-RPGT ticket). Baseline share does NOT enter."),
-                            "Post Revenue": st.column_config.NumberColumn(format="$%.0f", help="Expected successful revenue under the proposed split (expected successes × avg ticket)"),
-                            "Expected Revenue Impact": st.column_config.NumberColumn(format="$%+.0f", help="Post Revenue − Pre Revenue (Adj)"),
-                            "All-Time Attempts (raw)": st.column_config.NumberColumn(format="%.0f", help="Parent-bank grain, UN-decayed. Compare to the time-adj column: if decay is on, time-adj should be lower."),
-                            _ATT: st.column_config.NumberColumn(format="%.1f", help="Parent-bank grain (pools all BINs); time-decay-weighted when the decay toggle is on - the grain/values the engine scores on"),
-                            "Prior SR %": st.column_config.NumberColumn(format="%.2f%%", help="Bank x Currency prior the gateway is shrunk toward"),
-                            "κ used": st.column_config.NumberColumn(format="%.1f", help="Smoothing volume applied: the Fixed Number, or the per-Bank×Currency Empirical-Bayes estimate"),
-                            _BAA: st.column_config.NumberColumn(format="%.1f", help="All-Time (time-adj) Attempts + kappa"),
-                            _BAS: st.column_config.NumberColumn(format="%.1f", help="All-Time (time-adj) Success + kappa * prior. Engine Score = Adj Success / Adj Attempts"),
-                            "Raw Attempts (30D)": st.column_config.NumberColumn(format="%d"),
-                            "Raw Successes (30D)": st.column_config.NumberColumn(format="%d"),
-                            "Raw 30D Amount": st.column_config.NumberColumn(format="$%.0f", help="30D successful transaction value (revenue)"),
-                            "Avg txn value (Bank x Cur)": st.column_config.NumberColumn(format="$%.2f", help="Avg value per successful txn pooled over ALL RPGTs at the Bank×Currency level. Shown for contrast; the revenue figures now use the per-RPGT ticket (next column)."),
-                            "Eff. Ticket (per-RPGT)": st.column_config.NumberColumn(format="$%.2f", help="The per-RPGT-blended ticket actually used = Post Revenue ÷ Expected Success. Post Revenue = Expected Success × this; Pre Revenue = Baseline Success × the per-RPGT ticket."),
-                            "Baseline Attempts (30D)": st.column_config.NumberColumn(format="%d", help="Current-split attempts (cell 30D attempts × baseline share), summed over RPGTs. Baseline SR = Baseline Success ÷ Baseline Attempts."),
-                            "Baseline Success (30D)": st.column_config.NumberColumn(format="%d", help="Current-split successes; drives Pre Revenue (Adj) = Baseline Success × per-RPGT ticket."),
-                            "SR applied (30D)": st.column_config.NumberColumn(format="%.2f%%", help="Proposed-share-weighted 30D success rate = Expected Success ÷ Expected Attempts (so Expected Success = Expected Attempts × this). The baseline side uses Baseline Success ÷ Baseline Attempts."),
-                            "Expected Attempts (30D)": st.column_config.NumberColumn(format="%d", help="Proposed-split attempts (cell 30D attempts × proposed share), summed over RPGTs."),
-                            "Expected Success (30D)": st.column_config.NumberColumn(format="%d", help="Expected Attempts × SR applied. Drives Post Revenue."),
-                            "Exploration floor %": st.column_config.NumberColumn(format="%.2f%%", help="Minimum share every eligible gateway is floored to before capping/enforcement."),
-                            "Max share cap %": st.column_config.NumberColumn(format="%.2f%%", help="Maximum share any single gateway may hold."),
-                            "Floor+cap+enforce shift (pp)": st.column_config.NumberColumn(format="%+.2f pp", help="Net move from the raw Softmax (pre-floor) share to the final Proposed share = exploration floor + max-share cap + cross-cell VAMP/MID enforcement, combined (applied together, not per-gateway-decomposable)."),
-                            "Temperature (cell)": st.column_config.NumberColumn(format="%.3f"),
-                            "k applied (score x k)": st.column_config.NumberColumn(format="%.4f"),
-                            "Euler's constant": st.column_config.NumberColumn(format="%.5f"),
-                            "Weighting": st.column_config.NumberColumn(format="%.2f"),
-                            "Total Weighting": st.column_config.NumberColumn(format="%.2f"),
-                            "Softmax Share (pre-floor)": st.column_config.NumberColumn(format="%.2f%%"),
-                            "Reference Share (waterfall)": st.column_config.NumberColumn(format="%.2f%%", help="Genetic's dial-100 revenue reference: fill the best-converting gateways up to the max share."),
-                            "Tilt (pp)": st.column_config.NumberColumn(format="%+.2f pp", help="How the genetic tilt moved this gateway away from the revenue reference toward VAMP compliance."),
-                            "Final Share": st.column_config.NumberColumn(format="%.2f%%", help="The genetic engine's proposed share after tilting."),
-                        }
-                    )
+                    # (The old single combined table is replaced by the three headed tables below:
+                    # Revenue Impact Workings, Pre-Processing Workings, Allocation Workings.)
 
-                    # ---- PER-RPGT breakdown: each gateway row above = Σ of its RPGT rows here.
-                    # This is the grain the revenue is actually summed over (per-RPGT ticket ×
-                    # successes), so it reconciles the collapsed Bank×Currency×gateway rows.
-                    # (a checkbox, not an expander — the Engine Workings panel is itself an expander,
-                    # and Streamlit forbids nesting expanders.)
-                    if st.checkbox("Show per-RPGT breakdown — trace each gateway's attempts, successes, "
-                                   "ticket & revenue by RPGT", value=False, key="engwork_rpgt_breakdown"):
-                        if (not b_df.empty) and {"rpgt", "gateway"}.issubset(b_df.columns):
-                            _b = b_df.copy()
-                            if "gateway_join" not in _b.columns:
-                                _b["gateway_join"] = _b["gateway"].astype(str).str.strip().str.lower()
-                            if "bank_join" not in _b.columns:
-                                _b["bank_join"] = _b["bank"].astype(str).str.strip().str.lower()
-                            if "currency_join" not in _b.columns:
-                                _b["currency_join"] = _b["currency"].astype(str).str.strip().str.lower()
-                            _grp = ["bank_join", "currency_join", "rpgt", "gateway_join"]
-                            # share is now a proper per-cell distribution at the SOURCE (_impact_eval_frame
-                            # renormalises it), so post_att / post_succ / post_rev are correct here with no
-                            # per-table rescaling — Σ Expected Attempts = Σ Raw, and shares sum to 100%.
-                            _aggmap = {}
-                            for _src, _dst in [("post_att", "Expected Attempts"), ("post_succ", "Expected Success"),
-                                               ("post_rev", "Post Revenue")]:
-                                if _src in _b.columns:
-                                    _aggmap[_dst] = (_src, "sum")
-                            for _src, _dst in [("gateway", "Gateway"), ("baseline_share", "Current Share"),
-                                               ("share", "Proposed Share"), ("gw_sr", "SR (30D)"),
-                                               ("avg_ticket", "Ticket (per-RPGT)")]:
-                                if _src in _b.columns:
-                                    _aggmap[_dst] = (_src, "first")
-                            if any(_k in _aggmap for _k in ("Post Revenue", "Expected Success")):
-                                _rpt = _b.groupby(_grp, as_index=False).agg(**_aggmap)
-                                # RAW observed 30D attempts/successes + RAW-basis Pre Revenue (raw successes
-                                # × per-RPGT ticket). Match on a LOWERCASED rpgt key (the breakdown keeps
-                                # rpgt title-case, _raw_rpgt lowercases).
-                                if _raw_rpgt is not None and not getattr(_raw_rpgt, "empty", True):
-                                    _rr = _raw_rpgt[["bank_join", "currency_join", "rpgt_join", "gateway_join",
-                                                     "raw_succ", "raw_att", "pre_rev_raw"]].copy()
-                                    _rpt["_rpgt_l"] = _rpt["rpgt"].astype(str).str.strip().str.lower()
-                                    _rpt = _rpt.merge(
-                                        _rr, how="left",
-                                        left_on=["bank_join", "currency_join", "_rpgt_l", "gateway_join"],
-                                        right_on=["bank_join", "currency_join", "rpgt_join", "gateway_join"])
-                                    _rpt = _rpt.drop(columns=["_rpgt_l", "rpgt_join"], errors="ignore")
-                                _rpt["Raw Attempts (30D)"] = pd.to_numeric(_rpt.get("raw_att", 0), errors="coerce").fillna(0.0)
-                                _rpt["Raw Successes (30D)"] = pd.to_numeric(_rpt.get("raw_succ", 0), errors="coerce").fillna(0.0)
-                                _rpt["Pre Revenue (Adj)"] = pd.to_numeric(_rpt.get("pre_rev_raw"), errors="coerce").fillna(0.0)
-                                _rpt["BIN"] = _rpt["bank_join"].astype(str).str.upper()
-                                _rpt["Currency"] = _rpt["currency_join"].astype(str).str.upper()
-                                if "Gateway" not in _rpt.columns:
-                                    _rpt["Gateway"] = _rpt["gateway_join"]
-                                _rpt = _rpt.rename(columns={"rpgt": "RPGT"})
-                                for _pc in ["Current Share", "Proposed Share", "SR (30D)"]:
-                                    if _pc in _rpt.columns:
-                                        _rpt[_pc] = pd.to_numeric(_rpt[_pc], errors="coerce").fillna(0.0) * 100.0
-                                _order = [c for c in ["BIN", "Currency", "Gateway", "RPGT",
-                                                      "SR (30D)", "Ticket (per-RPGT)", "Current Share", "Proposed Share",
-                                                      "Raw Attempts (30D)", "Raw Successes (30D)",
-                                                      "Expected Attempts", "Expected Success",
-                                                      "Pre Revenue (Adj)", "Post Revenue"] if c in _rpt.columns]
-                                _rpt = _rpt[_order].sort_values(["BIN", "Currency", "Gateway", "RPGT"]).reset_index(drop=True)
-                                st.caption("Full RPGT grain (SR, ticket, shares & revenue are per-RPGT). "
-                                           "Pre Revenue (Adj) = Raw Successes × Ticket; Post Revenue = Expected Success × "
-                                           "Ticket. Shares sum to 100% per RPGT cell and Σ Expected Attempts = Σ Raw Attempts.")
-                                st.dataframe(
-                                    _rpt, use_container_width=True, hide_index=True,
-                                    column_config={
-                                        "SR (30D)": st.column_config.NumberColumn(format="%.2f%%", help="This RPGT's gateway 30D success rate."),
-                                        "Ticket (per-RPGT)": st.column_config.NumberColumn(format="$%.2f", help="This RPGT's avg ticket (Bank×Currency×RPGT)."),
-                                        "Current Share": st.column_config.NumberColumn(format="%.2f%%"),
-                                        "Proposed Share": st.column_config.NumberColumn(format="%.2f%%"),
-                                        "Raw Attempts (30D)": st.column_config.NumberColumn(format="%d", help="Actual observed 30D attempts for this gateway × RPGT."),
-                                        "Raw Successes (30D)": st.column_config.NumberColumn(format="%d", help="Actual observed 30D successes; drives Pre Revenue (Adj) = Raw Successes × Ticket."),
-                                        "Expected Attempts": st.column_config.NumberColumn(format="%d", help="cell attempts × proposed share (Σ per cell = Σ Raw Attempts)."),
-                                        "Expected Success": st.column_config.NumberColumn(format="%d", help="Expected Attempts × SR."),
-                                        "Pre Revenue (Adj)": st.column_config.NumberColumn(format="$%.0f", help="Raw Successes × Ticket (per-RPGT)."),
-                                        "Post Revenue": st.column_config.NumberColumn(format="$%.0f", help="Expected Success × Ticket (per-RPGT)."),
-                                    })
-                            else:
-                                st.caption("No per-RPGT revenue detail available for this selection.")
+                    # ============ Three headed workings tables (all at per-RPGT grain) ============
+                    # 1) Revenue Impact Workings  2) Pre-Processing Workings  3) Allocation Workings.
+                    # Grain = Bank x Currency x Gateway x RPGT. Score/softmax columns are pooled at
+                    # Bank x Currency (the grain the engine scores on) and repeat across a gateway's RPGTs.
+                    if (not b_df.empty) and {"rpgt", "gateway"}.issubset(b_df.columns):
+                        _b = b_df.copy()
+                        for _kj, _sc0 in (("gateway_join", "gateway"), ("bank_join", "bank"), ("currency_join", "currency")):
+                            if _kj not in _b.columns:
+                                _b[_kj] = _b[_sc0].astype(str).str.strip().str.lower()
+                        _grp = ["bank_join", "currency_join", "rpgt", "gateway_join"]
+                        _aggmap = {}
+                        for _src, _dst in [("post_att", "Expected Attempts"), ("post_succ", "Expected Success"),
+                                           ("post_rev", "Post Revenue")]:
+                            if _src in _b.columns:
+                                _aggmap[_dst] = (_src, "sum")
+                        for _src, _dst in [("gateway", "Gateway"), ("baseline_share", "Current Share"),
+                                           ("share", "Proposed Share"), ("gw_sr", "SR (30D)"),
+                                           ("avg_ticket", "Ticket (per-RPGT)")]:
+                            if _src in _b.columns:
+                                _aggmap[_dst] = (_src, "first")
+                        if any(_k in _aggmap for _k in ("Post Revenue", "Expected Success")):
+                            _wr = _b.groupby(_grp, as_index=False).agg(**_aggmap)
+                            # RAW observed 30D + raw-basis Pre Revenue (case-insensitive rpgt join)
+                            if _raw_rpgt is not None and not getattr(_raw_rpgt, "empty", True):
+                                _rr = _raw_rpgt[["bank_join", "currency_join", "rpgt_join", "gateway_join",
+                                                 "raw_succ", "raw_att", "pre_rev_raw"]].copy()
+                                _wr["_rpgt_l"] = _wr["rpgt"].astype(str).str.strip().str.lower()
+                                _wr = _wr.merge(_rr, how="left",
+                                                left_on=["bank_join", "currency_join", "_rpgt_l", "gateway_join"],
+                                                right_on=["bank_join", "currency_join", "rpgt_join", "gateway_join"])
+                                _wr = _wr.drop(columns=["_rpgt_l", "rpgt_join"], errors="ignore")
+                            _wr["Raw Attempts (30D)"] = pd.to_numeric(_wr.get("raw_att", 0), errors="coerce").fillna(0.0)
+                            _wr["Raw Successes (30D)"] = pd.to_numeric(_wr.get("raw_succ", 0), errors="coerce").fillna(0.0)
+                            _wr["Pre Revenue (Adj)"] = pd.to_numeric(_wr.get("pre_rev_raw"), errors="coerce").fillna(0.0)
+                            # merge POOLED score / softmax / allocation / genetic columns (broadcast per RPGT)
+                            _pool = [c for c in ["Cross-border?", "All_Time_Attempts", "All_Time_Success", "All-Time Raw SR",
+                                                 "Prior SR %", "κ used", "Bayesian Adj Attempts", "Bayesian Adj Success",
+                                                 "Engine Score (Smoothed SR)", "Temperature (cell)", "k applied (score x k)",
+                                                 "Euler's constant", "Weighting", "Total Weighting", "Softmax Share (pre-floor)",
+                                                 "Exploration floor %", "Max share cap %", "Reference Share (waterfall)",
+                                                 "Tilt (pp)", "Final Share"] if c in workings_full.columns]
+                            if _pool and {"bank_join", "currency_join", "gateway_join"}.issubset(workings_full.columns):
+                                _pfm = workings_full[["bank_join", "currency_join", "gateway_join"] + _pool].drop_duplicates(
+                                    ["bank_join", "currency_join", "gateway_join"])
+                                _wr = _wr.merge(_pfm, on=["bank_join", "currency_join", "gateway_join"], how="left")
+                            # derived (on FRACTIONS, before the %-scaling below). A column may be
+                            # absent for some engines (e.g. no Softmax Share for genetic), so read via
+                            # a helper that always returns a Series (never a scalar → no .fillna crash).
+                            def _S(_name, _d=0.0):
+                                if _name in _wr.columns:
+                                    return pd.to_numeric(_wr[_name], errors="coerce").fillna(_d)
+                                return pd.Series(_d, index=_wr.index, dtype=float)
+                            _kap = _S("κ used")
+                            _prior = _S("Prior SR %") / 100.0
+                            _wr["Bayesian Attempts Adjustment"] = _kap
+                            _wr["Bayesian Success Adjustment"] = _kap * _prior
+                            _pfrac = _S("Proposed Share")
+                            if "Softmax Share (pre-floor)" in _wr.columns:
+                                _sfrac = pd.to_numeric(_wr["Softmax Share (pre-floor)"], errors="coerce").fillna(_pfrac)
+                                _wr["Floor+cap+enforce shift (pp)"] = (_pfrac - _sfrac) * 100.0
+                            _wr["Raw SR % (All-Time)"] = _S("All-Time Raw SR") * 100.0
+                            _wr["Bank"] = _wr["bank_join"].astype(str).str.upper()
+                            _wr["Currency"] = _wr["currency_join"].astype(str).str.upper()
+                            if "Gateway" not in _wr.columns:
+                                _wr["Gateway"] = _wr["gateway_join"]
+                            _wr = _wr.rename(columns={"rpgt": "RPGT"})
+                            for _pc in ["Current Share", "Proposed Share", "SR (30D)", "Engine Score (Smoothed SR)",
+                                        "Softmax Share (pre-floor)", "Reference Share (waterfall)", "Final Share"]:
+                                if _pc in _wr.columns:
+                                    _wr[_pc] = pd.to_numeric(_wr[_pc], errors="coerce").fillna(0.0) * 100.0
+                            _wr = _wr.sort_values(["Bank", "Currency", "Gateway", "RPGT"]).reset_index(drop=True)
+
+                            # -------- 1) Revenue Impact Workings --------
+                            st.markdown("<h4 style='color:#0B1F3A;margin:0.4rem 0 0.2rem;'>Revenue Impact Workings</h4>", unsafe_allow_html=True)
+                            _c1 = [c for c in ["Bank", "Currency", "Gateway", "RPGT", "SR (30D)", "Ticket (per-RPGT)",
+                                               "Current Share", "Proposed Share", "Raw Attempts (30D)", "Raw Successes (30D)",
+                                               "Expected Attempts", "Expected Success", "Pre Revenue (Adj)", "Post Revenue"] if c in _wr.columns]
+                            st.dataframe(_wr[_c1], use_container_width=True, hide_index=True, column_config={
+                                "SR (30D)": st.column_config.NumberColumn(format="%.2f%%"),
+                                "Ticket (per-RPGT)": st.column_config.NumberColumn(format="$%.2f"),
+                                "Current Share": st.column_config.NumberColumn(format="%.2f%%"),
+                                "Proposed Share": st.column_config.NumberColumn(format="%.2f%%"),
+                                "Raw Attempts (30D)": st.column_config.NumberColumn(format="%d"),
+                                "Raw Successes (30D)": st.column_config.NumberColumn(format="%d"),
+                                "Expected Attempts": st.column_config.NumberColumn(format="%d", help="cell attempts × proposed share (Σ per cell = Σ Raw Attempts)."),
+                                "Expected Success": st.column_config.NumberColumn(format="%d", help="Expected Attempts × SR."),
+                                "Pre Revenue (Adj)": st.column_config.NumberColumn(format="$%.0f", help="Raw Successes × Ticket (per-RPGT)."),
+                                "Post Revenue": st.column_config.NumberColumn(format="$%.0f", help="Expected Success × Ticket (per-RPGT)."),
+                            })
+
+                            # -------- 2) Pre-Processing & Engine Score Workings --------
+                            st.markdown("<h4 style='color:#0B1F3A;margin:0.4rem 0 0.2rem;'>Pre-Processing &amp; Engine Score Workings</h4>", unsafe_allow_html=True)
+                            _c2map = {"Cross-border?": "Cross Border", "All_Time_Attempts": "Raw Attempts (All-Time)",
+                                      "All_Time_Success": "Raw Successes (All-Time)",
+                                      "Bayesian Adj Attempts": "Bayesian Adj Attempts (time-adj)",
+                                      "Bayesian Adj Success": "Bayesian Adj Successes (time-adj)"}
+                            # RPGT column ONLY when the Engine Score grain is per-RPGT. When the score is
+                            # pooled at Bank×Currency it's identical across a gateway's RPGTs, so drop RPGT
+                            # and collapse to one row per gateway.
+                            _score_rpgt = bool(ss.get("score_by_rpgt", False))
+                            _c2cols = (["Bank", "Currency", "Gateway"] + (["RPGT"] if _score_rpgt else [])
+                                       + ["Cross-border?", "All_Time_Attempts", "All_Time_Success", "Raw SR % (All-Time)",
+                                          "Bayesian Attempts Adjustment", "Bayesian Success Adjustment",
+                                          "Bayesian Adj Attempts", "Bayesian Adj Success", "Engine Score (Smoothed SR)"])
+                            _c2src = [c for c in _c2cols if c in _wr.columns]
+                            _c2 = _wr[_c2src].rename(columns=_c2map)
+                            if not _score_rpgt:
+                                _c2 = _c2.drop_duplicates(["Bank", "Currency", "Gateway"]).reset_index(drop=True)
+                            st.dataframe(_c2, use_container_width=True, hide_index=True, column_config={
+                                "Raw Attempts (All-Time)": st.column_config.NumberColumn(format="%.0f", help="All-time attempts (time-decay-weighted when decay is on) — the grain the engine scores on."),
+                                "Raw Successes (All-Time)": st.column_config.NumberColumn(format="%.0f"),
+                                "Raw SR % (All-Time)": st.column_config.NumberColumn(format="%.2f%%"),
+                                "Bayesian Attempts Adjustment": st.column_config.NumberColumn(format="%.1f", help="κ — the smoothing volume added to attempts."),
+                                "Bayesian Success Adjustment": st.column_config.NumberColumn(format="%.2f", help="κ × prior — the amount added to successes."),
+                                "Bayesian Adj Attempts (time-adj)": st.column_config.NumberColumn(format="%.1f", help="All-Time Attempts + κ."),
+                                "Bayesian Adj Successes (time-adj)": st.column_config.NumberColumn(format="%.1f", help="All-Time Successes + κ × prior."),
+                                "Engine Score (Smoothed SR)": st.column_config.NumberColumn(format="%.2f%%", help="Adj Successes ÷ Adj Attempts. Pooled at Bank×Currency, so it repeats across a gateway's RPGTs."),
+                            })
+
+                            # -------- 3) Allocation Workings --------
+                            st.markdown("<h4 style='color:#0B1F3A;margin:0.4rem 0 0.2rem;'>Allocation Workings</h4>", unsafe_allow_html=True)
+                            _c3 = ["Bank", "Currency", "Gateway", "RPGT", "Engine Score (Smoothed SR)",
+                                   "Temperature (cell)", "k applied (score x k)", "Euler's constant", "Weighting",
+                                   "Total Weighting", "Softmax Share (pre-floor)", "Reference Share (waterfall)", "Tilt (pp)",
+                                   "Exploration floor %", "Max share cap %", "Proposed Share", "Floor+cap+enforce shift (pp)"]
+                            _c3 = [c for i, c in enumerate(_c3) if c in _wr.columns and c not in _c3[:i]]
+                            st.dataframe(_wr[_c3], use_container_width=True, hide_index=True, column_config={
+                                "Engine Score (Smoothed SR)": st.column_config.NumberColumn(format="%.2f%%"),
+                                "Temperature (cell)": st.column_config.NumberColumn(format="%.3f"),
+                                "k applied (score x k)": st.column_config.NumberColumn(format="%.4f"),
+                                "Euler's constant": st.column_config.NumberColumn(format="%.5f"),
+                                "Weighting": st.column_config.NumberColumn(format="%.2f"),
+                                "Total Weighting": st.column_config.NumberColumn(format="%.2f"),
+                                "Softmax Share (pre-floor)": st.column_config.NumberColumn(format="%.2f%%", help="Softmax share before floor/cap/enforcement. Pooled at Bank×Currency."),
+                                "Reference Share (waterfall)": st.column_config.NumberColumn(format="%.2f%%", help="Genetic revenue reference (dial-100 waterfall)."),
+                                "Tilt (pp)": st.column_config.NumberColumn(format="%+.2f pp"),
+                                "Exploration floor %": st.column_config.NumberColumn(format="%.2f%%"),
+                                "Max share cap %": st.column_config.NumberColumn(format="%.2f%%"),
+                                "Proposed Share": st.column_config.NumberColumn(format="%.2f%%"),
+                                "Floor+cap+enforce shift (pp)": st.column_config.NumberColumn(format="%+.2f pp", help="Proposed − Softmax(pre-floor): net effect of floor + max-share cap + VAMP/MID enforcement."),
+                            })
                         else:
-                            st.caption("No per-RPGT detail available for this selection (e.g. a validate / parsed-rules split).")
+                            st.caption("No per-RPGT revenue detail available for this selection.")
+                    else:
+                        st.caption("No per-RPGT detail available for this selection (e.g. a validate / parsed-rules split).")
                 elif not debug_mode:
                     st.info("Table is empty. Please check the 'Toggle Debug Diagnostics' box above to find out why.")
 
