@@ -45,8 +45,10 @@ from routing_optimiser import (  # noqa: E402
     build_configs, build_pipeline_config, cell_baseline_vs_proposed,
     compress_split, count_config_rules, engine_choices, gateway_success_rates,
     gateway_volume_shift, headline_impact, key_contributors, list_sql_files,
-    load_forecast, load_success_data, optimise_split, portfolio_summary,
-    prepare_inputs, run_sql_file, run_vamp_pipeline, sweep_slider)
+    detect_blocked_gateways, gateway_move_vs_reference, load_forecast,
+    load_success_data, optimise_split, portfolio_summary, prepare_inputs,
+    rpgt_gateway_sensitivity, run_sql_file, run_vamp_pipeline, sweep_slider,
+    traffic_moved_curve)
 from routing_optimiser.engines import ENGINES, get_engine  # noqa: E402
 
 try:
@@ -403,6 +405,58 @@ def _save_ga_perf(d):
             _json.dump(d, _f)
     except Exception:
         pass
+
+
+_GA_N_SEED = 4   # parallel CMA-ES seeds per endpoint (also read by the settings-aware ETA scaling)
+
+
+def _switched_off_gateways(ov: dict) -> set:
+    """Canonicalised, lower-cased gateway ids that are SWITCHED OFF in an already-loaded
+    gateway_volume_overrides dict — i.e. target == 0 with apply_to in ("trx", "both").
+    Centralises the identical set-building duplicated across the app."""
+    from routing_optimiser.forecast_pipeline import _canonical_gateway
+    out = set()
+    if not isinstance(ov, dict):
+        return out
+    for _gw, _cfg in ov.items():
+        if isinstance(_cfg, dict) \
+                and pd.to_numeric(_cfg.get("target"), errors="coerce") == 0 \
+                and str(_cfg.get("apply_to", "")).strip().lower() in ("trx", "both"):
+            out.add(str(_canonical_gateway(_gw)).strip().lower())
+    return out
+
+
+def _apply_blocked_caps(split, blocked_pairs, floor):
+    """Cap the share of any BANK-BLOCKED (bank, gateway) to the exploration floor and redistribute
+    the freed share to the OTHER (non-blocked) gateways in the same cell, proportionally. Cells with
+    no non-blocked recipient are left unchanged (nowhere to move the volume). Matches on
+    lower/stripped (bank, gateway). Returns (new_split, n_rows_capped). Deterministic; no-op when
+    `blocked_pairs` is empty or nothing matches."""
+    if not blocked_pairs or split is None or getattr(split, "empty", True) \
+            or not {"bank", "gateway", "share"}.issubset(split.columns):
+        return split, 0
+    d = split.copy()
+    _bk = d["bank"].astype(str).str.strip().str.lower()
+    _gw = d["gateway"].astype(str).str.strip().str.lower()
+    _isb = np.array([(_b, _g) in blocked_pairs for _b, _g in zip(_bk, _gw)])
+    if not _isb.any():
+        return d, 0
+    _key = [c for c in ("rpgt", "currency", "bank", "pmp") if c in d.columns] or ["bank"]
+    _sh = pd.to_numeric(d["share"], errors="coerce").fillna(0.0).to_numpy()
+    _cap = np.where(_isb, np.minimum(_sh, float(floor)), _sh)          # blocked -> <= floor
+    d["_freed"] = _sh - _cap                                            # >= 0, only blocked rows
+    d["_rw"] = np.where(_isb, 0.0, _cap)                                # recipients = non-blocked
+    _grp = d.groupby(_key)
+    _freed_cell = _grp["_freed"].transform("sum").to_numpy()
+    _rw_cell = _grp["_rw"].transform("sum").to_numpy()
+    _has_recip = _rw_cell > 1e-12
+    _add = np.where(_has_recip, d["_rw"].to_numpy() * _freed_cell / np.where(_has_recip, _rw_cell, 1.0), 0.0)
+    # Apply the cap+redistribute only in cells that HAVE a non-blocked recipient; a cell whose
+    # gateways are ALL blocked is left untouched (nowhere to move the freed volume).
+    _new = np.where(_has_recip, _cap + _add, _sh)
+    d["share"] = _new
+    d = d.drop(columns=["_freed", "_rw"])
+    return d, int((_isb & _has_recip & (_new < _sh - 1e-12)).sum())
 
 
 # Impact-tab calc/export/cache helpers live in impact_calcs.py (kept out of this
@@ -885,10 +939,8 @@ with tab_fc:
                                     _ovp_bc = os.path.join(PROJECT_ROOT, "config", "inputs", "gateway_volume_overrides.json")
                                     _off_bc = set()
                                     if os.path.exists(_ovp_bc):
-                                        for _gw, _cfg in (_jbc.load(open(_ovp_bc)) or {}).items():
-                                            if isinstance(_cfg, dict) and pd.to_numeric(_cfg.get("target"), errors="coerce") == 0 \
-                                                    and str(_cfg.get("apply_to", "")).strip().lower() in ("trx", "both"):
-                                                _off_bc.add(str(_cgbc(_gw)).strip().lower())
+                                        with open(_ovp_bc) as _fbc:
+                                            _off_bc = _switched_off_gateways(_jbc.load(_fbc) or {})
                                     if _off_bc and isinstance(_bc_parsed, dict):
                                         _nrm = 0
                                         _clean = {}
@@ -1174,6 +1226,25 @@ with tab_fc:
 with tab_eng:
     out_dir = ss.get("pipeline_out_dir")
 
+    # Mid-run STOP control (file-based cooperative stop). Writing the signal makes a running genetic
+    # search halt at the next generation and keep the best split so far. Streamlit runs the compute
+    # synchronously in the ACTIVE tab, so trigger this from a SECOND browser tab/window (a separate
+    # session) — or run `touch <project>/runs/_stop` — to stop a run already in progress.
+    with st.sidebar:
+        if st.button("⛔ Stop genetic run", key="ga_stop_btn",
+                     help="Halt a running genetic search at the next generation, keeping the best "
+                          "split so far. Because the compute runs synchronously in the active tab, "
+                          "trigger this from a SECOND browser tab (or `touch runs/_stop`) to stop a "
+                          "run already in progress."):
+            try:
+                from routing_optimiser.run_bundle import request_stop as _rq_stop
+                _rd_stop = os.path.join(PROJECT_ROOT, "runs")
+                os.makedirs(_rd_stop, exist_ok=True)     # so the signal path is always runs/_stop
+                _rq_stop(_rd_stop)
+                st.sidebar.warning("Stop sent — the genetic search will halt at the next generation.")
+            except Exception as _e:  # noqa: BLE001
+                st.sidebar.error(f"Stop failed: {type(_e).__name__}: {_e}")
+
     if "pipeline_out_dir" not in ss:
         st.info("Cache a forecast in tab 1 first.")
     elif not out_dir:
@@ -1291,25 +1362,12 @@ with tab_eng:
                     key="eng_rpgt_scope",
                     help="Only these transaction types feed the engine and appear in the proposed "
                          "split, VAMP and impact. Leave all selected to route every RPGT.")
-                _cb1, _cb2 = st.columns(2)
-                _rpgt_hold_others = _cb1.checkbox(
-                    "Hold unselected RPGTs at their current split (pre = post)",
-                    value=True, key="eng_rpgt_hold_others",
-                    help="ON: the optimised routing is applied ONLY to the selected RPGTs; every "
-                         "other RPGT is held on its current baseline split, so its pre and post "
-                         "impact are identical. OFF: the single Currency×Bank routing decision "
-                         "(still informed only by the selected RPGTs) is applied to ALL RPGTs. "
-                         "No effect when all RPGTs are selected.")
-                _auto_explore = _cb2.checkbox(
-                    "Auto-explore capable-but-untested gateways", value=True, key="eng_auto_explore",
-                    help="Automatically make every gateway approved for a cell's currency (from "
-                         "Master_MID_List, minus scrubbed/switched-off) an eligible candidate — even "
-                         "with zero attempts — so capable-but-untested gateways can earn exploration "
-                         "volume without maintaining a manual list. Each untested gateway is seeded at "
-                         "the bank×currency AVERAGE success rate as a weak prior, so Thompson explores "
-                         "it with a wide posterior and softmax gives it the exploration floor. The VAMP "
-                         "cap and all constraints still govern them. Off = today's behaviour (only "
-                         "gateways with observed attempts, plus any explore_untested_gateways list).")
+                # These two are ALWAYS ON now (checkboxes removed). Keep both the local vars and
+                # the session_state keys True so every downstream reader (locals + ss.get) agrees.
+                _rpgt_hold_others = True   # hold unselected RPGTs at their current split (pre = post)
+                _auto_explore = True       # auto-explore capable-but-untested gateways
+                ss["eng_rpgt_hold_others"] = True
+                ss["eng_auto_explore"] = True
                 _grc1, _grc2 = st.columns(2)
                 _score_grain = _grc1.selectbox(
                     "Engine Score grain",
@@ -1351,7 +1409,37 @@ with tab_eng:
                                  "each gateway's VAMP spiking; risk aversion auto-calibrated. Softmax "
                                  "temperature does not apply.")
                 elif engine_key == "genetic":
-                    pass   # nothing shown for genetic
+                    st.selectbox(
+                        "Optimisation objective",
+                        ["Revenue", "Volume-weighted success rate"], index=1, key="ga_objective",
+                        help="Revenue = maximise volume × success rate × avg ticket. Volume-weighted "
+                             "success rate = maximise successful transactions regardless of ticket "
+                             "value. Both still meet every risk constraint.")
+                    _ga1, _ga2 = st.columns(2)
+                    _ga1.slider(
+                        "Risk aversion (safety ↔ revenue)", 0.0, 2.0, 0.5, 0.05, key="ga_risk_aversion",
+                        help="Higher = the safe (dial-0) end gives up more revenue to cut risk. 0.5 = current.")
+                    _ga2.number_input(
+                        "Cap-breach penalty", min_value=0, max_value=2000, value=250, step=50,
+                        key="ga_breach_fixed",
+                        help="How hard a split that goes over a VAMP/volume cap is punished (× MID revenue). "
+                             "Higher = the cap acts more like a wall. 250 = current.")
+                    _ga3, _ga4 = st.columns(2)
+                    _ga3.slider(
+                        "Band penalty strength", 0.1, 3.0, 1.0, 0.1, key="ga_band_mult",
+                        help="Multiplier on how hard the month per-MID VAMP/txn bands are enforced at the "
+                             "compliant end. 1.0 = current; higher sits further inside every band.")
+                    _ga4.number_input(
+                        "GA generations", min_value=20, max_value=400, value=80, step=10,
+                        key="ga_generations",
+                        help="How many evolution rounds the search runs. More = potentially better plans, "
+                             "but slower. 80 = current.")
+                    _ga5, _ga6 = st.columns(2)
+                    _ga5.number_input(
+                        "GA population (0 = auto)", min_value=0, max_value=300, value=0, step=10,
+                        key="ga_pop_override",
+                        help="Candidate plans per generation. 0 = auto-size from the problem (current). "
+                             "Larger = more thorough, slower.")
                 else:
                     _ink_caption(f"No settings for the {labels.get(engine_key, engine_key)} engine.")
                 # The risk↔conversion tradeoff is expressed by the dial variations, so the reference
@@ -1369,6 +1457,17 @@ with tab_eng:
                 floor = _ms2.slider(
                     "Exploration floor (%)", 0.0, 5.0, 1.0, 0.25, key="floor_sld",
                     help="Every eligible gateway keeps at least this share, so none goes dark.") / 100.0
+
+                # --- Compression shaping (drives the pool compression in tab 3 / configs) ---
+                _cm1, _cm2 = st.columns(2)
+                _cm1.selectbox(
+                    "Compression clustering", ["kmeans", "ward"], index=1, key="compress_method",
+                    help="Ward hierarchical (default) — builds one tree, so any distinct-split count "
+                         "is an instant tree-cut with no re-fit; or k-means.")
+                _cm2.selectbox(
+                    "Budget allocation", ["greedy", "knapsack"], index=1, key="compress_allocation",
+                    help="Knapsack (default) — exactly maximises retained fidelity for the pool "
+                         "budget; or greedy (faster, one-step-ahead). Knapsack is a bit slower.")
 
         with _c_data:
             with st.container(border=True):
@@ -1408,6 +1507,21 @@ with tab_eng:
                     decay_half = _dc2.number_input(
                         "Half-life (days)", min_value=1, max_value=365, value=15, step=1, key="decay_half_inp",
                         help="Attempts this many days old count half as much. Used only when time decay is on.")
+                    # --- Auto-block dead gateways (bank appears to have blocked the merchant) ---
+                    _bg1, _bg2 = st.columns(2)
+                    _bg1.checkbox(
+                        "Auto-block dead gateways", value=False, key="block_gw_cb",
+                        help="Flag a gateway as BANK-BLOCKED when its MOST-RECENT attempts have all "
+                             "failed (0 approvals) for at least the count on the right, then cap that "
+                             "gateway's share (for that bank) to the exploration floor so the engine "
+                             "stops routing real volume to a door the bank has closed.")
+                    _bg2.number_input(
+                        "Min consecutive failed attempts", min_value=10, max_value=1_000_000,
+                        value=100, step=10, key="block_min_inp",
+                        help="How many of the most-recent, all-failed attempts (from the latest "
+                             "attempt backward) before a gateway counts as blocked by that bank. "
+                             "e.g. 100 = the last 100 attempts for that gateway+bank all failed. Only "
+                             "used when 'Auto-block dead gateways' is on.")
                     # --- Bayesian smoothing (moved back here from Engine Type & Settings) ---
                     if engine_key == "thompson":
                         # Thompson uses its OWN self-contained Beta posteriors (raw time-decayed
@@ -1580,6 +1694,16 @@ with tab_eng:
 
         if submit_engine:
             ss["exploration_floor"] = float(floor)   # tab 3 uses this to replicate the engine's floor
+            # Mid-run STOP: clear any stale signal, then make a poller the GA checks each generation
+            # (halts + keeps best-so-far when the sidebar 'Stop' writes the signal).
+            try:
+                from routing_optimiser.run_bundle import clear_stop as _clr_stop, make_stop_check as _mk_stop
+                _runs_dir_stop = os.path.join(PROJECT_ROOT, "runs")
+                os.makedirs(_runs_dir_stop, exist_ok=True)   # signal path is always runs/_stop
+                _clr_stop(_runs_dir_stop)
+                _ga_stop = _mk_stop(_runs_dir_stop)
+            except Exception:  # noqa: BLE001
+                _ga_stop = None
             base_settings = OptimiserSettings(
                 risk_conversion_weight=0.5, engine=engine_key, engine_params=params,
                 hard=HardConstraints(max_gateway_share=max_share, vamp_cap=vamp_cap),
@@ -1604,6 +1728,28 @@ with tab_eng:
             _E_est = float(_perf0.get("secs", 715.0) or 715.0)           # engine ④ secs (last run)
             _C_est = float(_perf0.get("compress_secs", 527.0) or 527.0)  # compression ⑥ secs
             _PRE_est = 43.0                                              # ①②③ (roughly fixed)
+            # SETTINGS-AWARE scaling: the last run's times were measured under ITS settings. Rescale
+            # them to the CURRENT settings (generations × population × seeds for the engine, pool
+            # target for compression) so the FIRST estimate reflects a bigger/smaller run instead of
+            # waiting a full run to self-calibrate. Any missing stored field → ratio 1 (no-op), so an
+            # old ga_perf.json still works; ratios are clamped so a wild value can't blow up the ETA.
+            def _ratio(cur, prev, lo=0.2, hi=5.0):
+                try:
+                    cur, prev = float(cur), float(prev)
+                    return min(hi, max(lo, cur / prev)) if (prev > 0 and cur > 0) else 1.0
+                except Exception:  # noqa: BLE001
+                    return 1.0
+            _cur_gen = int(ss.get("ga_generations", 80) or 80)
+            _cur_pop_ovr = int(ss.get("ga_pop_override", 0) or 0)
+            # pop auto-sizes to n_mid (unknown pre-processing) → assume the same data ⇒ same auto pop
+            # as last run; only an explicit override changes the pop ratio.
+            _cur_pop = _cur_pop_ovr if _cur_pop_ovr > 0 else int(_perf0.get("pop", 0) or 0)
+            _eng_scale = (_ratio(_cur_gen, _perf0.get("gen"))
+                          * _ratio(_cur_pop, _perf0.get("pop"))
+                          * _ratio(_GA_N_SEED, _perf0.get("seeds")))
+            _E_est *= min(6.0, max(0.15, _eng_scale))
+            _C_est *= _ratio(int(ss.get("max_configs", 0) or 0), _perf0.get("pool_target"),
+                             lo=0.3, hi=3.0)
             _T_est = max(_PRE_est + _E_est + _C_est, 1.0)
             _f_cells = 26.0 / _T_est                    # assembling-cells checkpoint
             _f_eng = _PRE_est / _T_est                  # engine start
@@ -1619,20 +1765,25 @@ with tab_eng:
                 _el = _pt.time() - _run_t0
                 if frac >= 0.999:
                     _rem = ""
+                elif _t6_0 is not None:
+                    # FINAL stage (pool compression) is one long blocking call that never ticks the
+                    # bar, so a fraction-based linear ETA freezes the fraction while time keeps
+                    # elapsing and balloons (the old "~4386s left" bug). Anchor it to elapsed time in
+                    # the stage vs the calibrated compression time instead.
+                    _eta = int(max(1, min(_C_est - (_pt.time() - _t6_0), _T_est)))
+                    _rem = f" · ~{_eta}s left (est.)"
                 elif frac <= 0.02:
-                    # Too early for a stable linear estimate — trust the machine-calibrated
-                    # total (last run's measured engine+compression wall-time).
-                    _eta = int(max(_T_est - _el, 1))
+                    _eta = int(max(1, min(_T_est - _el, _T_est)))
                     _rem = f" · ~{_eta}s left (est.)"
                 else:
-                    # Blend the calibrated total remaining (_T_est − elapsed) with a live
-                    # linear extrapolation, weighting the model more early and the live pace
-                    # more as the run finishes — smoother + far less jumpy than pure linear
-                    # from an early fraction.
+                    # Blend the calibrated remaining with a live linear extrapolation, then HARD-
+                    # CLAMP to [1, total estimate]. The clamp is the safety net: a frozen fraction
+                    # during a long stage can no longer push the ETA past the whole estimated run.
                     _eta_model = _T_est - _el
-                    _eta_lin = _el * (1.0 - frac) / frac
-                    _eta = int(max(frac * _eta_lin + (1.0 - frac) * _eta_model, 1))
-                    _rem = f" · ~{_eta}s left (est.)" if _eta >= 1 else " · almost done"
+                    _eta_lin = _el * (1.0 - frac) / max(frac, 1e-6)
+                    _eta = frac * _eta_lin + (1.0 - frac) * _eta_model
+                    _eta = int(max(1, min(_eta, _T_est)))
+                    _rem = f" · ~{_eta}s left (est.)"
                 _txt = f"{_pct}%" + (f" · {label}" if label else "") + _rem
                 try:
                     _pbar.progress(frac, text=_txt)
@@ -1938,14 +2089,7 @@ with tab_eng:
                             from routing_optimiser.forecast_pipeline import _canonical_gateway
                             with open(_ovr_path) as _fh:
                                 _ovr = _json.load(_fh)
-                            _excl = set()
-                            for _gwid, _cfg in (_ovr.items() if isinstance(_ovr, dict) else []):
-                                if not isinstance(_cfg, dict):
-                                    continue
-                                _tgt = pd.to_numeric(_cfg.get("target"), errors="coerce")
-                                _ap = str(_cfg.get("apply_to", "")).strip().lower()
-                                if _tgt == 0 and _ap in ("trx", "both"):
-                                    _excl.add(str(_canonical_gateway(_gwid)).strip().lower())
+                            _excl = _switched_off_gateways(_ovr)
                             if _excl:
                                 _gg = adf["gateway"].map(_canonical_gateway).astype(str).str.strip().str.lower()
                                 _drop = _gg.isin(_excl)
@@ -2177,18 +2321,17 @@ with tab_eng:
                             for _pth, _key in [(os.path.join(PROJECT_ROOT, "config", "inputs", "test_gateways.json"), "scrub")]:
                                 try:
                                     if os.path.exists(_pth):
-                                        _j = _json.load(open(_pth))
+                                        with open(_pth) as _fpth:
+                                            _j = _json.load(_fpth)
                                         _skip |= {str(_cg_ex(g)).strip().lower() for g in (_j.get(_key, []) if isinstance(_j, dict) else [])}
                                 except Exception:  # noqa: BLE001
                                     pass
                             try:
                                 _ovp = os.path.join(PROJECT_ROOT, "config", "inputs", "gateway_volume_overrides.json")
                                 if os.path.exists(_ovp):
-                                    _ov = _json.load(open(_ovp))
-                                    for _gw, _cfg in (_ov.items() if isinstance(_ov, dict) else []):
-                                        if isinstance(_cfg, dict) and pd.to_numeric(_cfg.get("target"), errors="coerce") == 0 \
-                                                and str(_cfg.get("apply_to", "")).strip().lower() in ("trx", "both"):
-                                            _skip.add(str(_cg_ex(_gw)).strip().lower())
+                                    with open(_ovp) as _fov:
+                                        _ov = _json.load(_fov)
+                                    _skip |= _switched_off_gateways(_ov)
                             except Exception:  # noqa: BLE001
                                 pass
                             # Master-MID-list guards for the AUTO capable set:
@@ -2470,11 +2613,7 @@ with tab_eng:
                     try:
                         from routing_optimiser.forecast_pipeline import _canonical_gateway as _cg_off
                         _ovr_off = ss.get("gateway_volume_overrides") or {}
-                        _off_route = set()
-                        for _gwid, _cfg in (_ovr_off.items() if isinstance(_ovr_off, dict) else []):
-                            if isinstance(_cfg, dict) and pd.to_numeric(_cfg.get("target"), errors="coerce") == 0 \
-                                    and str(_cfg.get("apply_to", "")).strip().lower() in ("trx", "both"):
-                                _off_route.add(str(_cg_off(_gwid)).strip().lower())
+                        _off_route = _switched_off_gateways(_ovr_off)
                         if _off_route and "gateway" in agg_forecast.columns:
                             _gwc = agg_forecast["gateway"].map(_cg_off).astype(str).str.strip().str.lower()
                             _dropm = _gwc.isin(_off_route)
@@ -2553,7 +2692,7 @@ with tab_eng:
                     # weight re-runs the full granular enforcement (VAMP recap + per-MID /
                     # per-(MID×RPGT) cap scaling) on the exploded split, which is the slow
                     # part — so fewer stops ≈ proportionally faster with per-MID constraints.
-                    _N_VARIATIONS = 3   # dials evenly spaced 0→100 (0, 50, 100)
+                    _N_VARIATIONS = 2   # just the two endpoints: dial 0 (compliant) and 100 (ceiling)
                     weights = [round(float(w), 2) for w in np.linspace(0.0, 1.0, _N_VARIATIONS)]
                     _progress(_f_eng, "Running engine…")   # adaptive ETA (see _f_* above)
                     _stage(f"④ Run {engine_key} engine across the Risk↔Conversion axis")
@@ -4270,6 +4409,19 @@ with tab_eng:
                         if float(_rev_coef.sum()) <= 0:
                             _rev_coef = _cvol * _srr * _tick
                             log("   [Warning] GA revenue basis empty; using forecast × smoothed-SR fallback.")
+                        # OBJECTIVE (tab-2 dropdown): maximise REVENUE (default) or the VOLUME-WEIGHTED
+                        # SUCCESS RATE. For success, drop the avg-ticket factor so the coefficient is
+                        # volume × SR — maximising Σ share·vol·SR ≡ maximising the volume-weighted success
+                        # rate. Everything downstream (GA fitness, penalty scaling, greedy-vs-GA adoption)
+                        # then optimises the chosen objective while the SAME risk constraints still hold.
+                        if str(ss.get("ga_objective", "Revenue")).startswith("Volume"):
+                            _succ_coef = _rev_vol * _rev_sr
+                            if float(_succ_coef.sum()) <= 0:
+                                _succ_coef = _cvol * _srr
+                            _rev_coef = _succ_coef
+                            log("   GA objective: maximise VOLUME-WEIGHTED SUCCESS RATE (avg-ticket factor dropped).")
+                        else:
+                            log("   GA objective: maximise REVENUE (volume × SR × avg ticket).")
                         # per-MID stats (reference MID volume feeds the band proxy; ticket/SR for
                         # revenue). The standalone per-MID VOLUME cap was DROPPED — per-MID rules are
                         # enforced via the month bands (projection space), so no routing-volume ceiling.
@@ -4384,28 +4536,39 @@ with tab_eng:
                             "mid_base_vol": _mid_bvol,         # reference MID volume (for the ratio proxy)
                             "mid_ticket": _mid_tick, "mid_sr": _mid_srm,
                             "shape_mult": 10.0, "max_share": float(max_share), "floor": float(floor),
-                            "breach_fixed": 250.0,   # big fixed hit (× MID revenue) on ANY breach, + quadratic (5× stronger)
+                            "breach_fixed": float(ss.get("ga_breach_fixed", 250) or 250),   # UI cap-breach penalty (× MID revenue), + quadratic
+                            # CMA-ES engine: lean the θ=0 reference gently toward lower risk (γ,
+                            # dimensionless) so freed volume redistributes to LOW-risk recipients and
+                            # the base is already slightly compliant. 0 = no lean (unbiased reference).
+                            "ref_gamma": float(ss.get("ga_ref_gamma", 0.25) or 0.0),
                         }
-                        # CROSS-CELL per-MID tilt GA (flaw #4 rebuild). The genome is ONE tilt per
-                        # vampMid (~20 dims), which shifts a MID's volume from its HIGH-risk cells to
-                        # its LOW-risk cells — directly controlling the per-MID CROSS-cell VAMP rate
-                        # (the actual constraint) that the old per-cell tilt could never touch. Freed
-                        # share redistributes per cell in proportion to the revenue reference (more
-                        # revenue-efficient than greedy's lowest-rate dumping), so it can BEAT greedy
-                        # on MIDs whose risk varies across cells — and it's tiny/fast (seconds, not
-                        # the old 1h24m). dial 100 = softmax revenue reference; dial 0 = this GA's best
+                        # CROSS-CELL per-MID tilt search — CMA-ES (2026-07-25 rebuild of the old GA).
+                        # Genome per vampMid = [θr risk-tilt | θq revenue-tilt | g gain] (3·n_mid dims),
+                        # shifting a MID toward its LOW-risk / HIGH-revenue cells and moving its overall
+                        # presence — directly controlling the per-MID CROSS-cell VAMP rate (the actual
+                        # constraint). CMA-ES ranks feasibility-FIRST (compliant always beats breaching;
+                        # among compliant, higher revenue wins), with a smooth (no fixed-step) breach
+                        # measure, reseeded restarts + a Nelder–Mead polish. Freed share redistributes
+                        # to low-risk, revenue-efficient recipients (γ-leaned reference). Tiny/fast
+                        # (seconds). dial 100 = softmax revenue reference; dial 0 = this search's best
                         # compliant split; blended, both endpoints hard-enforced (2 VAMP solves).
                         ctx["ref_share"] = _ref_share_G          # θ=0 decode base (revenue-optimal)
+                        ss["_ga_ctx"] = ctx                      # stash for the experimental NSGA-II / full-matrix explorer
                         _n_cells = int(len(_counts)); _n_mid = int(len(_mids_u))
-                        _ga_pop = int(np.clip(round(4 * _n_mid), 30, 80))   # sized to the tiny genome
-                        _ga_gen = 80
+                        _pop_ovr = int(ss.get("ga_pop_override", 0) or 0)   # 0 = auto-size
+                        _ga_pop = _pop_ovr if _pop_ovr > 0 else int(np.clip(round(4 * _n_mid), 30, 80))
+                        _ga_gen = int(ss.get("ga_generations", 80) or 80)
                         _ga_pat = 12
-                        _N_SEED = 3          # multi-seed: keep the fittest of N random starts
+                        _N_SEED = _GA_N_SEED  # multi-seed: keep the fittest of N parallel CMA-ES starts
+                                              # (module constant, also read by the settings-aware ETA)
                         _GA_GAIN_MAX = 3.5   # wider per-MID gain range (was 2.0) → more cross-MID reach
+                        # CMA-ES self-adapts (covariance + step size) and ranks feasibility-first, so the
+                        # legacy GA knobs (breach-targeted mutation, smart init, adaptive λ) no longer
+                        # apply — run_midtilt_ga accepts them for compatibility and ignores them.
                         _rev_of = lambda _sh: float((np.asarray(_sh, float) * _rev_coef).sum())
-                        log(f"   GA (cross-cell per-MID tilt, {_n_mid} vampMids): pop={_ga_pop}, gen cap={_ga_gen} "
-                            "(adaptive σ + early stop). dial 0 = risk-MINIMISED compliant; dial 99 = max-revenue "
-                            "compliant; blended between (monotonic frontier); dial 100 = uncapped revenue ceiling.")
+                        log(f"   CMA-ES (cross-cell per-MID 3-axis tilt, {_n_mid} vampMids): λ={_ga_pop}, gen cap={_ga_gen} "
+                            "(covariance-adapted + reseeded restarts + polish). dial 0 = risk-MINIMISED compliant; "
+                            "dial 99 = max-revenue compliant; blended between (monotonic frontier); dial 100 = uncapped revenue ceiling.")
                         def _ga_true_breach(_sh):
                             """Total RELATIVE band breach of the TRUE pro-rata projection for `_sh`
                             (0 ⇒ every month band satisfied by the REAL projection, not the proxy)."""
@@ -4431,17 +4594,28 @@ with tab_eng:
                                     _tot += 1.0 - _v / _lo
                             return float(_tot)
 
-                        def _ga_solve_with_correction(_risk_min_w, _seed=42, _rounds=2, _band_w=8.0,
-                                                      _warm=None, _band_fix=20.0):
+                        def _ga_solve_with_correction(_risk_min_w, _seed=42, _rounds=1, _band_w=8.0,
+                                                      _warm=None, _band_fix=20.0, _ref_gamma=None,
+                                                      _n_fine=0, _n_restarts=None):
                             """Run the tilt GA, then RE-PROJECT & CORRECT (like the greedy): re-anchor
                             the band proxy at the GA's own split via the TRUE projection and re-run,
                             accepting a round ONLY if the true-projection band breach actually drops.
                             Bounded (≤ _rounds) and no-regression. `_band_w` scales the per-MID band
                             penalty (tougher at the dial-0 risk-min endpoint). `_warm` seeds a prior
-                            run's genome into the population (free reach). Returns (shares, info)."""
+                            run's genome into the population (free reach). `_ref_gamma` leans the θ=0
+                            reference toward compliance PER ENDPOINT (≈0 at revenue-max so the revenue
+                            ceiling isn't taxed; larger at risk-min). Returns (shares, info)."""
+                            _rg_default = ctx.get("ref_gamma", 0.25)
                             ctx["risk_min_w"] = float(_risk_min_w)
                             ctx["band_weight"] = float(_band_w)
                             ctx["band_fixed"] = float(_band_fix)
+                            if _ref_gamma is not None:
+                                ctx["ref_gamma"] = float(_ref_gamma)   # #8 per-endpoint compliant lean
+                            # Per-endpoint search knobs: richer per-cell genome (_n_fine) and extra
+                            # restarts/budget — used at the risk-min end where the extra reach pays.
+                            _extra_kw = {"n_fine": int(_n_fine)}
+                            if _n_restarts is not None:
+                                _extra_kw["n_restarts"] = int(_n_restarts)
                             try:
                                 ctx["midband"] = (_build_ga_bands(_ref_share_G) or None)
                             except Exception as _e:  # noqa: BLE001
@@ -4459,33 +4633,52 @@ with tab_eng:
                             # to each worker is safe.
                             _seed_results = None
                             if int(_N_SEED) > 1:
-                                try:
-                                    import time as _st_t
-                                    from joblib import Parallel, delayed
-                                    # Backend is env-selectable: loky (processes, default — true
-                                    # parallelism but pickles the ~600k-row ctx per worker) vs
-                                    # threading (no pickling; the GA's heavy numpy/pandas ops release
-                                    # the GIL). Both give byte-identical results (each seed is
-                                    # deterministic); pick whichever is faster on this box.
-                                    _ga_backend = os.environ.get("ROUTING_GA_PARALLEL_BACKEND", "loky").strip().lower()
-                                    if _ga_backend not in ("loky", "threading", "multiprocessing"):
-                                        _ga_backend = "loky"
-                                    _t_par0 = _st_t.time()
-                                    _seed_results = Parallel(
-                                        n_jobs=min(int(_N_SEED), os.cpu_count() or 1),
-                                        backend=_ga_backend)(
-                                        delayed(_run_midtilt_ga)(
-                                            ctx, lam=50.0, pop_size=_ga_pop, generations=_ga_gen,
-                                            seed=_seed + _s, auto=True, patience=_ga_pat,
-                                            warm_start=_warm, gain_max=_GA_GAIN_MAX)
-                                        for _s in range(int(_N_SEED)))
-                                    log(f"   multi-seed GA: {int(_N_SEED)} seeds in PARALLEL ({_ga_backend}, "
-                                        f"{min(int(_N_SEED), os.cpu_count() or 1)} workers) in "
-                                        f"{_st_t.time() - _t_par0:.1f}s.")
-                                except Exception as _pe:  # noqa: BLE001
-                                    log(f"   parallel multi-seed GA unavailable ({type(_pe).__name__}: "
-                                        f"{_pe}); running seeds sequentially.")
-                                    _seed_results = None
+                                import time as _st_t
+                                from joblib import Parallel, delayed
+                                import inspect as _insp_jl
+                                try:                        # older joblib lacks inner_max_num_threads
+                                    _JL_INNER_OK = ("inner_max_num_threads" in
+                                                    _insp_jl.signature(Parallel).parameters)
+                                except Exception:  # noqa: BLE001
+                                    _JL_INNER_OK = False
+                                # Backend: loky (processes) gives TRUE multi-core parallelism because
+                                # the CMA-ES holds the GIL a lot between numpy calls, so `threading`
+                                # only partially overlaps. Each seed is INDEPENDENT and fully
+                                # DETERMINISTIC (seed=_seed+_s), and results are consumed in seed order,
+                                # so the outcome is BYTE-IDENTICAL whatever the backend. loky needs
+                                # picklable args (ctx + the now-picklable stop_check); large ctx arrays
+                                # are auto-memmapped by joblib, and inner_max_num_threads=1 stops the
+                                # 4 workers × BLAS-threads oversubscription. If the chosen backend
+                                # errors we cascade loky→threading→sequential, so we can never end up
+                                # slower than the old shared-memory threading path. Override with
+                                # ROUTING_GA_PARALLEL_BACKEND=threading.
+                                _ga_backend = os.environ.get("ROUTING_GA_PARALLEL_BACKEND", "loky").strip().lower()
+                                if _ga_backend not in ("loky", "threading", "multiprocessing"):
+                                    _ga_backend = "loky"
+                                _try_backends = [_ga_backend] + (["threading"] if _ga_backend != "threading" else [])
+                                _njobs = min(int(_N_SEED), os.cpu_count() or 1)
+                                for _bk in _try_backends:
+                                    try:
+                                        _pk = dict(n_jobs=_njobs, backend=_bk)
+                                        if _bk in ("loky", "multiprocessing") and _JL_INNER_OK:
+                                            _pk["inner_max_num_threads"] = 1   # avoid BLAS oversubscription
+                                        _t_par0 = _st_t.time()
+                                        _seed_results = Parallel(**_pk)(
+                                            delayed(_run_midtilt_ga)(
+                                                ctx, lam=50.0, pop_size=_ga_pop, generations=_ga_gen,
+                                                seed=_seed + _s, auto=True, patience=_ga_pat,
+                                                warm_start=_warm, gain_max=_GA_GAIN_MAX, stop_check=_ga_stop,
+                                                **_extra_kw)
+                                            for _s in range(int(_N_SEED)))
+                                        log(f"   multi-seed GA: {int(_N_SEED)} seeds in PARALLEL ({_bk}, "
+                                            f"{_njobs} workers) in {_st_t.time() - _t_par0:.1f}s.")
+                                        break
+                                    except Exception as _pe:  # noqa: BLE001
+                                        _seed_results = None
+                                        _nxt = ("; retrying with threading." if _bk != _try_backends[-1]
+                                                else "; running seeds sequentially.")
+                                        log(f"   parallel multi-seed GA via {_bk} unavailable "
+                                            f"({type(_pe).__name__}: {_pe}){_nxt}")
                             _sh, _info = None, None
                             if _seed_results is not None:
                                 for _shc, _infoc in _seed_results:            # seed order preserved
@@ -4498,7 +4691,8 @@ with tab_eng:
                                     _shc, _infoc = _run_midtilt_ga(
                                         ctx, lam=50.0, pop_size=_ga_pop, generations=_ga_gen,
                                         seed=_seed + _s, auto=True, patience=_ga_pat,
-                                        warm_start=_warm, gain_max=_GA_GAIN_MAX)
+                                        warm_start=_warm, gain_max=_GA_GAIN_MAX, stop_check=_ga_stop,
+                                        **_extra_kw)
                                     if _info is None or _infoc["best_fit"] > _info["best_fit"]:
                                         _sh, _info = _shc, _infoc
                                 if int(_N_SEED) > 1:
@@ -4515,7 +4709,8 @@ with tab_eng:
                                                                        generations=_ga_gen, seed=_seed,
                                                                        auto=True, patience=_ga_pat,
                                                                        warm_start=_info.get("genome"),
-                                                                       gain_max=_GA_GAIN_MAX)
+                                                                       gain_max=_GA_GAIN_MAX, stop_check=_ga_stop,
+                                                                       **_extra_kw)
                                         _br2 = _ga_true_breach(_sh2)
                                         if _br2 < _br - 1e-9:
                                             _sh, _info, _br = _sh2, _info2, _br2   # accept: truly better
@@ -4529,23 +4724,27 @@ with tab_eng:
                             ctx["risk_min_w"] = 0.0
                             ctx["band_weight"] = 8.0   # reset to defaults for anything downstream
                             ctx["band_fixed"] = 20.0
+                            ctx["ref_gamma"] = _rg_default
                             return _sh, _info
 
                         import time as _gatime
                         _ga_wall0 = _gatime.time()
-                        _progress(_f_eng, "GA revenue-max endpoint…")
-                        _rep_comp_G, _inf = _ga_solve_with_correction(0.0)
-                        _ga_wall = _gatime.time() - _ga_wall0
-                        ss["ga_perf"] = {"secs": float(_ga_wall), "budget": int(_ga_pop * _ga_gen),
-                                         "nvar": 1, "n": int(len(G))}
-                        _save_ga_perf(ss["ga_perf"])   # survives restarts
-                        # SAFETY: adopt the GA compliant endpoint only if it is aggregate-VAMP compliant
-                        # AND retains ≥ the greedy shave's revenue — else fall back to greedy. No regression.
+                        # #10 greedy warm-start: hand the CMA-ES the known FEASIBLE greedy split so it
+                        # begins INSIDE the feasible region (it fits a genome to it). The risk-min
+                        # endpoint overrides this with the revenue endpoint's genome archive, so this
+                        # only seeds the revenue-max endpoint.
+                        ctx["warm_shares"] = np.asarray(_comp_share_G, float)
+                        # Precompute the sparse per-MID incidence ONCE (speed #1) so every seed/worker
+                        # reads it instead of rebuilding — identical results, hot-path saving.
+                        try:
+                            ctx["_mid_S"] = (_gg._build_mid_incidence(
+                                np.asarray(ctx["mid_id"]), int(ctx["n_mid"]), int(ctx["n_row"]))
+                                if int(ctx["n_mid"]) else None)
+                        except Exception:  # noqa: BLE001
+                            ctx["_mid_S"] = None
+                        _progress(_f_eng, "Revenue-max endpoint (greedy)…")
+                        # Aggregate per-vampMid VAMP-rate compliance guard (used for the dial-0 adoption).
                         def _agg_mid_ok(_sh):
-                            # Guard the GA endpoint on the aggregate per-vampMid VAMP-rate cap only.
-                            # The standalone per-MID VOLUME cap was dropped — per-MID rules are now
-                            # enforced via the month bands (projection space), not a routing-volume
-                            # ceiling — so it's no longer part of the adoption guard.
                             _v = _cvol * np.asarray(_sh, float)
                             for _mi, _r in enumerate(_mid_rows):
                                 _vol = float(_v[_r].sum())
@@ -4553,11 +4752,18 @@ with tab_eng:
                                     if float((_v[_r] * _rkr[_r]).sum()) / _vol > float(vamp_cap) + 1e-9:
                                         return False
                             return True
-                        _use_rep = _agg_mid_ok(_rep_comp_G) and (_rev_of(_rep_comp_G) >= _rev_of(_comp_share_G) - 1e-6)
-                        _comp_endpoint_G = _rep_comp_G if _use_rep else _comp_share_G   # dial 99 = max-revenue compliant
-                        log(f"   GA revenue-max compliant endpoint in {_fmt_secs(_ga_wall)}: revenue GA "
-                            f"${_rev_of(_rep_comp_G):,.0f} vs greedy ${_rev_of(_comp_share_G):,.0f} → using "
-                            f"{'GA (better)' if _use_rep else 'greedy'}.")
+                        # Revenue-max (dial 99) endpoint = the greedy revenue reference already shaved to
+                        # compliance by the LP (enforce_mid_vamp_caps), which is MINIMUM-MOVEMENT optimal
+                        # for the per-cell revenue objective under the cross-cell VAMP cap. The CMA-ES
+                        # smart-search that used to run here (~40 min) was consistently matched-or-beaten
+                        # by that greedy+LP split and its output DISCARDED — so it's removed. Dial 99 takes
+                        # the greedy compliant split directly; the CMA-ES still runs for the harder risk-min
+                        # (dial 0) end below. Trade-off: in a rare case the search might beat greedy on
+                        # revenue here — that upside is now forgone (greedy is the no-regression floor).
+                        _comp_endpoint_G = _comp_share_G   # dial 99 = max-revenue compliant (greedy + LP)
+                        log(f"   revenue-max (dial 99) endpoint: greedy revenue-compliant split "
+                            f"${_rev_of(_comp_share_G):,.0f} (CMA-ES revenue search removed — greedy is "
+                            f"LP-optimal here, so its result was always discarded).")
                         _progress(_f_rmin, "GA risk-min endpoint…")
                         # SECOND GA run for the SAFE (dial-0) endpoint: same setup + a risk-minimisation
                         # term so it tilts each MID further toward its low-risk cells while staying
@@ -4566,17 +4772,103 @@ with tab_eng:
                         # aggregate VAMP without degenerating (the θ-tilt keeps it revenue-shaped per cell).
                         _rev_ref = max(_rev_of(_ref_share_G), 1.0)
                         _vamp_ref = max(float((_cvol * _ref_share_G * _rkr).sum()), 1.0)
-                        _risk_aversion = 0.5
+                        _risk_aversion = float(ss.get("ga_risk_aversion", 0.5))   # UI: safety ↔ revenue
                         _safe_wall0 = _gatime.time()
                         # risk-min endpoint (dial 0): same GA + re-projection correction, with the
                         # risk-min term AND a TOUGHER per-MID band penalty (4× the dial-99 weight) so
                         # dial 0 sits inside every band harder. Intermediate dials inherit this via the
                         # frontier blend between the dial-0 and dial-99 endpoints.
-                        _safe_G, _inf2 = _ga_solve_with_correction(
-                            _risk_aversion * _rev_ref / _vamp_ref, _band_w=3375.0, _band_fix=8100.0,
-                            _warm=_inf.get("genome"))   # dial-0: bands ×5 again (675→3375, 1620→8100); warm-start
+                        _warm_dial0 = None
+                        _band_mult = float(ss.get("ga_band_mult", 1.0) or 1.0)   # UI band penalty strength
+                        # #1 DIVERSE SEEDS: hand the risk-min search BOTH the revenue-greedy compliant
+                        # split AND a risk-greedy split (each cell's share leaning to its lowest-risk
+                        # gateways), so it starts inside the risk-min basin, not just the revenue corner.
+                        try:
+                            _zrc, _ = _gg._risk_z_per_cell(np.asarray(ctx["risk"], float),
+                                                           np.asarray(ctx["cell_starts"], np.intp),
+                                                           np.asarray(ctx["cell_counts"], np.intp),
+                                                           int(ctx["n_row"]))
+                            _rw = np.asarray(ctx["elig"], float) * np.exp(-6.0 * _zrc)     # lean low-risk
+                            _seg = np.add.reduceat(_rw, np.asarray(ctx["cell_starts"], np.intp))
+                            _risk_greedy_G = _rw / np.repeat(np.where(_seg > 1e-12, _seg, 1.0),
+                                                             np.asarray(ctx["cell_counts"], np.intp))
+                            ctx["warm_shares"] = [np.asarray(_comp_share_G, float), _risk_greedy_G]
+                        except Exception:  # noqa: BLE001
+                            _risk_greedy_G = np.asarray(_comp_share_G, float)
+                            ctx["warm_shares"] = np.asarray(_comp_share_G, float)
+                        _n_fine_rm = int(min(40, max(0, _n_cells)))   # #4 richer per-cell genome (bounded)
+                        _rm_w = _risk_aversion * _rev_ref / _vamp_ref
+                        # #6 DISK CACHE: the risk-min search is deterministic, so a re-run with identical
+                        # inputs returns the SAME split instantly. The key hashes the engine build + every
+                        # ctx array + all endpoint params, so a hit can NEVER be stale.
+                        import hashlib as _hl_rm
+
+                        def _riskmin_key():
+                            _h = _hl_rm.md5(); _h.update(str(getattr(_gg, "__build__", "?")).encode())
+                            for _k in ("ref_share", "risk", "rev_coef", "cell_vol", "mid_id",
+                                       "cell_starts", "cell_counts", "elig", "mid_vol_cap",
+                                       "mid_base_vol", "vamp_floor_route"):
+                                _v = ctx.get(_k)
+                                if _v is not None:
+                                    _h.update(_k.encode())
+                                    _h.update(np.ascontiguousarray(np.asarray(_v)).tobytes())
+                            _h.update(np.ascontiguousarray(np.asarray(_comp_share_G, float)).tobytes())
+                            _h.update(np.ascontiguousarray(np.asarray(_risk_greedy_G, float)).tobytes())
+                            _h.update(repr((float(vamp_cap) if vamp_cap is not None else None,
+                                            float(ctx.get("max_share", 1.0) or 1.0),
+                                            float(ctx.get("floor", 0.0) or 0.0), repr(_mid_month_rules),
+                                            round(float(_rm_w), 6), round(float(_band_mult), 4), 0.4,
+                                            int(_n_fine_rm), int(_ga_pop), int(_ga_gen), int(_N_SEED),
+                                            float(_GA_GAIN_MAX), 4, 42)).encode())
+                            return _h.hexdigest()
+
+                        _rm_path = None; _safe_G = _inf2 = None
+                        try:
+                            _rm_path = os.path.join(PROJECT_ROOT, ".cache", f"riskmin_{_riskmin_key()}.pkl")
+                            if os.path.exists(_rm_path):
+                                import pickle as _pk_rm
+                                with open(_rm_path, "rb") as _f_rm:
+                                    _obj = _pk_rm.load(_f_rm)
+                                _safe_G, _inf2 = _obj["safe_G"], _obj["inf2"]
+                                log("   risk-min (dial 0): loaded from disk cache "
+                                    "(deterministic — identical to re-searching).")
+                        except Exception:  # noqa: BLE001
+                            _safe_G = _inf2 = None; _rm_path = None
+                        if _safe_G is None:
+                            # dial-0: bands scaled by UI strength; γ=0.4 leans the reference compliant (#8);
+                            # richer per-cell genome (#4) + extra restarts (#3) at this harder end.
+                            _safe_G, _inf2 = _ga_solve_with_correction(
+                                _rm_w, _band_w=3375.0 * _band_mult, _band_fix=8100.0 * _band_mult,
+                                _warm=_warm_dial0, _ref_gamma=0.4, _n_fine=_n_fine_rm, _n_restarts=4)
+                            if _rm_path:
+                                try:
+                                    import pickle as _pk_rm, glob as _glob_rm
+                                    os.makedirs(os.path.dirname(_rm_path), exist_ok=True)
+                                    with open(_rm_path, "wb") as _f_rm:
+                                        _pk_rm.dump({"safe_G": _safe_G, "inf2": _inf2}, _f_rm)
+                                    _old_rm = sorted(_glob_rm.glob(os.path.join(
+                                        os.path.dirname(_rm_path), "riskmin_*.pkl")), key=os.path.getmtime)
+                                    for _o_rm in _old_rm[:-40]:
+                                        try:
+                                            os.remove(_o_rm)
+                                        except Exception:  # noqa: BLE001
+                                            pass
+                                except Exception:  # noqa: BLE001
+                                    pass
+                        ss["ga_hist_rev"] = None                              # revenue-max CMA-ES removed
+                        ss["ga_hist_safe"] = (_inf2.get("history") if _inf2 else None)   # convergence chart
+                        # Engine-workings charts reflect the risk-min search (now the ONLY CMA-ES run).
+                        ss["ga_genome"] = (_inf2.get("genome") if _inf2 else None)
+                        ss["ga_mid_labels"] = [str(m) for m in _mids_u]
+                        ss["ga_pop_obj"] = (_inf2.get("pop_obj") if _inf2 else None)
+                        ss["ga_pop_viol"] = (_inf2.get("pop_viol") if _inf2 else None)
+                        _ga_perf_secs = _gatime.time() - _safe_wall0          # the single CMA-ES run's wall time
+                        ss["ga_perf"] = {"secs": float(_ga_perf_secs), "budget": int(_ga_pop * _ga_gen),
+                                         "gen": int(_ga_gen), "pop": int(_ga_pop), "seeds": int(_N_SEED),
+                                         "nvar": 1, "n": int(len(G))}
+                        _save_ga_perf(ss["ga_perf"])
                         # (_ga_solve_with_correction resets risk_min_w / band_weight on exit.)
-                        _ga_wall_tot = _ga_wall + (_gatime.time() - _safe_wall0)
+                        _ga_wall_tot = _gatime.time() - _ga_wall0
                         # Use the risk-min GA for dial 0 only if it is compliant; else fall back to the
                         # revenue-max endpoint (dial 0 == dial 99, frontier collapses but never regresses).
                         _safe_endpoint_G = _safe_G if _agg_mid_ok(_safe_G) else _comp_endpoint_G
@@ -4641,7 +4933,7 @@ with tab_eng:
                                     "volume": summ["volume"],
                                 })
                         log(f"   GA total wall time (cross-cell per-MID tilt + blend): {_fmt_secs(_ga_wall_tot)} "
-                            f"(2 GA runs [revenue-max + risk-min] × {_n_mid} vampMid tilts + 2 enforcements).")
+                            f"(1 GA run [risk-min only; revenue-max = greedy+LP] × {_n_mid} vampMid tilts + 2 enforcements).")
                     elif not changed:
                         log("✅ Reference (conversion-optimal) split already meets every per-vampMid "
                             "VAMP cap — dial 99↓ identical (compliant); dial 100 = RAW reference (uncapped).")
@@ -4781,7 +5073,41 @@ with tab_eng:
                     ss["mid_vol_constrained"] = sorted(
                         set(ss.get("mid_vol_constrained", [])) | {str(m) for m in _mid_gran_constrained})
                     ss["mid_rpgt_constrained"] = sorted({_rpgt_disp.get(k, k) for k in _rpgt_constrained})
-                    
+
+                    # --- Auto-block dead gateways: cap bank-blocked (bank×gateway) shares to the floor
+                    # across EVERY dial's split, BEFORE the impact frames are built, so impact + export
+                    # both reflect it. (Applied post-engine, so it can slightly perturb VAMP compliance;
+                    # blocked gateways are near-zero-volume by definition, so the effect is small.)
+                    ss["blocked_pairs"] = set(); ss["blocked_gateways"] = None; ss["blocked_capped"] = 0
+                    if bool(ss.get("block_gw_cb", False)):
+                        try:
+                            _badf = orig_adf.copy()
+                            _b2b = ss.get("bin_to_bank") or {}
+                            if _b2b and "bank" in _badf.columns:   # match the split's (BIN→bank-mapped) bank
+                                _badf["bank"] = _badf["bank"].map(
+                                    lambda _b: _b2b.get(_b, _b2b.get(str(_b), _b)))
+                            _bmin = float(ss.get("block_min_inp", 100) or 100)
+                            _bdf = detect_blocked_gateways(_badf, _bmin)
+                            ss["blocked_gateways"] = _bdf
+                            _bflag = _bdf[_bdf["blocked"]] if not _bdf.empty else _bdf
+                            _bpairs = set(zip(_bflag["bank"].astype(str).str.strip().str.lower(),
+                                              _bflag["gateway"].astype(str).str.strip().str.lower()))
+                            ss["blocked_pairs"] = _bpairs
+                            if _bpairs:
+                                _tot_cap = 0
+                                for v in variations:
+                                    v["split"], _nc = _apply_blocked_caps(v["split"], _bpairs, float(floor))
+                                    _tot_cap += _nc
+                                ss["blocked_capped"] = int(_tot_cap)
+                                log(f"   auto-block: {len(_bpairs)} bank×gateway flagged as BANK-BLOCKED "
+                                    f"(≥{int(_bmin)} most-recent consecutive failed attempts) → capped to the "
+                                    f"exploration floor ({_tot_cap} split row(s) capped across dials).")
+                                if _tot_cap == 0:
+                                    log("   [Warning] auto-block: flagged pairs matched no split rows "
+                                        "(bank/gateway naming mismatch?) — no shares were capped.")
+                        except Exception as _be:  # noqa: BLE001
+                            log(f"   [Warning] auto-block detection skipped ({type(_be).__name__}: {_be}).")
+
                     # --- CACHING UPGRADE: Pre-calculate the impact frames for instant sliders ---
                     _progress(_f_eng_end, "Pre-calculating impact…")
                     _stage("⑤ Pre-calculate impact frames for all variations")
@@ -4842,14 +5168,13 @@ with tab_eng:
                             _bk_pc, _bn_pc = "tav", _company_pc
                         _mid_list_pc = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                         _ms_pc = round(float(_wc_pc.get("max_share", 0.97)), 4)
-                        # LAZY: precompute ONLY the DEFAULT dial (0, the min weight) now; the other
-                        # dials are compressed ON-DEMAND in tab 3 the first time they're viewed/exported
-                        # (same output, just deferred). Since the dial defaults to 0, this removes ~2/3
-                        # of this stage from the run. The on-demand path (tab 3) caches its result into
-                        # the same ss['_pool_comp'] so it's only ever computed once per dial.
-                        _def_w_pc = min(float(_v["weight"]) for _v in variations) if variations else 0.0
-                        _stage(f"⑥ Pre-compute pool-targeted compression for the DEFAULT dial "
-                               f"{int(round(_def_w_pc * 100))} (others on-demand; target <= {_maxN_pc:,})")
+                        # Precompute the pool-targeted compression for EVERY dial now (here on tab 2,
+                        # during the run), so the tab-3 dial + impact views are instant with no
+                        # on-demand wait. The dials are INDEPENDENT and DETERMINISTIC, so they run in
+                        # PARALLEL below. (The tab-3 on-demand path is kept only as a fallback for any
+                        # dial that somehow isn't precomputed here; results cache into ss['_pool_comp'].)
+                        _stage(f"⑥ Pre-compute pool-targeted compression for all {len(variations)} "
+                               f"dial(s) (target <= {_maxN_pc:,})")
                         _t6_0 = _pt.time()   # for the adaptive-ETA compression calibration
                         # Recalibrate the compression ETA to THIS run's observed speed: scale the
                         # last-run compression estimate by how the actual pre+engine wall time
@@ -4861,12 +5186,10 @@ with tab_eng:
                         _C_est = max(_C_est * _spd, 1.0)
                         _T_est = _el_now + _C_est
                         _f_eng_end = _el_now / _T_est
-                        # Build one job for the default dial only (sig + weight + its ideal split).
+                        # Build one job per dial (sig + weight + its ideal split) — all of them now.
                         _jobs_pc = []
                         for _v in variations:
                             _w_pc = float(_v["weight"])
-                            if abs(_w_pc - _def_w_pc) > 1e-9:
-                                continue   # non-default dial → deferred to on-demand in tab 3
                             _sig_pc = (_w_pc, _maxN_pc, ss.get("variations_engine"), _bk_pc,
                                        str(_gl_pc), "sales", _ms_pc)
                             _jobs_pc.append((_sig_pc, _w_pc, _v["split"].copy()))
@@ -4885,8 +5208,18 @@ with tab_eng:
                         # spans the widest slice of the bar (0.35 → 0.95). Using joblib's ORDERED
                         # generator lets the bar tick up as each dial finishes, keeping the ETA live
                         # through the long stage.
+                        #
+                        # CORE-AWARE CHOICE (byte-identical either way): this "across-dials" branch
+                        # gives each dial only ONE core (its inner k-ary budget search runs SERIALLY),
+                        # so it caps at `_nvar_pc` cores no matter how many exist. When the machine has
+                        # plenty of cores (>= 2·dials) the SEQUENTIAL fallback is FASTER — it runs one
+                        # dial at a time but hands each dial's inner k-ary search ALL cores (probes many
+                        # budgets per round → far fewer rounds) AND uses the disk cache. Crossover is
+                        # ~4 cores for 2 dials (log_{C+1}(R)·dials < log2(R) ⇔ C>3). So only take the
+                        # across-dials path when cores are scarce; otherwise fall through to sequential.
+                        _pc_cpu = int(os.cpu_count() or 1)
                         _pc_results = None
-                        if _nvar_pc > 1:
+                        if _nvar_pc > 1 and _pc_cpu < 2 * _nvar_pc:
                             try:
                                 from joblib import Parallel, delayed
                                 from impact_calcs import pool_targeted_core as _ptc
@@ -4898,7 +5231,9 @@ with tab_eng:
                                     delayed(_ptc)(
                                         _spl, target_pools=_maxN_pc, wallet_ctx=_wc_pc,
                                         brand_name=_bn_pc, brand_key=_bk_pc, go_live=str(_gl_pc),
-                                        mid_list_path=_mid_list_pc, mode="sales")
+                                        mid_list_path=_mid_list_pc, mode="sales",
+                                        method=str(ss.get("compress_method", "ward")),
+                                        allocation=str(ss.get("compress_allocation", "knapsack")))
                                     for (_sig_pc, _w_pc, _spl) in _jobs_pc)
                                 _pc_results = []
                                 for _i_pc, _res_pc in enumerate(_gen_pc):
@@ -4944,11 +5279,38 @@ with tab_eng:
                             _new_cs = float(_pt.time() - _t6_0)
                             _old_cs = float(_gp.get("compress_secs", _new_cs) or _new_cs)
                             _gp["compress_secs"] = 0.5 * _old_cs + 0.5 * _new_cs
+                            _gp["pool_target"] = int(ss.get("max_configs", 0) or 0)   # scales next run's compression ETA
                             ss["ga_perf"] = _gp
                             _save_ga_perf(_gp)
                         except Exception:  # noqa: BLE001
                             pass
                     log(f"✅ Total run time {_pt.time() - _run_t0:.1f}s")
+
+                    # Auto-save a reproducible run bundle (timestamped folder under runs/): the exact
+                    # settings used + this run's full log. Best-effort, once per run; never breaks it.
+                    try:
+                        from routing_optimiser.run_bundle import write_run_bundle as _wrb
+                        _rb_cfg = {
+                            "engine": str(engine_key),
+                            "dials": [v.get("weight") for v in (ss.get("variations") or [])],
+                            "vamp_cap": (float(vamp_cap) if vamp_cap is not None else None),
+                            "max_pools": int(ss.get("max_configs", 0) or 0),
+                            "compress_method": str(ss.get("compress_method", "ward")),
+                            "compress_allocation": str(ss.get("compress_allocation", "knapsack")),
+                            "ga_search": "breach_targeted+smart_init+adaptive_lambda+diversity_archive (always on)",
+                            "ga_risk_aversion": float(ss.get("ga_risk_aversion", 0.5)),
+                            "ga_breach_fixed": float(ss.get("ga_breach_fixed", 250) or 250),
+                            "ga_band_mult": float(ss.get("ga_band_mult", 1.0) or 1.0),
+                            "ga_generations": int(ss.get("ga_generations", 80) or 80),
+                            "ga_pop_override": int(ss.get("ga_pop_override", 0) or 0),
+                            "ga_perf": ss.get("ga_perf"),
+                            "total_secs": round(_pt.time() - _run_t0, 1),
+                        }
+                        _rb_folder = _wrb(os.path.join(PROJECT_ROOT, "runs"), _rb_cfg,
+                                          log=log_lines, name=str(engine_key), keep=30)
+                        log(f"   run bundle saved: {_rb_folder}")
+                    except Exception as _rbe:  # noqa: BLE001
+                        log(f"   [Warning] run bundle save skipped ({type(_rbe).__name__}: {_rbe})")
                     _progress(1.0, "Done")
                     status.update(label=f"Generated {len(variations)} variations.", state="complete", expanded=False)
                     st.success("Variations ready — open tab 4.")
@@ -5144,29 +5506,12 @@ with tab_imp:
                 format_func=lambda w: f"{int(round(w * 100))}",
                 help="Dial: safer routing ↔ more revenue.")
             ss["selected_variation_weight"] = picked_w
-            # Impact basis toggle, rendered directly beneath the dial (label hidden).
+            # Impact basis: always the Compressed Rules — the split trimmed so the generated pool
+            # count stays within your target, i.e. what the exported configs actually deliver. The
+            # 'No Compression' view was removed. With no target set (_maxN == 0) the split is
+            # uncompressed by definition, so there's nothing to switch to.
             _maxN = int(ss.get("max_configs", 0) or 0)
-            if _maxN > 0:
-                _basis = _sld_col.radio(
-                    "Impact basis", ["No Compression", "Compressed Rules"],
-                    index=1,   # default to Compressed Rules (what the exported configs deliver)
-                    horizontal=True, key="impact_basis_sel", label_visibility="collapsed",
-                    help="No Compression = the uncompressed per-BIN split. Compressed Rules = the "
-                         "split trimmed so the generated pool count stays within your target — the "
-                         "impact the exported configs will actually deliver. Precomputed for every "
-                         "dial position when you generate variations.")
-                _basis_compressed = _basis.startswith("Compressed")
-                # Shrink the radio option text and force the two options SIDE BY SIDE on one
-                # line beneath the dial (the dial column is narrow, so horizontal=True alone
-                # wraps them): no-wrap radiogroup + a min-width that lets it use the empty
-                # space beneath the first metric card.
-                st.markdown("""<style>
-                    .st-key-impact_basis_sel label p { font-size: 11px !important; white-space: nowrap; }
-                    .st-key-impact_basis_sel div[role="radiogroup"] { flex-wrap: nowrap !important; gap: 0.45rem !important; }
-                    .st-key-impact_basis_sel { min-width: 250px; }
-                </style>""", unsafe_allow_html=True)
-            else:
-                _basis_compressed = False
+            _basis_compressed = _maxN > 0
 
             chosen = variations[weights.index(picked_w)]
             split_ideal = chosen["split"].copy()
@@ -5324,10 +5669,8 @@ with tab_imp:
                     _ovp_e = os.path.join(PROJECT_ROOT, "config", "inputs", "gateway_volume_overrides.json")
                     _off_e = set()
                     if os.path.exists(_ovp_e):
-                        for _gw, _cfg in (_je.load(open(_ovp_e)) or {}).items():
-                            if isinstance(_cfg, dict) and pd.to_numeric(_cfg.get("target"), errors="coerce") == 0 \
-                                    and str(_cfg.get("apply_to", "")).strip().lower() in ("trx", "both"):
-                                _off_e.add(str(_cge(_gw)).strip().lower())
+                        with open(_ovp_e) as _fe:
+                            _off_e = _switched_off_gateways(_je.load(_fe) or {})
                     if _off_e and not _enf.empty and "gateway" in _enf.columns:
                         _gc = _enf["gateway"].map(_cge).astype(str).str.strip().str.lower()
                         _enf = _enf[~_gc.isin(_off_e)].copy()
@@ -5336,8 +5679,8 @@ with tab_imp:
                             _enf["share"] = (_enf["share"] / _tt).where(_tt > 0, 0.0)
                             if "cell_volume" in _enf.columns:
                                 _enf["volume"] = _enf["cell_volume"] * _enf["share"]
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as _e:  # noqa: BLE001
+                    st.caption(f"Switched-off renormalisation skipped ({type(_e).__name__}: {_e}).")
                 return _enf
 
             _is_validate = (ss.get("variations_engine") == "validate")
@@ -5565,8 +5908,126 @@ with tab_imp:
                 and set(_rscope["selected"]) != set(_rscope.get("all", ())):
             _scoped_rpgts = tuple(_rscope["selected"])
 
-        _t_risk, _t_fin, _t_riskdetail, _t_middet, _t_bank, _t_engwork = st.tabs(
-            ["Risk Impact", "Financial Impact", "Risk Detail", "Mid Detail", "Bank Detail", "Engine Workings"])
+        def _cc_render_compliance_cost(_tab):
+            """Compliance Cost sub-tab: how much traffic was re-routed to meet constraints.
+            'Before' = revenue reference (dial 100, unconstrained); 'After' = the selected
+            compliant split. Four views: before→after dumbbell, flow of shed traffic (Sankey),
+            net share-change bars, and the compliance-cost curve across the dial."""
+            if not HAS_PLOTLY:
+                st.info("Plotly unavailable — compliance-cost charts skipped.")
+                return
+            _vars = ss.get("variations") or []
+            _sel = ss.get("split")
+            if not _vars or _sel is None or getattr(_sel, "empty", True):
+                st.info("Compute split variations on Tab 3 first — no split to compare yet.")
+                return
+            try:
+                import plotly.graph_objects as _go
+                _ref = max(_vars, key=lambda v: float(v.get("weight", 0)))["split"]
+                _sel_w = float(ss.get("selected_variation_weight", 0.0)) * 100.0
+                _mv = gateway_move_vs_reference(_ref, _sel)
+                _mv = _mv[(_mv["ref_volume"] + _mv["prop_volume"]) > 0].copy()
+                if _mv.empty:
+                    st.info("No gateway movement between the reference and the selected split.")
+                    return
+                _tot = max(float(_mv["ref_volume"].sum()), 1e-9)
+                _moved_pct = 0.5 * float(_mv["delta_volume"].abs().sum()) / _tot * 100.0
+                st.caption(f"'Before' = revenue reference (dial 100, unconstrained). 'After' = the "
+                           f"selected split (dial {_sel_w:.0f}). About {_moved_pct:.1f}% of book "
+                           f"volume was re-routed to meet the constraints.")
+                _top = _mv.reindex(_mv["delta_volume"].abs().sort_values(ascending=False).index).head(15)
+                _d = _top.iloc[::-1]                       # smallest-move at bottom for the h-charts
+                _colors = np.where(_d["delta_share"].to_numpy() >= 0, "#1D9E75", "#D85A30")
+
+                _c1, _c2 = st.columns(2)
+                with _c1:
+                    st.markdown("###### Before → after share")
+                    _xs, _ys = [], []
+                    for _, _r in _d.iterrows():
+                        _xs += [_r["ref_share"] * 100, _r["prop_share"] * 100, None]
+                        _ys += [str(_r["gateway"]), str(_r["gateway"]), None]
+                    _f1 = _go.Figure()
+                    _f1.add_scatter(x=_xs, y=_ys, mode="lines", line=dict(color="#B4B2A9", width=2),
+                                    hoverinfo="skip", showlegend=False)
+                    _f1.add_scatter(x=(_d["ref_share"] * 100), y=_d["gateway"].astype(str), mode="markers",
+                                    marker=dict(color="#B4B2A9", size=9), name="reference",
+                                    hovertemplate="%{y}<br>reference %{x:.1f}%<extra></extra>")
+                    _f1.add_scatter(x=(_d["prop_share"] * 100), y=_d["gateway"].astype(str), mode="markers",
+                                    marker=dict(color=_colors, size=9), name="selected",
+                                    hovertemplate="%{y}<br>selected %{x:.1f}%<extra></extra>")
+                    _f1.update_layout(height=max(260, 30 * len(_d) + 60),
+                                      margin=dict(l=10, r=10, t=10, b=10),
+                                      xaxis_title="share of volume (%)",
+                                      legend=dict(orientation="h", y=1.08))
+                    st.plotly_chart(_f1, use_container_width=True)
+                with _c2:
+                    st.markdown("###### Net share change (pp)")
+                    _f3 = _go.Figure()
+                    _f3.add_bar(x=_d["delta_share"] * 100, y=_d["gateway"].astype(str), orientation="h",
+                                marker=dict(color=_colors), hovertemplate="%{y}<br>%{x:+.2f} pp<extra></extra>")
+                    _f3.add_vline(x=0, line=dict(color="#B4B2A9", width=1))
+                    _f3.update_layout(height=max(260, 30 * len(_d) + 60),
+                                      margin=dict(l=10, r=10, t=10, b=10),
+                                      xaxis_title="percentage points moved", showlegend=False)
+                    st.plotly_chart(_f3, use_container_width=True)
+
+                st.markdown("###### Flow of shed traffic (where it went)")
+                _los = _mv[_mv["delta_volume"] < -1e-9].sort_values("delta_volume").head(6)
+                _gan = _mv[_mv["delta_volume"] > 1e-9].sort_values("delta_volume", ascending=False).head(6)
+                if _los.empty or _gan.empty:
+                    st.caption("No net shed-and-absorb flow at this dial (movement is within cells only).")
+                else:
+                    _srcL = list(_los["gateway"].astype(str))
+                    _tgtL = list(_gan["gateway"].astype(str))
+                    _shed = (-_los["delta_volume"].to_numpy())
+                    _gain = _gan["delta_volume"].to_numpy()
+                    # Total flow = min(total shed, total gain) so link widths reflect what was actually
+                    # absorbed; each link is proportional on BOTH sides (source share × target share).
+                    _stot = max(float(_shed.sum()), 1e-9)
+                    _gtot = max(float(_gain.sum()), 1e-9)
+                    _flow = min(_stot, _gtot)
+                    _si, _ti, _val = [], [], []
+                    for _i, _sv in enumerate(_shed):
+                        for _j, _gv in enumerate(_gain):
+                            _si.append(_i); _ti.append(len(_srcL) + _j)
+                            _val.append(_flow * (float(_sv) / _stot) * (float(_gv) / _gtot))
+                    _f2 = _go.Figure(_go.Sankey(
+                        node=dict(label=_srcL + _tgtL, pad=14, thickness=14,
+                                  color=["#D85A30"] * len(_srcL) + ["#1D9E75"] * len(_tgtL),
+                                  line=dict(width=0)),
+                        link=dict(source=_si, target=_ti, value=_val, color="rgba(93,202,165,0.4)")))
+                    _f2.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10),
+                                      font=dict(size=11))
+                    st.plotly_chart(_f2, use_container_width=True)
+
+                st.markdown("###### Compliance-cost curve")
+                _cur = traffic_moved_curve(_vars)
+                if _cur.empty:
+                    st.caption("Only one dial available — no curve to draw.")
+                else:
+                    _f4 = _go.Figure()
+                    _f4.add_scatter(x=_cur["dial"], y=_cur["moved_pct"], mode="lines",
+                                    line=dict(color="#1D9E75", width=2), fill="tozeroy",
+                                    fillcolor="rgba(29,158,117,0.14)",
+                                    hovertemplate="dial %{x:.0f}<br>%{y:.1f}% moved<extra></extra>")
+                    _f4.add_vline(x=_sel_w, line=dict(color="#D85A30", dash="dot", width=1))
+                    _f4.add_annotation(x=_sel_w, y=float(_cur["moved_pct"].max()),
+                                       text="selected", showarrow=False, yshift=6,
+                                       font=dict(size=10, color="#D85A30"))
+                    _f4.update_xaxes(autorange="reversed", title="dial (100 → 0, tightening)")
+                    _f4.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10),
+                                      yaxis_title="traffic moved vs reference (%)", showlegend=False)
+                    st.plotly_chart(_f4, use_container_width=True)
+            except Exception as _e:  # noqa: BLE001
+                st.info(f"Compliance-cost charts unavailable: {type(_e).__name__}: {_e}")
+
+        (_t_risk, _t_fin, _t_ccost, _t_riskdetail, _t_middet, _t_gwdet, _t_bank,
+         _t_engwork) = st.tabs(
+            ["Risk Impact", "Financial Impact", "Compliance Cost", "Risk Detail", "Mid Detail",
+             "Gateway Detail", "Bank Detail", "Engine Workings"])
+
+        with _t_ccost:
+            _cc_render_compliance_cost(_t_ccost)
         with _t_middet:
             _md_bank_slot = st.container()    # per-vampMid bank table + revenue bridge
             _md_charts_slot = st.container()  # vampMid-level SR + gateway-share charts
@@ -5575,6 +6036,109 @@ with tab_imp:
             # Revenue-by-vampMid × month table renders into this slot, positioned
             # ABOVE the Bank x Currency Impact section (its code lives further down).
             _rev_slot = st.container(border=True)
+
+            # -------------- Bank-blocked gateways (auto-block) --------------
+            _blk_df = ss.get("blocked_gateways")
+            if (_blk_df is not None and not getattr(_blk_df, "empty", True)
+                    and "blocked" in getattr(_blk_df, "columns", []) and bool(_blk_df["blocked"].any())):
+                with st.container(border=True):
+                    st.markdown("##### Bank-blocked gateways")
+                    _bf = _blk_df[_blk_df["blocked"]].copy()
+                    _ncap = int(ss.get("blocked_capped", 0) or 0)
+                    st.caption(f"{len(_bf)} bank × gateway pair(s) look BLOCKED — their most-recent "
+                               f"attempts all failed for ≥ {int(ss.get('block_min_inp', 100) or 100)} "
+                               f"attempts, so each was capped to the exploration floor ({_ncap} split "
+                               f"row(s) capped across dials). These are doors the bank appears to have "
+                               f"closed on us; longer bars = failing for longer.")
+                    _cols_bf = [c for c in ["bank", "gateway", "consec_failed", "last_success_date"]
+                                if c in _bf.columns]
+                    if not HAS_PLOTLY:
+                        st.dataframe(_bf[_cols_bf], use_container_width=True, hide_index=True)
+                    else:
+                        try:
+                            import plotly.graph_objects as _gbk
+                            _bfp = _bf.sort_values("consec_failed", ascending=True).tail(25)
+                            _lbl = (_bfp["bank"].astype(str) + " · " + _bfp["gateway"].astype(str))
+                            _fbk = _gbk.Figure(_gbk.Bar(
+                                x=_bfp["consec_failed"].to_numpy(),
+                                y=[str(s)[:40] for s in _lbl], orientation="h",
+                                marker=dict(color="#D85A30"),
+                                customdata=_bfp["last_success_date"].astype(str).to_numpy(),
+                                hovertemplate="%{y}<br>%{x:,.0f} consecutive failed attempts"
+                                              "<br>last success: %{customdata}<extra></extra>"))
+                            _fbk.update_layout(height=max(240, 24 * len(_bfp) + 60),
+                                               margin=dict(l=10, r=10, t=10, b=10),
+                                               xaxis_title="most-recent consecutive failed attempts")
+                            st.plotly_chart(_fbk, use_container_width=True)
+                        except Exception as _e:  # noqa: BLE001
+                            st.info(f"Blocked-gateway chart unavailable: {type(_e).__name__}: {_e}")
+
+            # -------------- RPGT routing-sensitivity priority scatter --------------
+            # Empirical-Bayes: consumes ss['sr'] (the κ-shrunk success_rate per
+            # rpgt×currency×bank×gateway, so thin gateways don't fake being best/worst),
+            # measures each RPGT's best−worst gateway gap (volume-weighted) and plots
+            # sensitivity vs volume, bubble = revenue at stake. Top-right = protect first.
+            with st.container(border=True):
+                st.markdown("##### RPGT routing-sensitivity priority")
+                st.caption("How much each RPGT's success rate swings between its best and worst "
+                           "gateway (empirical-Bayes shrunk, so thinly-tested gateways don't "
+                           "masquerade as extremes). X = 30-day attempts, Y = volume-weighted "
+                           "best−worst gap, bubble size & colour = revenue at stake. Top-right = "
+                           "high volume AND sensitive → handle with care.")
+                _sr_eb = ss.get("sr")
+                if not HAS_PLOTLY:
+                    st.info("Plotly unavailable — priority scatter skipped.")
+                elif _sr_eb is None or getattr(_sr_eb, "empty", True):
+                    st.info("Run the pipeline first — no success-rate data yet.")
+                else:
+                    try:
+                        import plotly.graph_objects as _gps
+                        try:                                   # portfolio avg ticket = Σrev / Σsucc
+                            _tk = float(pd.to_numeric(cell_agg["cell_rev"], errors="coerce").sum()
+                                        / max(pd.to_numeric(cell_agg["cell_succ"], errors="coerce").sum(), 1.0))
+                        except Exception:  # noqa: BLE001
+                            _tk = 1.0
+                        _rp = rpgt_gateway_sensitivity(_sr_eb, avg_ticket=_tk)
+                        _rp = _rp[(_rp["volume"] > 0) & (_rp["sensitivity_pp"] > 0)]
+                        if _rp.empty:
+                            st.info("No multi-gateway RPGTs to compare (need ≥2 eligible gateways in a cell).")
+                        else:
+                            _md_v = float(_rp["volume"].median())
+                            _md_s = float(_rp["sensitivity_pp"].median())
+                            _dmax = max(float(_rp["dollars_at_stake"].max()), 1.0)
+                            _sizes = 9.0 + 40.0 * np.sqrt(_rp["dollars_at_stake"].clip(lower=0.0) / _dmax)
+                            _fig = _gps.Figure()
+                            _fig.add_shape(type="rect", x0=_md_v, x1=float(_rp["volume"].max()) * 1.3,
+                                           y0=_md_s, y1=float(_rp["sensitivity_pp"].max()) * 1.15,
+                                           fillcolor="#E1F5EE", opacity=0.5, line=dict(width=0), layer="below")
+                            _fig.add_scatter(
+                                x=_rp["volume"], y=_rp["sensitivity_pp"], mode="markers",
+                                marker=dict(size=_sizes, color=_rp["dollars_at_stake"],
+                                            colorscale=[[0.0, "#EEF3FB"], [1.0, "#1D9E75"]],
+                                            line=dict(width=0.5, color="#0B1F3A"),
+                                            colorbar=dict(title="$ at stake", thickness=12)),
+                                text=_rp["rpgt"].astype(str),
+                                customdata=np.c_[_rp["dollars_at_stake"].to_numpy(), _rp["cells"].to_numpy()],
+                                hovertemplate=("<b>%{text}</b><br>attempts %{x:,.0f}"
+                                               "<br>sensitivity %{y:.2f} pp"
+                                               "<br>$ at stake %{customdata[0]:,.0f}"
+                                               "<br>routable cells %{customdata[1]:.0f}<extra></extra>"))
+                            _fig.add_vline(x=_md_v, line=dict(color="#B4B2A9", dash="dot", width=1))
+                            _fig.add_hline(y=_md_s, line=dict(color="#B4B2A9", dash="dot", width=1))
+                            for _, _rr in _rp.head(6).iterrows():
+                                _fig.add_annotation(x=_rr["volume"], y=_rr["sensitivity_pp"],
+                                                    text=str(_rr["rpgt"])[:20], showarrow=False,
+                                                    yshift=11, font=dict(size=10, color="#0B1F3A"))
+                            _fig.update_layout(height=430, margin=dict(l=10, r=10, t=10, b=10),
+                                               xaxis_title="30-day attempts (volume, log scale)",
+                                               yaxis_title="sensitivity (pp · best−worst gateway gap)",
+                                               xaxis_type="log", showlegend=False)
+                            st.plotly_chart(_fig, use_container_width=True)
+                            st.caption(f"Bubble revenue-at-stake uses a portfolio average ticket of "
+                                       f"${_tk:,.2f}. Shaded quadrant (top-right of the medians) is the "
+                                       f"protect-first zone.")
+                    except Exception as _e:  # noqa: BLE001
+                        st.info(f"Priority scatter unavailable: {type(_e).__name__}: {_e}")
 
             # -------------- Bank Impact Table Layout --------
             # Renders into the "Bank Detail" sub-tab (its RPGT-table slot is filled later).
@@ -5724,7 +6288,7 @@ with tab_imp:
                                      tickmode="array", tickvals=_xs, ticktext=[str(s) for s in _xs])  # full names
                     return _wf
 
-                def _bridge_items(_df, _name_col, _pre_col, _post_col, _sort_mode, _other="Other"):
+                def _bridge_items(_df, _name_col, _pre_col, _post_col, _sort_mode, _other="Other", _max_n=7):
                     """Pick the movers for a bridge given a sort mode; roll the rest into one bar.
                     Returns (pre_total, post_total, names, deltas) or None."""
                     _d = _df[[_name_col, _pre_col, _post_col]].copy()
@@ -5736,15 +6300,16 @@ with tab_imp:
                     if _d.empty:
                         return None
                     if _sort_mode == "Top decreases":
-                        _sel = _d[_d["_dd"] < 0].sort_values("_dd", ascending=True).head(7)
+                        _ranked = _d[_d["_dd"] < 0].sort_values("_dd", ascending=True)
                     elif _sort_mode == "Top absolute movers":
-                        _sel = _d.reindex(_d["_dd"].abs().sort_values(ascending=False).index).head(7)
+                        _ranked = _d.reindex(_d["_dd"].abs().sort_values(ascending=False).index)
                     else:  # "Top increases"
-                        _sel = _d[_d["_dd"] > 0].sort_values("_dd", ascending=False).head(7)
+                        _ranked = _d[_d["_dd"] > 0].sort_values("_dd", ascending=False)
+                    _sel = _ranked if _max_n is None else _ranked.head(_max_n)   # _max_n=None → show all, no 'Other'
                     _sel = _sel.sort_values("_dd", ascending=False)
                     _pre_t = float(_d["_p"].sum())
                     _post_t = float(_d["_q"].sum())
-                    _has_other = len(_d) > len(_sel)
+                    _has_other = (_max_n is not None) and (len(_d) > len(_sel))
                     _o = (_post_t - _pre_t) - float(_sel["_dd"].sum())
                     _names = _sel["_n"].astype(str).tolist() + ([_other] if _has_other else [])
                     _deltas = _sel["_dd"].tolist() + ([_o] if _has_other else [])
@@ -5837,8 +6402,9 @@ with tab_imp:
                             if _ep_r:
                                 _prop_r = _ep_r
                                 ss["_enf_prop_cache"] = {"key": _ep_key_r, "val": _ep_r}
-                    except Exception:  # noqa: BLE001
-                        pass   # keep the raw _prop_r on any failure
+                    except Exception as _e:  # noqa: BLE001
+                        # keep the raw _prop_r on any failure, but surface why the enforced basis fell back
+                        st.caption(f"Enforced-share revenue basis unavailable ({type(_e).__name__}: {_e}); using raw split shares.")
                     from routing_optimiser.forecast_pipeline import _canonical_gateway as _cg_r
                     _ovr_r = ss.get("gateway_volume_overrides") or {}
                     _off_r = set()
@@ -5967,12 +6533,12 @@ with tab_imp:
                     def _idx(opts, val):
                         return opts.index(val) if val in opts else 0
 
-                    # Inputs squeezed into the left half (a 4-unit spacer takes the rest).
-                    fc1, fc2, fc3, fc4, _fcsp = st.columns([1, 1, 1, 1, 4])
-                    sel_bc = fc1.selectbox("Bank / Currency", bc_opts, index=_idx(bc_opts, "JPMORGAN CHASE BANK NA - USD"), key="raw_daily_bc")
-                    sel_gw = fc2.selectbox("Gateway", gw_opts, index=_idx(gw_opts, "adyen-usd-tav"), key="raw_daily_gw")
-                    sel_end = fc4.date_input("End date", value=pd.to_datetime("2026-07-05").date(), key="raw_daily_end")
-                    sel_start = fc3.date_input("Start date", value=sel_end - datetime.timedelta(days=30), key="raw_daily_start")
+                    # Only the Bank / Currency filter remains (Gateway + date filters removed); the
+                    # chart shows the bank×currency's most-recent-30-days daily totals across gateways.
+                    fc1, _fcsp = st.columns([1, 5])
+                    sel_bc = fc1.selectbox("Bank / Currency", bc_opts,
+                                           index=_idx(bc_opts, "JPMORGAN CHASE BANK NA - USD"),
+                                           key="raw_daily_bc")
 
                     if not _dc2:
                         st.caption("Attempts data has no date column.")
@@ -5981,12 +6547,13 @@ with tab_imp:
                         _bv = sel_bc.split(" - ")[0].strip().lower()
                         _cv = sel_bc.split(" - ")[1].strip().lower()
                         mask = ((a["bank"].astype(str).str.strip().str.lower() == _bv)
-                                & (a["currency"].astype(str).str.strip().str.lower() == _cv)
-                                & (a["gateway"].astype(str).str.strip().str.lower() == sel_gw.strip().lower())
-                                & (a["_d"] >= pd.to_datetime(sel_start)) & (a["_d"] <= pd.to_datetime(sel_end)))
-                        d = a[mask]
+                                & (a["currency"].astype(str).str.strip().str.lower() == _cv))
+                        d = a[mask].copy()
+                        # No date filters now → default to the most recent 30 days in the data.
+                        if not d.empty and d["_d"].notna().any():
+                            d = d[d["_d"] >= (d["_d"].max() - pd.Timedelta(days=30))]
                         if d.empty:
-                            st.caption("No rows match the selected filters / date range.")
+                            st.caption("No rows match the selected bank / currency.")
                         else:
                             daily = (d.groupby(d["_d"].dt.date)
                                      .agg(attempts=("attempts", "sum"), success=("success", "sum"))
@@ -6094,7 +6661,10 @@ with tab_imp:
                     else:
                         b_val = selected_bank.split(" - ")[0]
                         c_val = selected_bank.split(" - ")[1].lower()
-                        b_join = eval_df.loc[(eval_df["bank"] == b_val) & (eval_df["currency_join"] == c_val), "bank_join"].iloc[0]
+                        _bj_tmp = eval_df.loc[(eval_df["bank"] == b_val) & (eval_df["currency_join"] == c_val), "bank_join"]
+                        # A bank label containing " - " can split wrong, leaving an empty match — fall
+                        # back to the bank part's own join key instead of IndexError-ing on .iloc[0].
+                        b_join = _bj_tmp.iloc[0] if not _bj_tmp.empty else str(b_val).strip().lower()
                         plot_adf_sel = adf_30d[(adf_30d["bank"].astype(str).str.strip().str.lower() == b_join) & (adf_30d["currency"].astype(str).str.strip().str.lower() == c_val)].copy()
                         b_df = eval_df[(eval_df["bank_join"] == b_join) & (eval_df["currency_join"] == c_val)].copy()
                 
@@ -6433,11 +7003,10 @@ with tab_imp:
                     # Revenue bridges (by vampMid / by RPGT) — reserved ABOVE the SR / share charts,
                     # filled later from the pre/post section once _evv / _rp are computed.
                     # Shared controls: metric (Revenue $ / Transactions) + which movers to show.
-                    _bmc = st.columns([1, 2])
-                    _br_metric = _bmc[0].radio("Bridge metric", ["Revenue", "Transactions"],
-                                               horizontal=True, key="tab_imp_br_metric")
-                    _br_sort = _bmc[1].radio("Show", ["Top increases", "Top decreases", "Top absolute movers"],
-                                             horizontal=True, key="tab_imp_br_sort")
+                    _br_metric = st.radio("Bridge metric", ["Revenue", "Transactions"],
+                                          horizontal=True, key="tab_imp_br_metric",
+                                          label_visibility="collapsed")
+                    _br_sort = "Top absolute movers"   # fixed: always show the biggest absolute movers
                     _br_money = (_br_metric == "Revenue")
                     _brc1, _brc2 = st.columns(2)
                     _vmbr_slot = _brc1.container()
@@ -6446,9 +7015,123 @@ with tab_imp:
                     # SR + gateway-share charts (now vampMid-level, no headers) render on the
                     # Mid Detail tab, side by side.
                     if HAS_PLOTLY:
-                        _mdcc = _md_charts_slot.columns(2)
-                        _mdcc[0].plotly_chart(fig_sr, use_container_width=True)
-                        _mdcc[1].plotly_chart(fig_sh, use_container_width=True)
+                        # Mid Detail's SR-by-date line chart AND the 100%-stacked gateway-share bar chart
+                        # are removed; the SR-by-day data now renders as a per-gateway trellis on the
+                        # Gateway Detail sub-tab (all Plotly, x-axis in dd-mm).
+                        # Keep only the most recent 30 days for these charts — some rows carry stray /
+                        # backfilled dates going back years, which otherwise stretch the axis.
+                        # Gateway Detail charts are portfolio-wide with their OWN Bank + RPGT filters
+                        # (independent of the Bank Analysis selection).
+                        with _t_gwdet:
+                            _gwf1, _gwf2, _gwfsp = st.columns([1, 1, 4])
+                            _bopts = (["(All)"] + sorted(adf_30d["bank"].astype(str).str.strip().unique().tolist())
+                                      if "bank" in adf_30d.columns else ["(All)"])
+                            _ropts = (["(All)"] + sorted(adf_30d["rpgt"].astype(str).str.title().str.strip().unique().tolist())
+                                      if "rpgt" in adf_30d.columns else ["(All)"])
+                            _gw_selb = _gwf1.selectbox("Bank", _bopts, key="gwdet_bank")
+                            _gw_selr = _gwf2.selectbox("RPGT", _ropts, key="gwdet_rpgt")
+                        _src_gw = adf_30d
+                        if _gw_selb != "(All)" and "bank" in _src_gw.columns:
+                            _src_gw = _src_gw[_src_gw["bank"].astype(str).str.strip() == _gw_selb]
+                        if _gw_selr != "(All)" and "rpgt" in _src_gw.columns:
+                            _src_gw = _src_gw[_src_gw["rpgt"].astype(str).str.title().str.strip() == _gw_selr]
+                        if "date_clean" in _src_gw.columns:
+                            _dgf = (_src_gw.groupby(["date_clean", "gateway"], as_index=False)
+                                    .agg(att=("attempts", "sum"), succ=("success", "sum")))
+                            if _f2v_sr:
+                                _dgf["gateway"] = (_dgf["gateway"].astype(str).str.strip().str.lower()
+                                                   .map(_f2v_sr).fillna(_dgf["gateway"].astype(str)))
+                                _dgf = _dgf.groupby(["date_clean", "gateway"], as_index=False).agg(
+                                    att=("att", "sum"), succ=("succ", "sum"))
+                            _dgf["sr"] = np.where(_dgf["att"] > 0, _dgf["succ"] / _dgf["att"], np.nan)
+                        else:
+                            _dgf = daily_gw
+                        _dg30 = _dgf.copy()
+                        _dg30["_dt"] = pd.to_datetime(_dg30["date_clean"], errors="coerce")
+                        _dg30 = _dg30.dropna(subset=["_dt"])
+                        if not _dg30.empty:
+                            _dg30 = _dg30[_dg30["_dt"] >= (_dg30["_dt"].max() - pd.Timedelta(days=29))]
+                        # Dynamic left margin sized to the longest MID name (so y-axis labels aren't clipped).
+                        _gw_names = _dg30["gateway"].astype(str).unique().tolist() if not _dg30.empty else []
+                        _hm_lm = int(min(320, 12 + (max((len(g) for g in _gw_names), default=10)) * 7))
+                        # ---- Gateway Detail: 30D raw SR % vs 30D raw volume, one point per MID (TOP) ----
+                        try:
+                            _sc = _dg30.groupby("gateway", as_index=False).agg(
+                                att=("att", "sum"), succ=("succ", "sum"))
+                            _sc["sr"] = np.where(_sc["att"] > 0, _sc["succ"] / _sc["att"], np.nan)
+                            _sc = _sc.dropna(subset=["sr"])
+                            if not _sc.empty:
+                                _scfig = px.scatter(_sc, x="att", y="sr", text="gateway")
+                                _scfig.update_traces(
+                                    textposition="top center", marker=dict(size=11, color="#0B1F3A"),
+                                    textfont=dict(size=9, color="#0B1F3A"),
+                                    hovertemplate=("MID: %{text}<br>30D raw volume: %{x:,.0f}"
+                                                   "<br>30D raw SR %% : %{y:.2%}<extra></extra>"))
+                                _scfig.update_yaxes(tickformat=".0%", title_text=None,
+                                                    tickfont=dict(color="#0B1F3A", size=8), gridcolor="lightgrey")
+                                _scfig.update_xaxes(title_text=None, tickfont=dict(color="#0B1F3A", size=8))
+                                _scfig.update_layout(
+                                    height=430, margin=dict(l=45, r=10, t=20, b=20),
+                                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                    font=dict(color="#0B1F3A", family="inherit"))
+                                _t_gwdet.plotly_chart(_scfig, use_container_width=True)
+                        except Exception as _sce:  # noqa: BLE001
+                            _t_gwdet.caption(f"MID scatter unavailable: {type(_sce).__name__}: {_sce}")
+                        try:
+                            from plotly.subplots import make_subplots as _msub
+                            import plotly.graph_objects as _gotr
+                            _dg_tr = _dg30.sort_values("_dt").copy()
+                            # This gateway's SR, and the SR of ALL OTHER gateways that day (benchmark).
+                            _dg_tr["sr"] = np.where(_dg_tr["att"] > 0, _dg_tr["succ"] / _dg_tr["att"], np.nan)
+                            _tot_tr = _dg_tr.groupby("_dt").agg(_ts=("succ", "sum"), _ta=("att", "sum"))
+                            _dg_tr = _dg_tr.merge(_tot_tr, on="_dt", how="left")
+                            _oth_att = _dg_tr["_ta"] - _dg_tr["att"]
+                            _dg_tr["sr_excl"] = np.where(_oth_att > 0,
+                                                         (_dg_tr["_ts"] - _dg_tr["succ"]) / _oth_att, np.nan)
+                            _mids_tr = [m for m in _gw_es_sorted if m in set(_dg_tr["gateway"].astype(str))]
+                            _mids_tr += [m for m in sorted(_dg_tr["gateway"].astype(str).unique())
+                                         if m not in _mids_tr]
+                            _ncol_tr = 3
+                            _nrow_tr = int(np.ceil(len(_mids_tr) / _ncol_tr))
+                            _fig_tr = _msub(rows=_nrow_tr, cols=_ncol_tr, subplot_titles=_mids_tr,
+                                            vertical_spacing=0.06, horizontal_spacing=0.04)
+                            _hov_tr = "Date : %{x|%d-%m}<br>SR %% : %{y:.2%}<extra></extra>"
+                            for _i, _g in enumerate(_mids_tr):
+                                _r, _c = _i // _ncol_tr + 1, _i % _ncol_tr + 1
+                                _d = _dg_tr[_dg_tr["gateway"].astype(str) == _g].sort_values("_dt")
+                                _x = _d["_dt"]
+                                _A = _d["sr"].to_numpy(float)          # this gateway
+                                _B = _d["sr_excl"].to_numpy(float)     # all other gateways
+                                # GREEN shade where this > others (between others and this), 30% opacity
+                                _fig_tr.add_trace(_gotr.Scatter(x=_x, y=_B, mode="lines", line=dict(width=0),
+                                    hoverinfo="skip", showlegend=False), row=_r, col=_c)
+                                _fig_tr.add_trace(_gotr.Scatter(x=_x, y=np.fmax(_A, _B), mode="lines",
+                                    line=dict(width=0), fill="tonexty", fillcolor="rgba(34,195,107,0.30)",
+                                    hoverinfo="skip", showlegend=False), row=_r, col=_c)
+                                # RED shade where this < others, 30% opacity
+                                _fig_tr.add_trace(_gotr.Scatter(x=_x, y=_B, mode="lines", line=dict(width=0),
+                                    hoverinfo="skip", showlegend=False), row=_r, col=_c)
+                                _fig_tr.add_trace(_gotr.Scatter(x=_x, y=np.fmin(_A, _B), mode="lines",
+                                    line=dict(width=0), fill="tonexty", fillcolor="rgba(230,55,72,0.30)",
+                                    hoverinfo="skip", showlegend=False), row=_r, col=_c)
+                                # dashed grey benchmark (all others, 50%) + dark-ink 'this gateway' on top
+                                _fig_tr.add_trace(_gotr.Scatter(x=_x, y=_B, mode="lines",
+                                    line=dict(color="#888888", dash="dash"), opacity=0.5, showlegend=False,
+                                    hovertemplate=_hov_tr), row=_r, col=_c)
+                                _fig_tr.add_trace(_gotr.Scatter(x=_x, y=_A, mode="lines",
+                                    line=dict(color="#0B1F3A"), showlegend=False,
+                                    hovertemplate=_hov_tr), row=_r, col=_c)
+                            _fig_tr.update_annotations(font=dict(size=11, color="#0B1F3A"))
+                            _fig_tr.update_yaxes(tickformat=".0%", showgrid=True, gridcolor="lightgrey",
+                                                 tickfont=dict(color="#0B1F3A", size=8))
+                            _fig_tr.update_xaxes(showticklabels=False, showgrid=False)
+                            _fig_tr.update_layout(
+                                height=max(468, 273 * _nrow_tr), margin=dict(l=30, r=20, t=30, b=10),
+                                showlegend=False, paper_bgcolor="rgba(0,0,0,0)",
+                                plot_bgcolor="rgba(0,0,0,0)", font=dict(color="#0B1F3A", family="inherit"))
+                            _t_gwdet.plotly_chart(_fig_tr, use_container_width=True)
+                        except Exception as _tre:  # noqa: BLE001
+                            _t_gwdet.caption(f"Gateway trellis unavailable: {type(_tre).__name__}: {_tre}")
 
 
             # ------------------------------------------------------------------
@@ -6517,7 +7200,7 @@ with tab_imp:
                         pre_rev=("pre_rev", "sum"), post_rev=("post_rev", "sum"),
                         pre_vol=("pre_vol", "sum"), post_vol=("post_vol", "sum"))
                     _vm_wf_all = None
-                    _vbi = _bridge_items(_vmbr, "_vmid", _bpre, _bpost, _br_sort, "Other vampMids")
+                    _vbi = _bridge_items(_vmbr, "_vmid", _bpre, _bpost, _br_sort, "Other vampMids", _max_n=None)
                     if _vbi is not None:
                         _vm_wf_all = _rev_bridge_waterfall(*_vbi, money=_br_money)
                     # RPGT bridge from the per-RPGT revenue table (_rp) + per-RPGT volume from _ev.
@@ -6529,7 +7212,7 @@ with tab_imp:
                             _rpvol = (_ev.assign(_rl=_ev["rpgt"].astype(str).str.strip().str.lower())
                                       .groupby("_rl").agg(pre_vol=("pre_vol", "sum"), post_vol=("post_vol", "sum")))
                             _rpx = _rpx.merge(_rpvol, on="_rl", how="left").fillna({"pre_vol": 0.0, "post_vol": 0.0})
-                            _rbi = _bridge_items(_rpx, "rpgt", _bpre, _bpost, _br_sort, "Other RPGTs")
+                            _rbi = _bridge_items(_rpx, "rpgt", _bpre, _bpost, _br_sort, "Other RPGTs", _max_n=None)
                             if _rbi is not None:
                                 _rpgt_wf_all = _rev_bridge_waterfall(*_rbi, money=_br_money)
                     except NameError:
@@ -6571,8 +7254,10 @@ with tab_imp:
                                 _topg = _gmid.groupby("parent")["score"].max()
                                 # vampMid holding the top engine score at each bank (for the tooltip)
                                 _gvalid = _gmid.dropna(subset=["score"])
-                                _top_mid = (_gvalid.loc[_gvalid.groupby("parent")["score"].idxmax()]
-                                            .set_index("parent")["_vm"]) if not _gvalid.empty else pd.Series(dtype=object)
+                                _top_rows = (_gvalid.loc[_gvalid.groupby("parent")["score"].idxmax()]
+                                             .set_index("parent")) if not _gvalid.empty else pd.DataFrame()
+                                _top_mid = (_top_rows["_vm"] if "_vm" in getattr(_top_rows, "columns", [])
+                                            else pd.Series(dtype=object))
                                 _all_banks = [b for b in _selg.index if float(_selg.loc[b, "att"]) > 0]
                                 # There can be thousands of banks/BINs → an unreadable single green
                                 # blob. Show only the TOP-N by raw 30D attempts (finviz style: the
@@ -6584,6 +7269,8 @@ with tab_imp:
                                     _att = np.array([float(_selg.loc[b, "att"]) for b in _banks])
                                     _top = np.array([float(_topg.loc[b]) for b in _banks])
                                     _topnm = [str(_top_mid.get(b, _gsel)) for b in _banks]
+                                    _topatt = [float(_top_rows.loc[b, "att"]) if b in getattr(_top_rows, "index", [])
+                                               else 0.0 for b in _banks]
                                     _gap = (_this - _top) * 100.0                    # ≤ 0 (top MID is the max)
                                     _M = float(np.nanmax(np.abs(_gap))) if np.isfinite(_gap).any() else 1.0
                                     _M = _M if (np.isfinite(_M) and _M > 1e-9) else 1.0
@@ -6591,37 +7278,30 @@ with tab_imp:
                                     # compares to the BEST MID at that bank (green = at/near best, red =
                                     # well below). px builds the tree; per-node arrays are aligned to px's
                                     # own node list so the hidden root gets blank text.
-                                    _df_tm = pd.DataFrame({
-                                        "Bank": list(_banks),
-                                        "Attempts": [float(a) for a in _att],
-                                        "gap": [float(g) for g in _gap],
-                                    })
-                                    _bank_tm = px.treemap(
-                                        _df_tm, path=[px.Constant("Banks"), "Bank"], values="Attempts",
-                                        color="gap", color_continuous_scale="RdYlGn", range_color=[-_M, 0.0])
-                                    _lab = list(_bank_tm.data[0].labels)
-                                    # Badge each tile by ranking THIS MID against ALL MIDs at that bank
-                                    # (by engine score): 👑 best · 🥄 worst · 🥈 2nd · 🥉 3rd. Priority:
-                                    # crown, then wooden spoon (worst always flagged), then silver/bronze.
+                                    # Rank category (best…terrible) for THIS MID at each bank — computed
+                                    # BEFORE the tree so it can drive the SUBTREE grouping. Rank 1 = best,
+                                    # rank N = terrible; the middle splits by percentile (top quartile =
+                                    # really good, bottom quartile = bad).
+                                    _CAT_COLORS = {"best": "#1B9E4B", "really good": "#86C34A",
+                                                   "average": "#F4C430", "bad": "#EF7D22",
+                                                   "terrible": "#E63748"}
                                     _gm_v = _gmid.dropna(subset=["score"])
                                     _gm_v = _gm_v[_gm_v["parent"].isin(_banks)]
                                     _score_lists = _gm_v.groupby("parent")["score"].apply(lambda s: s.to_numpy())
-                                    _icon_map = {}
+                                    _cat_map, _rank_map = {}, {}
                                     for b, ts in zip(_banks, _this):
                                         _arr = _score_lists.get(b, np.array([float(ts)], dtype=float))
                                         _n = int(_arr.size)
                                         _r = int(np.sum(_arr > float(ts) + 1e-12)) + 1     # 1 = best
-                                        _is_worst = float(ts) <= float(np.min(_arr)) + 1e-12
-                                        if _r == 1:
-                                            _icon_map[b] = "👑"
-                                        elif _n > 1 and _is_worst:
-                                            _icon_map[b] = "🥄"
-                                        elif _r == 2:
-                                            _icon_map[b] = "🥈"
-                                        elif _r == 3:
-                                            _icon_map[b] = "🥉"
+                                        _rank_map[b] = (_r, _n)
+                                        if _n <= 1 or _r == 1:
+                                            _cat_map[b] = "best"
+                                        elif _r == _n:
+                                            _cat_map[b] = "terrible"
                                         else:
-                                            _icon_map[b] = ""
+                                            _pct = (_r - 1) / (_n - 1)                     # 0 best … 1 worst
+                                            _cat_map[b] = ("really good" if _pct <= 0.25
+                                                           else "bad" if _pct >= 0.75 else "average")
                                     # word-wrap long bank names onto multiple rows so they don't overflow
                                     def _wrap(_s, _w=16):
                                         _lines, _cur = [], ""
@@ -6634,37 +7314,56 @@ with tab_imp:
                                         if _cur:
                                             _lines.append(_cur)
                                         return "<br>".join(_lines)
-                                    _txt_map = {
-                                        b: "<b>%s%s<br>%.2f%% vs %.2f%%</b>" % (
-                                            (_icon_map[b] + "<br>") if _icon_map[b] else "", _wrap(b), t * 100, tp * 100)
-                                        for b, t, tp in zip(_banks, _this, _top)
-                                    }
-                                    _num_map = {b: [float(a), float(t) * 100.0, float(tp) * 100.0, float(g)]
-                                                for b, a, t, tp, g in zip(_banks, _att, _this, _top, _gap)}
-                                    _nm_map = {b: str(nm) for b, nm in zip(_banks, _topnm)}
-                                    _node_text = [_txt_map.get(l, "") for l in _lab]          # root -> "" (no header)
-                                    _node_cd = [_num_map.get(l, [0.0, 0.0, 0.0, 0.0]) for l in _lab]
-                                    _node_hov = [_nm_map.get(l, "") for l in _lab]
-                                    # Colour tiles ourselves as literal hex so we control the ROOT too:
-                                    # leaves by gap (RdYlGn), the "Banks" parent pinned to dark ink so it
-                                    # never shows up green. (px's continuous scale otherwise colours the root.)
-                                    from plotly.colors import sample_colorscale as _samp
-                                    _gapmap = {b: float(g) for b, g in zip(_banks, _gap)}
-                                    _node_colors = [
-                                        (_samp("RdYlGn", [max(0.0, min(1.0, (_gapmap[l] + _M) / _M))])[0]
-                                         if (l in _gapmap and np.isfinite(_gapmap[l]))
-                                         else ("#808080" if l in _gapmap else "#0B1F3A"))
-                                        for l in _lab
-                                    ]
+                                    # Tree grain: Banks -> Category -> Bank, so each tile sits inside its rank
+                                    # category's subtree. Tile size = raw 30D attempts.
+                                    _df_tm = pd.DataFrame({
+                                        "Category": [_cat_map.get(b, "average") for b in _banks],
+                                        "Bank": list(_banks),
+                                        "Attempts": [float(a) for a in _att],
+                                    })
+                                    _bank_tm = px.treemap(
+                                        _df_tm, path=[px.Constant("Banks"), "Category", "Bank"],
+                                        values="Attempts")
+                                    _lab = list(_bank_tm.data[0].labels)
+                                    # Tile text = bank name + this-MID vs top score (category is the subtree
+                                    # header, not the tile). Tooltip = bank, engine score, top MID + its score.
+                                    _txt_map = {b: "<b>%s<br>%.2f%% vs %.2f%%</b>" % (_wrap(b), t * 100, tp * 100)
+                                                for b, t, tp in zip(_banks, _this, _top)}
+                                    _hov_map = {}
+                                    for b, t, tp, nm, a, ta in zip(_banks, _this, _top, _topnm, _att, _topatt):
+                                        _rr, _nn = _rank_map.get(b, (0, 0))
+                                        _hov_map[b] = (
+                                            "Bank: %s"
+                                            "<br>Engine score: %.2f%%  ·  rank %d of %d"
+                                            "<br>This MID raw 30D attempts: %s"
+                                            "<br>Top MID at bank: %s (%.2f%%)"
+                                            "<br>Top MID raw 30D attempts: %s"
+                                            % (b, t * 100, _rr, _nn, format(a, ",.0f"),
+                                               str(nm), tp * 100, format(ta, ",.0f")))
+                                    # Per-NODE arrays aligned to px's node list (root + category nodes + bank
+                                    # leaves). Category nodes show their name as the header and take the
+                                    # category colour; bank leaves inherit it; the root "Banks" is dark ink.
+                                    _node_text, _node_hov, _node_colors = [], [], []
+                                    for _l in _lab:
+                                        if _l in _cat_map:                        # bank leaf
+                                            _node_text.append(_txt_map.get(_l, ""))
+                                            _node_hov.append(_hov_map.get(_l, ""))
+                                            _node_colors.append(_CAT_COLORS.get(_cat_map[_l], "#808080"))
+                                        elif _l in _CAT_COLORS:                   # category subtree node
+                                            _node_text.append("<b>%s</b>" % str(_l).upper())
+                                            _node_hov.append("<b>%s</b>" % str(_l).upper())
+                                            _node_colors.append(_CAT_COLORS.get(_l, "#808080"))
+                                        else:                                     # root "Banks"
+                                            _node_text.append("")
+                                            _node_hov.append("")
+                                            _node_colors.append("#0B1F3A")
                                     _bank_tm.update_traces(
                                         text=_node_text, texttemplate="%{text}", textposition="middle center",
                                         insidetextfont=dict(color="white"),
-                                        marker=dict(colors=_node_colors, line=dict(width=0), coloraxis=None),
-                                        customdata=_node_cd, hovertext=_node_hov,
-                                        hovertemplate="%{label}<br>Raw 30D attempts: %{customdata[0]:,.0f}"
-                                                      "<br>This MID engine score: %{customdata[1]:.2f}%"
-                                                      "<br>Top MID at bank: %{hovertext} (%{customdata[2]:.2f}%)"
-                                                      "<br>Gap: %{customdata[3]:+.2f} pp<extra></extra>")
+                                        marker=dict(colors=_node_colors, line=dict(width=1, color="#0B1F3A"),
+                                                    coloraxis=None),
+                                        hovertext=_node_hov,
+                                        hovertemplate="%{hovertext}<extra></extra>")
                                     _bank_tm.update_layout(margin=dict(t=4, l=2, r=2, b=2), height=945,
                                                            coloraxis_showscale=False,       # no colour scale
                                                            paper_bgcolor="#0B1F3A",         # dark ink behind tiles
@@ -6709,7 +7408,7 @@ with tab_imp:
                             # Per-vampMid bridge (uses the shared metric + sort controls above;
                             # read from session_state so it's independent of local scope).
                             _gb_money = (ss.get("tab_imp_br_metric", "Revenue") == "Revenue")
-                            _gb_sort = ss.get("tab_imp_br_sort", "Top increases")
+                            _gb_sort = "Top absolute movers"   # bank bridge always shows the biggest movers
                             _gbpre, _gbpost = ("pre_rev", "post_rev") if _gb_money else ("pre_vol", "post_vol")
                             _vm_wf = None
                             _gbi = _bridge_items(_gfull, "bank", _gbpre, _gbpost, _gb_sort, "Other banks")
@@ -6728,6 +7427,251 @@ with tab_imp:
                         st.info("No vampMids in this variation's split.")
 
             # -------------- FILTERABLE ENGINE WORKINGS EXPANDER & DEBUGGER --------------
+            # --- Banks per vampMid: how widely each MID is spread across banks ---
+            _bpm_split = ss.get("split")
+            if (HAS_PLOTLY and _bpm_split is not None and not getattr(_bpm_split, "empty", True)
+                    and {"gateway", "bank", "share"}.issubset(getattr(_bpm_split, "columns", []))):
+                with _t_engwork.expander("🏦 Banks per vampMid (how widely each MID is spread)",
+                                         expanded=False):
+                    st.caption("For each vampMid (merchant account), the number of DISTINCT banks it "
+                               "carries routed share in, on the selected split (share > 0). A wide bar "
+                               "= the MID touches many banks; a short one = concentrated on a few.")
+                    try:
+                        import plotly.graph_objects as _gbp
+                        _f2v = (ss.get("wallet_ctx") or {}).get("fid2vamp") or {}
+                        _d = _bpm_split.copy()
+                        _d["_sh"] = pd.to_numeric(_d["share"], errors="coerce").fillna(0.0)
+                        _d = _d[_d["_sh"] > 1e-9]
+                        _gwl = _d["gateway"].astype(str).str.strip().str.lower()
+                        _d["_vm"] = (_gwl.map(_f2v).fillna(_d["gateway"].astype(str)) if _f2v
+                                     else _d["gateway"].astype(str))
+                        _bpm = _d.groupby("_vm")["bank"].nunique().sort_values(ascending=True)
+                        if _bpm.empty:
+                            st.info("No routed share in the selected split.")
+                        else:
+                            _bpm = _bpm.tail(30)                 # up to 30 MIDs, most-spread at top
+                            _fbp = _gbp.Figure(_gbp.Bar(
+                                x=_bpm.to_numpy(), y=[str(m)[:34] for m in _bpm.index],
+                                orientation="h", marker=dict(color="#378ADD"),
+                                hovertemplate="%{y}<br>%{x} bank(s)<extra></extra>"))
+                            _fbp.update_layout(height=max(280, 22 * len(_bpm) + 60),
+                                               margin=dict(l=10, r=10, t=10, b=10),
+                                               xaxis_title="distinct banks with routed share")
+                            st.plotly_chart(_fbp, use_container_width=True)
+                            st.caption(f"{len(_bpm)} vampMid(s) shown (most-spread first) · median "
+                                       f"{int(_bpm.median())} bank(s) per MID.")
+                    except Exception as _e:  # noqa: BLE001
+                        st.info(f"Banks-per-vampMid chart unavailable: {type(_e).__name__}: {_e}")
+
+            # --- GA workings: convergence / step-size / violation / genome / population ---
+            _hist_rev = ss.get("ga_hist_rev"); _hist_safe = ss.get("ga_hist_safe")
+            if HAS_PLOTLY and (_hist_rev or _hist_safe):
+                import pandas as _pd
+                import plotly.graph_objects as _gof
+
+                def _conv_df(h):
+                    if not h:
+                        return None
+                    _cols = ["gen", "best", "gen_best", "gen_mean", "sigma", "viol", "eps"][:len(h[0])]
+                    return _pd.DataFrame(h, columns=_cols)
+
+                with _t_engwork.expander("📈 GA scoring over time (convergence)", expanded=True):
+                    st.caption("How the search's score improved each generation, for each end of the "
+                               "dial. Higher is better; 'best so far' is the best plan yet, 'population "
+                               "mean' the average candidate.")
+
+                    def _mk_conv(h, title):
+                        d = _conv_df(h)
+                        if d is None:
+                            return None
+                        f = _gof.Figure()
+                        f.add_scatter(x=d["gen"], y=d["best"], mode="lines", name="best so far",
+                                      line=dict(color="#1D9E75"))
+                        f.add_scatter(x=d["gen"], y=d["gen_mean"], mode="lines", name="population mean",
+                                      line=dict(color="#B4B2A9", dash="dot"))
+                        f.update_layout(height=300, margin=dict(l=10, r=10, t=36, b=10), title=title,
+                                        xaxis_title="generation", yaxis_title="fitness",
+                                        legend=dict(orientation="h", y=1.16))
+                        return f
+                    _cvc1, _cvc2 = st.columns(2)
+                    _figr = _mk_conv(_hist_rev, "Revenue-max endpoint (dial 100)")
+                    _figs = _mk_conv(_hist_safe, "Risk-min endpoint (dial 0)")
+                    if _figr is not None:
+                        _cvc1.plotly_chart(_figr, use_container_width=True)
+                    if _figs is not None:
+                        _cvc2.plotly_chart(_figs, use_container_width=True)
+
+                    _fsig = _gof.Figure(); _has_sig = False
+                    for _h, _nm, _dash, _col in ((_hist_rev, "dial 100", "solid", "#378ADD"),
+                                                 (_hist_safe, "dial 0", "dot", "#D4537E")):
+                        _d = _conv_df(_h)
+                        if _d is not None and "sigma" in _d:
+                            _has_sig = True
+                            _fsig.add_scatter(x=_d["gen"], y=_d["sigma"], mode="lines", name=_nm,
+                                              line=dict(color=_col, dash=_dash))
+                    if _has_sig:
+                        st.markdown("###### Step size (σ) — big steps early, refines late, jumps on restart")
+                        _fsig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10),
+                                            xaxis_title="generation", yaxis_title="step size σ",
+                                            yaxis_type="log", legend=dict(orientation="h", y=1.15))
+                        st.plotly_chart(_fsig, use_container_width=True)
+
+                    def _mk_viol(h, title):
+                        d = _conv_df(h)
+                        if d is None or "viol" not in d:
+                            return None
+                        f = _gof.Figure()
+                        f.add_scatter(x=d["gen"], y=d["viol"], mode="lines", name="violation",
+                                      line=dict(color="#D85A30"), fill="tozeroy",
+                                      fillcolor="rgba(216,90,48,0.12)")
+                        if "eps" in d:
+                            f.add_scatter(x=d["gen"], y=d["eps"], mode="lines", name="ε tolerance",
+                                          line=dict(color="#888780", dash="dot"))
+                        f.update_layout(height=280, margin=dict(l=10, r=10, t=36, b=10), title=title,
+                                        xaxis_title="generation", yaxis_title="total violation",
+                                        legend=dict(orientation="h", y=1.16))
+                        return f
+                    _fvr = _mk_viol(_hist_rev, "Revenue-max endpoint (dial 100)")
+                    _fvs = _mk_viol(_hist_safe, "Risk-min endpoint (dial 0)")
+                    if _fvr is not None or _fvs is not None:
+                        st.markdown("###### Violation → feasibility (breach falls to 0 as ε tightens)")
+                        _vvc1, _vvc2 = st.columns(2)
+                        if _fvr is not None:
+                            _vvc1.plotly_chart(_fvr, use_container_width=True)
+                        if _fvs is not None:
+                            _vvc2.plotly_chart(_fvs, use_container_width=True)
+
+                _genome = ss.get("ga_genome"); _mlabels = ss.get("ga_mid_labels")
+                if _genome is not None and _mlabels:
+                    with _t_engwork.expander("🧬 Winning tilt genome (per vampMid)", expanded=False):
+                        st.caption("What the search decided for each vampMid: θr pulls it toward its "
+                                   "LOW-risk cells, θq toward its HIGH-revenue cells, gain moves its "
+                                   "overall presence across cells. Larger magnitude = a stronger move.")
+                        _g = np.asarray(_genome, float); _M = len(_mlabels)
+                        if _g.size >= 3 * _M and _M > 0:
+                            _mat = np.vstack([_g[:_M], _g[_M:2 * _M], _g[2 * _M:3 * _M]])
+                            _fhm = _gof.Figure(_gof.Heatmap(
+                                z=_mat, x=[str(m)[:22] for m in _mlabels],
+                                y=["θr risk-tilt", "θq revenue-tilt", "gain"],
+                                colorscale=[[0.0, "#D85A30"], [0.5, "#EEF3FB"], [1.0, "#1D9E75"]],
+                                zmid=0.0, colorbar=dict(title="value")))
+                            _fhm.update_layout(height=240, margin=dict(l=10, r=10, t=10, b=10),
+                                               xaxis=dict(tickangle=-45))
+                            st.plotly_chart(_fhm, use_container_width=True)
+                        else:
+                            st.info("Genome shape doesn't match the MID labels — skipped.")
+
+                _pobj = ss.get("ga_pop_obj"); _pviol = ss.get("ga_pop_viol")
+                if _pobj is not None and _pviol is not None:
+                    with _t_engwork.expander("⚖️ Feasibility-first population (final generation)", expanded=False):
+                        st.caption("Every candidate in the last generation of the revenue-max search, "
+                                   "by constraint violation (x) and objective ≈ revenue (y). Any "
+                                   "compliant point (violation ≈ 0) outranks every breaching one, so the "
+                                   "winner sits atop the feasible wall on the left.")
+                        _po = np.asarray(_pobj, float); _pv = np.asarray(_pviol, float)
+                        if _po.size and _pv.size and _po.size == _pv.size:
+                            _feas = _pv <= 1e-9
+                            _fsc = _gof.Figure()
+                            _fsc.add_scatter(x=_pv[~_feas], y=_po[~_feas], mode="markers", name="breaching",
+                                             marker=dict(color="#D85A30", size=7, opacity=0.65))
+                            _fsc.add_scatter(x=_pv[_feas], y=_po[_feas], mode="markers", name="feasible",
+                                             marker=dict(color="#1D9E75", size=8, opacity=0.8))
+                            _wi = (int(np.argmax(np.where(_feas, _po, -np.inf))) if _feas.any()
+                                   else int(np.argmin(_pv)))
+                            _fsc.add_scatter(x=[float(_pv[_wi])], y=[float(_po[_wi])], mode="markers",
+                                             name="winner", marker=dict(color="#0F6E56", size=14,
+                                             symbol="circle-open", line=dict(width=2)))
+                            _fsc.add_vline(x=0.0, line=dict(color="#1D9E75", dash="dot", width=1))
+                            _fsc.update_layout(height=340, margin=dict(l=10, r=10, t=10, b=10),
+                                               xaxis_title="constraint violation",
+                                               yaxis_title="objective (≈ revenue)",
+                                               legend=dict(orientation="h", y=1.12))
+                            st.plotly_chart(_fsc, use_container_width=True)
+                        else:
+                            st.info("No final-population data captured for this run.")
+
+            # --- Time-decay weighting curve (how older attempts count less in the SR estimate) ---
+            if HAS_PLOTLY:
+                with _t_engwork.expander("⏳ Time-decay weighting (how older data counts less)", expanded=False):
+                    _dc_on = bool(ss.get("apply_decay", ss.get("apply_decay_cb", True)))
+                    _hl = float(ss.get("decay_half_inp", 15) or 15)
+                    st.caption("Each attempt is exponentially down-weighted by its age when the "
+                               "success rates are estimated: weight = 0.5^(age ÷ half-life). At the "
+                               "half-life an attempt counts half as much; at twice the half-life, a "
+                               "quarter. " + (f"Currently ON, half-life {_hl:.0f} days."
+                               if _dc_on else "Currently OFF — every attempt counts fully (flat line)."))
+                    import numpy as _np2
+                    import plotly.graph_objects as _gdc
+                    _xmax = max(90.0, _hl * 4.0)
+                    _age = _np2.linspace(0.0, _xmax, 240)
+                    _w = _np2.power(0.5, _age / max(_hl, 1e-9)) if _dc_on else _np2.ones_like(_age)
+                    _fdc = _gdc.Figure()
+                    _fdc.add_scatter(x=_age, y=_w, mode="lines", name="weight",
+                                     line=dict(color="#1D9E75", width=2), fill="tozeroy",
+                                     fillcolor="rgba(29,158,117,0.12)",
+                                     hovertemplate="age %{x:.0f}d<br>weight %{y:.2f}<extra></extra>")
+                    if _dc_on:
+                        _fdc.add_scatter(x=_age, y=_np2.ones_like(_age), mode="lines", name="no decay",
+                                         line=dict(color="#B4B2A9", width=1, dash="dot"), hoverinfo="skip")
+                        _fdc.add_shape(type="line", x0=_hl, x1=_hl, y0=0.0, y1=0.5,
+                                       line=dict(color="#D85A30", dash="dot", width=1))
+                        _fdc.add_shape(type="line", x0=0.0, x1=_hl, y0=0.5, y1=0.5,
+                                       line=dict(color="#D85A30", dash="dot", width=1))
+                        _fdc.add_scatter(x=[_hl], y=[0.5], mode="markers+text",
+                                         marker=dict(color="#D85A30", size=9),
+                                         text=[f"half-life {_hl:.0f}d → 0.50"], textposition="top right",
+                                         textfont=dict(size=11, color="#D85A30"), showlegend=False,
+                                         hovertemplate="half-life %{x:.0f}d → weight 0.50<extra></extra>")
+                    _fdc.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10),
+                                       xaxis_title="age of attempt (days)",
+                                       yaxis_title="weight in the estimate",
+                                       yaxis=dict(range=[0.0, 1.05]),
+                                       legend=dict(orientation="h", y=1.12))
+                    st.plotly_chart(_fdc, use_container_width=True)
+
+            # --- Experimental: full-matrix GA & NSGA-II frontier (self-contained; NOT the production dial) ---
+            with _t_engwork.expander("🧪 Experimental: full-matrix GA & NSGA-II frontier (off the production dial)", expanded=False):
+                st.caption("Runs the alternative engines on the LAST computed problem, purely to "
+                           "explore. It does NOT change the deployed split or the dial.")
+                _ctx_x = ss.get("_ga_ctx")
+                if _ctx_x is None:
+                    st.info("Compute split variations on Tab 2 first — this reuses that run's problem.")
+                else:
+                    _xp1, _xp2, _xp3 = st.columns(3)
+                    _lam_x = _xp1.slider("Risk weight λ", 0.0, 100.0, 50.0, 5.0, key="fmx_lam")
+                    _gen_x = _xp2.number_input("Generations", 20, 200, 60, 10, key="fmx_gen")
+                    _pop_x = _xp3.number_input("Population", 20, 120, 40, 10, key="fmx_pop")
+                    _bx1, _bx2 = st.columns(2)
+                    if _bx1.button("Run NSGA-II frontier", key="fmx_nsga_btn"):
+                        try:
+                            from routing_optimiser.genetic_fullmatrix import run_fullmatrix_ga as _rfm
+                            with st.spinner("Running NSGA-II frontier…"):
+                                _front, _finfo = _rfm(_ctx_x, lam=float(_lam_x), pop_size=int(_pop_x),
+                                                      generations=int(_gen_x), multiobjective=True)
+                            _frn = _finfo["front"]   # (revenue, aggregate VAMP)
+                            import plotly.graph_objects as _gof2
+                            _figfr = _gof2.Figure()
+                            _figfr.add_scatter(x=_frn[:, 1], y=_frn[:, 0], mode="markers+lines",
+                                               name="Pareto front")
+                            _figfr.update_layout(height=380, margin=dict(l=10, r=10, t=36, b=10),
+                                                 title=f"Revenue vs risk frontier ({_finfo['n_front']} points)",
+                                                 xaxis_title="aggregate expected VAMP (count)",
+                                                 yaxis_title="revenue ($)")
+                            st.plotly_chart(_figfr, use_container_width=True)
+                        except Exception as _fe:  # noqa: BLE001
+                            st.error(f"NSGA-II run failed: {type(_fe).__name__}: {_fe}")
+                    if _bx2.button("Run full-matrix GA (single objective)", key="fmx_single_btn"):
+                        try:
+                            from routing_optimiser.genetic_fullmatrix import run_fullmatrix_ga as _rfm
+                            with st.spinner("Running full-matrix GA…"):
+                                _best, _binfo = _rfm(_ctx_x, lam=float(_lam_x), pop_size=int(_pop_x),
+                                                     generations=int(_gen_x), multiobjective=False)
+                            st.success(f"Done · revenue ${_binfo['revenue']:,.0f} · fitness "
+                                       f"{_binfo['best_fit']:,.0f} · {_binfo['dims']} dims · "
+                                       f"{_binfo['gens']} generations")
+                        except Exception as _fe:  # noqa: BLE001
+                            st.error(f"Full-matrix run failed: {type(_fe).__name__}: {_fe}")
+
             with _t_engwork.expander("⚙️ View Algorithm Scoring Workings (Pre-Softmax) & Granular BIN Impact", expanded=True):
                 st.markdown("<div style='font-size: 0.85rem; color: #0B1F3A; margin-bottom: 1rem;'>This table exposes the granular BIN/Currency level details. You can sort and filter any column by clicking the column headers.</div>", unsafe_allow_html=True)
             
@@ -6826,7 +7770,13 @@ with tab_imp:
                             workings["All-Time Attempts (raw)"] = 0.0
                         workings = workings.drop(columns=[c for c in ["_cj", "_pj", "_gj", "attempts", "success", "prior_rate", "success_rate", "kappa"] if c in workings.columns])
                     else:
-                        workings["Engine Score (Smoothed SR)"] = np.where(workings["All_Time_Attempts"] > 0, workings["Weighted_SR"] / workings["All_Time_Attempts"], sr_df.groupby(["bank", "currency", "gateway"])[rate_col].mean().values)
+                        # Fallback = the (bank, currency, gateway) grouped mean, looked up PER ROW by
+                        # key (reindex on workings' own keys) rather than assigned by position — a
+                        # key-sorted .values array would otherwise attach scores to the wrong cell.
+                        _grp_fb = sr_df.groupby(["bank", "currency", "gateway"])[rate_col].mean()
+                        _grp_fb_aligned = _grp_fb.reindex(
+                            pd.MultiIndex.from_frame(workings[["bank", "currency", "gateway"]])).to_numpy()
+                        workings["Engine Score (Smoothed SR)"] = np.where(workings["All_Time_Attempts"] > 0, workings["Weighted_SR"] / workings["All_Time_Attempts"], _grp_fb_aligned)
                         for _c in ["Prior SR %", "Bayesian Adj Attempts", "Bayesian Adj Success", "All-Time Attempts (raw)", "κ used"]:
                             workings[_c] = 0.0
                     workings["All-Time Raw SR"] = np.where(workings["All_Time_Attempts"] > 0, workings["All_Time_Success"] / workings["All_Time_Attempts"], 0)
@@ -7817,6 +8767,17 @@ with tab_imp:
                                     text=_txt, texttemplate="%{text}", textposition="inside",
                                     insidetextanchor="middle", textfont=dict(size=7, color="#FFFFFF"),
                                     cliponaxis=False))
+                            # Count charts: y-axis floor = the MAX-total RPGT's MINIMUM plotted (non-zero)
+                            # monthly value − 20%; ceiling = the tallest stacked total + 5%. The
+                            # 100%-stacked (pct) chart keeps its full 0–100% range.
+                            _mmax_rp = max(_mtot) if _mtot else 0.0
+                            _yaxd = dict(showgrid=True, gridcolor='lightgrey', tickfont=_afont2, title=None,
+                                         ticksuffix=("%" if pct else None))
+                            if (not pct) and _segs and _mmax_rp > 0:
+                                _topseg_vals = [_v for _v in _ymap[_segs[0]] if _v > 0]   # biggest RPGT's monthly values
+                                _minv_top = min(_topseg_vals) if _topseg_vals else 0.0
+                                if _minv_top > 0:
+                                    _yaxd["range"] = [0.8 * _minv_top, _mmax_rp * 1.05]
                             _figs.update_layout(
                                 # t=96 reserves enough room ABOVE the plot for the (wrapping) RPGT
                                 # legend so it isn't clipped and never overflows onto the bars; the
@@ -7830,8 +8791,7 @@ with tab_imp:
                                             font=dict(color='#0B1F3A', size=7), title_text=None,
                                             traceorder="normal"),   # highest first; wraps to as many
                                                                     # lines as needed (extra top margin)
-                                yaxis=dict(showgrid=True, gridcolor='lightgrey', tickfont=_afont2, title=None,
-                                           ticksuffix=("%" if pct else None)))
+                                yaxis=_yaxd)
                             _figs.update_xaxes(type="category", categoryorder="array",
                                                categoryarray=_order_labels, showgrid=False,
                                                tickfont=_afont2, title=None)
@@ -8119,7 +9079,7 @@ with tab_imp:
                         vp = mid_table_from_granular(_gr_shared)
                     else:
                         vp = compute_vamp_post_by_mid(tp_path, prop_items_flat, str(_m0.date()), str(_gl),
-                                                      excluded_mids, _kill_eff)
+                                                      excluded_mids, _kill_eff, _mtime(tp_path))
                     vp = vp.sort_values("VAMP M0", ascending=False)
 
                     col_groups, cols = [], ["vampMid"]

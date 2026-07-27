@@ -22,17 +22,36 @@ from __future__ import annotations
 
 import numpy as np
 
-__build__ = "2026-07-19-genetic-band-priority-mult"
+__build__ = "2026-07-25e-riskmin-diverse-seeds-finecells-memetic-adaptiveeps"
 
 
-def _mid_sums(vol, mid_rows, M):
-    """Per-MID column sums of `vol` (P, N) -> (P, M). Loops over the ~20 MIDs
-    (vectorised per MID) — far faster than np.add.at on 49k rows."""
+def _mid_sums(vol, mid_rows, M, S=None):
+    """Per-MID column sums of `vol` (P, N) -> (P, M).
+
+    Fast path (`S` given): `S` is a precomputed sparse (M, N) 0/1 incidence matrix
+    (row m has 1s on that MID's columns), so the per-MID sums are ONE sparse matmul
+    `(S @ vol.T).T` in optimised C instead of a Python loop over the MIDs — the hot
+    inner op of every candidate evaluation. Numerically identical to the loop up to
+    floating-point summation order (~1e-15); build it once with `_build_mid_incidence`.
+    Fallback: loop over the ~20 MIDs (vectorised per MID)."""
+    if S is not None:
+        return np.asarray(S.dot(vol.T)).T
     out = np.empty((vol.shape[0], M), dtype=float)
     for m in range(M):
         r = mid_rows[m]
         out[:, m] = vol[:, r].sum(axis=1) if len(r) else 0.0
     return out
+
+
+def _build_mid_incidence(mid_id, M, N):
+    """Sparse (M, N) 0/1 incidence for `_mid_sums`' fast path: entry (m, n)=1 iff row n
+    belongs to vampMid m. Built once per problem; CSR so `S @ vol.T` is a single BLAS-ish
+    sparse-dense product. `mid_id` (N,) maps each row to its MID index in [0, M)."""
+    from scipy import sparse as _sp
+    mid_id = np.asarray(mid_id)
+    cols = np.arange(N)
+    data = np.ones(N, dtype=float)
+    return _sp.csr_matrix((data, (mid_id, cols)), shape=(M, N))
 
 
 def _fitness(pop, ctx, lam):
@@ -212,123 +231,825 @@ def _cap_floor_shares(X, cell_starts, cell_counts, elig, cap, floor):
     return X
 
 
-def _decode_midtilt(theta, ref, z_mid, mid_id, cell_starts, cell_counts, elig,
-                    cap=1.0, floor=0.0, gain=None):
-    """theta (P, M) -> shares (P, N). Per-row tilt uses the row's MID via mid_id.
+def _mid_over(shares, ctx, include_floor_shortfall=True):
+    """Per-candidate per-MID breach magnitude (P, M): the RELATIVE overage (actual/limit − 1,
+    or floor short-fall) across the VAMP-rate cap, per-MID volume cap and projected bands —
+    whichever is worst for that MID. >0 means that MID currently breaches. READ-ONLY: it
+    mirrors the risk maths in `_fitness` but is used only to STEER the search (adaptive-λ /
+    breach-targeted mutation). It never changes feasibility or the score, so if it is slightly
+    off the worst case is imperfect targeting, never a masked breach.
 
-    `gain` (P, M), optional, is a per-MID overall-presence knob: share ∝ ref · exp(−θ·z) ·
-    exp(g_mid). θ decides WHERE a MID sits (which of its cells); g decides HOW MUCH of it
-    there is across ALL its cells — a raised g pulls share to that MID in every cell (taking
-    it from other MIDs), which is the cross-MID volume move the tilt alone can't make. The
-    max-share cap and exploration floor are enforced HARD here (see _cap_floor_shares), so
-    every candidate the GA scores is already a deployable split."""
-    tr = theta[:, mid_id]                                     # (P, N)
-    w = ref[None, :] * np.exp(-tr * z_mid[None, :]) * elig[None, :]
-    if gain is not None:
-        w = w * np.exp(gain[:, mid_id])                       # per-MID overall-presence gain
+    `include_floor_shortfall=False` reports ONLY the breaches that are fixed by SHEDDING a MID's
+    volume (VAMP-rate cap, per-MID volume cap, band CEILING). It omits band-FLOOR shortfalls —
+    where a MID's projected metric is too LOW and needs MORE volume — because the Lamarckian
+    repair raises θr (sheds volume), which would push a floor-short MID further from feasibility."""
+    mid_rows, M = ctx["mid_rows"], int(ctx["n_mid"])
+    P = shares.shape[0]
+    over = np.zeros((P, M), dtype=float)
+    if M == 0:
+        return over
+    cv, risk = ctx["cell_vol"], ctx["risk"]
+    _S = ctx.get("_mid_S")                                    # fast per-MID sums when available
+    vol = shares * cv[None, :]
+    midv = _mid_sums(vol, mid_rows, M, S=_S)
+    if ctx.get("vamp_cap") is not None:                       # per-vampMid aggregate VAMP rate
+        midvr = _mid_sums(vol * risk[None, :], mid_rows, M, S=_S)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rate = np.where(midv > 1e-12, midvr / midv, 0.0)
+        over = np.maximum(over, np.maximum(rate / max(ctx["vamp_cap"], 1e-9) - 1.0, 0.0))
+    if ctx.get("mid_vol_cap") is not None:                    # per-MID volume / projected caps
+        _cap_v = np.where(ctx["mid_vol_cap"] > 0, ctx["mid_vol_cap"], np.inf)
+        over = np.maximum(over, np.maximum(midv / _cap_v[None, :] - 1.0, 0.0))
+    _bands = ctx.get("midband")
+    if _bands:                                                # month-specific per-MID bands
+        _bvol = ctx.get("mid_base_vol")
+        with np.errstate(divide="ignore", invalid="ignore"):
+            _fmid = (np.where(_bvol[None, :] > 1e-12, midv / _bvol[None, :], 1.0)
+                     if _bvol is not None else np.ones_like(midv))
+        for _b in _bands:
+            _mi, _bval, _ceil, _floor = _b[0], _b[1], _b[2], _b[3]
+            _proj = _fmid[:, _mi] * float(_bval)
+            if _ceil is not None:
+                over[:, _mi] = np.maximum(over[:, _mi],
+                                          np.maximum(_proj / max(float(_ceil), 1e-9) - 1.0, 0.0))
+            if include_floor_shortfall and _floor is not None and float(_floor) > 0:
+                over[:, _mi] = np.maximum(over[:, _mi],
+                                          np.maximum(1.0 - _proj / max(float(_floor), 1e-9), 0.0))
+    return over
+
+
+# ===========================================================================
+# CMA-ES cross-cell per-vampMid tilt search  (live engine as of 2026-07-25).
+#
+# Replaces the hand-rolled GA above. Eight upgrades, all always-on:
+#   1. CMA-ES  — a covariance-adapting evolution strategy searches the tilt
+#      genome, learning which MIDs to move together and self-tuning its step size.
+#      ACTIVE variant: the worst samples' directions are actively shrunk (negative
+#      recombination weights) for faster, more reliable convergence at zero extra
+#      evaluations.
+#   2. Memetic gradient polish — after CMA-ES, an SLSQP refine using the ANALYTIC
+#      gradient of revenue AND of the (smooth) violation through the softmax decode
+#      lands on the local KKT optimum precisely (Nelder–Mead only as a fallback).
+#      Accepted only if feasibility-first BETTER.
+#   3. ε-constrained feasibility ranking — early generations rank with a RELAXED
+#      violation tolerance ε that shrinks to 0, so the search can cross slightly
+#      infeasible ground to reach better basins, then tightens to exact compliance.
+#      The returned best is always judged STRICTLY feasible (ε=0).
+#   4. Smooth 'wall' — the constraint measure is the CONTINUOUS relative overage
+#      (0 exactly at the cap), so the search sees a smooth gradient toward compliance.
+#   5. Second tilt axis — each MID has θr (toward LOW-risk cells), θq (toward
+#      HIGH-revenue cells) and g (overall presence):
+#          share_g ∝ ref_g · exp(−θr·zr_g + θq·zq_g + g_mid)     genome = 3·n_mid.
+#   6. Freed-volume redistribution — the reference base is leaned low-risk (see 8),
+#      so shed volume lands on LOW-risk recipients.
+#   7. IPOP restarts + archive reseed — several CMA-ES restarts, each reseeded from
+#      the incumbent with a DOUBLED population (IPOP) and wider step, returning a
+#      diverse archive.
+#   8. Leaned reference — the θ=0 base is nudged toward lower risk by γ (per-endpoint:
+#      ≈0 at the revenue-max end, larger at the risk-min end).
+#   9. Lamarckian repair — before scoring, each breaching MID's risk-tilt θr is nudged
+#      up (down the violation gradient) and written back, so the population drifts
+#      toward feasibility and surfaces higher-revenue feasible points.
+#  10. Greedy warm-start — the caller can pass a known FEASIBLE split (e.g. the greedy
+#      compliant one); a genome is fitted to it and seeds the search INSIDE the feasible
+#      region, so the whole budget goes to improving revenue (via ctx['warm_shares']).
+#
+# Speed (numerically identical to ~1e-15): a precomputed sparse MID incidence matrix
+# for the hot per-MID sums; the incumbent's score reused from the last generation (no
+# re-evaluation); C^{-1/2} precomputed once per eigen-update; the decode's exp computed
+# only on eligible columns; per-cell cap/floor constants precomputed once; ctx arrays
+# forced float64-contiguous once.
+#
+# Deterministic given `seed`. Same (best_shares, info) contract as before, so the tab-3
+# caller and its warm-start / archive plumbing are unchanged.
+# ===========================================================================
+def _ret_z_per_mid(ret, mid_rows, n_mid, N):
+    """Standardise each vampMid's per-cell REVENUE-efficiency (rev_coef) across ITS
+    rows, so the return-tilt axis θq pulls that MID toward its own higher-revenue
+    cells (mirror of `_risk_z_per_mid` on the revenue axis)."""
+    z = np.zeros(N, dtype=float)
+    for m in range(n_mid):
+        r = mid_rows[m]
+        if len(r) == 0:
+            continue
+        rr = ret[r]
+        sd = rr.std()
+        z[r] = (rr - rr.mean()) / sd if sd > 1e-12 else 0.0
+    return z
+
+
+def _leaned_ref(ref, risk, elig, cell_starts, cell_counts, gamma):
+    """Lean the revenue reference gently toward LOWER global risk (γ ≥ 0): the θ=0
+    base — and therefore where freed volume redistributes — starts a little compliant
+    (improvements #6 and #8). γ is dimensionless (risk standardised across eligible
+    rows). γ=0 returns the reference unchanged. Result is renormalised per cell."""
+    gamma = float(gamma)
+    if gamma <= 0.0:
+        return np.asarray(ref, float)
+    ref = np.asarray(ref, float)
+    e = np.asarray(elig, float) > 0.5
+    rr = risk[e]
+    if rr.size == 0:
+        return ref
+    sd = rr.std()
+    zg = np.zeros_like(risk, dtype=float)
+    if sd > 1e-12:
+        zg[e] = (risk[e] - rr.mean()) / sd
+    w = ref * np.exp(-gamma * zg)
+    seg = np.add.reduceat(w, cell_starts)
+    seg = np.where(seg > 1e-12, seg, 1.0)
+    return w / np.repeat(seg, cell_counts)
+
+
+def _cap_floor_prep(cell_starts, cell_counts, elig, cap, floor):
+    """Precompute the per-cell CONSTANTS the max-share/floor water-fill needs, so they
+    are built ONCE per problem instead of on every decode (bit-identical, pure saving).
+    Returns None when neither cap nor floor binds. `elig_row`, `capN`, `fl`, `n_elig_cell`
+    match the arrays `_cap_floor_shares` recomputes internally each call."""
+    cap = float(cap); floor = float(floor)
+    if cap >= 1.0 and floor <= 0.0:
+        return None
+    elig = np.asarray(elig, float)
+    elig_row = elig[None, :] > 0.5
+    n_elig_cell = np.repeat(np.add.reduceat(elig, cell_starts), cell_counts)      # (N,)
+    fl = None
+    if floor > 0.0:
+        fl = np.minimum(floor, np.where(n_elig_cell > 0, 1.0 / np.maximum(n_elig_cell, 1.0),
+                                        0.0))[None, :]
+    capN = np.where(n_elig_cell >= 2, cap, 1.0)[None, :] if cap < 1.0 else None
+    return {"elig_row": elig_row, "n_elig_cell": n_elig_cell, "fl": fl, "capN": capN,
+            "cap": cap, "floor": floor,
+            "cell_starts": np.asarray(cell_starts), "cell_counts": np.asarray(cell_counts)}
+
+
+def _cap_floor_apply(X, prep):
+    """HARD per-cell floor-then-cap water-fill using PRECOMPUTED constants (`prep` from
+    `_cap_floor_prep`). Byte-identical to `_cap_floor_shares` — same order of operations,
+    only the per-cell constants are reused rather than rebuilt each call."""
+    cs, ccnt = prep["cell_starts"], prep["cell_counts"]
+    elig_row, fl, capN = prep["elig_row"], prep["fl"], prep["capN"]
+    if fl is not None:
+        for _ in range(50):
+            under = elig_row & (X < fl - 1e-12)
+            if not under.any():
+                break
+            deficit_cell = np.repeat(np.add.reduceat(np.where(under, fl - X, 0.0), cs,
+                                                     axis=1), ccnt, axis=1)
+            X = np.where(under, fl, X)
+            give = np.where(elig_row & (~under) & (X > fl + 1e-12), X - fl, 0.0)
+            give_cell = np.repeat(np.add.reduceat(give, cs, axis=1), ccnt, axis=1)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                X = X - np.where(give_cell > 1e-12, give * deficit_cell / give_cell, 0.0)
+    if capN is not None:
+        for _ in range(50):
+            over = X > capN + 1e-12
+            if not over.any():
+                break
+            excess_col = np.where(over, X - capN, 0.0)
+            excess_cell = np.repeat(np.add.reduceat(excess_col, cs, axis=1), ccnt, axis=1)
+            X = np.where(over, capN, X)
+            room = np.where(elig_row & (~over) & (X < capN - 1e-12), capN - X, 0.0)
+            room_cell = np.repeat(np.add.reduceat(room, cs, axis=1), ccnt, axis=1)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                X = X + np.where(room_cell > 1e-12, room * excess_cell / room_cell, 0.0)
+    return X
+
+
+def _risk_z_per_cell(risk, cell_starts, cell_counts, N):
+    """Standardise each CELL's per-gateway risk across ITS rows (mirror of `_risk_z_per_mid`
+    but per cell), so a per-cell fine tilt can shift share within one cell toward its
+    lower-risk gateways. Vectorised via reduceat (no Python loop over cells)."""
+    cnt = np.maximum(cell_counts.astype(float), 1.0)
+    smean = np.add.reduceat(risk, cell_starts) / cnt
+    var = np.add.reduceat(risk * risk, cell_starts) / cnt - smean * smean
+    sd = np.sqrt(np.maximum(var, 0.0))
+    mean_row = np.repeat(smean, cell_counts)
+    sd_row = np.repeat(sd, cell_counts)
+    z = np.where(sd_row > 1e-12, (risk - mean_row) / sd_row, 0.0)
+    return z, sd            # sd (per-cell) also used to pick the fine-tilt cells
+
+
+def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
+                     cap=1.0, floor=0.0, *, eidx=None, prep=None,
+                     fine_idx=None, zr_cell=None, n_fine=0):
+    """genome (P, 3M[+K]) = [θr (risk-tilt) | θq (return-tilt) | g (gain) | cellθ (K fine)] -> (P, N).
+
+        share_g ∝ ref_g · exp(−θr·zr_g + θq·zq_g + g_mid − cellθ_cell·zr_cell_g) · elig
+
+    renormalised per cell, then the HARD max-share cap / exploration floor. θr (≥0) pulls a MID
+    toward its LOW-risk cells, θq (≥0) toward its HIGH-revenue cells, g moves its overall
+    presence, and the optional per-cell fine tilt cellθ (≥0, `n_fine` of them, on the top-K
+    risk-heavy cells via `fine_idx`/`zr_cell`) shifts share WITHIN one cell toward its low-risk
+    gateways — extra reach the coarse per-MID tilt can't provide. `n_fine`=0 (default) is the
+    exact 3M-genome behaviour.
+
+    Speed (identical results): with `eidx` (eligible column indices) the exp is computed only on
+    eligible columns; `prep` reuses precomputed cap/floor constants."""
+    if M == 0:
+        w = ref[None, :] * elig[None, :]
+        seg = np.add.reduceat(w, cell_starts, axis=1)
+        seg = np.where(seg > 1e-12, seg, 1.0)
+        X = w / np.repeat(seg, cell_counts, axis=1)
+        if prep is not None:                                 # enforce the HARD cap/floor here too
+            X = _cap_floor_apply(X, prep)
+        elif cap < 1.0 or floor > 0.0:
+            X = _cap_floor_shares(X, cell_starts, cell_counts, elig, float(cap), float(floor))
+        return X
+    P = genome.shape[0]; N = mid_id.shape[0]
+    tr = genome[:, :M]; tq = genome[:, M:2 * M]; gg = genome[:, 2 * M:3 * M]
+    _cols = eidx if (eidx is not None and eidx.shape[0] < N) else np.arange(N)
+    mi = mid_id[_cols]
+    a = -tr[:, mi] * zr[None, _cols] + tq[:, mi] * zq[None, _cols] + gg[:, mi]
+    if int(n_fine) and fine_idx is not None:                 # per-cell fine tilt on selected cells
+        _fi = fine_idx[_cols]
+        _fm = _fi >= 0
+        if _fm.any():
+            _cth = genome[:, 3 * M:3 * M + int(n_fine)]      # (P, K)
+            a[:, _fm] = a[:, _fm] - _cth[:, _fi[_fm]] * zr_cell[None, _cols][:, _fm]
+    w = np.zeros((P, N), dtype=float)
+    w[:, _cols] = ref[None, _cols] * np.exp(a) * elig[None, _cols]
     seg = np.add.reduceat(w, cell_starts, axis=1)
     seg = np.where(seg > 1e-12, seg, 1.0)
     X = w / np.repeat(seg, cell_counts, axis=1)
-    if cap < 1.0 or floor > 0.0:
+    if prep is not None:
+        X = _cap_floor_apply(X, prep)
+    elif cap < 1.0 or floor > 0.0:
         X = _cap_floor_shares(X, cell_starts, cell_counts, elig, float(cap), float(floor))
     return X
+
+
+def _obj_viol(shares, ctx):
+    """Split the score into (objective, violation) for feasibility-first ranking.
+
+    objective (P,) = revenue [− risk_min term], MAXIMISED among FEASIBLE splits.
+    violation (P,) = summed RELATIVE constraint overage across the per-vampMid VAMP-rate
+        cap, per-MID volume caps and projected bands — CONTINUOUS and exactly 0 when
+        compliant (the smooth 'wall', improvement #4). No fixed step, no λ.
+    Mirrors the risk maths in `_fitness` so the two engines agree on what a breach is."""
+    cv, risk, rc = ctx["cell_vol"], ctx["risk"], ctx["rev_coef"]
+    mid_rows, M = ctx["mid_rows"], int(ctx["n_mid"])
+    _S = ctx.get("_mid_S")                                   # precomputed incidence (fast path)
+    P = shares.shape[0]
+    revenue = (shares * rc[None, :]).sum(axis=1)
+    obj = revenue.astype(float).copy()
+    viol = np.zeros(P, dtype=float)
+    if M and (ctx.get("vamp_cap") is not None or ctx.get("mid_vol_cap") is not None
+              or ctx.get("midband")):
+        vol = shares * cv[None, :]
+        midv = _mid_sums(vol, mid_rows, M, S=_S)
+        if ctx.get("vamp_cap") is not None:
+            midvr = _mid_sums(vol * risk[None, :], mid_rows, M, S=_S)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                rate = np.where(midv > 1e-12, midvr / midv, 0.0)
+            viol += np.maximum(rate / max(ctx["vamp_cap"], 1e-9) - 1.0, 0.0).sum(axis=1)
+        if ctx.get("mid_vol_cap") is not None:
+            _cap_v = np.where(ctx["mid_vol_cap"] > 0, ctx["mid_vol_cap"], np.inf)
+            viol += np.maximum(midv / _cap_v[None, :] - 1.0, 0.0).sum(axis=1)
+        _bands = ctx.get("midband")
+        if _bands:
+            _bvol = ctx.get("mid_base_vol")
+            with np.errstate(divide="ignore", invalid="ignore"):
+                _fmid = (np.where(_bvol[None, :] > 1e-12, midv / _bvol[None, :], 1.0)
+                         if _bvol is not None else np.ones_like(midv))
+            for _b in _bands:
+                _mi, _bval, _ceil, _floor = _b[0], _b[1], _b[2], _b[3]
+                _proj = _fmid[:, _mi] * float(_bval)
+                if _ceil is not None:
+                    viol += np.maximum(_proj / max(float(_ceil), 1e-9) - 1.0, 0.0)
+                if _floor is not None and float(_floor) > 0:
+                    viol += np.maximum(1.0 - _proj / max(float(_floor), 1e-9), 0.0)
+    # Structural caps AND the exploration floor are hard-enforced in the decode, so these are
+    # ≈0 — kept as a symmetric safety net so a split the decode could not fully repair still
+    # ranks as infeasible (previously only the cap was checked, not the floor).
+    _cap = float(ctx.get("max_share", 1.0) or 1.0)
+    if _cap < 1.0:
+        viol += (np.maximum(shares - _cap, 0.0) / max(_cap, 1e-9)).sum(axis=1)
+    _floor = float(ctx.get("floor", 0.0) or 0.0)
+    if _floor > 0.0 and ctx.get("cell_starts") is not None:
+        _cs = np.asarray(ctx["cell_starts"]); _cc = np.asarray(ctx["cell_counts"])
+        _el = np.asarray(ctx["elig"], float)
+        _nec = np.repeat(np.add.reduceat(_el, _cs), _cc)         # eligible gateways per cell
+        _fl = np.minimum(_floor, np.where(_nec > 0, 1.0 / np.maximum(_nec, 1.0), 0.0))
+        _mask = (_el > 0.5) & (_nec >= 2)                        # single-gateway cells can't be floored
+        viol += (np.maximum(_fl[None, :] - shares, 0.0) * _mask[None, :]
+                 / max(_floor, 1e-9)).sum(axis=1)
+    # RISK-MINIMISATION secondary objective (safe compliant endpoint only). Among equally
+    # compliant splits, prefer the one that also carries LESS total risk. Auto-scaled by
+    # the caller via ctx['risk_min_w']; 0 leaves the pure-revenue objective unchanged.
+    _rmw = float(ctx.get("risk_min_w", 0.0))
+    if _rmw > 0.0 and M:
+        _vol = shares * cv[None, :]
+        _vfr = ctx.get("vamp_floor_route")
+        if _vfr is not None:
+            _midvr = _mid_sums(_vol * risk[None, :], mid_rows, M, S=_S)
+            _excess = np.maximum(_midvr - np.asarray(_vfr, float)[None, :], 0.0)
+            obj = obj - _rmw * _excess.sum(axis=1)
+        else:
+            obj = obj - _rmw * (_vol * risk[None, :]).sum(axis=1)
+    return obj, viol
+
+
+_FEAS_TOL = 1e-9
+
+
+def _feas_keys(obj, viol, tol=_FEAS_TOL):
+    """Deb feasibility-first ranking as a MINIMISABLE key (improvement #3). Feasible
+    rows rank by −objective (so higher revenue wins); infeasible rows all rank ABOVE
+    the worst feasible, ordered by violation. If nothing is feasible, rank by violation
+    alone. Order-only — CMA-ES is rank-based, so the per-generation reference is fine."""
+    obj = np.asarray(obj, float)
+    viol = np.asarray(viol, float)
+    key = np.empty_like(obj)
+    f = viol <= tol
+    if f.any():
+        f_worst = float(obj[f].min())
+        key[f] = -obj[f]
+        key[~f] = -f_worst + viol[~f]
+    else:
+        key[:] = viol
+    return key
+
+
+def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=None,
+           eps0=0.0, repair=None):
+    """Active (μ/μ_w, λ)-CMA-ES over the box [lo, hi] (bounds via clipping). `eval_ov(X)`
+    returns (objective, violation) per row; ranking is feasibility-first with an
+    ε-CONSTRAINED tolerance that starts at `eps0` and shrinks to 0 (early generations may
+    cross slightly-infeasible ground, later ones are strict). The returned best is judged
+    STRICTLY feasible. `repair(X)->X'` is an optional Lamarckian repair applied to samples
+    before scoring (repaired points drive the update). Active negative recombination weights
+    (Hansen 2016) shrink the worst directions. Returns (best_x, best_key, best_ov, gen_trace).
+    Self-contained numpy; deterministic given `seed`."""
+    rng = np.random.default_rng(int(seed))
+    x0 = np.asarray(x0, float)
+    D = x0.shape[0]
+    lo = np.asarray(lo, float); hi = np.asarray(hi, float)
+    xmean = np.clip(x0.copy(), lo, hi)
+    sigma = float(sigma0)
+    lam = int(max(4, popsize)); mu = max(1, lam // 2)
+    # Active-CMA raw weights: positive for the best μ, negative for the worst λ−μ.
+    wp = np.log((lam + 1) / 2.0) - np.log(np.arange(1, lam + 1))
+    w_pos, w_neg = wp[:mu], wp[mu:]
+    mueff = float((w_pos.sum() ** 2) / np.sum(w_pos ** 2))
+    _neg_ss = float(np.sum(w_neg ** 2))
+    mueff_neg = float((w_neg.sum() ** 2) / _neg_ss) if (w_neg.size and _neg_ss > 0) else 0.0
+    cc = (4 + mueff / D) / (D + 4 + 2 * mueff / D)
+    cs = (mueff + 2) / (D + mueff + 5)
+    c1 = 2.0 / ((D + 1.3) ** 2 + mueff)
+    cmu = min(1 - c1, 2 * (mueff - 2 + 1 / mueff) / ((D + 2) ** 2 + mueff))
+    damps = 1 + 2 * max(0.0, np.sqrt((mueff - 1) / (D + 1)) - 1) + cs
+    w = wp.copy()
+    w[:mu] = w_pos / w_pos.sum()                             # positive weights sum to 1
+    if w_neg.size:
+        _a_mu = 1 + c1 / max(cmu, 1e-23)
+        _a_mueff = 1 + 2 * mueff_neg / (mueff + 2)
+        _a_posdef = (1 - c1 - cmu) / max(D * cmu, 1e-23)
+        _scale_neg = min(_a_mu, _a_mueff, _a_posdef)
+        w[mu:] = _scale_neg * w_neg / max(-w_neg.sum(), 1e-23)
+    pc = np.zeros(D); ps = np.zeros(D)
+    B = np.eye(D); Dd = np.ones(D); C = np.eye(D); invsqrtC = np.eye(D)
+    chiN = np.sqrt(D) * (1 - 1.0 / (4 * D) + 1.0 / (21 * D * D))
+    best_x = xmean.copy(); best_key = np.inf; best_ov = (-np.inf, np.inf)
+    gen_trace = []
+    counteval = 0; eigeneval = 0
+    _stall = 0; _stall_max = 10 + int(30 * D / lam)          # convergence early-stop (TolFun/TolX)
+    _fin_obj = _fin_viol = None                              # last generation's population (obj, viol)
+    for it in range(int(max_iter)):
+        if stop_check is not None and stop_check():
+            break
+        Z = rng.standard_normal((lam, D))
+        Y = ((B * Dd[None, :]) @ Z.T).T                      # (lam, D) = B·diag(Dd)·z
+        X = xmean[None, :] + sigma * Y
+        Xc = np.clip(X, lo[None, :], hi[None, :])
+        if repair is not None:                               # Lamarckian: repaired points are used
+            Xc = np.clip(np.asarray(repair(Xc), float), lo[None, :], hi[None, :])
+        obj, viol = eval_ov(Xc)
+        obj = np.asarray(obj, float); viol = np.asarray(viol, float)
+        counteval += lam
+        eps_it = float(eps0) * max(0.0, 1.0 - it / max(1.0, 0.8 * max_iter))   # relax early, strict late
+        rkeys = _feas_keys(obj, viol, tol=max(eps_it, _FEAS_TOL))              # SELECTION (relaxed)
+        skeys = _feas_keys(obj, viol, tol=_FEAS_TOL)                          # BEST-TRACK (strict)
+        idx = np.argsort(rkeys, kind="stable")
+        _b = int(np.argmin(skeys))
+        if skeys[_b] < best_key - 1e-12:
+            best_key = float(skeys[_b]); best_x = Xc[_b].copy()
+            best_ov = (float(obj[_b]), float(viol[_b])); _stall = 0
+        else:
+            _stall += 1
+        gen_trace.append((float(skeys.min()), float(skeys.mean()), float(sigma),
+                          float(viol[_b]), float(eps_it)))     # + best violation, ε tolerance
+        _fin_obj, _fin_viol = obj, viol                       # last generation's population
+        Xsorted = Xc[idx]
+        xold = xmean.copy()
+        xmean = w[:mu] @ Xsorted[:mu]                        # mean: POSITIVE weights only
+        ysel = (xmean - xold) / sigma
+        ps = (1 - cs) * ps + np.sqrt(cs * (2 - cs) * mueff) * (invsqrtC @ ysel)
+        hsig = (np.linalg.norm(ps) / np.sqrt(1 - (1 - cs) ** (2 * (it + 1))) / chiN) < (1.4 + 2 / (D + 1))
+        pc = (1 - cc) * pc + (np.sqrt(cc * (2 - cc) * mueff) if hsig else 0.0) * ysel
+        artmp = (Xsorted - xold[None, :]) / sigma            # all λ
+        w_o = w.copy()
+        if w_neg.size:                                       # length-normalise negative-weighted dirs
+            yv = (invsqrtC @ artmp.T).T
+            norm2 = np.sum(yv * yv, axis=1) + 1e-23
+            _neg = w < 0
+            w_o[_neg] = w[_neg] * D / norm2[_neg]
+        rank_mu = (artmp.T * w_o) @ artmp
+        cdelta = 0.0 if hsig else cc * (2 - cc)
+        C = ((1 - c1 - cmu * float(np.sum(w)) + c1 * cdelta) * C
+             + c1 * np.outer(pc, pc) + cmu * rank_mu)
+        sigma *= np.exp((cs / damps) * (np.linalg.norm(ps) / chiN - 1))
+        if not np.isfinite(sigma) or sigma <= 0:
+            break
+        # Convergence early-stop: no strict-best improvement for a while (TolFun), or the
+        # search distribution has collapsed below a floor (TolX) — the covariance is spent,
+        # so further generations just burn evaluations. Restarts still re-explore afterwards.
+        if _stall >= _stall_max or sigma * float(np.max(Dd)) < 1e-11:
+            break
+        if counteval - eigeneval > lam / max(c1 + cmu, 1e-12) / D / 10:
+            eigeneval = counteval
+            C = np.triu(C) + np.triu(C, 1).T                 # keep symmetric
+            vals, B = np.linalg.eigh(C)
+            Dd = np.sqrt(np.maximum(vals, 1e-20))
+            invsqrtC = (B * (1.0 / Dd)[None, :]) @ B.T        # C^{-1/2}, precomputed once/update
+        xmean = np.clip(xmean, lo, hi)
+    _fpop = ((np.asarray(_fin_obj, float), np.asarray(_fin_viol, float))
+             if _fin_obj is not None else (None, None))
+    return best_x, best_key, best_ov, gen_trace, _fpop
 
 
 def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
                    mutation_sigma=1.0, seed=42, elite_frac=0.2, auto=True,
                    patience=12, sigma_min=0.05, sigma_max=4.0, success_window=5,
-                   theta_max=25.0, gain_max=2.0, warm_start=None):
-    """Evolve a per-vampMid genome = [θ (cross-cell tilt) | g (overall-presence gain)],
-    maximising revenue − λ·risk_penalty. Genome is 2·n_mid dims (still tiny), so it stays
-    fast; the gain block lets a MID gain/shed net volume across cells (cross-MID moves the
-    tilt alone can't make). `warm_start` seeds known-good genomes (e.g. a prior run's winner)
-    into the population — free reach without more compute. Returns (best_shares (N,), info)
-    with info['genome'] for warm-starting the next run. Deterministic given `seed`."""
-    rng = np.random.default_rng(seed)
+                   theta_max=25.0, gain_max=2.0, warm_start=None,
+                   breach_targeted=True, breach_mut_boost=3.0,
+                   smart_init=True, init_tries=4,
+                   adaptive_lambda=True, breach_lambda_boost=4.0,
+                   archive_k=5, archive_min_dist=0.5, stop_check=None,
+                   n_restarts=2, polish=True, ref_gamma=None, n_fine=0):
+    """Active-CMA-ES cross-cell per-vampMid tilt search — the live engine (see the block
+    comment above for the full upgrade list). Genome = [θr | θq | g] (3·n_mid dims).
+    Ranking is ε-relaxed feasibility-first (compliant always beats non-compliant at the end),
+    so `lam` is no longer a penalty weight — accepted for interface compatibility and ignored.
+
+    Returns (best_shares (N,), info) with info['genome'] (3·n_mid) for warm-starting and
+    info['archive'] of diverse good genomes. Deterministic given `seed`.
+
+    Optional ctx keys: 'warm_shares' (a known feasible split to seed inside the feasible
+    region, #10), 'ref_gamma' (compliant lean γ, #8), '_mid_S' (cached incidence — built here
+    if absent). Legacy GA-only knobs (elite_frac, mutation_*, sigma_*, breach_*,
+    adaptive_lambda, smart_init, success_window, patience) are accepted but unused — CMA-ES
+    self-adapts. New knobs: n_restarts (IPOP restarts, #7), polish (SLSQP gradient refine, #2),
+    ref_gamma (overrides ctx; falls back to ctx['ref_gamma'] then 0.25)."""
     N = ctx["n_row"]; M = int(ctx["n_mid"])
-    cs = np.asarray(ctx["cell_starts"]); cc = np.asarray(ctx["cell_counts"])
-    elig = np.asarray(ctx["elig"], float)
-    ref = np.asarray(ctx["ref_share"], float)
-    mid_id = np.asarray(ctx["mid_id"])
-    z_mid = _risk_z_per_mid(np.asarray(ctx["risk"], float), ctx["mid_rows"], M, N)
-    _cap = float(ctx.get("max_share", 1.0) or 1.0)      # HARD max-share (enforced in decode)
-    _floor = float(ctx.get("floor", 0.0) or 0.0)        # HARD exploration floor
-    D = 2 * M                                            # genome = [θ | g]
-    gain_max = float(gain_max)
+    # Force float64-contiguous ONCE so the hot per-generation ops get zero-copy views.
+    _cont = lambda a, dt=float: np.ascontiguousarray(a, dtype=dt)
+    cs = _cont(ctx["cell_starts"], np.intp); cc = _cont(ctx["cell_counts"], np.intp)
+    elig = _cont(ctx["elig"])
+    ref0 = _cont(ctx["ref_share"])
+    mid_id = _cont(ctx["mid_id"], np.intp)
+    risk = _cont(ctx["risk"])
+    rc = _cont(ctx["rev_coef"])
+    cv = _cont(ctx["cell_vol"])
+    zr = _cont(_risk_z_per_mid(risk, ctx["mid_rows"], M, N))
+    zq = _cont(_ret_z_per_mid(rc, ctx["mid_rows"], M, N))
+    _cap = float(ctx.get("max_share", 1.0) or 1.0)
+    _floor = float(ctx.get("floor", 0.0) or 0.0)
+    _gamma = float(ctx.get("ref_gamma", 0.25) if ref_gamma is None else ref_gamma)
+    ref = _cont(_leaned_ref(ref0, risk, elig, cs, cc, _gamma))   # #8 leaned compliant base
+    theta_max = float(theta_max); gain_max = float(gain_max)
 
-    def _clip(x):
-        x = np.array(x, dtype=float, copy=True)
-        x[..., :M] = np.clip(x[..., :M], 0.0, theta_max)     # tilt >= 0
-        x[..., M:] = np.clip(x[..., M:], -gain_max, gain_max)  # gain symmetric
-        return x
+    # --- precomputed hot-path structures (built once; used every candidate) ---
+    _S = ctx.get("_mid_S")
+    if _S is None and M:
+        _S = _build_mid_incidence(mid_id, M, N)             # sparse per-MID sums (speed #1)
+    ctx["_mid_S"] = _S                                       # so _obj_viol uses the fast path
+    _eidx = np.nonzero(elig > 0.5)[0].astype(np.intp)        # eligible columns (speed #4)
+    _prep = _cap_floor_prep(cs, cc, elig, _cap, _floor)      # cap/floor constants (speed, identical)
+    _bands = ctx.get("midband")
+    _base_v = ctx.get("mid_base_vol")
+    _vcap = ctx.get("vamp_cap"); _volcap = ctx.get("mid_vol_cap")
 
-    def _decode(genome):
-        return _decode_midtilt(genome[:, :M], ref, z_mid, mid_id, cs, cc, elig, _cap, _floor,
-                               gain=genome[:, M:])
+    # #4 richer genome: give the TOP-K risk-heavy cells (high volume × within-cell risk spread)
+    # their own fine tilt so the search can move share WITHIN a cell toward low-risk gateways —
+    # reach the coarse per-MID tilt lacks. n_fine=0 keeps the exact 3M-genome behaviour.
+    _K = int(max(0, min(int(n_fine), len(cs))))
+    _fine_idx = None; _zr_cell = None
+    if _K > 0 and M > 0:
+        _zr_cell, _cell_sd = _risk_z_per_cell(risk, cs, cc, N)
+        _cell_vol = cv[cs]                                   # per-cell volume (rows share it)
+        _score = _cell_vol * _cell_sd                        # worth-tilting = big & risk-spread
+        _fine_cells = np.argsort(-_score, kind="stable")[:_K]
+        _fine_idx = np.full(N, -1, dtype=np.intp)
+        for _j, _ci in enumerate(_fine_cells):
+            _s0 = int(cs[_ci]); _s1 = _s0 + int(cc[_ci])
+            _fine_idx[_s0:_s1] = _j
+        _zr_cell = _cont(_zr_cell)
 
-    def fit_of(genome):
-        return _fitness(_decode(genome), ctx, lam)
+    def _decode(G):
+        return _decode_midtilt3(G, M, ref, zr, zq, mid_id, cs, cc, elig, _cap, _floor,
+                                eidx=_eidx, prep=_prep,
+                                fine_idx=_fine_idx, zr_cell=_zr_cell, n_fine=_K)
 
-    pop = np.zeros((pop_size, D), dtype=float)           # member 0 = θ=0,g=0 = revenue reference
-    if pop_size > 1:
-        pop[1:, :M] = rng.uniform(0.0, theta_max * 0.5, size=(pop_size - 1, M))
-        pop[1:, M:] = rng.uniform(-gain_max * 0.5, gain_max * 0.5, size=(pop_size - 1, M))
-    if warm_start is not None:                           # seed prior winners after member 0
+    def _decode_precap(G):                                   # softmax shares w/o cap/floor (grads)
+        return _decode_midtilt3(G, M, ref, zr, zq, mid_id, cs, cc, elig, 1.0, 0.0,
+                                eidx=_eidx, prep=None,
+                                fine_idx=_fine_idx, zr_cell=_zr_cell, n_fine=_K)
+
+    # --- degenerate: no per-MID levers -> the (leaned) reference is the answer ---
+    if M == 0:
+        best = _decode(np.zeros((1, 0)))[0]
+        _rev = float((best * rc).sum())
+        return best, {"gens": 0, "gens_max": int(generations), "early_stopped": False,
+                      "sigma_final": 0.0, "best_fit": _rev, "init_fit": _rev,
+                      "revenue": _rev, "risk_cost": 0.0, "dims": 0,
+                      "genome": np.zeros(0), "archive": np.zeros((1, 0)), "history": []}
+
+    D = 3 * M + _K
+    # CMA-ES runs in a UNIT box [0,1]^D so all coordinates share a scale; map to the actual
+    # bounds (θr,θq ∈ [0, theta_max]; g ∈ [−gain_max, gain_max]; cellθ ∈ [0, theta_max]).
+    lo_a = np.concatenate([np.zeros(M), np.zeros(M), np.full(M, -gain_max), np.zeros(_K)])
+    hi_a = np.concatenate([np.full(M, theta_max), np.full(M, theta_max), np.full(M, gain_max),
+                           np.full(_K, theta_max)])
+    span = np.where(hi_a - lo_a > 1e-12, hi_a - lo_a, 1.0)
+
+    def _to_actual(V):
+        return lo_a[None, :] + np.asarray(V, float) * span[None, :]
+
+    def _to_unit(x):
+        return np.clip((np.asarray(x, float) - lo_a) / span, 0.0, 1.0)
+
+    def eval_ov(V):                                          # unit pop -> (objective, violation)
+        return _obj_viol(_decode(_to_actual(V)), ctx)
+
+    def score_of(gu):                                        # unit genome -> (obj, viol)
+        obj, viol = _obj_viol(_decode(_to_actual(np.asarray(gu)[None, :])), ctx)
+        return float(obj[0]), float(viol[0])
+
+    def better(a, b):                                        # feasibility-first strict-better
+        ao, av = a; bo, bv = b
+        af = av <= _FEAS_TOL; bf = bv <= _FEAS_TOL
+        if af != bf:
+            return af
+        return ao > bo if af else av < bv
+
+    def _cellrep(v):                                         # (N,) -> per-cell sum, repeated (N,)
+        return np.repeat(np.add.reduceat(v, cs), cc)
+
+    def _midsum1(v):                                         # (N,) -> (M,) per-MID sum (fast path)
+        return (np.asarray(_S.dot(v)).ravel() if _S is not None
+                else _mid_sums(v[None, :], ctx["mid_rows"], M)[0])
+
+    # #9/#2 memetic gradients: analytic ∂revenue and ∂(smooth violation) through the
+    # ref-weighted softmax decode, for a single genome (unit space). Used by the SLSQP
+    # polish. The violation here is the SMOOTH pre-cap surrogate (VAMP-rate + volume + bands);
+    # the accept test still uses the true post-cap feasibility-first score.
+    def _fine_grad(vec):                                     # (N,) d or e -> (K,) fine-tilt gradient
+        if _K <= 0 or _fine_idx is None:
+            return np.zeros(0)
+        _m = _fine_idx >= 0
+        return -np.bincount(_fine_idx[_m], weights=(_zr_cell * vec)[_m], minlength=_K)
+
+    def _grads(gu):
+        G = _to_actual(np.clip(gu, 0.0, 1.0)[None, :])
+        X = _decode_precap(G)[0]                             # (N,)
+        RbarC = _cellrep(rc * X)
+        d = X * (rc - RbarC)
+        gR = np.concatenate([-_midsum1(zr * d), _midsum1(zq * d), _midsum1(d), _fine_grad(d)]) * span
+        R = float((X * rc).sum())
+        # violation sensitivities per MID: dV/dA_m (VAMP rate), dV/dB_m (volume + bands)
+        u = cv * X
+        A = _midsum1(u * risk); Bm = _midsum1(u)
+        Bs = np.where(Bm > 1e-12, Bm, 1.0)
+        rate = np.where(Bm > 1e-12, A / Bs, 0.0)
+        gA = np.zeros(M); gB = np.zeros(M); V = 0.0
+        if _vcap is not None:
+            o = rate / max(float(_vcap), 1e-9) - 1.0
+            act = o > 0.0
+            V += float(np.maximum(o, 0.0).sum())
+            gr = np.where(act, 1.0 / max(float(_vcap), 1e-9), 0.0)
+            gA += gr / Bs
+            gB += -gr * rate / Bs
+        if _volcap is not None:
+            capv = np.where(np.asarray(_volcap) > 0, np.asarray(_volcap, float), np.inf)
+            ov = Bm / capv - 1.0
+            act = ov > 0.0
+            V += float(np.maximum(ov, 0.0).sum())
+            gB += np.where(act, 1.0 / capv, 0.0)
+        if _bands:
+            fmid = (np.where(np.asarray(_base_v) > 1e-12, Bm / np.where(np.asarray(_base_v) > 1e-12,
+                    np.asarray(_base_v, float), 1.0), 1.0) if _base_v is not None else np.ones(M))
+            for _bd in _bands:
+                _mi, _bval, _ceil, _flr = _bd[0], _bd[1], _bd[2], _bd[3]
+                _proj = fmid[_mi] * float(_bval)
+                _bden = max(float(_base_v[_mi]), 1e-12) if _base_v is not None else 1.0
+                if _ceil is not None:
+                    _oc = _proj / max(float(_ceil), 1e-9) - 1.0
+                    if _oc > 0.0:
+                        V += _oc
+                        gB[_mi] += (1.0 / max(float(_ceil), 1e-9)) * float(_bval) / _bden
+                if _flr is not None and float(_flr) > 0:
+                    _un = 1.0 - _proj / max(float(_flr), 1e-9)
+                    if _un > 0.0:
+                        V += _un
+                        gB[_mi] += -(float(_bval) / _bden) / max(float(_flr), 1e-9)
+        p = cv * (gA[mid_id] * risk + gB[mid_id])
+        e = X * (p - _cellrep(p * X))
+        gV = np.concatenate([-_midsum1(zr * e), _midsum1(zq * e), _midsum1(e), _fine_grad(e)]) * span
+        return R, gR, V, gV
+
+    # #10 greedy warm-start: fit a genome whose decode ≈ a supplied FEASIBLE split so the
+    # search starts INSIDE the feasible region (fitted once; cheap L-BFGS on ‖decode−target‖²).
+    def _fit_to_target(target):
+        t = np.clip(np.asarray(target, float), 0.0, None)
+        try:
+            from scipy.optimize import minimize as _minimize
+
+            def _loss(z):
+                X = _decode_precap(_to_actual(np.clip(z, 0.0, 1.0)[None, :]))[0]
+                return 0.5 * float(((X - t) ** 2).sum())
+
+            _r = _minimize(_loss, _to_unit(np.zeros(D)), method="L-BFGS-B",
+                           bounds=[(0.0, 1.0)] * D, options={"maxiter": 60})
+            return np.clip(np.asarray(_r.x, float), 0.0, 1.0)
+        except Exception:
+            return None
+
+    # #1 diverse multi-seed starts: an explicit warm_start genome, each supplied warm split
+    # (ctx['warm_shares'] may be ONE split OR a LIST — e.g. revenue-greedy AND risk-greedy),
+    # fitted to a genome, plus the θ=0 leaned reference. Deduped, best (feasibility-first) first;
+    # each seeds one restart so the search explores several corners, not just one.
+    def _seed_key(sv):
+        return (0 if sv[1] <= _FEAS_TOL else 1, -sv[0] if sv[1] <= _FEAS_TOL else sv[1])
+    _seed_us = []
+    if warm_start is not None:
         _ws = np.atleast_2d(np.asarray(warm_start, float))
-        if _ws.ndim == 2 and _ws.shape[1] == D and pop_size > 1:
-            _k = min(len(_ws), pop_size - 1)
-            pop[1:1 + _k] = _clip(_ws[:_k])
-    fit = fit_of(pop)
-    n_elite = max(1, int(round(elite_frac * pop_size)))
-    sigma = float(max(mutation_sigma, sigma_max * 0.5)) if auto else float(mutation_sigma)
-    _g_scale = (gain_max / theta_max) if theta_max > 1e-9 else 1.0   # gain noise ~ its range
-    init_fit = float(fit.max()); best_fit = init_fit
-    best_g = pop[int(np.argmax(fit))].copy()
-    hist, stale = [], 0; _C = 0.85; gens_run = 0
+        if _ws.ndim == 2 and _ws.shape[1] == D:
+            for _row in _ws[:3]:
+                _seed_us.append(_to_unit(_row))
+    _wsh = ctx.get("warm_shares")
+    if _wsh is not None:
+        _wa = None if isinstance(_wsh, (list, tuple)) else np.asarray(_wsh, float)
+        _wlist = (list(_wsh) if isinstance(_wsh, (list, tuple))
+                  else ([_wa[i] for i in range(_wa.shape[0])] if (_wa is not None and _wa.ndim == 2)
+                        else [_wsh]))
+        for _w in _wlist[:3]:
+            _f = _fit_to_target(_w)
+            if _f is not None:
+                _seed_us.append(_f)
+    _seed_us.append(_to_unit(np.zeros(D)))                   # leaned reference — always available
+    _uniq = {}
+    for _u in _seed_us:
+        _u = np.clip(np.asarray(_u, float), 0.0, 1.0)
+        if _u.shape[0] == D:
+            _uniq.setdefault(np.round(_u, 6).tobytes(), _u)
+    _seeds = sorted(_uniq.values(), key=lambda u: _seed_key(score_of(u))) or [_to_unit(np.zeros(D))]
+    x0_u = _seeds[0]
 
-    for g in range(generations):
-        gens_run = g + 1
-        order = np.argsort(-fit)
-        elite = pop[order[:n_elite]].copy()
+    # #9 Lamarckian repair: nudge each breaching MID's risk-tilt θr UP (reduces its VAMP rate /
+    # volume / band-CEILING overage), written back so the population drifts toward feasibility.
+    # Only SHED-fixable breaches drive it (include_floor_shortfall=False), so a MID that is short
+    # of a band FLOOR — which needs MORE volume, not less — is never pushed the wrong way. The
+    # nudge is a BOUNDED, dimensionless unit-space step: over/(1+over) squashes any relative
+    # overage into [0,1), so the θr move is ≤ _REPAIR_LR regardless of the overage scale.
+    _REPAIR_LR = 0.30
 
-        def _pick():
-            c = rng.integers(0, pop_size, size=3)
-            return c[np.argmax(fit[c])]
-        children = np.empty_like(pop)
-        children[:n_elite] = elite
-        for k in range(n_elite, pop_size):
-            a, b = pop[_pick()], pop[_pick()]
-            wq = rng.random(D)
-            child = wq * a + (1 - wq) * b
-            m = rng.random(D) < mutation_rate
-            noise = rng.normal(0.0, sigma, size=D)
-            noise[M:] *= _g_scale                        # scale gain mutations to the gain range
-            child = np.where(m, child + noise, child)
-            children[k] = _clip(child)
-        pop = children
-        fit = fit_of(pop)
+    def _repair(Vpop):
+        over = _mid_over(_decode(_to_actual(Vpop)), ctx, include_floor_shortfall=False)   # (P, M)
+        if over.size == 0 or float(over.max()) <= 1e-12:
+            return Vpop
+        V2 = np.array(Vpop, float, copy=True)
+        _step = _REPAIR_LR * (over / (1.0 + over))           # bounded [0, _REPAIR_LR) unit-space nudge
+        V2[:, :M] = np.clip(V2[:, :M] + _step, 0.0, 1.0)
+        return V2
 
-        gb = float(fit.max()); improved = gb > best_fit + 1e-9
-        if improved:
-            best_fit = gb; best_g = pop[int(np.argmax(fit))].copy(); stale = 0
-        else:
-            stale += 1
-        if auto:
-            hist.append(1 if improved else 0)
-            if len(hist) >= success_window:
-                ps = float(np.mean(hist[-success_window:]))
-                sigma = sigma / _C if ps > 0.2 else sigma * _C
-                sigma = float(min(max(sigma, sigma_min), sigma_max))
-            if stale >= patience:
-                break
+    lam_cma = int(max(6, pop_size))
+    _LAM_CAP = int(4 * lam_cma)                              # bound IPOP growth
+    best_u = x0_u.copy(); best_sv = score_of(best_u)
+    init_sv = best_sv
+    # #5 adaptive ε: scale the early feasibility relaxation to the ACTUAL starting infeasibility
+    # (feasible start → tiny; very infeasible → looser), instead of a fixed 0.15.
+    _EPS0 = float(min(0.40, max(0.05, 0.6 * best_sv[1])))
 
-    best = _decode(best_g[None, :])[0]
-    best_rev = float((best * ctx["rev_coef"]).sum())
+    def _polish_genome(u0):
+        """#2 memetic: SLSQP with analytic revenue + smooth-violation gradients (Nelder–Mead
+        fallback). Returns u0 unless the TRUE post-cap feasibility-first score strictly improves."""
+        if not polish or (stop_check is not None and stop_check()):
+            return u0
+        _pol = None
+        try:
+            from scipy.optimize import minimize as _minimize
+            _gcache = {}
+
+            def _gc(z):
+                z = np.clip(np.asarray(z, float), 0.0, 1.0); _k = z.tobytes()
+                _r = _gcache.get(_k)
+                if _r is None:
+                    _r = _grads(z)
+                    if len(_gcache) > 96:
+                        _gcache.clear()
+                    _gcache[_k] = _r
+                return _r
+
+            _res = _minimize(lambda z: -_gc(z)[0], u0, jac=lambda z: -(_gc(z)[1]),
+                             method="SLSQP", bounds=[(0.0, 1.0)] * D,
+                             constraints=[{"type": "ineq", "fun": lambda z: _FEAS_TOL - _gc(z)[2],
+                                           "jac": lambda z: -(_gc(z)[3])}],
+                             options={"maxiter": 60, "ftol": 1e-9})
+            _pol = np.clip(np.asarray(_res.x, float), 0.0, 1.0)
+        except Exception:
+            _pol = None
+        if _pol is None:                                     # fallback: Nelder–Mead
+            try:
+                from scipy.optimize import minimize as _minimize
+
+                def _sk(z):
+                    _o, _v = score_of(np.clip(z, 0.0, 1.0))
+                    return (-_o) if _v <= _FEAS_TOL else (1e12 + _v)
+
+                _res = _minimize(_sk, u0, method="Nelder-Mead",
+                                 options={"maxfev": int(min(40 * D, 1200)), "xatol": 1e-4,
+                                          "fatol": 1e-6, "adaptive": True})
+                _pol = np.clip(np.asarray(_res.x, float), 0.0, 1.0)
+            except Exception:
+                _pol = None
+        return _pol if (_pol is not None and better(score_of(_pol), score_of(u0))) else u0
+
+    n_r = max(max(1, int(n_restarts)), len(_seeds))          # #3 a restart per diverse seed + IPOP
+    all_hist = []; restart_bests = []; best_fpop = (None, None)
+    for r in range(n_r):
+        if stop_check is not None and stop_check():
+            break
+        if r < len(_seeds):                                  # #1 seed each diverse start
+            start = _seeds[r].copy(); s0 = 0.30; _lam_r = lam_cma
+        else:                                                # #3/#7 IPOP: reseed from incumbent, grow λ
+            _e = r - len(_seeds) + 1
+            jit = np.random.default_rng(int(seed) + 1000 + r).normal(0.0, 0.15, size=D)
+            start = np.clip(best_u + jit, 0.0, 1.0)
+            s0 = min(0.55, 0.30 * (1.4 ** _e))
+            _lam_r = min(int(lam_cma * (2 ** _e)), _LAM_CAP)
+        bx, bk, bov, tr, fpop = _cmaes(eval_ov, start, s0, np.zeros(D), np.ones(D),
+                                       popsize=_lam_r, max_iter=int(generations),
+                                       seed=int(seed) + r, stop_check=stop_check,
+                                       eps0=_EPS0, repair=_repair)
+        all_hist.append(tr)
+        bx = _polish_genome(bx)                              # #2 polish EVERY restart's winner
+        sv = score_of(bx)
+        restart_bests.append((bx.copy(), sv))
+        if best_fpop[0] is None:
+            best_fpop = fpop
+        if better(sv, best_sv):
+            best_fpop = fpop                                 # final population of the winning restart
+            best_sv = sv; best_u = bx.copy()
+
+    best_G = _to_actual(best_u[None, :])
+    best = _decode(best_G)[0]
+    best_rev = float((best * rc).sum())
+    best_obj, best_viol = best_sv
+    best_feas = best_viol <= _FEAS_TOL
+    best_fit = best_obj if best_feas else (-1e15 - best_viol)
+    init_fit = init_sv[0] if init_sv[1] <= _FEAS_TOL else (-1e15 - init_sv[1])
+
+    # Per-generation trace for the UI charts, as 7-tuples:
+    # (gen, best-so-far score, this-gen best score, this-gen mean score, sigma, violation, ε).
+    # The first five match the old convergence chart (scores = maximised feasibility-aware −key,
+    # so best-so-far rises); the last two feed the σ and violation→feasibility charts.
+    history = []; gi = 0; run_best = -np.inf; sigma_final = 0.0
+    for tr in all_hist:
+        for gk, mk, sg, vv, ee in tr:
+            gi += 1
+            gen_best = -gk
+            run_best = max(run_best, gen_best)
+            sigma_final = float(sg)
+            history.append((gi, float(run_best), float(gen_best), float(-mk), float(sg),
+                            float(vv), float(ee)))
+
+    # Diversity archive (improvement #7 output): the restart winners that are >= archive_min_dist
+    # apart in genome space, best (feasibility-first) first, for warm-starting a later run.
+    def _rank_key(sv):
+        return (0 if sv[1] <= _FEAS_TOL else 1, -sv[0] if sv[1] <= _FEAS_TOL else sv[1])
+
+    _ordered = sorted(restart_bests, key=lambda t: _rank_key(t[1]))
+    _arch = [best_G[0].copy()]
+    for gu, sv in _ordered:
+        if len(_arch) >= int(archive_k):
+            break
+        ga = _to_actual(np.asarray(gu)[None, :])[0]
+        if all(np.linalg.norm(ga - a) > float(archive_min_dist) for a in _arch):
+            _arch.append(ga.copy())
+    archive = np.asarray(_arch, dtype=float)
+
     info = {
-        "gens": int(gens_run), "gens_max": int(generations),
-        "early_stopped": bool(auto and gens_run < generations),
-        "sigma_final": float(sigma), "best_fit": float(best_fit), "init_fit": float(init_fit),
-        "revenue": best_rev, "risk_cost": float(best_rev - best_fit), "dims": D,
-        "genome": best_g.copy(),      # pass to warm_start on a subsequent run
+        "gens": int(gi), "gens_max": int(generations) * n_r,
+        "early_stopped": bool(gi < int(generations) * n_r),
+        "sigma_final": float(sigma_final), "best_fit": float(best_fit),
+        "init_fit": float(init_fit), "revenue": best_rev,
+        "risk_cost": float(best_rev - best_fit), "dims": D,
+        "feasible": bool(best_feas), "violation": float(best_viol),
+        "genome": best_G[0].copy(),   # 3·n_mid -> warm_start on a subsequent run
+        "archive": archive,           # (K, 3M) good-but-different genomes (best first)
+        "history": history,           # per-generation scoring trace (for the UI charts)
+        "pop_obj": best_fpop[0],      # winning restart's final-population objectives (revenue-ish)
+        "pop_viol": best_fpop[1],     # winning restart's final-population violations
+        "engine": "cmaes",            # marker so stale bytecode / old GA is obvious in logs
     }
     return best, info

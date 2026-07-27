@@ -1,0 +1,26 @@
+engine: genetic
+dials:
+- 0.0
+- 0.5
+- 1.0
+vamp_cap: 0.06
+max_pools: 500
+compress_method: ward
+compress_allocation: knapsack
+ga_search: breach_targeted+smart_init+adaptive_lambda+diversity_archive (always on)
+ga_risk_aversion: 0.5
+ga_breach_fixed: 250.0
+ga_band_mult: 1.0
+ga_generations: 80
+ga_pop_override: 0
+ga_perf:
+  secs: 2443.0612370967865
+  budget: 5120
+  gen: 80
+  pop: 64
+  seeds: 4
+  nvar: 1
+  n: 109914
+  compress_secs: 1447.6284568309784
+  pool_target: 500
+total_secs: 6698.0

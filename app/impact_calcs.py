@@ -77,7 +77,11 @@ def _mid_keep_fraction(vampmid_series, period_series, kill_eff, month_0):
 
 @st.cache_data(show_spinner=False)
 def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mids=frozenset(),
-                             kill_eff=()):
+                             kill_eff=(), mtime: float = 0.0):
+    # `mtime` is a cache-key-only argument (unused in the body): pass the tp_path file
+    # mtime so a regenerated CSV at the same path busts this @st.cache_data. It must be a
+    # PLAIN (non-underscore) name — st.cache_data excludes underscore-prefixed args from
+    # the hash, so an `_mtime` name would silently NOT participate in the key.
     """Derive the proposed-split VAMP forecast from the saved baseline export.
 
     NON-INVASIVE: re-scales vamp_t_period_export.csv's baseline (VAMP_Pre /
@@ -172,7 +176,6 @@ def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mid
     return out.fillna(0.0).reset_index()
 
 
-@st.cache_data(show_spinner=False)
 def compute_vamp_post_from_prorata(pp_path, prop_items, excluded_mids=frozenset(),
                                    kill_eff=(), month_0=None, scoped_rpgts=()):
     """Accurate proposed-split VAMP forecast using the pipeline pro-rata export.
@@ -980,7 +983,6 @@ def _inject_backfill_rows(pp, prop):
     return pd.concat([pp, new], ignore_index=True, sort=False)
 
 
-@st.cache_data(show_spinner=False)
 def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset(),
                                   kill_eff=(), month_0=None, scoped_rpgts=(),
                                   wallet_incapable=frozenset(), usa_only=frozenset(),
@@ -1256,21 +1258,30 @@ def _mtime(path):
 
 
 @_cache_data(show_spinner=False)
-def _c_read_parquet(path, _m):
+def _c_read_parquet(path, m):
+    # `m` is the file mtime — it MUST be a plain (non-underscore) name so st.cache_data
+    # includes it in the cache key; a leading-underscore arg is excluded from the hash,
+    # which would silently return a stale parquet after the file is regenerated.
     return pd.read_parquet(path)
 
 
 @_cache_data(show_spinner=False)
-def _c_vamp_post_prorata(pp_path, _m, prop_items, excluded_mids, kill_eff=(), month_0=None,
+def _c_vamp_post_prorata(pp_path, m, prop_items, excluded_mids, kill_eff=(), month_0=None,
                          scoped_rpgts=()):
+    # `m` = file mtime; kept as a PLAIN (non-underscore) name so it actually participates
+    # in the st.cache_data key (underscore-prefixed args are excluded from the hash), so a
+    # regenerated pp_path busts this cache. Unused in the body — cache-key only.
     return compute_vamp_post_from_prorata(pp_path, prop_items, excluded_mids, kill_eff,
                                           month_0, scoped_rpgts)
 
 
 @_cache_data(show_spinner=False)
-def _c_prepost_granular(pp_path, _m, prop_items, excluded_mids, kill_eff=(), month_0=None,
+def _c_prepost_granular(pp_path, m, prop_items, excluded_mids, kill_eff=(), month_0=None,
                         scoped_rpgts=(), wallet_incapable=frozenset(), usa_only=frozenset(),
                         exploration_floor=0.0):
+    # `m` = file mtime; PLAIN (non-underscore) name so it participates in the st.cache_data
+    # key (underscore args are excluded from the hash) — a regenerated pp_path busts this
+    # cache. Unused in the body — cache-key only.
     return compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids, kill_eff,
                                          month_0, scoped_rpgts, wallet_incapable, usa_only,
                                          exploration_floor=exploration_floor)
@@ -1602,7 +1613,7 @@ def count_pools_for_split(split_long, brand_name, go_live, *, wallet_incapable=f
 
 def pool_targeted_core(split_ideal, *, target_pools, wallet_ctx, brand_name, brand_key,
                        go_live, mid_list_path, date_tag="000000", mode="sales", scheme="vi",
-                       emit_generic=False):
+                       emit_generic=False, method="kmeans", allocation="greedy", parallel=1):
     """Pure (NO session_state) pool-count-targeting compression for `split_ideal`.
 
     Returns (compressed_long, stats). Because it takes only picklable arguments and touches
@@ -1610,6 +1621,7 @@ def pool_targeted_core(split_ideal, *, target_pools, wallet_ctx, brand_name, bra
     positions are independent and deterministic, so parallelising them gives identical
     output. `pool_targeted_compression` wraps this with the ss cache.
     """
+    from functools import partial as _partial
     from routing_optimiser.kmeans_compress import compress_to_pool_budget
     wc = wallet_ctx or {}
     _si = split_ideal.copy()
@@ -1617,24 +1629,26 @@ def pool_targeted_core(split_ideal, *, target_pools, wallet_ctx, brand_name, bra
         _si["cell_volume"] = (_si.groupby(["rpgt", "currency", "bank"])["volume"].transform("sum")
                               if "volume" in _si.columns else 1.0)
 
-    def _count(_cl):
-        return count_pools_for_split(
-            _cl, brand_name, go_live,
-            wallet_incapable=set(wc.get("incapable", set())),
-            fid2vamp=wc.get("fid2vamp"),
-            mid_list_path=mid_list_path,
-            usa_only=set(wc.get("usa_only", set())),
-            country_pres=wc.get("country_pres", {}),
-            max_share=float(wc.get("max_share", 0.97)),
-            brand_key=brand_key, date_tag=date_tag, scheme=scheme, mode=mode,
-            emit_generic=emit_generic)
+    # PICKLABLE count function (functools.partial of a MODULE-LEVEL fn) so the pool-budget
+    # search can run the config-generation probes in loky/process workers — a plain closure
+    # can't be pickled and would force joblib back to threading. Identical result to the old
+    # closure (same args, just bound via partial; `_cl` fills the first positional at call).
+    _count = _partial(
+        count_pools_for_split, brand_name=brand_name, go_live=go_live,
+        wallet_incapable=set(wc.get("incapable", set())), fid2vamp=wc.get("fid2vamp"),
+        mid_list_path=mid_list_path, usa_only=set(wc.get("usa_only", set())),
+        country_pres=wc.get("country_pres", {}), max_share=float(wc.get("max_share", 0.97)),
+        brand_key=brand_key, date_tag=date_tag, scheme=scheme, mode=mode,
+        emit_generic=emit_generic)
 
     return compress_to_pool_budget(_si, int(target_pools), _count,
-                                   max_gateway_cap=float(wc.get("max_share", 0.97)))
+                                   max_gateway_cap=float(wc.get("max_share", 0.97)),
+                                   method=method, allocation=allocation, parallel=int(parallel))
 
 
 def _pool_disk_key(split_ideal, *, target_pools, wallet_ctx, brand_name, brand_key,
-                   go_live, mid_list_path, date_tag, mode, scheme, emit_generic):
+                   go_live, mid_list_path, date_tag, mode, scheme, emit_generic,
+                   method="kmeans", allocation="greedy"):
     """CONTENT hash of everything the compression output depends on: the split's own values
     (not object identity), all params, and the MID-list mtime. Because it hashes CONTENT, a
     changed split or setting yields a different key — so a disk hit can NEVER be stale."""
@@ -1656,6 +1670,7 @@ def _pool_disk_key(split_ideal, *, target_pools, wallet_ctx, brand_name, brand_k
         "tp": int(target_pools), "bn": str(brand_name), "bk": str(brand_key),
         "gl": str(go_live), "dt": str(date_tag), "mode": str(mode), "scheme": str(scheme),
         "eg": bool(emit_generic), "midm": _midm,
+        "cmeth": str(method), "calloc": str(allocation),
         "ms": round(float(wc.get("max_share", 0.97)), 6),
         "inc": sorted(str(x) for x in (wc.get("incapable") or set())),
         "uo": sorted(str(x) for x in (wc.get("usa_only") or set())),
@@ -1681,6 +1696,11 @@ def pool_targeted_compression(ss, split_ideal, *, target_pools, sig, wallet_ctx,
     feasible for the cards.
     """
     _cache = ss.get("_pool_comp") or {}
+    # Opt-in compression clustering / budget-allocation (default kmeans/greedy = existing
+    # behaviour). Read from ss and fold into the cache key so a change never returns a stale hit.
+    _method = str(ss.get("compress_method", "ward"))
+    _alloc = str(ss.get("compress_allocation", "knapsack"))
+    sig = f"{sig}|cmp={_method}:{_alloc}"
     if sig in _cache:
         _e = _cache[sig]
         return _e["long"], _e["stats"]
@@ -1694,7 +1714,8 @@ def pool_targeted_compression(ss, split_ideal, *, target_pools, sig, wallet_ctx,
         _dk = _pool_disk_key(split_ideal, target_pools=target_pools, wallet_ctx=wallet_ctx,
                              brand_name=brand_name, brand_key=brand_key, go_live=go_live,
                              mid_list_path=mid_list_path, date_tag=date_tag, mode=mode,
-                             scheme=scheme, emit_generic=emit_generic)
+                             scheme=scheme, emit_generic=emit_generic,
+                             method=_method, allocation=_alloc)
         _dpath = os.path.join(_cdir, f"pool_comp_{_dk}.pkl")
         if os.path.exists(_dpath):
             _obj = pd.read_pickle(_dpath)
@@ -1705,11 +1726,17 @@ def pool_targeted_compression(ss, split_ideal, *, target_pools, sig, wallet_ctx,
     except Exception:  # noqa: BLE001
         _dpath = None
 
+    # Parallel k-ary budget search: probe several cell budgets per round across the cores so
+    # the (expensive) config-generation counts overlap. Same result as the serial binary search
+    # (verified budget ≤ target). Bounded to ≤8 workers; ROUTING_COMPRESS_PARALLEL=1 disables it.
+    _par = int(os.environ.get("ROUTING_COMPRESS_PARALLEL", "0") or 0)
+    if _par <= 0:
+        _par = min(max(2, os.cpu_count() or 2), 8)
     _cl, _st = pool_targeted_core(
         split_ideal, target_pools=target_pools, wallet_ctx=wallet_ctx,
         brand_name=brand_name, brand_key=brand_key, go_live=go_live,
         mid_list_path=mid_list_path, date_tag=date_tag, mode=mode, scheme=scheme,
-        emit_generic=emit_generic)
+        emit_generic=emit_generic, method=_method, allocation=_alloc, parallel=_par)
     if _dpath:                                   # persist for future runs (best-effort)
         try:
             import glob as _glob

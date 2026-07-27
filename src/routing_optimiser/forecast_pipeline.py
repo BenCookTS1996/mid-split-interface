@@ -96,10 +96,9 @@ def run_vamp_pipeline(config: dict, project_root: str,
 
     project_root = os.path.abspath(project_root)
     sys.path.insert(0, os.path.join(project_root, "src"))
-    from google.cloud import bigquery  # noqa: F401  (import check)
+    from google.cloud import bigquery
     from vamp_pipeline import (ActuarialEngine, AllocationEngine, DataExtractor,
                                ExportManager)
-    from google.cloud import bigquery as bq
 
     prev_cwd = os.getcwd()
     os.chdir(project_root)  # so 'queries/<file>.sql' resolves
@@ -121,7 +120,7 @@ def run_vamp_pipeline(config: dict, project_root: str,
                     f"(exists={os.path.isdir(config['paths']['queries_dir'])})")
         logger.info(f"ADAPTER: mid_list_file={mlf} (exists={os.path.exists(mlf)})")
 
-        client = bq.Client(project=gcp_project) if gcp_project else bq.Client()
+        client = bigquery.Client(project=gcp_project) if gcp_project else bigquery.Client()
 
         logger.info("ADAPTER: PHASE 1 — DataExtractor.extract_all()")
         extractor = DataExtractor(config, client)
@@ -215,16 +214,16 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
         d = d[pd.to_numeric(d["period"], errors="coerce") == 0].copy()
 
     # pick the 'pre' volume and risk columns, in preference order
-    vol_col = next((c for c in ["Txn_Pre", "Sim_Sales", "VI_Txn_Pre"] if c in d.columns), None)
-    vamp_col = next((c for c in ["VAMP_Pre", "Sim_VAMPs"] if c in d.columns), None)
+    vol_col = next((c for c in ["Txn_Pre", PRE_SALES, "VI_Txn_Pre"] if c in d.columns), None)
+    vamp_col = next((c for c in ["VAMP_Pre", PRE_VAMPS] if c in d.columns), None)
     if vol_col is None:
         return pd.DataFrame(columns=["rpgt", "currency", "bank", "gateway",
                                      "volume", "baseline_share", "risk_rate"])
     d["volume"] = pd.to_numeric(d[vol_col], errors="coerce").fillna(0.0)
     if vamp_col is not None:
         d["_vamps"] = pd.to_numeric(d[vamp_col], errors="coerce").fillna(0.0)
-    elif "Sim_Rate" in d.columns:
-        rate = pd.to_numeric(d["Sim_Rate"], errors="coerce").fillna(0.0)
+    elif PRE_RATE in d.columns:
+        rate = pd.to_numeric(d[PRE_RATE], errors="coerce").fillna(0.0)
         d["_vamps"] = rate * d["volume"]
     else:
         d["_vamps"] = 0.0

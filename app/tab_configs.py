@@ -51,8 +51,11 @@ def render(ss, PROJECT_ROOT):
 
         mode = "sales"   # Mode input removed — always 'sales'.
         emit_generic = False   # pool-generic emit removed (full mode only); always compressed 'sales'.
-        extra_priority = st.number_input("Extra priority boost", 0, 2_000_000, 0, step=50000,
-                                         help="Added to every pool's priority (script's EXTRA_PRIORITY_AMOUNT).")
+        # Priority-boost input at the SAME width as the 'Generate JSON configs' button below
+        # (which sits in a 1.1-of-6.0 column).
+        _pbc, _pbsp = st.columns([1.1, 4.9])
+        extra_priority = _pbc.number_input("Extra priority boost", 0, 2_000_000, 0, step=50000,
+                                           help="Added to every pool's priority (script's EXTRA_PRIORITY_AMOUNT).")
 
         # Two green buttons side by side, each the same width as tab 3's Export button
         # (weight 1.1 of a 6.0 row ≈ 18%).

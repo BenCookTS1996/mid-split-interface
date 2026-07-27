@@ -10,6 +10,8 @@ break away when they have real evidence.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 
@@ -49,7 +51,10 @@ def load_success_data(source) -> pd.DataFrame:
         C.get("processor", "processor"): "processor",
         C.get("gateway_fid", "gatewayFid"): "gateway",
         C.get("initial_attempt", "initialattempt"): "attempts",
-        C.get("success", "initialSuccess"): "success",
+        # numerator must be the INITIAL-stage success so it matches the
+        # 'initialattempt' denominator (same funnel stage); using the final
+        # 'success' column here mixed funnel stages and inflated the ratio.
+        C.get("initial_success", "initialSuccess"): "success",
         C.get("amount", "amount"): "amount",
     } if hasattr(C, "get") else {}
 
@@ -57,16 +62,10 @@ def load_success_data(source) -> pd.DataFrame:
     valid_renames = {k: v for k, v in rename_map.items() if k in df.columns}
     df = df.rename(columns=valid_renames)
 
-    # 3. Explicit fallback for the new SQL logic (in case the schema dict was incomplete)
-    if "bank" not in df.columns and "bankName" in df.columns:
-        df = df.rename(columns={"bankName": "bank"})
-    if "gateway" not in df.columns and "gatewayFid" in df.columns:
-        df = df.rename(columns={"gatewayFid": "gateway"})
-        
-    if "success" not in df.columns and "initialSuccess" in df.columns:
-        df["success"] = df["initialSuccess"]
-    if "attempts" not in df.columns and "initialattempt" in df.columns:
-        df["attempts"] = df["initialattempt"]
+    # (The previous "explicit fallback" block that re-renamed bankName/gatewayFid
+    # and copied initialSuccess/initialattempt was removed: rename_map above already
+    # covers those exact source columns, so the block was redundant and — since it
+    # copied the INITIAL success — contradicted the old final-'success' mapping.)
 
     # Canonicalise gateway names so any deprecated '-x' MID collapses onto its
     # non-'-x' sibling. Matches the same rule used for the pipeline forecast,
@@ -93,7 +92,9 @@ def _apply_time_decay(df: pd.DataFrame, half_life_days: float | None,
     ref = d[date_col].max()
     age_days = (ref - d[date_col]).dt.total_seconds() / 86400.0
     w = 0.5 ** (age_days.clip(lower=0) / float(half_life_days))
-    w = w.fillna(1.0)
+    # Rows whose date failed to parse (NaT -> NaN age) get ZERO weight, not full
+    # most-recent weight: a bad/unparseable date must not silently count as fresh.
+    w = w.fillna(0.0)
     d["attempts"] = d["attempts"].astype(float) * w
     d["success"] = d["success"].astype(float) * w
     return d
@@ -111,25 +112,48 @@ def _empirical_bayes_kappa(grp: pd.DataFrame, scope: list[str],
     `fallback`. Returns a frame of scope keys + 'kappa'.
     """
     rows = []
+    # Gateways must be compared only against OTHER GATEWAYS IN THE SAME BANK,
+    # otherwise cross-bank differences leak into the "between-gateway" spread and
+    # bias kappa. So `bank` is always part of the per-cell grouping (added here if
+    # it isn't already in `scope`); we measure the spread WITHIN each
+    # (scope, bank) cell, then attempt-weight-pool those cells up to `scope`.
+    cell_extra = [] if "bank" in scope else ["bank"]
     for key, g in grp.groupby(scope):
         key = key if isinstance(key, tuple) else (key,)
-        n = g["attempts"].to_numpy(float)
-        x = g["success"].to_numpy(float)
-        m = n > 0
-        n, x = n[m], x[m]
-        if len(n) < 2 or n.sum() <= 0:
+        n_all = g["attempts"].to_numpy(float)
+        x_all = g["success"].to_numpy(float)
+        m_all = n_all > 0
+        if not m_all.any() or n_all[m_all].sum() <= 0:
             rows.append((*key, float(fallback)))
             continue
-        p = x / n
-        mu = x.sum() / n.sum()
-        if mu <= 0 or mu >= 1:
-            # A group where every gateway succeeded (or all failed) — usually a thin-
-            # sample artefact, not truth. Use the modest `fallback` kappa (NOT kmax), so
-            # per-gateway evidence still shows through rather than being erased to 0/1. (F1)
+        mu = x_all[m_all].sum() / n_all[m_all].sum()               # pooled scope mean
+        # Accumulate the attempt-weighted within-bank observed & sampling variances.
+        num_obs = num_samp = wsum = 0.0
+        cells = [g] if not cell_extra else [gb for _, gb in g.groupby(cell_extra)]
+        for gb in cells:
+            n = gb["attempts"].to_numpy(float)
+            x = gb["success"].to_numpy(float)
+            m = n > 0
+            n, x = n[m], x[m]
+            if len(n) < 2 or n.sum() <= 0:
+                # single-gateway bank cell carries no between-gateway signal — skip it
+                continue
+            p = x / n
+            mu_b = x.sum() / n.sum()                               # this bank's own mean
+            obs_var_b = float((n * (p - mu_b) ** 2).sum() / n.sum())   # attempt-weighted
+            samp_var_b = mu_b * (1.0 - mu_b) * len(n) / n.sum()        # mean binomial noise
+            wt = float(n.sum())
+            num_obs += wt * obs_var_b
+            num_samp += wt * samp_var_b
+            wsum += wt
+        if wsum <= 0 or mu <= 0 or mu >= 1:
+            # No bank had >=2 gateways to compare (or every gateway succeeded/failed) —
+            # usually a thin-sample artefact, not truth. Use the modest `fallback` kappa
+            # (NOT kmax), so per-gateway evidence still shows through. (F1)
             rows.append((*key, float(fallback)))
             continue
-        obs_var = float((n * (p - mu) ** 2).sum() / n.sum())      # attempt-weighted
-        samp_var = mu * (1.0 - mu) * len(n) / n.sum()             # mean binomial noise
+        obs_var = num_obs / wsum
+        samp_var = num_samp / wsum
         true_var = obs_var - samp_var
         if true_var <= 1e-9:
             # Gateways look alike: shrink hard, but only up to the (now sane) kmax cap so
@@ -168,6 +192,18 @@ def gateway_success_rates(
     grp = grp.rename(columns={gateway_col: "gateway"})
     grp["raw_rate"] = np.where(grp["attempts"] > 0,
                                grp["success"] / grp["attempts"], np.nan)
+    # Defensive: a raw_rate above 1.0 means success exceeded attempts, which can
+    # only happen from a funnel column-mapping mismatch (e.g. a final-stage
+    # 'success' numerator paired with the 'initialattempt' denominator). Warn so
+    # the mapping gets fixed, then clamp so the shrinkage maths can't be poisoned.
+    if bool((grp["raw_rate"] > 1.0).any()):
+        warnings.warn(
+            "raw_rate > 1.0 detected (success exceeds attempts): likely a funnel "
+            "column-mapping mismatch, e.g. the final 'success' column mapped to the "
+            "numerator while 'initialattempt' is the denominator. Clamping to 1.0.",
+            stacklevel=2,
+        )
+    grp["raw_rate"] = grp["raw_rate"].clip(upper=1.0)
 
     scope = list(prior_scope)
     prior = (
@@ -192,6 +228,95 @@ def gateway_success_rates(
 
     out["success_rate"] = (out["success"] + out["kappa"] * out["prior_rate"]) / (out["attempts"] + out["kappa"])
     return out
+
+
+def detect_blocked_gateways(adf, min_consecutive: float, date_col: str = "date"):
+    """Flag (bank, gateway) pairs the acquiring bank appears to have BLOCKED us on.
+
+    Looks at the MOST-RECENT consecutive run of daily attempts that ALL failed (a day counts
+    as failed only if it had zero successes); a day with any success breaks the run. If the
+    attempts in that leading all-failed run reach `min_consecutive`, the pair is flagged
+    `blocked` — the caller then caps that gateway's share (for that bank) to the exploration
+    floor. Vectorised (one groupby-cummax, no per-pair Python loop).
+
+    Returns a DataFrame: bank, gateway, consec_failed (attempts in the leading failed run),
+    last_success_date, blocked (bool), sorted by consec_failed descending. Empty if the inputs
+    lack the needed columns or `min_consecutive` <= 0.
+    """
+    cols = ["bank", "gateway", "consec_failed", "last_success_date", "blocked"]
+    need = {"bank", "gateway", "attempts", "success"}
+    if (adf is None or not need.issubset(getattr(adf, "columns", [])) or date_col not in
+            getattr(adf, "columns", []) or float(min_consecutive) <= 0):
+        return pd.DataFrame(columns=cols)
+    d = adf[["bank", "gateway", "attempts", "success", date_col]].copy()
+    d["_day"] = pd.to_datetime(d[date_col], errors="coerce").dt.normalize()
+    d = d.dropna(subset=["_day"])
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    d["_bank"] = d["bank"].astype(str)
+    d["_gw"] = d["gateway"].astype(str)
+    d["att"] = pd.to_numeric(d["attempts"], errors="coerce").fillna(0.0)
+    d["suc"] = pd.to_numeric(d["success"], errors="coerce").fillna(0.0)
+    g = (d.groupby(["_bank", "_gw", "_day"], as_index=False)
+         .agg(att=("att", "sum"), suc=("suc", "sum")))
+    # Sort each pair's days MOST-RECENT first; the leading all-failed run is where the running
+    # max of successes (from the top) is still 0. Sum its attempts.
+    g = g.sort_values(["_bank", "_gw", "_day"], ascending=[True, True, False])
+    g["_cmax"] = g.groupby(["_bank", "_gw"])["suc"].cummax()
+    _run = (g[g["_cmax"] <= 0].groupby(["_bank", "_gw"], as_index=False)["att"].sum()
+            .rename(columns={"att": "consec_failed"}))
+    out = g[["_bank", "_gw"]].drop_duplicates().merge(_run, on=["_bank", "_gw"], how="left")
+    out["consec_failed"] = out["consec_failed"].fillna(0.0)
+    _succ = (g[g["suc"] > 0].groupby(["_bank", "_gw"], as_index=False)["_day"].max()
+             .rename(columns={"_day": "last_success_date"}))
+    out = out.merge(_succ, on=["_bank", "_gw"], how="left")
+    out["blocked"] = out["consec_failed"] >= float(min_consecutive)
+    out = out.rename(columns={"_bank": "bank", "_gw": "gateway"})
+    return out[cols].sort_values("consec_failed", ascending=False).reset_index(drop=True)
+
+
+def rpgt_gateway_sensitivity(sr_df, avg_ticket: float = 1.0, min_attempts: float = 1.0):
+    """How sensitive is each RPGT to WHERE its traffic is routed.
+
+    Consumes the output of ``gateway_success_rates`` (one row per rpgt×currency×bank×gateway
+    with the EMPIRICAL-BAYES-shrunk ``success_rate`` — thin gateways already pulled toward
+    the pooled rate, so they can't masquerade as best/worst). For each (rpgt, currency, bank)
+    cell we take the best−worst gap of the shrunk gateway rates: that is the success-rate swing
+    reachable by rerouting within that cell. Volume-weighting those gaps up to the RPGT gives
+    its sensitivity (percentage points), and Σ(gap × volume × avg_ticket) is the revenue at
+    stake between best- and worst-case routing.
+
+    Returns one row per rpgt: ``volume`` (30-day attempts), ``sensitivity_pp``,
+    ``dollars_at_stake``, ``cells`` (number of routable cells), sorted by dollars.
+    """
+    need = {"rpgt", "currency", "bank", "gateway", "attempts", "success_rate"}
+    d = sr_df.copy()
+    missing = need - set(d.columns)
+    if missing:
+        raise KeyError(f"rpgt_gateway_sensitivity needs columns {sorted(missing)} in sr_df")
+    d["attempts"] = pd.to_numeric(d["attempts"], errors="coerce")
+    d["success_rate"] = pd.to_numeric(d["success_rate"], errors="coerce")
+    d = d[(d["attempts"] >= float(min_attempts)) & d["success_rate"].notna()]
+    cols = ["rpgt", "volume", "sensitivity_pp", "dollars_at_stake", "cells"]
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    cell = d.groupby(["rpgt", "currency", "bank"], as_index=False).agg(
+        vol=("attempts", "sum"), rmax=("success_rate", "max"),
+        rmin=("success_rate", "min"), ngw=("gateway", "nunique"))
+    # Only cells with ≥2 eligible gateways are reroutable; single-gateway cells
+    # contribute NOTHING — not to the gap, and not to the volume/cells denominators
+    # either — so they can't dilute sensitivity_pp or dollars_at_stake.
+    routable = cell["ngw"] >= 2
+    cell["gap"] = np.where(routable, (cell["rmax"] - cell["rmin"]).clip(lower=0.0), 0.0)
+    cell["rvol"] = np.where(routable, cell["vol"], 0.0)      # routable volume only
+    cell["gapvol"] = cell["gap"] * cell["rvol"]
+    cell["rcell"] = routable.astype(int)                    # routable-cell counter
+    rp = cell.groupby("rpgt", as_index=False).agg(
+        volume=("rvol", "sum"), gapvol=("gapvol", "sum"), cells=("rcell", "sum"))
+    rp["sensitivity_pp"] = np.where(rp["volume"] > 0, rp["gapvol"] / rp["volume"] * 100.0, 0.0)
+    rp["dollars_at_stake"] = rp["gapvol"] * float(avg_ticket)
+    return (rp[cols].sort_values("dollars_at_stake", ascending=False)
+            .reset_index(drop=True))
 
 
 def risk_rates_from_forecast(forecast: pd.DataFrame | None,

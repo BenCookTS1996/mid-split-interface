@@ -26,9 +26,21 @@ def list_sql_files(sql_dir: str) -> list[str]:
 
 def cache_path_for(sql_path: str, cache_dir: str,
                    params: dict | None = None) -> str:
-    """Cache filename includes a short hash of params so different runs cache
-    separately (e.g. different date ranges or companies)."""
+    """Cache filename includes a short hash of the SQL file's own text AND of
+    params, so different runs cache separately (e.g. different date ranges or
+    companies) AND editing the query itself invalidates any stale cache."""
     stem = os.path.splitext(os.path.basename(sql_path))[0]
+    # Hash the query contents so an edited .sql (same params) can't reuse a stale
+    # parquet. Fall back to the file's mtime if the contents can't be read.
+    try:
+        with open(sql_path, "rb") as f:
+            sql_digest = hashlib.md5(f.read()).hexdigest()[:10]
+    except OSError:
+        try:
+            sql_digest = hashlib.md5(str(os.path.getmtime(sql_path)).encode()).hexdigest()[:10]
+        except OSError:
+            sql_digest = "nosql"
+    stem = f"{stem}_{sql_digest}"
     if params:
         key = "|".join(f"{k}={params[k]}" for k in sorted(params))
         digest = hashlib.md5(key.encode()).hexdigest()[:10]

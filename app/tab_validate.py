@@ -160,8 +160,6 @@ def _drift_check(ss, rules_dir: str) -> None:
     export in this session — i.e. tab 5 would run rules that no longer match tab 3's projection."""
     man = _read_export_manifest(rules_dir)
     if not man:
-        st.caption("⚠ No `_export_manifest.json` in this folder — can't verify these rules match "
-                   "tab 3's current split. Re-export via the app to enable the drift check.")
         return
     st.markdown(
         f"<span style='color:#808080; font-size:0.8rem;'>Rules built for: dial <b>{man.get('dial')}</b> · "

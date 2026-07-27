@@ -14,6 +14,7 @@ The output is a list of CellProblem objects, one per RPGT x Currency x Bank.
 from __future__ import annotations
 
 import os
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -67,8 +68,36 @@ def build_cell_problems(
     default_risk: float = 0.006,
 ) -> list[CellProblem]:
     """Join forecast volume + baseline split with success/risk rates per cell."""
-    sr = success_rates.set_index(["rpgt", "currency", "bank", "gateway"])
+    # Normalise the join keys (strip + case-fold) on BOTH sides so a casing/whitespace
+    # difference between the success data (bankName) and the forecast (pipeline) doesn't
+    # silently miss and dump every gateway onto the pooled prior. (If the two sides key on
+    # fundamentally different values — e.g. BIN vs bank-name — normalisation can't help, but
+    # the fallback-rate warning below makes that visible instead of silent.)
+    def _nk(x):
+        return str(x).strip().casefold()
+
+    _srn = success_rates.copy()
+    for _c in ("rpgt", "currency", "bank", "gateway"):
+        if _c in _srn.columns:
+            _srn[_c] = _srn[_c].map(_nk)
+    sr = _srn.set_index(["rpgt", "currency", "bank", "gateway"])
+    # Normalising the keys can collapse case/whitespace-variant rows onto the same key; drop
+    # the resulting duplicate index entries (keep first) so `sr.loc[key]` returns exactly one
+    # row (a Series) rather than a multi-row DataFrame — otherwise float(row[...]) raises.
+    if sr.index.has_duplicates:
+        sr = sr[~sr.index.duplicated(keep="first")]
+    # Attempts-WEIGHTED pooled prior (an unweighted mean over cells would let tiny, noisy
+    # cells count as much as huge ones).
+    if len(sr) and {"success", "attempts"}.issubset(sr.columns) and float(sr["attempts"].sum()) > 0:
+        _global_rate = float(sr["success"].sum() / sr["attempts"].sum())
+    elif len(sr):
+        _global_rate = float(sr["success_rate"].mean())
+    else:
+        _global_rate = 0.85
+    _has_prior = "prior_rate" in sr.columns
+    _has_kappa = "kappa" in sr.columns
     problems: list[CellProblem] = []
+    _n_gw = _n_pool = 0
 
     for (rpgt, currency, bank), cell in forecast.groupby(["rpgt", "currency", "bank"]):
         gateways = list(cell["gateway"])
@@ -78,11 +107,9 @@ def build_cell_problems(
 
         succ, obs_s, obs_a, is_pool = [], [], [], []
         prior_r, kap = [], []
-        _has_prior = "prior_rate" in sr.columns
-        _has_kappa = "kappa" in sr.columns
-        _global_rate = float(sr["success_rate"].mean()) if len(sr) else 0.85
         for gw in gateways:
-            key = (rpgt, currency, bank, gw)
+            key = (_nk(rpgt), _nk(currency), _nk(bank), _nk(gw))
+            _n_gw += 1
             if key in sr.index:
                 row = sr.loc[key]
                 succ.append(float(row["success_rate"]))
@@ -95,6 +122,7 @@ def build_cell_problems(
                 # No per-cell attempts data for this gateway: fall back to the
                 # pooled mean. Flag it so the UI can show which cells are on
                 # the pooled prior rather than real per-cell evidence.
+                _n_pool += 1
                 succ.append(_global_rate)
                 obs_s.append(0.0)
                 obs_a.append(0.0)
@@ -144,6 +172,15 @@ def build_cell_problems(
             _expl = np.zeros(len(gateways), bool)
         problem.is_explore = _expl  # type: ignore[attr-defined]
         problems.append(problem)
+    # Surface silent join misses: if most gateways found no per-cell success data, the
+    # forecast/success-rate keys probably don't line up (e.g. BIN vs bankName) and every
+    # rate is really the pooled prior — a real, otherwise-invisible data bug.
+    if _n_gw and _n_pool / _n_gw > 0.5:
+        warnings.warn(
+            f"build_cell_problems: {_n_pool}/{_n_gw} gateways ({100 * _n_pool / _n_gw:.0f}%) had "
+            f"no per-cell success data and fell back to the pooled prior — check the "
+            f"rpgt/currency/bank/gateway join keys (possible BIN-vs-bankName mismatch).",
+            stacklevel=2)
     return problems
 
 

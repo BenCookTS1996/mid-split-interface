@@ -71,10 +71,70 @@ def gateway_volume_shift(split: pd.DataFrame) -> pd.DataFrame:
     """How much volume each gateway gains/loses vs baseline (the 'stolen'
     volume view from your VAMP guide)."""
     g = split.copy()
-    g["proposed_volume"] = g["share"] * g["cell_volume"]
-    g["baseline_volume"] = g["baseline_share"] * g["cell_volume"]
+    _v = _split_volume(g)                                   # tolerate 'volume' or 'cell_volume'
+    g["proposed_volume"] = g["share"] * _v
+    g["baseline_volume"] = g["baseline_share"] * _v
     out = (g.groupby("gateway", as_index=False)
            .agg(baseline_volume=("baseline_volume", "sum"),
                 proposed_volume=("proposed_volume", "sum")))
     out["delta_volume"] = out["proposed_volume"] - out["baseline_volume"]
     return out.sort_values("delta_volume", ascending=False).reset_index(drop=True)
+
+
+def _split_volume(df: pd.DataFrame) -> pd.Series:
+    """Per-row cell volume from a split frame, tolerating either column name."""
+    col = "volume" if "volume" in df.columns else ("cell_volume" if "cell_volume" in df.columns else None)
+    if col is None:
+        return pd.Series(0.0, index=df.index)
+    return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+
+def gateway_move_vs_reference(ref_split: pd.DataFrame, sel_split: pd.DataFrame,
+                              keys=("rpgt", "currency", "bank", "gateway")) -> pd.DataFrame:
+    """Per-gateway volume BEFORE (`ref_split`) vs AFTER (`sel_split`), aligned on the
+    cell×gateway grain. Use with the revenue reference (dial 100) as `ref_split` and the
+    selected compliant split as `sel_split` to see the traffic moved to meet constraints.
+
+    Returns one row per gateway: ref_volume, prop_volume, delta_volume (+gained / −shed),
+    ref_share, prop_share, delta_share — sorted by delta_volume descending.
+    """
+    kk = [k for k in keys if k in ref_split.columns and k in sel_split.columns]
+    a = ref_split.copy(); b = sel_split.copy()
+    a["_v"] = _split_volume(a); b["_v"] = _split_volume(b)
+    a["_refv"] = pd.to_numeric(a.get("share", 0), errors="coerce").fillna(0.0) * a["_v"]
+    b["_propv"] = pd.to_numeric(b.get("share", 0), errors="coerce").fillna(0.0) * b["_v"]
+    m = a[kk + ["_refv"]].merge(b[kk + ["_propv"]], on=kk, how="outer")
+    m[["_refv", "_propv"]] = m[["_refv", "_propv"]].fillna(0.0)
+    g = m.groupby("gateway", as_index=False).agg(ref_volume=("_refv", "sum"),
+                                                 prop_volume=("_propv", "sum"))
+    _tr = max(float(g["ref_volume"].sum()), 1e-9)
+    _tp = max(float(g["prop_volume"].sum()), 1e-9)
+    g["delta_volume"] = g["prop_volume"] - g["ref_volume"]
+    g["ref_share"] = g["ref_volume"] / _tr
+    g["prop_share"] = g["prop_volume"] / _tp
+    g["delta_share"] = g["prop_share"] - g["ref_share"]
+    return g.sort_values("delta_volume", ascending=False).reset_index(drop=True)
+
+
+def traffic_moved_curve(variations, ref_weight=None) -> pd.DataFrame:
+    """Fraction of total volume moved vs the revenue reference, for every dial position.
+
+    The reference is the max-weight variation (dial 100) unless `ref_weight` names one.
+    For each variation, moved% = ½·Σ_gateway |Δvolume| / total — the share of book that had
+    to be re-routed relative to the unconstrained-optimal split. Rising as the dial tightens
+    is the compliance-cost curve. Returns df: dial (0–100), moved_pct.
+    """
+    vs = [v for v in (variations or []) if isinstance(v, dict) and v.get("split") is not None]
+    if not vs:
+        return pd.DataFrame(columns=["dial", "moved_pct"])
+    if ref_weight is not None:
+        ref = min(vs, key=lambda v: abs(float(v.get("weight", 0)) - float(ref_weight)))["split"]
+    else:
+        ref = max(vs, key=lambda v: float(v.get("weight", 0)))["split"]
+    rows = []
+    for v in vs:
+        g = gateway_move_vs_reference(ref, v["split"])
+        tot = max(float(g["ref_volume"].sum()), 1e-9)
+        moved = 0.5 * float(g["delta_volume"].abs().sum()) / tot * 100.0
+        rows.append({"dial": float(v.get("weight", 0)) * 100.0, "moved_pct": moved})
+    return pd.DataFrame(rows).sort_values("dial", ascending=False).reset_index(drop=True)
