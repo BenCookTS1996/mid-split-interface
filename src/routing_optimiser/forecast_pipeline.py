@@ -127,16 +127,20 @@ def run_vamp_pipeline(config: dict, project_root: str,
             f"ADAPTER: run config — company={_rs.get('company')} · month={_rs.get('month_var')} · "
             f"month_0_start={_rs.get('month_0_start_date')} · "
             f"actuals={_rs.get('actuals_start_date')}→{_rs.get('actuals_end_date')} · "
+            f"split_go_live={_rs.get('split_go_live_date')} · "
             f"future_anchor={_rs.get('future_anchor_date')} · "
             f"blend_future_sheet_rules={_rs.get('blend_future_sheet_rules')} · "
-            f"use_chunked_csv_files={_rs.get('use_chunked_csv_files')}")
+            f"use_chunked_csv_files={_rs.get('use_chunked_csv_files')} · "
+            f"load_curves_from_cache={_rs.get('load_curves_from_cache')} · "
+            f"cache_path={config.get('paths', {}).get('cache_path')}")
 
         def _shape(obj, name, warn_empty=True):
-            """Log a dataframe's size + leading columns; warn LOUDLY when empty so a 0-row
-            stage (e.g. unparsed split rules) is obvious instead of silently producing empty
-            downstream exports."""
+            """Log a dataframe's size + leading columns, PLUS the summed transaction count of any
+            recognised txn-count column(s). Warns LOUDLY when a source is empty OR has rows but ZERO
+            transactions — so a missing-volume source (e.g. the 'no VI Txn' case) is obvious instead
+            of silently producing empty/zero-volume downstream exports."""
             try:
-                import pandas as _pd
+                import pandas as _pd, re as _re
                 if isinstance(obj, _pd.DataFrame):
                     _c = list(obj.columns)
                     logger.info(f"      · {name}: {len(obj):,} rows × {len(_c)} cols"
@@ -144,6 +148,24 @@ def run_vamp_pipeline(config: dict, project_root: str,
                                    if _c else ""))
                     if warn_empty and len(obj) == 0:
                         logger.warning(f"      [!] {name} is EMPTY — every export built from it will be 0 rows.")
+                    # Σ transactions: sum every column that carries a transaction count (historical
+                    # visa_trx_count / trx_count, or the forecast fc_vi_trx_m* incl. PreSim/Reallocated),
+                    # so a source that has rows but NO volume is flagged (root of the 'no VI Txn' issue).
+                    try:
+                        _txn = [c for c in _c
+                                if str(c).strip().lower() in ("visa_trx_count", "vi_trx_count",
+                                                              "trx_count", "trx total", "trx_total")
+                                or _re.match(r'^(presim_|reallocated_)?fc_vi_trx_m\d+$', str(c).strip().lower())]
+                        if _txn and len(obj):
+                            _tot = float(sum(float(_pd.to_numeric(obj[c], errors="coerce").fillna(0).sum())
+                                             for c in _txn))
+                            logger.info(f"          ↳ Σ transactions = {_tot:,.0f}  "
+                                        f"[{', '.join(map(str, _txn[:6]))}{' …' if len(_txn) > 6 else ''}]")
+                            if warn_empty and _tot <= 0:
+                                logger.warning(f"      [!] {name} has rows but ZERO transactions — "
+                                               "volume is missing/empty at this source.")
+                    except Exception:  # noqa: BLE001
+                        pass
                 elif obj is None:
                     logger.info(f"      · {name}: None")
                 else:

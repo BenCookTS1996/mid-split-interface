@@ -154,6 +154,24 @@ class DataExtractor:
         query = query.replace('{ACTUALS_END_DATE}', self.actuals_end)
         return query
 
+    @staticmethod
+    def _txn_total(df) -> str:
+        """Sum any transaction-count column(s) in df (visa_trx_count / trx_count / trx total /
+        fc_vi_trx_m*) so each loaded source reports its total volume. Returns a ' · Σ txn = N'
+        suffix (or '' if the source carries no recognised count column)."""
+        try:
+            import re as _re
+            _cols = [c for c in df.columns
+                     if str(c).strip().lower() in ("visa_trx_count", "vi_trx_count",
+                                                   "trx_count", "trx total", "trx_total")
+                     or _re.match(r'^(presim_|reallocated_)?fc_vi_trx_m\d+$', str(c).strip().lower())]
+            if not _cols or len(df) == 0:
+                return ""
+            _tot = float(sum(float(pd.to_numeric(df[c], errors="coerce").fillna(0).sum()) for c in _cols))
+            return f" · Σ txn = {_tot:,.0f} [{', '.join(map(str, _cols[:4]))}{' …' if len(_cols) > 4 else ''}]"
+        except Exception:  # noqa: BLE001
+            return ""
+
     def _fetch_bq_data(self, cache_filename: str, sql_filename: str, apply_keys: bool = True) -> pd.DataFrame:
         """
         Checks the local cache for a pre-compiled Parquet file. If missing,
@@ -161,17 +179,30 @@ class DataExtractor:
         """
         full_path = os.path.join(self.cache_path, cache_filename)
         if os.path.exists(full_path):
-            logger.info(f"   > Loading {cache_filename} from Drive cache...")
-            return pd.read_parquet(full_path)
-            
+            _df_cached = pd.read_parquet(full_path)
+            # Fingerprint the cache file (rows · size · mtime · Σ transactions) so two machines can
+            # be compared directly — a divergent baseline almost always traces to a different Drive-
+            # cache sync of one of these files, obvious from row-count / mtime / transaction total.
+            try:
+                import datetime as _dt
+                _sz_mb = os.path.getsize(full_path) / 1e6
+                _mt = _dt.datetime.fromtimestamp(os.path.getmtime(full_path)).strftime("%Y-%m-%d %H:%M")
+                logger.info(f"   > Loading {cache_filename} from Drive cache "
+                            f"[{len(_df_cached):,} rows, {_sz_mb:.1f} MB, mtime {_mt}]"
+                            f"{self._txn_total(_df_cached)}")
+            except Exception:  # noqa: BLE001
+                logger.info(f"   > Loading {cache_filename} from Drive cache...")
+            return _df_cached
+
         logger.info(f"   > 📡 Cache miss. Running BigQuery for {cache_filename}...")
         query = self._read_sql_file(sql_filename)
         df = self.bq.query(query).to_dataframe()
-        
-        if apply_keys: 
+        logger.info(f"   > BigQuery returned {cache_filename}: {len(df):,} rows{self._txn_total(df)}")
+
+        if apply_keys:
             logger.info(f"      - Generating Profile Keys before caching...")
             df = self._fast_apply_keys(df)
-            
+
         os.makedirs(self.cache_path, exist_ok=True)
         df.to_parquet(full_path, index=False)
         return df

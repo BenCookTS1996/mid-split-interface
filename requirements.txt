@@ -1,18 +1,31 @@
+# ==========================================================================
+# Python: 3.8.10  (the version this project is developed/run against)
+#
+# Versions below: numpy / pandas are PINNED to the exact versions confirmed
+# running in production (they print in every tab-2 run diagnostics header).
+# The rest are left as minimum floors until locked to your environment.
+#
+# To pin EVERYTHING to exactly what you have installed and working, run this
+# in the same venv you launch Streamlit from and replace the floors below:
+#     pip freeze | grep -iE "pandas|numpy|scipy|scikit-learn|joblib|pyyaml|openpyxl|streamlit|plotly|google-cloud-bigquery|db-dtypes|pyarrow"
+# (or `pip freeze > requirements.lock.txt` to capture the whole environment).
+# ==========================================================================
+
 # Core (used by the algorithms + headless runner)
-pandas>=2.0
-numpy>=1.24
-scipy>=1.10
-scikit-learn>=1.3
-joblib>=1.3          # parallel multi-seed genetic engine (loky backend)
-pyyaml>=6.0
-openpyxl>=3.1
+pandas==2.0.3         # confirmed installed
+numpy==1.24.4         # confirmed installed
+scipy>=1.10           # TODO: pin to your installed version (pip show scipy)
+scikit-learn>=1.3     # TODO: pin to your installed version
+joblib>=1.3           # parallel multi-seed genetic engine (loky backend); TODO: pin
+pyyaml>=6.0           # TODO: pin
+openpyxl>=3.1         # TODO: pin
 
 # UI + charts
-streamlit>=1.32
-plotly>=5.18
+streamlit>=1.32       # TODO: pin to your installed version
+plotly>=5.18          # TODO: pin
 
 # BigQuery: run the .sql extracts and cache to parquet. Required for live forecast
 # runs ("Run VAMP pipeline"); not needed if you only load previously-run outputs.
-google-cloud-bigquery>=3.0
-db-dtypes>=1.1
-pyarrow>=14.0
+google-cloud-bigquery>=3.0   # TODO: pin
+db-dtypes>=1.1               # TODO: pin
+pyarrow>=14.0                # TODO: pin
