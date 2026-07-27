@@ -63,6 +63,11 @@ SCENARIO_TO_RPGT = {
     "Addon Renewal": "Addon Renewal",
     "Upgrade": "Upgrades",
     "P6M Renewal": "P6M Renewals",
+    # Legacy alias: attempts_success.sql historically emitted a misspelled
+    # 'Monthly Intiial'. The query is now fixed, but old cached parquet / re-loaded
+    # outputs may still carry the typo, so canonicalise it here at the single loader
+    # chokepoint (load_success_data) rather than relying on per-tab maps.
+    "Monthly Intiial": "Monthly Initial",
 }
 
 

@@ -67,7 +67,7 @@ enriched_logic AS (
     paymentMethodProvider,
 
     CASE
-      WHEN transactionType = 'auth' AND paymentType = 'order' AND amount < 12 AND paymentMethod != 'paypal' THEN 'Monthly Intiial'
+      WHEN transactionType = 'auth' AND paymentType = 'order' AND amount < 12 AND paymentMethod != 'paypal' THEN 'Monthly Initial'
       WHEN transactionType = 'auth' AND paymentType = 'order' AND amount > 12 AND amount < 37 AND amount != 23 AND paymentMethod != 'paypal' THEN 'Annual Sub Sale'
       WHEN transactionType = 'auth' AND paymentType = 'order' AND amount = 39 AND paymentMethod != 'paypal' THEN 'Upgrade'
       WHEN transactionType = 'capture' AND paymentType = 'order' AND productGroupType = '2' AND paymentMethod != 'paypal' THEN 'Addon Sale'

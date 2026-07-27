@@ -18,7 +18,15 @@ __build__ = "2026-07-22-cfg-json-viewer-bin-filter"
 def render(ss, PROJECT_ROOT):
     _variations = ss.get("variations")
     if not _variations:
-        st.info("Compute split variations in tab 3 (Routing engine) first.")
+        st.markdown(
+            "<div style='text-align:center; padding:3.6rem 1rem; color:#475467;'>"
+            "<div style='font-size:2.4rem; line-height:1; margin-bottom:0.6rem;'>🔒</div>"
+            "<div style='font-size:1.05rem; font-weight:700; color:#0B1F3A; "
+            "margin-bottom:0.3rem;'>Nothing to generate yet</div>"
+            "<div style='font-size:0.9rem;'>Head to <b>2 · Routing engine</b> and click "
+            "<b>Compute split variations</b> — you can generate connector configs here "
+            "once a split exists.</div></div>",
+            unsafe_allow_html=True)
     else:
         from routing_optimiser.connector_pool_configs import (
             BRANDS as _POOL_BRANDS, company_to_brand_key as _co2brand,

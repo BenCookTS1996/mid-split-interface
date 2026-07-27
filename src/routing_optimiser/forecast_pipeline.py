@@ -120,21 +120,70 @@ def run_vamp_pipeline(config: dict, project_root: str,
                     f"(exists={os.path.isdir(config['paths']['queries_dir'])})")
         logger.info(f"ADAPTER: mid_list_file={mlf} (exists={os.path.exists(mlf)})")
 
+        import time as _t
+        _t0_all = _t.time()
+        _rs = config.get("run_settings", {}) or {}
+        logger.info(
+            f"ADAPTER: run config — company={_rs.get('company')} · month={_rs.get('month_var')} · "
+            f"month_0_start={_rs.get('month_0_start_date')} · "
+            f"actuals={_rs.get('actuals_start_date')}→{_rs.get('actuals_end_date')} · "
+            f"future_anchor={_rs.get('future_anchor_date')} · "
+            f"blend_future_sheet_rules={_rs.get('blend_future_sheet_rules')} · "
+            f"use_chunked_csv_files={_rs.get('use_chunked_csv_files')}")
+
+        def _shape(obj, name, warn_empty=True):
+            """Log a dataframe's size + leading columns; warn LOUDLY when empty so a 0-row
+            stage (e.g. unparsed split rules) is obvious instead of silently producing empty
+            downstream exports."""
+            try:
+                import pandas as _pd
+                if isinstance(obj, _pd.DataFrame):
+                    _c = list(obj.columns)
+                    logger.info(f"      · {name}: {len(obj):,} rows × {len(_c)} cols"
+                                + (f"  [{', '.join(map(str, _c[:10]))}{' …' if len(_c) > 10 else ''}]"
+                                   if _c else ""))
+                    if warn_empty and len(obj) == 0:
+                        logger.warning(f"      [!] {name} is EMPTY — every export built from it will be 0 rows.")
+                elif obj is None:
+                    logger.info(f"      · {name}: None")
+                else:
+                    try:
+                        logger.info(f"      · {name}: {len(obj):,} item(s)")
+                    except Exception:  # noqa: BLE001
+                        logger.info(f"      · {name}: {type(obj).__name__}")
+            except Exception:  # noqa: BLE001
+                pass
+
         client = bigquery.Client(project=gcp_project) if gcp_project else bigquery.Client()
 
-        logger.info("ADAPTER: PHASE 1 — DataExtractor.extract_all()")
+        _tp = _t.time()
+        logger.info("ADAPTER: PHASE 1 — DataExtractor.extract_all() "
+                    "[BigQuery pull → parse split rules → assemble forecast matrix]")
         extractor = DataExtractor(config, client)
         extractor.extract_all()
-        logger.info("ADAPTER: PHASE 1b — _fetch_mr_daily_weights()")
-        mr_weights = extractor._fetch_mr_daily_weights()
+        logger.info(f"ADAPTER: PHASE 1 finished in {_t.time() - _tp:.1f}s — data shapes:")
+        _shape(getattr(extractor, "gw_mapping_df", None), "gateway mapping (historical)")
+        _shape(getattr(extractor, "longterm_fcast_df", None), "long-term forecast matrix")
+        _shape(getattr(extractor, "split_df", None), "SPLIT RULES (parsed from Excel)")
+        _shape(getattr(extractor, "attempts_df", None), "attempts (derived)")
+        _shape(getattr(extractor, "mid_df", None), "MID list")
 
-        logger.info("ADAPTER: PHASE 2 — ActuarialEngine.run_engine()")
+        _tp = _t.time()
+        logger.info("ADAPTER: PHASE 1b — _fetch_mr_daily_weights() [monthly-renewal daily curve]")
+        mr_weights = extractor._fetch_mr_daily_weights()
+        _shape(mr_weights, "MR daily weights")
+
+        _tp = _t.time()
+        logger.info("ADAPTER: PHASE 2 — ActuarialEngine.run_engine() "
+                    "[reference curves → distribute granular VAMPs to the waterfall]")
         actuarial = ActuarialEngine(
             config=config, fcast_data=extractor.fcast_data_df,
             mapping_data=extractor.gw_mapping_df,
             longterm_fcast_pre=extractor.longterm_fcast_df,
             attempts_df=extractor.attempts_df)
         final_attempts_df = actuarial.run_engine()
+        logger.info(f"ADAPTER: PHASE 2 finished in {_t.time() - _tp:.1f}s")
+        _shape(final_attempts_df, "actuarial attempts (with VAMPs)")
 
         # Persist the split-INDEPENDENT forecast (actuarial attempts + the context the
         # AllocationEngine/ExportManager need) so tab 3 can run the REAL allocation on a
@@ -156,21 +205,29 @@ def run_vamp_pipeline(config: dict, project_root: str,
             logger.warning(f"ADAPTER: could not cache forecast artifacts ({_pe}); "
                            "tab-3 exact mode will be unavailable.")
 
-        logger.info("ADAPTER: PHASE 3 — AllocationEngine.execute_time_aware_routing()")
+        _tp = _t.time()
+        logger.info("ADAPTER: PHASE 3 — AllocationEngine.execute_time_aware_routing() "
+                    "[apply split rules across the t-periods, death syncs + redistribution]")
         allocator = AllocationEngine(
             config=config, attempts_df=final_attempts_df,
             split_df=extractor.split_df, mr_weights=mr_weights)
         pre_df, post_df = allocator.execute_time_aware_routing()
+        logger.info(f"ADAPTER: PHASE 3 finished in {_t.time() - _tp:.1f}s")
+        _shape(pre_df, "pre-simulation matrix (PreSim)")
+        _shape(post_df, "reallocated matrix (post)")
 
-        logger.info("ADAPTER: PHASE 4 — ExportManager.run_all_exports()")
+        _tp = _t.time()
+        logger.info("ADAPTER: PHASE 4 — ExportManager.run_all_exports() "
+                    "[Pop & Stack the massive matrix → CSV baseline exports]")
         exporter = ExportManager(config=config, mid_df=extractor.mid_df,
                                  attempts_df=extractor.attempts_df, mr_weights=mr_weights)
         exporter.run_all_exports(pre_df, post_df)
+        logger.info(f"ADAPTER: PHASE 4 finished in {_t.time() - _tp:.1f}s")
 
         out = config["paths"]["output_dir"].format(
             month_var=config["run_settings"]["month_var"],
             company=config["run_settings"]["company"])
-        logger.info("ADAPTER: pipeline complete")
+        logger.info(f"ADAPTER: pipeline complete — total {_t.time() - _t0_all:.1f}s")
         return os.path.join(project_root, out)
     finally:
         os.chdir(prev_cwd)

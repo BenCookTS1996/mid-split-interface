@@ -92,7 +92,18 @@ st.markdown("""
   div[data-testid="stVerticalBlock"] {gap: 0.35rem;}
   div[data-testid="stHorizontalBlock"] {gap: 0.6rem;}
   hr {margin: 0.3rem 0;}
-  h5 {margin: 0.35rem 0 0.15rem 0; color: var(--tav-ink); font-weight: 700;}
+  /* CONSISTENT TYPE SCALE — one size per role so spacing/weight read uniformly app-wide:
+       h4  = tab / section titles      (largest)
+       h5  = card titles               (the `##### N. …` panel headers)
+       h6  = chart / sub-section titles (the `###### …` labels above individual charts)
+       caption = helper text under a control. */
+  h4 {font-size: 1.18rem; font-weight: 800; letter-spacing: -0.01em;
+      color: var(--tav-ink); margin: 0.5rem 0 0.25rem 0;}
+  h5 {font-size: 1.00rem; font-weight: 700; letter-spacing: -0.005em;
+      color: var(--tav-ink); margin: 0.35rem 0 0.15rem 0;}
+  h6 {font-size: 0.82rem; font-weight: 700; text-transform: none;
+      color: var(--tav-muted); margin: 0.55rem 0 0.1rem 0;}
+  [data-testid="stCaptionContainer"] {font-size: 0.8rem; line-height: 1.35;}
 
   /* st.caption text in black (Streamlit defaults to muted grey) */
   [data-testid="stCaptionContainer"], [data-testid="stCaptionContainer"] *,
@@ -772,6 +783,39 @@ tab_fc, tab_eng, tab_imp, tab_cfg = st.tabs([
     "4 · Generate configs",
 ])
 
+# --- Readiness gate: tabs 3 (impact) & 4 (configs) only have anything to show once a run
+# (or a validated split) has produced `variations`. Until then, dim the two top-level tab
+# labels (with a hover tooltip) so they LOOK inactive, and show a calm placeholder inside
+# them instead of an empty page / a raw "compute first" info box. ---
+_HAS_RUN = bool(ss.get("variations"))
+
+def _locked_panel(step_html):
+    """Calm centered placeholder for a results tab that has no run behind it yet."""
+    st.markdown(
+        "<div style='text-align:center; padding:3.6rem 1rem; color:var(--tav-muted);'>"
+        "<div style='font-size:2.4rem; line-height:1; margin-bottom:0.6rem;'>🔒</div>"
+        "<div style='font-size:1.05rem; font-weight:700; color:var(--tav-ink); "
+        "margin-bottom:0.3rem;'>Nothing to show yet</div>"
+        f"<div style='font-size:0.9rem;'>{step_html}</div></div>",
+        unsafe_allow_html=True)
+
+if not _HAS_RUN:
+    # Scope to TOP-LEVEL tabs only: `:not([tab-panel] …)` excludes every nested tab-list
+    # (tab 1's and tab 3's sub-tabs live inside a tab-panel). nth-of-type counts the tab
+    # buttons, so (3) and (4) are the Impact and Configs tabs.
+    st.markdown("""<style>
+      button[data-baseweb="tab"]:not([data-baseweb="tab-panel"] button[data-baseweb="tab"]):nth-of-type(3),
+      button[data-baseweb="tab"]:not([data-baseweb="tab-panel"] button[data-baseweb="tab"]):nth-of-type(4) {
+          opacity: 0.4 !important; cursor: not-allowed; position: relative;
+      }
+      button[data-baseweb="tab"]:not([data-baseweb="tab-panel"] button[data-baseweb="tab"]):nth-of-type(3):hover::after,
+      button[data-baseweb="tab"]:not([data-baseweb="tab-panel"] button[data-baseweb="tab"]):nth-of-type(4):hover::after {
+          content: "Run the engine first"; position: absolute; top: 100%; left: 0;
+          white-space: nowrap; background: #0B1F3A; color: #fff; font-size: 0.72rem;
+          font-weight: 600; padding: 3px 8px; margin-top: 4px; z-index: 1000;
+      }
+    </style>""", unsafe_allow_html=True)
+
 # ============================================================================
 # TAB 1 - Forecast
 # ============================================================================
@@ -1368,6 +1412,18 @@ with tab_eng:
                 _auto_explore = True       # auto-explore capable-but-untested gateways
                 ss["eng_rpgt_hold_others"] = True
                 ss["eng_auto_explore"] = True
+                # OPT-IN speed trade: skip injecting exploration fallback gateways into cells whose
+                # forecast volume is below this floor. Those tiny cells barely move the objective but
+                # bloat every GA matrix op. 0 = inject everywhere (today's behaviour, byte-identical);
+                # a small value (e.g. 50) drops only near-empty cells for a small result change.
+                st.number_input(
+                    "Exploration min cell volume (0 = explore all)", min_value=0, max_value=100_000,
+                    value=0, step=50, key="explore_min_cell_vol",
+                    help="Cells with forecast volume below this get NO injected fallback gateways (they "
+                         "stay single-gateway), shrinking the search matrix to speed up the engine. "
+                         "0 keeps today's behaviour exactly. Non-zero changes the result slightly — A/B it: "
+                         "run once at 0 and once at your value, then compare the logged dial-0 VAMP rate, "
+                         "revenue, MIDs-over-cap and total gateway-rows.")
                 _grc1, _grc2 = st.columns(2)
                 _score_grain = _grc1.selectbox(
                     "Engine Score grain",
@@ -1436,10 +1492,46 @@ with tab_eng:
                              "but slower. 80 = current.")
                     _ga5, _ga6 = st.columns(2)
                     _ga5.number_input(
-                        "GA population (0 = auto)", min_value=0, max_value=300, value=0, step=10,
+                        "No Candidate Splits", min_value=0, max_value=300, value=0, step=10,
                         key="ga_pop_override",
                         help="Candidate plans per generation. 0 = auto-size from the problem (current). "
                              "Larger = more thorough, slower.")
+                    # Default seed count to the machine's core count, so every seed runs at once
+                    # (workers = min(seeds, cores)). Extra seeds beyond the cores just queue.
+                    _cpu_seeds_default = max(1, min(int(os.cpu_count() or 4), 16))
+                    _ga6.number_input(
+                        "Number of seeds", min_value=1, max_value=16, value=_cpu_seeds_default, step=1,
+                        key="ga_n_seeds",
+                        help="Independent CMA-ES searches, each from a different random start; the fittest "
+                             "is kept. Defaults to your CPU core count so they all run in parallel. More = "
+                             "better odds of the best result but more compute; seeds beyond your core count "
+                             "queue and run in later waves (slower).")
+                    _ga7, _ga8 = st.columns(2)
+                    _ga7.number_input(
+                        "Restarts per seed", min_value=1, max_value=10, value=4, step=1,
+                        key="ga_restarts",
+                        help="Each seed re-launches its search from a fresh spread this many times, keeping "
+                             "the best result across them. More = better odds of the best split but longer "
+                             "(total generations = restarts × generations). 4 = current.")
+                    # Candidate-split budget readout. These inputs are inside the Compute form, so
+                    # this reflects the LAST-COMMITTED settings and refreshes when you press Compute
+                    # (not per-keystroke). λ (candidate splits per generation) auto-sizes to the
+                    # problem when 'No Candidate Splits' = 0, so we show a ~64 estimate in that case.
+                    _bud_seeds = max(1, int(ss.get("ga_n_seeds", _cpu_seeds_default) or _cpu_seeds_default))
+                    _bud_rst = max(1, int(ss.get("ga_restarts", 4) or 4))
+                    _bud_gen = int(ss.get("ga_generations", 80) or 80)
+                    _bud_pop = int(ss.get("ga_pop_override", 0) or 0)
+                    _bud_lam = _bud_pop if _bud_pop > 0 else 64
+                    _bud_cands = _bud_seeds * _bud_rst * _bud_gen * _bud_lam
+                    _lam_txt = (f"{_bud_lam}" if _bud_pop > 0 else f"~{_bud_lam} (auto)")
+                    _ga8.markdown(
+                        "<div style='padding-top:0.35rem; font-size:0.78rem; color:var(--tav-muted); "
+                        "line-height:1.15;'>Candidate splits evaluated<br>"
+                        f"<span style='font-size:1.15rem; font-weight:800; color:var(--tav-ink);'>"
+                        f"≈ {_bud_cands:,}</span></div>", unsafe_allow_html=True)
+                    _ink_caption(
+                        f"= {_bud_seeds} seeds × {_bud_rst} restarts × {_bud_gen} generations × "
+                        f"{_lam_txt} candidate splits/generation. Refreshes when you press Compute.")
                 else:
                     _ink_caption(f"No settings for the {labels.get(engine_key, engine_key)} engine.")
                 # The risk↔conversion tradeoff is expressed by the dial variations, so the reference
@@ -1508,15 +1600,17 @@ with tab_eng:
                         "Half-life (days)", min_value=1, max_value=365, value=15, step=1, key="decay_half_inp",
                         help="Attempts this many days old count half as much. Used only when time decay is on.")
                     # --- Auto-block dead gateways (bank appears to have blocked the merchant) ---
-                    _bg1, _bg2 = st.columns(2)
+                    # vertical_alignment="center" so the checkbox sits mid-height against the
+                    # (taller, labelled) number input beside it instead of pinning to the top.
+                    _bg1, _bg2 = st.columns(2, vertical_alignment="center")
                     _bg1.checkbox(
                         "Auto-block dead gateways", value=False, key="block_gw_cb",
                         help="Flag a gateway as BANK-BLOCKED when its MOST-RECENT attempts have all "
                              "failed (0 approvals) for at least the count on the right, then cap that "
                              "gateway's share (for that bank) to the exploration floor so the engine "
                              "stops routing real volume to a door the bank has closed.")
-                    _bg2.number_input(
-                        "Min consecutive failed attempts", min_value=10, max_value=1_000_000,
+                    _bg2.slider(
+                        "Min consecutive failed attempts", min_value=10, max_value=1000,
                         value=100, step=10, key="block_min_inp",
                         help="How many of the most-recent, all-failed attempts (from the latest "
                              "attempt backward) before a gateway counts as blocked by that bank. "
@@ -1541,9 +1635,10 @@ with tab_eng:
                         # while the input is hidden.
                         _shrink_in = 300
                         if not use_eb:
-                            _shrink_in = st.number_input(
-                                "Bayesian Smoothing Volume", min_value=0, max_value=100_000, value=300, step=50,
-                                help="Pseudo-attempts applied to every gateway under Fixed Number smoothing.")
+                            _shrink_in = st.slider(
+                                "Bayesian Smoothing Volume", min_value=0, max_value=2000, value=300, step=50,
+                                help="Pseudo-attempts applied to every gateway under Fixed Number smoothing. "
+                                     "Higher = more shrinkage toward the prior.")
                         shrink = 300 if use_eb else int(_shrink_in)
 
         # Section 3 (Risk constraints + per-MID editor) on the LEFT, Section 4 (Run Log)
@@ -1552,7 +1647,13 @@ with tab_eng:
         with _c_log:
             with st.container(border=True):
                 st.markdown("##### 4. Run Log")
-                _run_prog_slot = st.container()   # % complete + ETA bar (filled during a run)
+                _run_prog_slot = st.container(key="run_prog_slot")   # % complete + ETA bar (filled during a run)
+                # Lift the status row (spinner + "Running…" label) up so its text lines up with
+                # the "Enforce VAMP cap" checkbox at the top of the Risk Constraints panel beside
+                # it — the st.status box carries a top margin that otherwise sits it lower. Same
+                # .st-key-<key> technique used for the checkbox alignment elsewhere in this app.
+                st.markdown("<style>.st-key-run_prog_slot{margin-top:-0.5rem;}</style>",
+                            unsafe_allow_html=True)
                 _run_log_slot = st.container()
         with _c_rc:
             with st.container(border=True):
@@ -1711,14 +1812,13 @@ with tab_eng:
 
             import time as _pt
             _run_t0 = _pt.time()
-            # Spinner + "Running…" label (LEFT) share ONE row with the % / ETA progress bar
-            # (RIGHT); the live log renders full-width beneath (log_area is redirected to
-            # _run_log_slot below). The bar takes 4/5 of the row so it lines up close to the
-            # full-width log box under it.
-            # Status label wide enough for one line; estimator bar takes less room to its right.
-            _hc_l, _hc_r = _run_prog_slot.columns([3, 2])
-            status = _hc_l.status("Running pre-processing and split engine…", expanded=False)
-            _pbar = _hc_r.progress(0.0, text="0% · starting…")
+            # CALM PROGRESS VIEW: a prominent "~N remaining" headline + current stage on top,
+            # a thin % bar under it, and the full technical log tucked inside a collapsed
+            # "Show technical details" expander (the st.status widget) so a non-expert sees a
+            # quiet progress screen while the raw diagnostics stay one click away for experts.
+            _eta_slot = _run_prog_slot.empty()                 # big remaining-time headline
+            _pbar = _run_prog_slot.progress(0.0, text="starting…")
+            status = _run_prog_slot.status("Show technical details", expanded=False)
 
             # ADAPTIVE ETA: derive the stage-boundary fractions from the LAST run's measured
             # engine (④) + compression (⑥) wall-times (persisted in ga_perf.json), so the % and
@@ -1744,9 +1844,21 @@ with tab_eng:
             # pop auto-sizes to n_mid (unknown pre-processing) → assume the same data ⇒ same auto pop
             # as last run; only an explicit override changes the pop ratio.
             _cur_pop = _cur_pop_ovr if _cur_pop_ovr > 0 else int(_perf0.get("pop", 0) or 0)
+            # Seeds run in parallel up to the core count, so wall time scales with the number of
+            # sequential WAVES = ceil(seeds / cores), not the raw seed count (adding seeds within
+            # the core budget is ~free; only overflow beyond the cores adds a wave).
+            _cpu_now = max(1, int(os.cpu_count() or 4))
+            _cur_seeds = max(1, int(ss.get("ga_n_seeds", _GA_N_SEED) or _GA_N_SEED))
+            _prev_seeds = max(1, int(_perf0.get("seeds", _GA_N_SEED) or _GA_N_SEED))
+            _cur_waves = -(-_cur_seeds // _cpu_now)      # ceil division
+            _prev_waves = -(-_prev_seeds // _cpu_now)
+            # Restarts multiply each seed's total generations (gens_max = generations × restarts),
+            # so they scale engine time roughly linearly — fold them into the estimate too.
+            _cur_restarts = max(1, int(ss.get("ga_restarts", 4) or 4))
             _eng_scale = (_ratio(_cur_gen, _perf0.get("gen"))
                           * _ratio(_cur_pop, _perf0.get("pop"))
-                          * _ratio(_GA_N_SEED, _perf0.get("seeds")))
+                          * _ratio(_cur_waves, _prev_waves)
+                          * _ratio(_cur_restarts, _perf0.get("restarts", 4)))
             _E_est *= min(6.0, max(0.15, _eng_scale))
             _C_est *= _ratio(int(ss.get("max_configs", 0) or 0), _perf0.get("pool_target"),
                              lo=0.3, hi=3.0)
@@ -1784,17 +1896,36 @@ with tab_eng:
                     _eta = frac * _eta_lin + (1.0 - frac) * _eta_model
                     _eta = int(max(1, min(_eta, _T_est)))
                     _rem = f" · ~{_eta}s left (est.)"
-                _txt = f"{_pct}%" + (f" · {label}" if label else "") + _rem
+                _txt = f"{_pct}%" + (f" · {label}" if label else "")
                 try:
                     _pbar.progress(frac, text=_txt)
                 except Exception:  # noqa: BLE001
                     pass
+                # PROMINENT ETA headline (the calm view's focal point): humanise the estimate
+                # to minutes when it's long, and pair it with the current stage in muted text.
+                try:
+                    if frac >= 0.999:
+                        _head = "✓ Finishing up…"
+                    elif int(_eta) >= 90:
+                        _head = f"~{int(round(int(_eta) / 60))} min remaining"
+                    else:
+                        _head = f"~{max(1, int(_eta))}s remaining"
+                    _eta_slot.markdown(
+                        "<div style='display:flex; align-items:baseline; gap:0.6rem; "
+                        "padding:0.1rem 0 0.35rem 0;'>"
+                        f"<span style='font-size:1.5rem; font-weight:800; line-height:1.1; "
+                        f"color:var(--tav-ink);'>{_head}</span>"
+                        f"<span style='font-size:0.9rem; color:var(--tav-muted);'>"
+                        f"{label or 'working…'}</span></div>",
+                        unsafe_allow_html=True)
+                except Exception:  # noqa: BLE001
+                    pass
 
             with status:
-                # Render the live log FULL-WIDTH into the Run-Log column (not inside the
-                # narrow spinner column), so the spinner+bar row stays compact on top and
-                # the dark log box spans the panel beneath it.
-                log_area = _run_log_slot.empty()
+                # Render the live log INSIDE the "Show technical details" expander (the status
+                # widget) so the default view stays calm — the raw diagnostics only appear when
+                # the user expands it. `st.empty()` here places the log within the status.
+                log_area = st.empty()
                 log_lines: list[str] = []
                 def log(msg):
                     # Keep the FULL log in log_lines (shown in the expandable panel and copyable);
@@ -2377,6 +2508,17 @@ with tab_eng:
                                 _cell_gws.setdefault(_k, set()).add(_gw)
                             _cells = agg_forecast[_cellkey_cols].drop_duplicates()
                             _cells_cur = _cells["currency"].astype(str).str.strip().str.lower().to_numpy()
+                            # OPT-IN volume gate: per-cell total forecast volume, used to skip
+                            # exploration injection in near-empty cells. 0 → no gating (unchanged).
+                            _expl_min_vol = float(ss.get("explore_min_cell_vol", 0) or 0)
+                            _cell_vol_map = {}
+                            if _expl_min_vol > 0:
+                                _cv_keys = list(zip(*[agg_forecast[c].astype(str).str.strip().str.lower()
+                                                      for c in _cellkey_cols]))
+                                _cv_vol = pd.to_numeric(agg_forecast["volume"], errors="coerce").fillna(0.0).to_numpy()
+                                for _k, _v in zip(_cv_keys, _cv_vol):
+                                    _cell_vol_map[_k] = _cell_vol_map.get(_k, 0.0) + float(_v)
+                            _pruned_cells = set()
                             _new_rows = []
                             for _g in sorted(_explore):
                                 _gc = _fid_cur.get(_g)
@@ -2389,6 +2531,9 @@ with tab_eng:
                                     if len(_cell_gws.get(_ck, ())) >= _MIN_GW:   # cell already has a fallback
                                         continue
                                     if _ck + (_g,) in _have:
+                                        continue
+                                    if _expl_min_vol > 0 and _cell_vol_map.get(_ck, 0.0) < _expl_min_vol:
+                                        _pruned_cells.add(_ck)          # near-empty cell → skip exploration
                                         continue
                                     _rp = _cd.get("rpgt", "ALL_RPGTS")
                                     _nr = {k: _cd[k] for k in _gk}
@@ -2406,6 +2551,11 @@ with tab_eng:
                                     f"single-gateway cells ({len(set(k[3] for k in _inj_fc_keys))} gateway(s), "
                                     f"{'auto: currency-capable' if _auto_explore else 'explore list'}); "
                                     "seeded at the bank×currency average (weak prior) + explore cap.")
+                            if _expl_min_vol > 0:
+                                log(f"   exploration volume gate ON (min cell volume {_expl_min_vol:,.0f}): "
+                                    f"skipped {len(_pruned_cells)} near-empty cell(s) → fewer fallback rows "
+                                    "injected, smaller GA matrix (A/B: compare total gateway-rows + dial-0 "
+                                    "VAMP/revenue/MIDs-over-cap vs a run at 0).")
                     except Exception as _e:  # noqa: BLE001
                         log(f"   [Warning] new-gateway exploration injection skipped: {_e}")
                         _inj_fc_keys = []
@@ -2692,8 +2842,14 @@ with tab_eng:
                     # weight re-runs the full granular enforcement (VAMP recap + per-MID /
                     # per-(MID×RPGT) cap scaling) on the exploded split, which is the slow
                     # part — so fewer stops ≈ proportionally faster with per-MID constraints.
-                    _N_VARIATIONS = 2   # just the two endpoints: dial 0 (compliant) and 100 (ceiling)
-                    weights = [round(float(w), 2) for w in np.linspace(0.0, 1.0, _N_VARIATIONS)]
+                    # Only the risk-minimised compliant endpoint (dial 0) is produced now — the
+                    # max-revenue ceiling (dial 100) was removed at the user's request. The greedy
+                    # revenue split is STILL computed internally as a GA warm-start seed, so dial 0
+                    # is unchanged; dropping dial 100 just skips its pool-compression pass. Every
+                    # variation-builder below loops `weights` and only makes a dial-100 entry when
+                    # w>=1.0, so a single [0.0] weight yields exactly the dial-0 split.
+                    _N_VARIATIONS = 1   # dial 0 only (compliant); dial 100 ceiling removed
+                    weights = [round(float(w), 2) for w in np.linspace(0.0, 0.0, _N_VARIATIONS)]
                     _progress(_f_eng, "Running engine…")   # adaptive ETA (see _f_* above)
                     _stage(f"④ Run {engine_key} engine across the Risk↔Conversion axis")
                     log(f"   {_N_VARIATIONS} dials: {', '.join(str(int(round(w * 100))) for w in weights)}")
@@ -4189,6 +4345,22 @@ with tab_eng:
                             if not _needs:
                                 break
                             _seed_t = _scale_mids_in_gran(_seed, _needs)   # tilt reference by the γ needs
+                            # CHEAP PRE-CHECK (#8 speed): a full _enforce_once on the tilted seed is
+                            # expensive (minutes). Enforcement is ~monotonic in seed quality, so if
+                            # tilting doesn't even lower the seed's PROJECTED badness (cheap, no LP
+                            # enforcement) vs the current seed, enforcing it won't Pareto-beat the
+                            # current result — skip the pass instead of computing-then-rejecting it.
+                            # The real Pareto guard below still protects anything we DO enforce.
+                            try:
+                                _pc_cur, _pc_tilt = _combined_bad(_seed), _combined_bad(_seed_t)
+                            except Exception:  # noqa: BLE001
+                                _pc_cur = _pc_tilt = None
+                            if (_pc_cur is not None and _pc_tilt is not None
+                                    and not (_pc_tilt < _pc_cur - 1e-12)):
+                                log(f"   engine↔enforcement feedback (#8) round {_fb + 1}: tilt did not "
+                                    f"lower the projected badness ({_pc_cur:.6g}→{_pc_tilt:.6g}) — skipping "
+                                    "the enforcement pass (no Pareto gain possible, saves a full solve).")
+                                break
                             _cand = _enforce_once(_seed_t)
                             if _cand is None or getattr(_cand, "empty", True):
                                 break
@@ -4559,7 +4731,9 @@ with tab_eng:
                         _ga_pop = _pop_ovr if _pop_ovr > 0 else int(np.clip(round(4 * _n_mid), 30, 80))
                         _ga_gen = int(ss.get("ga_generations", 80) or 80)
                         _ga_pat = 12
-                        _N_SEED = _GA_N_SEED  # multi-seed: keep the fittest of N parallel CMA-ES starts
+                        # multi-seed: keep the fittest of N parallel CMA-ES starts. N is the tab-2
+                        # "Number of seeds" control (defaults to core count); _GA_N_SEED is the fallback.
+                        _N_SEED = max(1, int(ss.get("ga_n_seeds", _GA_N_SEED) or _GA_N_SEED))
                                               # (module constant, also read by the settings-aware ETA)
                         _GA_GAIN_MAX = 3.5   # wider per-MID gain range (was 2.0) → more cross-MID reach
                         # CMA-ES self-adapts (covariance + step size) and ranks feasibility-first, so the
@@ -4657,19 +4831,64 @@ with tab_eng:
                                     _ga_backend = "loky"
                                 _try_backends = [_ga_backend] + (["threading"] if _ga_backend != "threading" else [])
                                 _njobs = min(int(_N_SEED), os.cpu_count() or 1)
+                                # Can we stream results as each seed returns? (joblib >=1.3 has
+                                # return_as). If so we log a per-seed convergence summary the moment
+                                # each finishes; the generator is ORDERED so the fittest tie-break
+                                # stays byte-identical to the blocking call. Older joblib → blocking.
+                                try:
+                                    _gen_ok = ("return_as" in _insp_jl.signature(Parallel).parameters)
+                                except Exception:  # noqa: BLE001
+                                    _gen_ok = False
+
+                                def _log_seed(_idx, _infoc, _t0, _best_holder):
+                                    """Verbose one-line summary for a finished seed (best-effort)."""
+                                    try:
+                                        _fit = float(_infoc.get("best_fit", float("nan")))
+                                        _i0 = float(_infoc.get("init_fit", _fit))
+                                        _feas = bool(_infoc.get("feasible", False))
+                                        _viol = float(_infoc.get("violation", 0.0))
+                                        _gns = int(_infoc.get("gens", 0))
+                                        _gmax = int(_infoc.get("gens_max", 0))
+                                        _sig = float(_infoc.get("sigma_final", 0.0))
+                                        _es = bool(_infoc.get("early_stopped", False))
+                                        _tag = ""
+                                        if _best_holder[0] is None or _fit > _best_holder[0]:
+                                            _best_holder[0] = _fit; _tag = "  ← best so far"
+                                        log(f"      • seed {_idx}/{int(_N_SEED)} finished "
+                                            f"(t+{_st_t.time() - _t0:.0f}s): fitness {_i0:,.4g}→{_fit:,.4g}, "
+                                            f"feasible={_feas}, violation={_viol:.4g}, "
+                                            f"{_gns}/{_gmax} gens{' (early-stop)' if _es else ''}, "
+                                            f"σ_final={_sig:.3g}{_tag}")
+                                    except Exception:  # noqa: BLE001
+                                        pass
+
                                 for _bk in _try_backends:
                                     try:
                                         _pk = dict(n_jobs=_njobs, backend=_bk)
                                         if _bk in ("loky", "multiprocessing") and _JL_INNER_OK:
                                             _pk["inner_max_num_threads"] = 1   # avoid BLAS oversubscription
                                         _t_par0 = _st_t.time()
-                                        _seed_results = Parallel(**_pk)(
-                                            delayed(_run_midtilt_ga)(
-                                                ctx, lam=50.0, pop_size=_ga_pop, generations=_ga_gen,
-                                                seed=_seed + _s, auto=True, patience=_ga_pat,
-                                                warm_start=_warm, gain_max=_GA_GAIN_MAX, stop_check=_ga_stop,
-                                                **_extra_kw)
+                                        log(f"   multi-seed GA (risk-min endpoint): launching "
+                                            f"{int(_N_SEED)} seed(s) across {_njobs} {_bk} worker(s) "
+                                            f"— gens≤{int(_ga_gen)}, pop={int(_ga_pop)} each; "
+                                            "per-seed results logged as they finish…")
+                                        _tasks = (delayed(_run_midtilt_ga)(
+                                            ctx, lam=50.0, pop_size=_ga_pop, generations=_ga_gen,
+                                            seed=_seed + _s, auto=True, patience=_ga_pat,
+                                            warm_start=_warm, gain_max=_GA_GAIN_MAX, stop_check=_ga_stop,
+                                            **_extra_kw)
                                             for _s in range(int(_N_SEED)))
+                                        if _gen_ok:
+                                            _pk["return_as"] = "generator"
+                                            _seed_results, _bh = [], [None]
+                                            for _si, (_shc, _infoc) in enumerate(Parallel(**_pk)(_tasks), 1):
+                                                _seed_results.append((_shc, _infoc))
+                                                _log_seed(_si, _infoc, _t_par0, _bh)
+                                        else:
+                                            _seed_results = list(Parallel(**_pk)(_tasks))
+                                            _bh = [None]
+                                            for _si, (_shc, _infoc) in enumerate(_seed_results, 1):
+                                                _log_seed(_si, _infoc, _t_par0, _bh)
                                         log(f"   multi-seed GA: {int(_N_SEED)} seeds in PARALLEL ({_bk}, "
                                             f"{_njobs} workers) in {_st_t.time() - _t_par0:.1f}s.")
                                         break
@@ -4687,12 +4906,19 @@ with tab_eng:
                             else:
                                 import time as _st_t
                                 _t_seq0 = _st_t.time()
+                                _bh_seq = [None]
+                                if int(_N_SEED) > 1:
+                                    log(f"   multi-seed GA (risk-min endpoint): running "
+                                        f"{int(_N_SEED)} seed(s) SEQUENTIALLY (parallel unavailable) "
+                                        f"— gens≤{int(_ga_gen)}, pop={int(_ga_pop)} each…")
                                 for _s in range(int(_N_SEED)):
                                     _shc, _infoc = _run_midtilt_ga(
                                         ctx, lam=50.0, pop_size=_ga_pop, generations=_ga_gen,
                                         seed=_seed + _s, auto=True, patience=_ga_pat,
                                         warm_start=_warm, gain_max=_GA_GAIN_MAX, stop_check=_ga_stop,
                                         **_extra_kw)
+                                    if int(_N_SEED) > 1:
+                                        _log_seed(_s + 1, _infoc, _t_seq0, _bh_seq)
                                     if _info is None or _infoc["best_fit"] > _info["best_fit"]:
                                         _sh, _info = _shc, _infoc
                                 if int(_N_SEED) > 1:
@@ -4819,7 +5045,8 @@ with tab_eng:
                                             float(ctx.get("floor", 0.0) or 0.0), repr(_mid_month_rules),
                                             round(float(_rm_w), 6), round(float(_band_mult), 4), 0.4,
                                             int(_n_fine_rm), int(_ga_pop), int(_ga_gen), int(_N_SEED),
-                                            float(_GA_GAIN_MAX), 4, 42)).encode())
+                                            float(_GA_GAIN_MAX),
+                                            int(max(1, int(ss.get("ga_restarts", 4) or 4))), 42)).encode())
                             return _h.hexdigest()
 
                         _rm_path = None; _safe_G = _inf2 = None
@@ -4839,7 +5066,8 @@ with tab_eng:
                             # richer per-cell genome (#4) + extra restarts (#3) at this harder end.
                             _safe_G, _inf2 = _ga_solve_with_correction(
                                 _rm_w, _band_w=3375.0 * _band_mult, _band_fix=8100.0 * _band_mult,
-                                _warm=_warm_dial0, _ref_gamma=0.4, _n_fine=_n_fine_rm, _n_restarts=4)
+                                _warm=_warm_dial0, _ref_gamma=0.4, _n_fine=_n_fine_rm,
+                                _n_restarts=max(1, int(ss.get("ga_restarts", 4) or 4)))
                             if _rm_path:
                                 try:
                                     import pickle as _pk_rm, glob as _glob_rm
@@ -4865,6 +5093,7 @@ with tab_eng:
                         _ga_perf_secs = _gatime.time() - _safe_wall0          # the single CMA-ES run's wall time
                         ss["ga_perf"] = {"secs": float(_ga_perf_secs), "budget": int(_ga_pop * _ga_gen),
                                          "gen": int(_ga_gen), "pop": int(_ga_pop), "seeds": int(_N_SEED),
+                                         "restarts": int(max(1, int(ss.get("ga_restarts", 4) or 4))),
                                          "nvar": 1, "n": int(len(G))}
                         _save_ga_perf(ss["ga_perf"])
                         # (_ga_solve_with_correction resets risk_min_w / band_weight on exit.)
@@ -4884,19 +5113,26 @@ with tab_eng:
                             return _agg
                         def _enforce_endpoint(_shares):
                             return _restrict_and_recap(_explode(_endpoint_agg(_shares)))
+                        # dial 100 removed → the revenue endpoint is only needed when a ceiling dial
+                        # (w≥1) or a multi-dial frontier is produced. For a lone dial-0 run its full
+                        # enforcement (a whole extra solve) is dead weight, so skip it and frame the
+                        # variation off the COMPLIANT endpoint instead — byte-identical dial-0 output.
+                        _need_rev = any(w >= 1.0 - 1e-9 for w in weights) or len(weights) > 1
                         _progress(_f_enf1, "Enforcing caps (1/2)…")
-                        _rev_gran = _enforce_endpoint(_comp_endpoint_G)    # dial 99↓ = max-revenue compliant (GA)
+                        _rev_gran = _enforce_endpoint(_comp_endpoint_G) if _need_rev else None  # dial 99↓ (skipped for lone dial 0)
                         _progress(_f_enf2, "Enforcing caps (2/2)…")
                         _comp_gran = _enforce_endpoint(_safe_endpoint_G)   # dial 0 = risk-minimised compliant (GA)
                         _progress(_f_var, "Building variations…")
                         # DIAL 100 (per spec): RAW softmax revenue reference — eligibility only, NO
                         # VAMP / MID / max-share caps — the unconstrained revenue ceiling. May breach.
-                        _raw100 = _restrict(_explode(_endpoint_agg(_ref_share_G)))
+                        _raw100 = _restrict(_explode(_endpoint_agg(_ref_share_G))) if _need_rev else None
                         _keyc = ["rpgt", "currency", "bank", "gateway"]
                         variations = []
-                        if (_rev_gran is not None and not getattr(_rev_gran, "empty", True)
+                        _frame_src = (_rev_gran if (_rev_gran is not None and not getattr(_rev_gran, "empty", True))
+                                      else _comp_gran)
+                        if (_frame_src is not None and not getattr(_frame_src, "empty", True)
                                 and _comp_gran is not None and not getattr(_comp_gran, "empty", True)):
-                            _tmpl = _rev_gran.reset_index(drop=True).copy()
+                            _tmpl = _frame_src.reset_index(drop=True).copy()
                             _cm = (_comp_gran[_keyc + ["share"]].drop_duplicates(_keyc)
                                    .rename(columns={"share": "_comp_share_g"}))
                             _tmpl = _tmpl.merge(_cm, on=_keyc, how="left")
@@ -4933,7 +5169,8 @@ with tab_eng:
                                     "volume": summ["volume"],
                                 })
                         log(f"   GA total wall time (cross-cell per-MID tilt + blend): {_fmt_secs(_ga_wall_tot)} "
-                            f"(1 GA run [risk-min only; revenue-max = greedy+LP] × {_n_mid} vampMid tilts + 2 enforcements).")
+                            f"(1 GA run [risk-min only; revenue-max = greedy+LP] × {_n_mid} vampMid tilts + "
+                            f"{2 if _need_rev else 1} enforcement(s) [revenue endpoint {'kept' if _need_rev else 'skipped — lone dial 0'}]).")
                     elif not changed:
                         log("✅ Reference (conversion-optimal) split already meets every per-vampMid "
                             "VAMP cap — dial 99↓ identical (compliant); dial 100 = RAW reference (uncapped).")
@@ -4972,14 +5209,20 @@ with tab_eng:
                         # only (bans / wallet), NO VAMP / MID / max-share caps — so it can BREACH. It
                         # is the unconstrained revenue ceiling (a diagnostic, not deployable if it
                         # breaches). Its "MIDs over cap" count surfaces exactly how much it breaches.
-                        _rev_gran = _restrict_and_recap(_explode(_summ_from_shares(ref_share)[0]))
+                        # dial 100 removed → skip the revenue-endpoint enforcement for a lone dial-0
+                        # run (dead weight; frame off the compliant endpoint — identical dial-0 output).
+                        _need_rev = any(w >= 1.0 - 1e-9 for w in weights) or len(weights) > 1
+                        _rev_gran = (_restrict_and_recap(_explode(_summ_from_shares(ref_share)[0]))
+                                     if _need_rev else None)
                         _comp_gran = _restrict_and_recap(_explode(_summ_from_shares(comp_share)[0]))
-                        _raw100 = _restrict(_explode(_summ_from_shares(ref_share)[0]))   # dial 100: eligibility only
+                        _raw100 = (_restrict(_explode(_summ_from_shares(ref_share)[0])) if _need_rev else None)  # dial 100: eligibility only
                         _keyc = ["rpgt", "currency", "bank", "gateway"]
                         variations = []
-                        if (_rev_gran is not None and not getattr(_rev_gran, "empty", True)
+                        _frame_src = (_rev_gran if (_rev_gran is not None and not getattr(_rev_gran, "empty", True))
+                                      else _comp_gran)
+                        if (_frame_src is not None and not getattr(_frame_src, "empty", True)
                                 and _comp_gran is not None and not getattr(_comp_gran, "empty", True)):
-                            _tmpl = _rev_gran.reset_index(drop=True).copy()
+                            _tmpl = _frame_src.reset_index(drop=True).copy()
                             _cm = (_comp_gran[_keyc + ["share"]].drop_duplicates(_keyc)
                                    .rename(columns={"share": "_comp_share_g"}))
                             _tmpl = _tmpl.merge(_cm, on=_keyc, how="left")
@@ -5312,8 +5555,18 @@ with tab_eng:
                     except Exception as _rbe:  # noqa: BLE001
                         log(f"   [Warning] run bundle save skipped ({type(_rbe).__name__}: {_rbe})")
                     _progress(1.0, "Done")
-                    status.update(label=f"Generated {len(variations)} variations.", state="complete", expanded=False)
-                    st.success("Variations ready — open tab 4.")
+                    status.update(label="Show technical details", state="complete", expanded=False)
+                    try:
+                        _eta_slot.markdown(
+                            "<div style='font-size:1.4rem; font-weight:800; line-height:1.1; "
+                            "color:var(--tav-green-dark); padding:0.1rem 0 0.35rem 0;'>"
+                            f"✓ Done in {int(_pt.time() - _run_t0)}s "
+                            f"<span style='font-size:0.9rem; font-weight:600; color:var(--tav-muted);'>"
+                            f"· {len(variations)} variations ready</span></div>",
+                            unsafe_allow_html=True)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    st.success("Variations ready — open **3 · Split, outputs & impact**.")
                 except Exception as exc:  # noqa: BLE001
                     import traceback as _tb
                     _fulltb = _tb.format_exc()
@@ -5330,9 +5583,13 @@ with tab_eng:
                         log("═══════════════════════════════════════════════════════════════════")
                     except Exception:  # noqa: BLE001
                         pass
-                    status.update(label="FAILED", state="error", expanded=True)
+                    status.update(label="Run failed — technical details", state="error", expanded=True)
                     try:
                         _pbar.empty()   # clear the % bar so it doesn't look stuck mid-run
+                        _eta_slot.markdown(
+                            "<div style='font-size:1.3rem; font-weight:800; color:var(--tav-red); "
+                            "padding:0.1rem 0 0.35rem 0;'>✕ Run failed — see details below</div>",
+                            unsafe_allow_html=True)
                     except Exception:  # noqa: BLE001
                         pass
                 finally:
@@ -5347,7 +5604,7 @@ with tab_eng:
         # container on every rerun, so when we're NOT mid-run re-render the stored text.
         if not submit_engine and ss.get("last_run_log"):
             with _run_log_slot:
-                with st.expander("Run Log (last run)", expanded=True):
+                with st.expander("Show technical details (last run)", expanded=False):
                     st.code(ss["last_run_log"], language="log")
 
         if ss.get("_tab3_error"):
@@ -5466,7 +5723,9 @@ with tab_imp:
     </style>""", unsafe_allow_html=True)
 
     if "variations" not in ss or "adf" not in ss:
-        st.info("Compute variations in tab 2 first.")
+        _locked_panel("Head to <b>2 · Routing engine</b> and click "
+                      "<b>Compute split variations</b> — your split, outputs and impact "
+                      "analysis will appear here.")
     else:
         variations = ss["variations"]
         weights = [v["weight"] for v in variations]
@@ -5500,11 +5759,21 @@ with tab_imp:
             _prev_w = ss.get("selected_variation_weight")
             # Default the dial to 0 (risk-minimised compliant endpoint); keep the user's pick after.
             _def_w = _prev_w if _prev_w in weights else min(weights)
-            picked_w = _sld_col.select_slider(
-                "**Risk  ↔  Conversion**", options=weights,
-                value=_def_w,
-                format_func=lambda w: f"{int(round(w * 100))}",
-                help="Dial: safer routing ↔ more revenue.")
+            if len(weights) > 1:
+                picked_w = _sld_col.select_slider(
+                    "**Risk  ↔  Conversion**", options=weights,
+                    value=_def_w,
+                    format_func=lambda w: f"{int(round(w * 100))}",
+                    help="Dial: safer routing ↔ more revenue.")
+            else:
+                # Single variation (dial 100 removed) — no dial to pick; show a static label.
+                picked_w = weights[0]
+                _sld_col.markdown(
+                    "<div style='padding-top:0.15rem;'>"
+                    "<div style='font-size:0.82rem; font-weight:700; color:var(--tav-ink);'>Split</div>"
+                    "<div style='font-size:0.85rem; color:var(--tav-muted); margin-top:0.1rem;'>"
+                    "Risk-minimised · compliant</div></div>",
+                    unsafe_allow_html=True)
             ss["selected_variation_weight"] = picked_w
             # Impact basis: always the Compressed Rules — the split trimmed so the generated pool
             # count stays within your target, i.e. what the exported configs actually deliver. The
