@@ -1,0 +1,394 @@
+"""Numba-accelerated fused decode+objective for the cross-cell tilt GA (OPT-IN).
+
+This module powers the **"GA - Numba"** engine ONLY. The production "Genetic algorithm"
+engine never imports or touches it. Importing this file has no side effects and never
+raises, even when Numba is not installed.
+
+Why it exists
+-------------
+The per-generation hot loop is `_obj_viol(_decode(genome))` in `genetic_global.py`. In
+NumPy that materialises several (population × gateways) intermediates per generation
+(the exp array, the per-cell reduceat sums, the water-fill temporaries, the per-MID
+sparse sums). This kernel FUSES the whole decode+objective into a single pass over one
+candidate at a time, so the big intermediates never exist — that (not a smaller float)
+is where the speed-up comes from. It keeps full **float64** maths and sums in the SAME
+ORDER as the NumPy path, so results are identical to float64 rounding — unlike float32,
+which would perturb the chaotic CMA-ES trajectory into a different answer.
+
+Safety contract (verify-or-fallback)
+-------------------------------------
+`make_numba_eval(...)` builds the fast callable. `verify(...)` runs BOTH the Numba kernel
+and the existing NumPy `_decode_midtilt3`/`_obj_viol` on the same sample of genomes and
+compares objective+violation. The caller only trusts Numba if they match within tolerance;
+otherwise it logs the discrepancy and falls back to the normal NumPy GA. Because the fast
+path is gated on that check, a wrong or non-compiling kernel can NEVER produce a bad split
+— the worst case is "GA - Numba" behaving exactly like the ordinary Genetic engine.
+
+Build marker is logged by the caller so stale bytecode is obvious.
+"""
+from __future__ import annotations
+
+import time
+
+import numpy as np
+
+__build__ = "2026-07-28-ga-numba-fused-eval-verify-or-fallback"
+
+# --------------------------------------------------------------------------- numba guard
+try:                                            # Numba is optional; absent -> engine falls back.
+    from numba import njit as _njit             # type: ignore
+    NUMBA_OK = True
+
+    def njit(*a, **k):                          # force our safe defaults (no fastmath: keep IEEE)
+        k.setdefault("cache", True)
+        k.setdefault("fastmath", False)
+        k.setdefault("nogil", True)
+        if a and callable(a[0]):
+            return _njit(**k)(a[0])
+        return _njit(*a, **k)
+except Exception:                               # noqa: BLE001 - no numba -> identity decorator
+    NUMBA_OK = False
+
+    def njit(*a, **k):                          # type: ignore
+        if a and callable(a[0]):
+            return a[0]
+
+        def deco(f):
+            return f
+        return deco
+
+
+# --------------------------------------------------------------------------- fused kernel
+@njit
+def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fine,
+                nec_col, fl_col, capN_col, has_floor, has_cap,
+                cv, risk, rc,
+                has_vcap, vcap,
+                has_volcap, volcap,
+                n_bands, b_mi, b_bval, b_ceil, b_floor, b_has_ceil, b_has_floor,
+                has_base, base_vol,
+                max_share, floor_val,
+                rmw, has_vfr, vfr):
+    """One fused pass: ACTUAL genome batch G (P, 3M[+K]) -> (obj (P,), viol (P,)).
+
+    Mirrors `_decode_midtilt3` (softmax tilt -> per-cell renorm -> floor-then-cap water-fill)
+    then `_obj_viol` (revenue [- risk-min], VAMP-rate / volume / band / cap / floor violations),
+    summing in the same index order as the NumPy versions so the two agree to float64 rounding.
+    """
+    P = G.shape[0]
+    N = ref.shape[0]
+    C = cs.shape[0]
+    obj = np.empty(P, dtype=np.float64)
+    viol = np.empty(P, dtype=np.float64)
+    w = np.empty(N, dtype=np.float64)
+    X = np.empty(N, dtype=np.float64)
+    midv = np.empty(M, dtype=np.float64)
+    midvr = np.empty(M, dtype=np.float64)
+
+    for p in range(P):
+        # ---- decode: softmax tilt weights on eligible columns -----------------------
+        for g in range(N):
+            if elig[g] > 0.5:
+                m = mid_id[g]
+                a = -G[p, m] * zr[g] + G[p, M + m] * zq[g] + G[p, 2 * M + m]
+                if n_fine > 0 and fine_idx[g] >= 0:
+                    a -= G[p, 3 * M + fine_idx[g]] * zr_cell[g]
+                w[g] = ref[g] * np.exp(a) * elig[g]
+            else:
+                w[g] = 0.0
+        # ---- per-cell renormalise ---------------------------------------------------
+        for c in range(C):
+            s0 = cs[c]
+            s1 = s0 + cc[c]
+            seg = 0.0
+            for g in range(s0, s1):
+                seg += w[g]
+            if seg <= 1e-12:
+                seg = 1.0
+            for g in range(s0, s1):
+                X[g] = w[g] / seg
+        # ---- HARD exploration-floor water-fill (lift-then-take, up to 50 sweeps) -----
+        if has_floor:
+            for _it in range(50):
+                any_under = False
+                for c in range(C):
+                    s0 = cs[c]
+                    s1 = s0 + cc[c]
+                    deficit = 0.0
+                    give_cell = 0.0
+                    for g in range(s0, s1):
+                        if elig[g] > 0.5 and X[g] < fl_col[g] - 1e-12:
+                            deficit += fl_col[g] - X[g]
+                            any_under = True
+                        elif elig[g] > 0.5 and X[g] > fl_col[g] + 1e-12:
+                            give_cell += X[g] - fl_col[g]
+                    if deficit > 0.0:
+                        for g in range(s0, s1):
+                            if elig[g] > 0.5 and X[g] < fl_col[g] - 1e-12:
+                                X[g] = fl_col[g]
+                            elif (elig[g] > 0.5 and X[g] > fl_col[g] + 1e-12
+                                  and give_cell > 1e-12):
+                                X[g] = X[g] - (X[g] - fl_col[g]) * deficit / give_cell
+                if not any_under:
+                    break
+        # ---- HARD max-share cap water-fill (shed-then-fill, up to 50 sweeps) ---------
+        if has_cap:
+            for _it in range(50):
+                any_over = False
+                for c in range(C):
+                    s0 = cs[c]
+                    s1 = s0 + cc[c]
+                    excess = 0.0
+                    room_cell = 0.0
+                    for g in range(s0, s1):
+                        if X[g] > capN_col[g] + 1e-12:
+                            excess += X[g] - capN_col[g]
+                            any_over = True
+                        elif elig[g] > 0.5 and X[g] < capN_col[g] - 1e-12:
+                            room_cell += capN_col[g] - X[g]
+                    if excess > 0.0:
+                        for g in range(s0, s1):
+                            if X[g] > capN_col[g] + 1e-12:
+                                X[g] = capN_col[g]
+                            elif (elig[g] > 0.5 and X[g] < capN_col[g] - 1e-12
+                                  and room_cell > 1e-12):
+                                X[g] = X[g] + (capN_col[g] - X[g]) * excess / room_cell
+                if not any_over:
+                    break
+        # ---- objective: revenue -----------------------------------------------------
+        o = 0.0
+        for g in range(N):
+            o += X[g] * rc[g]
+        v = 0.0
+        # ---- per-MID aggregates (only when a per-MID constraint is active) -----------
+        need_mid = (has_vcap == 1) or (has_volcap == 1) or (n_bands > 0)
+        if need_mid:
+            for m in range(M):
+                midv[m] = 0.0
+                midvr[m] = 0.0
+            for g in range(N):
+                vg = X[g] * cv[g]
+                mm = mid_id[g]
+                midv[mm] += vg
+                midvr[mm] += vg * risk[g]
+            if has_vcap == 1:
+                denom = vcap if vcap > 1e-9 else 1e-9
+                for m in range(M):
+                    rate = midvr[m] / midv[m] if midv[m] > 1e-12 else 0.0
+                    t = rate / denom - 1.0
+                    if t > 0.0:
+                        v += t
+            if has_volcap == 1:
+                for m in range(M):
+                    t = midv[m] / volcap[m] - 1.0     # volcap has +inf sentinel for <=0 caps
+                    if t > 0.0:
+                        v += t
+            if n_bands > 0:
+                for b in range(n_bands):
+                    m = b_mi[b]
+                    if has_base == 1:
+                        fmid = midv[m] / base_vol[m] if base_vol[m] > 1e-12 else 1.0
+                    else:
+                        fmid = 1.0
+                    proj = fmid * b_bval[b]
+                    if b_has_ceil[b] == 1:
+                        cc_ = b_ceil[b] if b_ceil[b] > 1e-9 else 1e-9
+                        t = proj / cc_ - 1.0
+                        if t > 0.0:
+                            v += t
+                    if b_has_floor[b] == 1 and b_floor[b] > 0.0:
+                        ff_ = b_floor[b] if b_floor[b] > 1e-9 else 1e-9
+                        t = 1.0 - proj / ff_
+                        if t > 0.0:
+                            v += t
+        # ---- structural safety nets (cap + floor), matching _obj_viol ----------------
+        if max_share < 1.0:
+            denom = max_share if max_share > 1e-9 else 1e-9
+            for g in range(N):
+                t = X[g] - max_share
+                if t > 0.0:
+                    v += t / denom
+        if floor_val > 0.0:
+            denom = floor_val if floor_val > 1e-9 else 1e-9
+            for g in range(N):
+                if elig[g] > 0.5 and nec_col[g] >= 2.0:
+                    t = fl_col[g] - X[g]
+                    if t > 0.0:
+                        v += t / denom
+        # ---- risk-minimisation secondary objective ----------------------------------
+        if rmw > 0.0:
+            if has_vfr == 1:
+                if not need_mid:                       # midvr not built above -> build it now
+                    for m in range(M):
+                        midvr[m] = 0.0
+                    for g in range(N):
+                        midvr[mid_id[g]] += X[g] * cv[g] * risk[g]
+                s = 0.0
+                for m in range(M):
+                    ex = midvr[m] - vfr[m]
+                    if ex > 0.0:
+                        s += ex
+                o -= rmw * s
+            else:
+                tot = 0.0
+                for g in range(N):
+                    tot += X[g] * cv[g] * risk[g]
+                o -= rmw * tot
+        obj[p] = o
+        viol[p] = v
+    return obj, viol
+
+
+# --------------------------------------------------------------------------- builder
+def _prep_cols(cell_starts, cell_counts, elig, cap, floor):
+    """Per-column nec / floor / capN constants, matching `genetic_global._cap_floor_prep`
+    but as dense (N,) arrays the fused kernel can index directly."""
+    cs = np.ascontiguousarray(cell_starts, dtype=np.intp)
+    cc = np.ascontiguousarray(cell_counts, dtype=np.intp)
+    elig = np.ascontiguousarray(elig, dtype=np.float64)
+    nec_cell = np.add.reduceat(elig, cs)
+    nec_col = np.repeat(nec_cell, cc).astype(np.float64)
+    fl_col = np.minimum(float(floor),
+                        np.where(nec_col > 0, 1.0 / np.maximum(nec_col, 1.0), 0.0)).astype(np.float64)
+    capN_col = np.where(nec_col >= 2.0, float(cap), 1.0).astype(np.float64)
+    return nec_col, fl_col, capN_col
+
+
+def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
+                    cap, floor, fine_idx, zr_cell, n_fine, cv, risk, rc, ctx):
+    """Return a callable `eval_actual(G)->(obj, viol)` (G in ACTUAL genome space) backed by
+    the fused Numba kernel. All constants are captured once. Raises if Numba is unavailable
+    (caller guards on NUMBA_OK)."""
+    if not NUMBA_OK:
+        raise RuntimeError("numba not available")
+    M = int(M)
+    N = int(ref.shape[0])
+    _c = lambda a, dt=np.float64: np.ascontiguousarray(a, dtype=dt)
+    ref = _c(ref); zr = _c(zr); zq = _c(zq)
+    cv = _c(cv); risk = _c(risk); rc = _c(rc)
+    elig = _c(elig)
+    mid_id = _c(mid_id, np.intp)
+    cs = _c(cell_starts, np.intp); cc = _c(cell_counts, np.intp)
+    n_fine = int(n_fine)
+    fine_idx = _c(fine_idx, np.intp) if (n_fine > 0 and fine_idx is not None) else np.full(N, -1, np.intp)
+    zr_cell = _c(zr_cell) if zr_cell is not None else np.zeros(N, np.float64)
+
+    cap = float(cap); floor = float(floor)
+    nec_col, fl_col, capN_col = _prep_cols(cs, cc, elig, cap, floor)
+    has_floor = 1 if floor > 0.0 else 0
+    has_cap = 1 if cap < 1.0 else 0
+
+    # ---- objective flags/arrays derived from ctx (mirrors _obj_viol's optional terms) ----
+    _vcap = ctx.get("vamp_cap")
+    has_vcap = 1 if _vcap is not None else 0
+    vcap = float(_vcap) if _vcap is not None else 0.0
+
+    _volcap = ctx.get("mid_vol_cap")
+    has_volcap = 1 if _volcap is not None else 0
+    if _volcap is not None:
+        _vc = np.asarray(_volcap, dtype=np.float64)
+        volcap = np.where(_vc > 0, _vc, np.inf).astype(np.float64)
+    else:
+        volcap = np.full(M, np.inf, np.float64)
+
+    _bands = ctx.get("midband") or []
+    n_bands = int(len(_bands))
+    b_mi = np.zeros(max(n_bands, 1), np.intp)
+    b_bval = np.zeros(max(n_bands, 1), np.float64)
+    b_ceil = np.zeros(max(n_bands, 1), np.float64)
+    b_floor = np.zeros(max(n_bands, 1), np.float64)
+    b_has_ceil = np.zeros(max(n_bands, 1), np.intp)
+    b_has_floor = np.zeros(max(n_bands, 1), np.intp)
+    for _i, _b in enumerate(_bands):
+        b_mi[_i] = int(_b[0]); b_bval[_i] = float(_b[1])
+        if _b[2] is not None:
+            b_has_ceil[_i] = 1; b_ceil[_i] = float(_b[2])
+        if _b[3] is not None:
+            b_has_floor[_i] = 1; b_floor[_i] = float(_b[3])
+
+    _base = ctx.get("mid_base_vol")
+    has_base = 1 if _base is not None else 0
+    base_vol = np.asarray(_base, np.float64) if _base is not None else np.zeros(M, np.float64)
+
+    max_share = float(ctx.get("max_share", 1.0) or 1.0)
+    floor_val = float(ctx.get("floor", 0.0) or 0.0)
+    rmw = float(ctx.get("risk_min_w", 0.0) or 0.0)
+    _vfr = ctx.get("vamp_floor_route")
+    has_vfr = 1 if _vfr is not None else 0
+    vfr = np.asarray(_vfr, np.float64) if _vfr is not None else np.zeros(M, np.float64)
+
+    def eval_actual(G):
+        G = np.ascontiguousarray(G, dtype=np.float64)
+        return _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fine,
+                           nec_col, fl_col, capN_col, has_floor, has_cap,
+                           cv, risk, rc,
+                           has_vcap, vcap,
+                           has_volcap, volcap,
+                           n_bands, b_mi, b_bval, b_ceil, b_floor, b_has_ceil, b_has_floor,
+                           has_base, base_vol,
+                           max_share, floor_val,
+                           rmw, has_vfr, vfr)
+
+    return eval_actual
+
+
+# --------------------------------------------------------------------------- verifier
+def verify(np_eval_actual, nb_eval_actual, sample_G, *, rtol_obj=1e-7, atol_viol=1e-7,
+           warmup=True):
+    """Run NumPy and Numba evals on the SAME actual-space genomes and compare. Returns a dict
+    the caller logs verbatim for cross-validation:
+
+        used-decision inputs: ok (bool), reason (str)
+        accuracy: max_abs_obj, max_rel_obj, max_abs_viol, max_rel_viol
+        timing:   t_np, t_nb, speedup, n_sample  (t_nb EXCLUDES the one-off JIT compile)
+
+    `ok` requires every value finite AND max_rel_obj<=rtol_obj AND max_abs_viol<=atol_viol.
+    Never raises: any error is caught and returned as ok=False with the reason.
+    """
+    out = {"ok": False, "reason": "", "n_sample": int(np.asarray(sample_G).shape[0]),
+           "max_abs_obj": float("nan"), "max_rel_obj": float("nan"),
+           "max_abs_viol": float("nan"), "max_rel_viol": float("nan"),
+           "t_np": float("nan"), "t_nb": float("nan"), "speedup": float("nan"),
+           "compile_s": float("nan")}
+    try:
+        G = np.ascontiguousarray(sample_G, dtype=np.float64)
+        # NumPy reference
+        _t = time.perf_counter()
+        o_np, v_np = np_eval_actual(G)
+        out["t_np"] = time.perf_counter() - _t
+        o_np = np.asarray(o_np, float); v_np = np.asarray(v_np, float)
+        # Numba: first call pays JIT compile -> measure it separately, then time the hot call.
+        if warmup:
+            _t = time.perf_counter()
+            nb_eval_actual(G[:1])
+            out["compile_s"] = time.perf_counter() - _t
+        _t = time.perf_counter()
+        o_nb, v_nb = nb_eval_actual(G)
+        out["t_nb"] = time.perf_counter() - _t
+        o_nb = np.asarray(o_nb, float); v_nb = np.asarray(v_nb, float)
+
+        if o_nb.shape != o_np.shape or v_nb.shape != v_np.shape:
+            out["reason"] = f"shape mismatch obj{o_nb.shape}vs{o_np.shape} viol{v_nb.shape}vs{v_np.shape}"
+            return out
+        if not (np.all(np.isfinite(o_nb)) and np.all(np.isfinite(v_nb))):
+            out["reason"] = "numba produced non-finite values"
+            return out
+
+        da = np.abs(o_nb - o_np)
+        out["max_abs_obj"] = float(da.max())
+        out["max_rel_obj"] = float((da / (np.abs(o_np) + 1e-9)).max())
+        dv = np.abs(v_nb - v_np)
+        out["max_abs_viol"] = float(dv.max())
+        out["max_rel_viol"] = float((dv / (np.abs(v_np) + 1e-9)).max())
+        if out["t_nb"] > 0:
+            out["speedup"] = float(out["t_np"] / out["t_nb"])
+
+        ok = (out["max_rel_obj"] <= rtol_obj) and (out["max_abs_viol"] <= atol_viol)
+        out["ok"] = bool(ok)
+        out["reason"] = "verified: numba matches numpy within tolerance" if ok else (
+            f"MISMATCH rel_obj={out['max_rel_obj']:.2e} (tol {rtol_obj:.0e}), "
+            f"abs_viol={out['max_abs_viol']:.2e} (tol {atol_viol:.0e})")
+        return out
+    except Exception as exc:  # noqa: BLE001 - verification must never crash a run
+        out["reason"] = f"{type(exc).__name__}: {exc}"
+        return out

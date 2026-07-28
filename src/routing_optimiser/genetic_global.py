@@ -571,7 +571,7 @@ def _feas_keys(obj, viol, tol=_FEAS_TOL):
 
 
 def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=None,
-           eps0=0.0, repair=None):
+           eps0=0.0, repair=None, progress_cb=None):
     """Active (μ/μ_w, λ)-CMA-ES over the box [lo, hi] (bounds via clipping). `eval_ov(X)`
     returns (objective, violation) per row; ranking is feasibility-first with an
     ε-CONSTRAINED tolerance that starts at `eps0` and shrinks to 0 (early generations may
@@ -626,6 +626,11 @@ def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=N
         obj, viol = eval_ov(Xc)
         obj = np.asarray(obj, float); viol = np.asarray(viol, float)
         counteval += lam
+        if progress_cb is not None:                        # live candidate-count reporting (best-effort)
+            try:
+                progress_cb(int(lam))
+            except Exception:  # noqa: BLE001
+                pass
         eps_it = float(eps0) * max(0.0, 1.0 - it / max(1.0, 0.8 * max_iter))   # relax early, strict late
         rkeys = _feas_keys(obj, viol, tol=max(eps_it, _FEAS_TOL))              # SELECTION (relaxed)
         skeys = _feas_keys(obj, viol, tol=_FEAS_TOL)                          # BEST-TRACK (strict)
@@ -685,7 +690,8 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
                    smart_init=True, init_tries=4,
                    adaptive_lambda=True, breach_lambda_boost=4.0,
                    archive_k=5, archive_min_dist=0.5, stop_check=None,
-                   n_restarts=2, polish=True, ref_gamma=None, n_fine=0):
+                   n_restarts=2, polish=True, ref_gamma=None, n_fine=0, progress_cb=None,
+                   numba=False):
     """Active-CMA-ES cross-cell per-vampMid tilt search — the live engine (see the block
     comment above for the full upgrade list). Genome = [θr | θq | g] (3·n_mid dims).
     Ranking is ε-relaxed feasibility-first (compliant always beats non-compliant at the end),
@@ -798,6 +804,49 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     def _midsum1(v):                                         # (N,) -> (M,) per-MID sum (fast path)
         return (np.asarray(_S.dot(v)).ravel() if _S is not None
                 else _mid_sums(v[None, :], ctx["mid_rows"], M)[0])
+
+    # ---- OPT-IN Numba fast path ("GA - Numba" engine only) --------------------------------
+    # numba=False (the default, i.e. the production Genetic engine) leaves EVERYTHING above
+    # untouched. When numba=True we build a fused float64 kernel, VERIFY it produces the same
+    # (objective, violation) as the NumPy decode+objective on a deterministic genome sample, and
+    # only then swap it in for the hot per-generation eval. Any failure -> keep NumPy. The verify
+    # result is returned in info['numba'] so the caller can log it for cross-validation.
+    ga_numba_info = {"requested": bool(numba), "used": False, "reason": "not requested"}
+    if numba:
+        ga_numba_info["reason"] = ""
+        try:
+            from . import numba_kernels as _nbk
+            if not _nbk.NUMBA_OK:
+                ga_numba_info["reason"] = "numba not importable in this environment"
+            else:
+                _nb_eval_actual = _nbk.make_numba_eval(M, ref, zr, zq, mid_id, cs, cc, elig,
+                                                       _cap, _floor, _fine_idx, _zr_cell, _K,
+                                                       cv, risk, rc, ctx)
+                _np_eval_actual = lambda G: _obj_viol(_decode(G), ctx)   # noqa: E731
+                # Deterministic verification sample: zero (θ=0 base), warm-start if any, + random.
+                _vrng = np.random.default_rng(int(seed) ^ 0x5A17)
+                _vs = [np.zeros(D)]
+                if warm_start is not None:
+                    try:
+                        _vs.append(_to_unit(np.asarray(warm_start, float)))
+                    except Exception:  # noqa: BLE001
+                        pass
+                _vs += list(_vrng.random((6, D)))
+                _sampleG = _to_actual(np.clip(np.asarray(_vs, float), 0.0, 1.0))
+                _vr = _nbk.verify(_np_eval_actual, _nb_eval_actual, _sampleG)
+                ga_numba_info.update(_vr)
+                ga_numba_info["build"] = getattr(_nbk, "__build__", "")
+                if _vr.get("ok"):
+                    def eval_ov(V):                          # noqa: F811 - numba override
+                        return _nb_eval_actual(_to_actual(V))
+
+                    def score_of(gu):                        # noqa: F811 - numba override
+                        _o, _v = _nb_eval_actual(_to_actual(np.asarray(gu)[None, :]))
+                        return float(_o[0]), float(_v[0])
+
+                    ga_numba_info["used"] = True
+        except Exception as _e:  # noqa: BLE001 - any failure -> NumPy path, never crash a run
+            ga_numba_info["reason"] = f"{type(_e).__name__}: {_e}"
 
     # #9/#2 memetic gradients: analytic ∂revenue and ∂(smooth violation) through the
     # ref-weighted softmax decode, for a single genome (unit space). Used by the SLSQP
@@ -990,7 +1039,7 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
         bx, bk, bov, tr, fpop = _cmaes(eval_ov, start, s0, np.zeros(D), np.ones(D),
                                        popsize=_lam_r, max_iter=int(generations),
                                        seed=int(seed) + r, stop_check=stop_check,
-                                       eps0=_EPS0, repair=_repair)
+                                       eps0=_EPS0, repair=_repair, progress_cb=progress_cb)
         all_hist.append(tr)
         bx = _polish_genome(bx)                              # #2 polish EVERY restart's winner
         sv = score_of(bx)
@@ -1013,15 +1062,21 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     # (gen, best-so-far score, this-gen best score, this-gen mean score, sigma, violation, ε).
     # The first five match the old convergence chart (scores = maximised feasibility-aware −key,
     # so best-so-far rises); the last two feed the σ and violation→feasibility charts.
-    history = []; gi = 0; run_best = -np.inf; sigma_final = 0.0
-    for tr in all_hist:
+    history = []; gi = 0; run_best = -np.inf; sigma_final = 0.0; cand_run = 0
+    for _ri, tr in enumerate(all_hist):
+        # candidates evaluated per generation of THIS restart = that restart's λ (IPOP grows it:
+        # base λ for the diverse-seed restarts, then doubling capped at _LAM_CAP). Lets the UI plot
+        # score vs. CANDIDATES-evaluated (true x-axis), not just generation index.
+        _lam_r = (lam_cma if _ri < len(_seeds)
+                  else min(int(lam_cma * (2 ** (_ri - len(_seeds) + 1))), _LAM_CAP))
         for gk, mk, sg, vv, ee in tr:
             gi += 1
+            cand_run += int(_lam_r)
             gen_best = -gk
             run_best = max(run_best, gen_best)
             sigma_final = float(sg)
             history.append((gi, float(run_best), float(gen_best), float(-mk), float(sg),
-                            float(vv), float(ee)))
+                            float(vv), float(ee), int(cand_run)))
 
     # Diversity archive (improvement #7 output): the restart winners that are >= archive_min_dist
     # apart in genome space, best (feasibility-first) first, for warm-starting a later run.
@@ -1051,5 +1106,6 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
         "pop_obj": best_fpop[0],      # winning restart's final-population objectives (revenue-ish)
         "pop_viol": best_fpop[1],     # winning restart's final-population violations
         "engine": "cmaes",            # marker so stale bytecode / old GA is obvious in logs
+        "numba": ga_numba_info,       # verify-or-fallback result (used? diffs? timings?) for logs
     }
     return best, info

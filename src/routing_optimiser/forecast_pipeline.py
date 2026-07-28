@@ -249,6 +249,29 @@ def run_vamp_pipeline(config: dict, project_root: str,
         out = config["paths"]["output_dir"].format(
             month_var=config["run_settings"]["month_var"],
             company=config["run_settings"]["company"])
+        _out_dir = os.path.join(project_root, out)
+
+        # Log the head() of every exported CSV so the run log shows what actually landed on disk
+        # (read with nrows so a multi-million-row export costs nothing to peek at).
+        try:
+            import glob as _glob
+            for _csv in sorted(_glob.glob(os.path.join(_out_dir, "*.csv"))):
+                _name = os.path.basename(_csv)
+                try:
+                    _n_total = sum(1 for _ in open(_csv)) - 1   # rows minus header
+                    _peek = pd.read_csv(_csv, nrows=5)
+                    logger.info(f"ADAPTER: exported {_name} ({max(_n_total, 0):,} rows) — head(5):")
+                    _shape(_peek, _name, warn_empty=(_n_total <= 0))
+                    with pd.option_context("display.max_columns", 20, "display.width", 200,
+                                           "display.max_colwidth", 24):
+                        _htxt = _peek.to_string(max_cols=20)
+                    for _ln in _htxt.splitlines():
+                        logger.info("        " + _ln)
+                except Exception as _ce:  # noqa: BLE001
+                    logger.info(f"ADAPTER: exported {_name} — head() unavailable ({type(_ce).__name__}: {_ce})")
+        except Exception:  # noqa: BLE001
+            pass
+
         logger.info(f"ADAPTER: pipeline complete — total {_t.time() - _t0_all:.1f}s")
         return os.path.join(project_root, out)
     finally:

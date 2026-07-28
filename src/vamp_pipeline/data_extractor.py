@@ -172,6 +172,22 @@ class DataExtractor:
         except Exception:  # noqa: BLE001
             return ""
 
+    @staticmethod
+    def _log_head(df, label: str, n: int = 5) -> None:
+        """Log df.head(n) so the actual CONTENT of each loaded/exported file is visible in the run
+        log (not just its shape). Wide frames are truncated to keep the log readable."""
+        try:
+            import pandas as _pd
+            with _pd.option_context("display.max_columns", 20, "display.width", 200,
+                                    "display.max_colwidth", 24):
+                _txt = df.head(n).to_string(max_cols=20)
+            logger.info(f"      head({n}) of {label}"
+                        + (f"  [{len(df.columns)} cols, showing ≤20]:" if len(df.columns) > 20 else ":"))
+            for _ln in _txt.splitlines():
+                logger.info("        " + _ln)
+        except Exception:  # noqa: BLE001
+            pass
+
     def _fetch_bq_data(self, cache_filename: str, sql_filename: str, apply_keys: bool = True) -> pd.DataFrame:
         """
         Checks the local cache for a pre-compiled Parquet file. If missing,
@@ -192,12 +208,14 @@ class DataExtractor:
                             f"{self._txn_total(_df_cached)}")
             except Exception:  # noqa: BLE001
                 logger.info(f"   > Loading {cache_filename} from Drive cache...")
+            self._log_head(_df_cached, cache_filename)
             return _df_cached
 
         logger.info(f"   > 📡 Cache miss. Running BigQuery for {cache_filename}...")
         query = self._read_sql_file(sql_filename)
         df = self.bq.query(query).to_dataframe()
         logger.info(f"   > BigQuery returned {cache_filename}: {len(df):,} rows{self._txn_total(df)}")
+        self._log_head(df, cache_filename)
 
         if apply_keys:
             logger.info(f"      - Generating Profile Keys before caching...")

@@ -136,3 +136,29 @@ def make_stop_check(target: str):
     """Return a zero-arg predicate for a GA's `stop_check` param: True once the flag exists.
     Usage:  run_midtilt_ga(ctx, lam, stop_check=make_stop_check(runs_dir))."""
     return _StopCheck(_stop_path(target))
+
+
+class _ProgressWriter:
+    """Picklable per-seed progress reporter for the GA's `progress_cb` param.
+
+    Called once per generation with the number of candidate splits evaluated that generation
+    (λ); it accumulates a running per-seed total and writes it to `path`. Because it's a plain
+    module-level class (not a closure/lambda) it survives pickling into loky workers, so each
+    parallel seed reports its own live count to its own file — the main process sums the files
+    to show an aggregate "candidate splits evaluated so far" while the search runs. Best-effort:
+    any write failure is swallowed so progress reporting can NEVER break a run."""
+    __slots__ = ("path", "total")
+
+    def __init__(self, path: str):
+        self.path = path
+        self.total = 0
+
+    def __call__(self, inc: int) -> None:
+        try:
+            self.total += int(inc)
+            _tmp = self.path + ".tmp"
+            with open(_tmp, "w") as _f:
+                _f.write(str(self.total))
+            os.replace(_tmp, self.path)   # atomic swap so the poller never reads a torn count
+        except Exception:  # noqa: BLE001
+            pass

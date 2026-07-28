@@ -1345,6 +1345,12 @@ with tab_eng:
         # so its dropdown option is injected here rather than sourced from ENGINES.
         if "genetic" not in {k for k, _ in choices}:
             choices.append(("genetic", "Genetic algorithm"))
+        # 'genetic_numba' is the SAME cross-cell tilt GA with a Numba-compiled float64 fused
+        # decode+objective (opt-in, verify-or-fallback). Dispatched exactly like 'genetic' but
+        # with numba=True; if Numba is missing or the kernel doesn't verify it falls back to the
+        # NumPy path, so it can never produce a different split — see genetic_global/numba_kernels.
+        if "genetic_numba" not in {k for k, _ in choices}:
+            choices.append(("genetic_numba", "GA - Numba (experimental, self-verifying)"))
         labels = {k: lbl for k, lbl in choices}
         keys = [k for k, _ in choices]
         # Default to the Genetic algorithm (the production engine); fall back to softmax/first.
@@ -1378,6 +1384,11 @@ with tab_eng:
                 engine_key = st.selectbox("Split engine", keys, index=default_idx,
                                           format_func=lambda k: labels[k], key="engine_key_select",
                                           help="Method used to choose the split.")
+                # 'genetic_numba' shares ALL of the Genetic engine's UI/dispatch; the only
+                # difference is numba=True at the GA call. These two flags keep the rest of the
+                # tab from having to special-case the extra key everywhere.
+                _is_genetic = engine_key in ("genetic", "genetic_numba")
+                _use_numba = (engine_key == "genetic_numba")
 
                 st.divider()
                 # ---- Split scope & grain (RPGTs, grain, hold-others, auto-explore) ----
@@ -1445,7 +1456,7 @@ with tab_eng:
                 params = {}
                 temp_method, softmax_temperature = "Manual", 0.17
                 # Genetic and Thompson have no engine settings — show nothing (no header, no caption).
-                if engine_key not in ("genetic", "thompson"):
+                if engine_key not in ("genetic", "genetic_numba", "thompson"):
                     st.divider()
                     st.markdown("**Engine settings**")
                 if engine_key == "softmax":
@@ -1464,7 +1475,12 @@ with tab_eng:
                     _ink_caption("No dials. Reference maximises conversion minus the DOWNSIDE (CVaR) of "
                                  "each gateway's VAMP spiking; risk aversion auto-calibrated. Softmax "
                                  "temperature does not apply.")
-                elif engine_key == "genetic":
+                elif _is_genetic:
+                    if _use_numba:
+                        _ink_caption("Same search as the Genetic algorithm, with a Numba-compiled "
+                                     "float64 decode+objective. On launch it verifies the compiled "
+                                     "kernel against the NumPy engine and only uses it if they match "
+                                     "exactly — otherwise it falls back to NumPy (see the run log).")
                     st.selectbox(
                         "Optimisation objective",
                         ["Revenue", "Volume-weighted success rate"], index=1, key="ga_objective",
@@ -1490,48 +1506,83 @@ with tab_eng:
                         key="ga_generations",
                         help="How many evolution rounds the search runs. More = potentially better plans, "
                              "but slower. 80 = current.")
+                    _cpu_seeds_default = max(1, min(int(os.cpu_count() or 4), 16))
                     _ga5, _ga6 = st.columns(2)
                     _ga5.number_input(
-                        "No Candidate Splits", min_value=0, max_value=300, value=0, step=10,
+                        "No Candidate Splits", min_value=0, max_value=300, value=64, step=10,
                         key="ga_pop_override",
-                        help="Candidate plans per generation. 0 = auto-size from the problem (current). "
-                             "Larger = more thorough, slower.")
-                    # Default seed count to the machine's core count, so every seed runs at once
-                    # (workers = min(seeds, cores)). Extra seeds beyond the cores just queue.
-                    _cpu_seeds_default = max(1, min(int(os.cpu_count() or 4), 16))
+                        help="Candidate plans per generation (λ). 64 = default. 0 = auto-size from the "
+                             "problem. Larger = more thorough, slower.")
                     _ga6.number_input(
                         "Number of seeds", min_value=1, max_value=16, value=_cpu_seeds_default, step=1,
                         key="ga_n_seeds",
-                        help="Independent CMA-ES searches, each from a different random start; the fittest "
-                             "is kept. Defaults to your CPU core count so they all run in parallel. More = "
-                             "better odds of the best result but more compute; seeds beyond your core count "
-                             "queue and run in later waves (slower).")
-                    _ga7, _ga8 = st.columns(2)
+                        help="Independent CMA-ES searches from different random starts; the fittest is kept. "
+                             "Defaults to your CPU core count so they run in one parallel wave.")
+                    # vertical_alignment="center" so the readout sits mid-height against the
+                    # (taller, labelled) restarts input beside it.
+                    _ga7, _ga8 = st.columns(2, vertical_alignment="center")
                     _ga7.number_input(
                         "Restarts per seed", min_value=1, max_value=10, value=4, step=1,
                         key="ga_restarts",
-                        help="Each seed re-launches its search from a fresh spread this many times, keeping "
-                             "the best result across them. More = better odds of the best split but longer "
-                             "(total generations = restarts × generations). 4 = current.")
-                    # Candidate-split budget readout. These inputs are inside the Compute form, so
-                    # this reflects the LAST-COMMITTED settings and refreshes when you press Compute
-                    # (not per-keystroke). λ (candidate splits per generation) auto-sizes to the
-                    # problem when 'No Candidate Splits' = 0, so we show a ~64 estimate in that case.
+                        help="Each seed re-launches from a fresh spread this many times, keeping the best. "
+                             "More = better odds of the best split, longer.")
                     _bud_seeds = max(1, int(ss.get("ga_n_seeds", _cpu_seeds_default) or _cpu_seeds_default))
                     _bud_rst = max(1, int(ss.get("ga_restarts", 4) or 4))
                     _bud_gen = int(ss.get("ga_generations", 80) or 80)
                     _bud_pop = int(ss.get("ga_pop_override", 0) or 0)
                     _bud_lam = _bud_pop if _bud_pop > 0 else 64
-                    _bud_cands = _bud_seeds * _bud_rst * _bud_gen * _bud_lam
-                    _lam_txt = (f"{_bud_lam}" if _bud_pop > 0 else f"~{_bud_lam} (auto)")
+                    # RANGE for the candidate-split budget (exact total is only known after a run,
+                    # since early-stops are data-dependent):
+                    #   floor   = seeds × restarts × generations × λ  (fixed λ)
+                    #   ceiling = seeds × generations × Σ min(λ·2^e, 4λ)  — the CMA-ES doubles λ on
+                    #             each IPOP restart, capped at 4λ, so this is the no-early-stop max.
+                    _bud_floor = _bud_seeds * _bud_rst * _bud_gen * _bud_lam
+                    _ceil_mult = sum(min(2 ** _e, 4) for _e in range(max(int(_bud_rst), 1)))
+                    _bud_ceil = _bud_seeds * _bud_gen * _bud_lam * _ceil_mult
+                    # NARROW range once calibrated: anchor on the last run's realization ratio
+                    # (actual ÷ nominal floor) scaled to the current floor, ±15% — far tighter than
+                    # the theoretical floor–ceiling. Fall back to floor–ceiling before the first run.
+                    _ratio = float(ss.get("last_ga_ratio", 0.0) or 0.0)
+                    if _ratio > 0:
+                        _exp = _bud_floor * _ratio
+                        _lo_c, _hi_c = _exp * 0.85, _exp * 1.15
+                    else:
+                        _lo_c, _hi_c = float(_bud_floor), float(_bud_ceil)
+                    # Estimated END-TO-END processing time, calibrated from the LAST run:
+                    #   GA time      = candidate_range ÷ measured throughput (candidates/sec)
+                    #   fixed overhead = last total − last GA (data + enforcement + compression, which
+                    #                    don't scale with the candidate count)
+                    #   end-to-end   = fixed overhead + GA time range
+                    _lc = int(ss.get("last_ga_cands", 0) or 0)
+                    _lsecs = float(ss.get("last_ga_secs", 0.0) or 0.0)
+                    _ltot = float(ss.get("last_total_secs", 0.0) or 0.0)
+                    _rate = (_lc / _lsecs) if (_lc > 0 and _lsecs > 0) else 0.0
+                    _fixed = max(0.0, _ltot - _lsecs) if _ltot > 0 else 0.0
+
+                    def _fmt_eta(_secs):
+                        _m = _secs / 60.0
+                        return f"{_m:.0f} min" if _m >= 1.5 else f"{max(1, int(_secs))}s"
+                    if _rate > 0:
+                        _lo = _fixed + _lo_c / _rate
+                        _hi = _fixed + _hi_c / _rate
+                        _eta_sub = (f"est. end-to-end ~{_fmt_eta(_lo)}–{_fmt_eta(_hi)}"
+                                    + (f" (last run {_fmt_eta(_ltot)} total)" if _ltot > 0 else ""))
+                    else:
+                        _eta_sub = "est. time: run once to calibrate the throughput"
+                    _rng_lbl = ("Candidate splits (est.)" if _ratio > 0 else "Candidate splits (range)")
                     _ga8.markdown(
-                        "<div style='padding-top:0.35rem; font-size:0.78rem; color:var(--tav-muted); "
-                        "line-height:1.15;'>Candidate splits evaluated<br>"
-                        f"<span style='font-size:1.15rem; font-weight:800; color:var(--tav-ink);'>"
-                        f"≈ {_bud_cands:,}</span></div>", unsafe_allow_html=True)
-                    _ink_caption(
-                        f"= {_bud_seeds} seeds × {_bud_rst} restarts × {_bud_gen} generations × "
-                        f"{_lam_txt} candidate splits/generation. Refreshes when you press Compute.")
+                        "<div style='font-size:0.78rem; color:var(--tav-muted); line-height:1.2;'>"
+                        f"{_rng_lbl}<br>"
+                        f"<span style='font-size:1.1rem; font-weight:800; color:var(--tav-ink);'>"
+                        f"{int(_lo_c):,} – {int(_hi_c):,}</span>"
+                        f"<div style='font-size:0.72rem;'>{_eta_sub}</div></div>", unsafe_allow_html=True)
+                    st.checkbox(
+                        "Diverse-seed search (experimental)", value=False, key="ga_diverse_seeds",
+                        help="Spread the parallel seeds across the revenue↔risk axis with varied "
+                             "explore/exploit settings, instead of near-identical searches. SAME time "
+                             "(same seeds, generations, restarts, population — one parallel wave); it "
+                             "just covers more ground. Can find a better split but changes the result, "
+                             "so A/B it. Off = current behaviour (byte-identical).")
                 else:
                     _ink_caption(f"No settings for the {labels.get(engine_key, engine_key)} engine.")
                 # The risk↔conversion tradeoff is expressed by the dial variations, so the reference
@@ -1604,7 +1655,7 @@ with tab_eng:
                     # (taller, labelled) number input beside it instead of pinning to the top.
                     _bg1, _bg2 = st.columns(2, vertical_alignment="center")
                     _bg1.checkbox(
-                        "Auto-block dead gateways", value=False, key="block_gw_cb",
+                        "Auto-block dead gateways", value=True, key="block_gw_cb",
                         help="Flag a gateway as BANK-BLOCKED when its MOST-RECENT attempts have all "
                              "failed (0 approvals) for at least the count on the right, then cap that "
                              "gateway's share (for that bank) to the exploration floor so the engine "
@@ -2744,8 +2795,14 @@ with tab_eng:
                                 agg_forecast.loc[_nar, "risk_rate"] = [
                                     _riskavg.get((c, b, r), 0.006)
                                     for c, b, r in zip(_ck2[_nar], _bk2[_nar], _rk2[_nar])]
+                            # Only the Thompson engine actually samples this posterior; for every
+                            # other engine (incl. genetic/CMA-ES) it's just a weak, uncertain prior
+                            # scored as a point rate — so don't imply Thompson sampling when unused.
+                            _wp = ("wide Thompson posterior the Thompson engine samples to explore"
+                                   if engine_key == "thompson"
+                                   else "weak/uncertain prior, scored cautiously")
                             log(f"   exploration seeding: {len(_sr_rows)} untested gateway cell(s) seeded "
-                                f"(weak prior, attempts=0 → wide Thompson posterior): {_n_sib} from a same-"
+                                f"(attempts=0 → {_wp}): {_n_sib} from a same-"
                                 f"processor+brand+currency sibling, {_n_xbrand} from a CROSS-BRAND processor "
                                 f"benchmark, {len(_sr_rows) - _n_sib - _n_xbrand} from the bank×currency average.")
                         except Exception as _e:  # noqa: BLE001
@@ -4495,7 +4552,7 @@ with tab_eng:
                             return _x if _aggr(_x) <= _aggr(_blend) + 1e-9 else _blend
                         return _fshare
 
-                    if engine_key == "genetic":
+                    if engine_key in ("genetic", "genetic_numba"):
                         # ---- Global GA: revenue − λ·risk, WARM-STARTED from softmax + HARD-
                         # ENFORCED on output. The GA population is seeded with softmax's
                         # revenue-optimal and compliant splits, so (with elitism) it can't
@@ -4790,6 +4847,11 @@ with tab_eng:
                             _extra_kw = {"n_fine": int(_n_fine)}
                             if _n_restarts is not None:
                                 _extra_kw["n_restarts"] = int(_n_restarts)
+                            if engine_key == "genetic_numba":
+                                # opt-in Numba fused eval; the GA self-verifies vs NumPy and
+                                # falls back if it can't (every run_midtilt_ga call below forwards
+                                # this via **_extra_kw).
+                                _extra_kw["numba"] = True
                             try:
                                 ctx["midband"] = (_build_ga_bands(_ref_share_G) or None)
                             except Exception as _e:  # noqa: BLE001
@@ -4862,6 +4924,75 @@ with tab_eng:
                                     except Exception:  # noqa: BLE001
                                         pass
 
+                                # LIVE PROGRESS: give each seed a picklable writer that records its
+                                # running candidate-eval count to its own file; run the (blocking)
+                                # Parallel in a BACKGROUND THREAD so THIS thread stays free to poll
+                                # those files and log an aggregate "candidate splits evaluated so far"
+                                # while the search runs. All best-effort — any failure cascades to the
+                                # next backend / sequential path, byte-identical to before.
+                                import concurrent.futures as _cf, shutil as _shutil
+                                try:
+                                    from routing_optimiser.run_bundle import _ProgressWriter as _PW
+                                except Exception:  # noqa: BLE001
+                                    _PW = None
+                                _prog_dir = os.path.join(PROJECT_ROOT, "runs", "_gaprog")
+                                try:
+                                    _shutil.rmtree(_prog_dir, ignore_errors=True)
+                                    os.makedirs(_prog_dir, exist_ok=True)
+                                except Exception:  # noqa: BLE001
+                                    _prog_dir = None
+                                _writers = ([_PW(os.path.join(_prog_dir, f"seed_{_s}.txt"))
+                                             for _s in range(int(_N_SEED))]
+                                            if (_PW is not None and _prog_dir) else [None] * int(_N_SEED))
+                                _restarts_est = int(_extra_kw.get("n_restarts", 2) or 2)
+                                _total_cand = max(1, int(_N_SEED) * _restarts_est * int(_ga_gen) * int(_ga_pop))
+
+                                def _poll_progress(_t0, _emit, _nseed):
+                                    """Sum the per-seed progress files and surface the live count in BOTH
+                                    the visible headline (so it's seen without expanding the technical log)
+                                    and the technical log (rate-limited). The progress bar freezes during
+                                    the GA — this headline is what tells you it's still working."""
+                                    if not _prog_dir:
+                                        return
+                                    _done = 0
+                                    _active = 0
+                                    try:
+                                        for _fn in os.listdir(_prog_dir):
+                                            if _fn.endswith(".txt"):
+                                                try:
+                                                    with open(os.path.join(_prog_dir, _fn)) as _pf:
+                                                        _v = int((_pf.read().strip() or "0"))
+                                                    _done += _v
+                                                    if _v > 0:
+                                                        _active += 1
+                                                except Exception:  # noqa: BLE001
+                                                    pass
+                                    except Exception:  # noqa: BLE001
+                                        return
+                                    _now = _st_t.time()
+                                    _rate = _done / max(_now - _t0, 1e-6)
+                                    # VISIBLE headline (updated every poll) — no need to expand the log.
+                                    try:
+                                        _eta_slot.markdown(
+                                            "<div style='padding:0.1rem 0 0.35rem 0; line-height:1.25;'>"
+                                            "<span style='font-size:1.4rem; font-weight:800; color:var(--tav-ink);'>"
+                                            f"Searching… ≈ {_done:,}</span>"
+                                            "<span style='font-size:0.9rem; color:var(--tav-muted);'> candidate "
+                                            f"splits evaluated</span><br>"
+                                            "<span style='font-size:0.8rem; color:var(--tav-muted);'>"
+                                            f"{_active}/{int(_nseed)} seeds reporting · {_rate:,.0f}/s · "
+                                            f"t+{_now - _t0:.0f}s</span></div>", unsafe_allow_html=True)
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                    # Technical-log line (rate-limited): raw count is exact; no denominator —
+                                    # the true total exceeds seeds×restarts×gens×λ because CMA-ES doubles λ on
+                                    # each IPOP restart, so a fixed "of Y" would read past 100%.
+                                    if _done > _emit["n"] and (_now - _emit["t"]) >= 8.0:
+                                        _emit["n"], _emit["t"] = _done, _now
+                                        log(f"   GA progress: ≈ {_done:,} candidate splits evaluated so far "
+                                            f"({_active}/{int(_nseed)} seeds active, {_rate:,.0f}/s) · "
+                                            f"t+{_now - _t0:.0f}s")
+
                                 for _bk in _try_backends:
                                     try:
                                         _pk = dict(n_jobs=_njobs, backend=_bk)
@@ -4871,24 +5002,95 @@ with tab_eng:
                                         log(f"   multi-seed GA (risk-min endpoint): launching "
                                             f"{int(_N_SEED)} seed(s) across {_njobs} {_bk} worker(s) "
                                             f"— gens≤{int(_ga_gen)}, pop={int(_ga_pop)} each; "
-                                            "per-seed results logged as they finish…")
-                                        _tasks = (delayed(_run_midtilt_ga)(
-                                            ctx, lam=50.0, pop_size=_ga_pop, generations=_ga_gen,
+                                            f"≥{_total_cand:,} candidate splits (more with restart λ-growth), "
+                                            "count logged live every few seconds…")
+                                        # DIVERSE-SEED SEARCH (opt-in, free): give each worker a DISTINCT
+                                        # start (blend of the revenue-greedy ↔ risk-greedy references +
+                                        # light jitter) and a DISTINCT explore/exploit strategy (varying
+                                        # gain_max). warm_shares stays length-1 per worker so the restart
+                                        # count is UNCHANGED (n_r = max(n_restarts, #seeds)); same seeds,
+                                        # generations, pop → same one-wave wall time. Off → byte-identical.
+                                        _diverse = bool(ss.get("ga_diverse_seeds", False)) and int(_N_SEED) > 1
+                                        _seed_ctx = [ctx] * int(_N_SEED)
+                                        _seed_gm = [_GA_GAIN_MAX] * int(_N_SEED)
+                                        if _diverse:
+                                            try:
+                                                import numpy as _np_ds
+                                                _ws0 = ctx.get("warm_shares")
+                                                _anch = ([_np_ds.asarray(a, float) for a in _ws0]
+                                                         if isinstance(_ws0, (list, tuple)) and len(_ws0) >= 2
+                                                         else None)
+                                                _cs_ds = _np_ds.asarray(ctx.get("cell_starts", []), int)
+                                                _cc_ds = _np_ds.asarray(ctx.get("cell_counts", []), int)
+                                                _seed_ctx, _seed_gm = [], []
+                                                for _s in range(int(_N_SEED)):
+                                                    _w = _s / max(int(_N_SEED) - 1, 1)   # 0=risk … 1=revenue
+                                                    _seed_gm.append(float(_GA_GAIN_MAX * (0.7 + 0.6 * _w)))
+                                                    if _anch is not None and _cs_ds.size and _anch[0].shape == _anch[1].shape:
+                                                        _rng_ds = _np_ds.random.default_rng(int(_seed) + 7000 + _s)
+                                                        _bl = _w * _anch[0] + (1.0 - _w) * _anch[1]
+                                                        _bl = _np_ds.clip(_bl + _rng_ds.normal(0.0, 0.04, _bl.shape), 0.0, None)
+                                                        _seg = _np_ds.add.reduceat(_bl, _cs_ds)
+                                                        _bl = _bl / _np_ds.repeat(_np_ds.where(_seg > 1e-12, _seg, 1.0), _cc_ds)
+                                                        _seed_ctx.append({**ctx, "warm_shares": [_bl]})
+                                                    else:
+                                                        _seed_ctx.append(ctx)
+                                                log(f"   diverse-seed search ON: {int(_N_SEED)} workers spread across the "
+                                                    f"revenue↔risk axis, explore/exploit gain_max "
+                                                    f"{min(_seed_gm):.2f}–{max(_seed_gm):.2f} (same budget/time).")
+                                            except Exception as _dse:  # noqa: BLE001
+                                                log(f"   [Warning] diverse-seed setup skipped "
+                                                    f"({type(_dse).__name__}: {_dse}); standard seeding used.")
+                                                _seed_ctx = [ctx] * int(_N_SEED)
+                                                _seed_gm = [_GA_GAIN_MAX] * int(_N_SEED)
+                                        _tasks = [delayed(_run_midtilt_ga)(
+                                            _seed_ctx[_s], lam=50.0, pop_size=_ga_pop, generations=_ga_gen,
                                             seed=_seed + _s, auto=True, patience=_ga_pat,
-                                            warm_start=_warm, gain_max=_GA_GAIN_MAX, stop_check=_ga_stop,
-                                            **_extra_kw)
-                                            for _s in range(int(_N_SEED)))
-                                        if _gen_ok:
-                                            _pk["return_as"] = "generator"
-                                            _seed_results, _bh = [], [None]
-                                            for _si, (_shc, _infoc) in enumerate(Parallel(**_pk)(_tasks), 1):
-                                                _seed_results.append((_shc, _infoc))
-                                                _log_seed(_si, _infoc, _t_par0, _bh)
-                                        else:
-                                            _seed_results = list(Parallel(**_pk)(_tasks))
-                                            _bh = [None]
-                                            for _si, (_shc, _infoc) in enumerate(_seed_results, 1):
-                                                _log_seed(_si, _infoc, _t_par0, _bh)
+                                            warm_start=_warm, gain_max=_seed_gm[_s], stop_check=_ga_stop,
+                                            progress_cb=_writers[_s], **_extra_kw)
+                                            for _s in range(int(_N_SEED))]
+                                        _box = {}
+                                        def _run_par(_pk=_pk, _tasks=_tasks, _box=_box):
+                                            _box["r"] = list(Parallel(**_pk)(_tasks))
+                                        _emit = {"n": 0, "t": 0.0}
+                                        with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                                            _fut = _ex.submit(_run_par)
+                                            while not _fut.done():
+                                                _st_t.sleep(3.0)
+                                                _poll_progress(_t_par0, _emit, _N_SEED)
+                                            _fut.result()          # re-raise any worker error → fallback
+                                        _seed_results = _box.get("r")
+                                        # Sum the per-seed progress files one last time → the EXACT
+                                        # candidate count actually evaluated, stored so the tab-2 readout
+                                        # can show the true number (not just the pre-run floor estimate).
+                                        try:
+                                            _fin_cands = 0
+                                            if _prog_dir:
+                                                for _fn in os.listdir(_prog_dir):
+                                                    if _fn.endswith(".txt"):
+                                                        try:
+                                                            with open(os.path.join(_prog_dir, _fn)) as _pf:
+                                                                _fin_cands += int((_pf.read().strip() or "0"))
+                                                        except Exception:  # noqa: BLE001
+                                                            pass
+                                            if _fin_cands > 0:
+                                                ss["last_ga_cands"] = int(_fin_cands)
+                                                ss["last_ga_secs"] = float(_st_t.time() - _t_par0)
+                                                # Realization ratio = actual ÷ nominal floor. Captures how
+                                                # much λ-growth (↑) and early-stops (↓) net out at THESE
+                                                # settings, so the tab-2 readout can predict the next run's
+                                                # count tightly (scale the floor by this) instead of showing
+                                                # the wide theoretical floor–ceiling band.
+                                                _nom = (int(_N_SEED)
+                                                        * max(1, int(ss.get("ga_restarts", 4) or 4))
+                                                        * int(_ga_gen) * int(_ga_pop))
+                                                if _nom > 0:
+                                                    ss["last_ga_ratio"] = float(_fin_cands) / float(_nom)
+                                        except Exception:  # noqa: BLE001
+                                            pass
+                                        _bh = [None]
+                                        for _si, (_shc, _infoc) in enumerate(_seed_results or [], 1):
+                                            _log_seed(_si, _infoc, _t_par0, _bh)
                                         log(f"   multi-seed GA: {int(_N_SEED)} seeds in PARALLEL ({_bk}, "
                                             f"{_njobs} workers) in {_st_t.time() - _t_par0:.1f}s.")
                                         break
@@ -4924,6 +5126,44 @@ with tab_eng:
                                 if int(_N_SEED) > 1:
                                     log(f"   multi-seed GA: {int(_N_SEED)} seeds SEQUENTIAL in "
                                         f"{_st_t.time() - _t_seq0:.1f}s (parallel unavailable).")
+                            # ---- GA - Numba: extensive cross-validation diagnostics --------------
+                            # Printed whenever the Numba engine was requested, so a reviewer can
+                            # confirm the compiled kernel produced the SAME (objective, violation) as
+                            # the NumPy engine before trusting the fast path — or see exactly why it
+                            # fell back. All seeds verify identically, so we log the winner's block.
+                            try:
+                                _nbi = (_info or {}).get("numba") if isinstance(_info, dict) else None
+                                if _nbi and _nbi.get("requested"):
+                                    log("   ── GA-Numba verification ──────────────────────────────")
+                                    log(f"      kernel build   : {_nbi.get('build', '?')}")
+                                    if _nbi.get("used"):
+                                        log("      DECISION       : ✓ USING Numba fused float64 kernel "
+                                            "(verified identical to NumPy)")
+                                    else:
+                                        log(f"      DECISION       : ↩ FELL BACK to NumPy engine "
+                                            f"— {_nbi.get('reason', 'unknown')}")
+                                    _ns = _nbi.get("n_sample")
+                                    if _ns:
+                                        log(f"      verified on    : {int(_ns)} sample genomes "
+                                            "(θ=0 base + warm-start + random draws)")
+                                    _mro = _nbi.get("max_rel_obj"); _mao = _nbi.get("max_abs_obj")
+                                    _mav = _nbi.get("max_abs_viol"); _mrv = _nbi.get("max_rel_viol")
+                                    if _mro is not None and _mro == _mro:   # not NaN
+                                        log(f"      objective diff : max |rel|={_mro:.2e}  max |abs|={_mao:.2e}"
+                                            "   (tolerance rel ≤ 1e-7)")
+                                        log(f"      violation diff : max |abs|={_mav:.2e}  max |rel|={_mrv:.2e}"
+                                            "   (tolerance abs ≤ 1e-7)")
+                                    _tnp = _nbi.get("t_np"); _tnb = _nbi.get("t_nb")
+                                    _cmp = _nbi.get("compile_s"); _spd = _nbi.get("speedup")
+                                    if _tnp is not None and _tnp == _tnp:
+                                        log(f"      sample timing  : numpy={_tnp*1e3:.2f} ms  "
+                                            f"numba={_tnb*1e3:.2f} ms  (JIT compile {_cmp*1e3:.0f} ms, "
+                                            f"one-off)  →  {_spd:.2f}× on the verify batch")
+                                    log("      note           : per-run speed-up is larger than the tiny "
+                                        "verify batch shows; compile is paid ONCE per worker process.")
+                                    log("   ───────────────────────────────────────────────────────")
+                            except Exception as _nle:  # noqa: BLE001 - logging must never break a run
+                                log(f"   [Warning] GA-Numba diagnostics log skipped ({_nle}).")
                             if ctx["midband"]:
                                 try:
                                     _br = _ga_true_breach(_sh)
@@ -5111,8 +5351,39 @@ with tab_eng:
                             _agg["share"] = np.asarray(_shares, dtype=float)
                             _agg["volume"] = _agg["cell_volume"] * _agg["share"]
                             return _agg
+                        # AUTO-BLOCK (pre-enforcement): detect bank-blocked (bank,gateway) pairs UP
+                        # FRONT and cap them to the exploration floor INSIDE the enforcement input, so
+                        # the freed volume is redistributed COMPLIANTLY (VAMP + per-MID bands) by the
+                        # same enforcement pass that already runs — instead of the old post-hoc patch
+                        # that capped AFTER enforcement and could perturb VAMP compliance. No extra
+                        # solve, so ≈ no added time. Best-effort; empty set → unchanged behaviour.
+                        _blk_pairs_pre = set()
+                        if bool(ss.get("block_gw_cb", False)):
+                            try:
+                                _bapre = orig_adf.copy()
+                                _b2bp = ss.get("bin_to_bank") or {}
+                                if _b2bp and "bank" in _bapre.columns:
+                                    _bapre["bank"] = _bapre["bank"].map(
+                                        lambda _b: _b2bp.get(_b, _b2bp.get(str(_b), _b)))
+                                _bdfp = detect_blocked_gateways(
+                                    _bapre, float(ss.get("block_min_inp", 100) or 100))
+                                _bflagp = _bdfp[_bdfp["blocked"]] if not _bdfp.empty else _bdfp
+                                _blk_pairs_pre = set(zip(
+                                    _bflagp["bank"].astype(str).str.strip().str.lower(),
+                                    _bflagp["gateway"].astype(str).str.strip().str.lower()))
+                                if _blk_pairs_pre:
+                                    log(f"   auto-block (pre-enforcement): {len(_blk_pairs_pre)} bank×gateway "
+                                        "capped to the exploration floor INSIDE enforcement → the freed "
+                                        "volume is redistributed compliantly (no post-hoc VAMP perturbation).")
+                            except Exception as _bpe:  # noqa: BLE001
+                                log(f"   [Warning] pre-enforcement auto-block detect skipped "
+                                    f"({type(_bpe).__name__}: {_bpe}); post-hoc cap still applies.")
+
                         def _enforce_endpoint(_shares):
-                            return _restrict_and_recap(_explode(_endpoint_agg(_shares)))
+                            _g = _explode(_endpoint_agg(_shares))
+                            if _blk_pairs_pre:                      # cap blocked → floor BEFORE enforcing
+                                _g, _ = _apply_blocked_caps(_g, _blk_pairs_pre, float(floor))
+                            return _restrict_and_recap(_g)
                         # dial 100 removed → the revenue endpoint is only needed when a ceiling dial
                         # (w≥1) or a multi-dial frontier is produced. For a lone dial-0 run its full
                         # enforcement (a whole extra solve) is dead weight, so skip it and frame the
@@ -5527,7 +5798,16 @@ with tab_eng:
                             _save_ga_perf(_gp)
                         except Exception:  # noqa: BLE001
                             pass
-                    log(f"✅ Total run time {_pt.time() - _run_t0:.1f}s")
+                    _total_run_secs = _pt.time() - _run_t0
+                    log(f"✅ Total run time {_total_run_secs:.1f}s")
+                    # Persist the end-to-end wall time + the GA's share, so the tab-2 readout can
+                    # estimate WHOLE-RUN time (data + engine + enforcement + compression), not just
+                    # the candidate search. ga_secs may be 0 (non-genetic / cached) → guard downstream.
+                    try:
+                        ss["last_total_secs"] = float(_total_run_secs)
+                        ss["last_ga_wall_secs"] = float(ss.get("last_ga_secs", 0.0) or 0.0)
+                    except Exception:  # noqa: BLE001
+                        pass
 
                     # Auto-save a reproducible run bundle (timestamped folder under runs/): the exact
                     # settings used + this run's full log. Best-effort, once per run; never breaks it.
@@ -7741,8 +8021,50 @@ with tab_imp:
                 def _conv_df(h):
                     if not h:
                         return None
-                    _cols = ["gen", "best", "gen_best", "gen_mean", "sigma", "viol", "eps"][:len(h[0])]
+                    _cols = ["gen", "best", "gen_best", "gen_mean", "sigma", "viol", "eps", "cands"][:len(h[0])]
                     return _pd.DataFrame(h, columns=_cols)
+
+                # NEW: engine score vs. candidate splits EVALUATED (the true search-effort x-axis),
+                # plus the marginal gain per 10k candidates — shows where the search plateaus, i.e.
+                # whether more budget (seeds/restarts/generations) would still be buying improvement.
+                if _hist_safe and len(_hist_safe) and len(_hist_safe[0]) >= 8:
+                    with _t_engwork.expander("📈 Engine score vs candidate splits evaluated", expanded=True):
+                        st.caption("Best score so far against how many candidate splits have been "
+                                   "evaluated. A flattening curve means extra search is no longer "
+                                   "improving the result (diminishing returns); a still-rising curve "
+                                   "means more budget would likely help.")
+                        _d2 = _conv_df(_hist_safe)
+                        _fsc = _gof.Figure()
+                        _fsc.add_scatter(x=_d2["cands"], y=_d2["best"], mode="lines",
+                                         name="best score", line=dict(color="#1D9E75", width=2))
+                        _fsc.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10),
+                                           xaxis_title="candidate splits evaluated",
+                                           yaxis_title="engine score (best so far)",
+                                           legend=dict(orientation="h", y=1.16))
+                        st.plotly_chart(_fsc, use_container_width=True)
+                        # Marginal gain: Δ(best score) per 10,000 candidates — a falling-to-zero
+                        # curve confirms the search has converged.
+                        try:
+                            import numpy as _np_mg
+                            _cx = _d2["cands"].to_numpy(float)
+                            _by = _d2["best"].to_numpy(float)
+                            if _cx.size >= 3:
+                                _dc = _np_mg.diff(_cx); _db = _np_mg.diff(_by)
+                                _rate = _np_mg.where(_dc > 0, _db / _dc, 0.0) * 10000.0
+                                _fmg = _gof.Figure()
+                                _fmg.add_scatter(x=_cx[1:], y=_rate, mode="lines",
+                                                 name="Δscore / 10k candidates",
+                                                 line=dict(color="#B4762C"), fill="tozeroy",
+                                                 fillcolor="rgba(180,118,44,0.12)")
+                                _fmg.update_layout(height=240, margin=dict(l=10, r=10, t=30, b=10),
+                                                   xaxis_title="candidate splits evaluated",
+                                                   yaxis_title="score gain per 10k",
+                                                   legend=dict(orientation="h", y=1.2))
+                                st.markdown("###### Marginal gain — improvement per 10,000 candidates "
+                                            "(→ 0 means converged)")
+                                st.plotly_chart(_fmg, use_container_width=True)
+                        except Exception:  # noqa: BLE001
+                            pass
 
                 with _t_engwork.expander("📈 GA scoring over time (convergence)", expanded=True):
                     st.caption("How the search's score improved each generation, for each end of the "
@@ -8257,7 +8579,7 @@ with tab_imp:
                     # Genetic engine has NO per-cell pre-softmax score. Instead show its OWN
                     # workings: the revenue-greedy REFERENCE (dial-100 waterfall: fill the best
                     # gateways up to the max share), the TILT the GA applied, and the FINAL share.
-                    _is_genetic = ss.get("variations_engine") == "genetic"
+                    _is_genetic = ss.get("variations_engine") in ("genetic", "genetic_numba")
                     if _is_genetic:
                         _gcap = float((ss.get("wallet_ctx") or {}).get("max_share", 0.97))
                         # Explicit per-cell loop (robust: groupby.apply returning a Series can be
