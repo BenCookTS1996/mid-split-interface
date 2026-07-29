@@ -826,6 +826,57 @@ def _find_gcloud():
     return None
 
 
+def _query_table_refs(queries_dir):
+    """Best-effort scan of every .sql in `queries_dir` for fully-qualified BigQuery table refs
+    (`project.dataset.table` or `dataset.table`, backticked or after FROM / JOIN). Returns
+    {table_ref: [source .sql filenames]}. Skips single-identifier CTE/aliases and any ref whose
+    name is templated (contains '{'), which can't be resolved statically."""
+    import re as _re
+    import glob as _glob
+    import os as _os
+    refs = {}
+    if not _os.path.isdir(queries_dir):
+        return refs
+    _bt = _re.compile(r"`([A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-\$]+){1,2})`")
+    _fj = _re.compile(r"\b(?:FROM|JOIN)\s+`?([A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-\$]+){1,2})`?",
+                      _re.IGNORECASE)
+    for _f in sorted(_glob.glob(_os.path.join(queries_dir, "*.sql"))):
+        try:
+            with open(_f, encoding="utf-8", errors="ignore") as _fh:
+                _sql = _fh.read()
+        except Exception:  # noqa: BLE001
+            continue
+        _name = _os.path.basename(_f)
+        for _t in set(_bt.findall(_sql)) | set(_fj.findall(_sql)):
+            _t = _t.strip().strip("`")
+            if "{" in _t or "}" in _t or _t.count(".") < 1:
+                continue
+            refs.setdefault(_t, set()).add(_name)
+    return {k: sorted(v) for k, v in refs.items()}
+
+
+def _check_table_access(project, tables):
+    """DRY-RUN a `SELECT 1 FROM <table> LIMIT 0` per table (free — no bytes billed) to test that the
+    signed-in user can resolve AND read it. Returns (ok_list, bad_list[(table, reason)])."""
+    from google.cloud import bigquery
+    _client = bigquery.Client(project=project)
+    _cfg = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
+    ok, bad = [], []
+    for _t in tables:
+        try:
+            _client.query("SELECT 1 FROM `%s` LIMIT 0" % _t, job_config=_cfg)
+            ok.append(_t)
+        except Exception as _e:  # noqa: BLE001
+            _code = getattr(_e, "code", None)
+            if _code == 403:
+                bad.append((_t, "no permission (403)"))
+            elif _code == 404:
+                bad.append((_t, "not found (404)"))
+            else:
+                bad.append((_t, f"{type(_e).__name__}: {str(_e)[:80]}"))
+    return ok, bad
+
+
 def _run_preflight(project):
     """Return [(label, status, detail, fix)]; status ∈ ok / warn / fail / skip."""
     out = []
@@ -864,6 +915,32 @@ def _run_preflight(project):
                         "Job User + Data Viewer on that project."))
     else:
         out.append(("BigQuery access", "skip", "sign in first, then re-check", ""))
+    if _adc:                                          # 3b. per-table access across every queries/*.sql
+        try:
+            _refs = _query_table_refs(SQL_DIR)
+            if not _refs:
+                out.append(("Query table access", "warn",
+                            f"no table references found in {SQL_DIR} (nothing to check)", ""))
+            else:
+                _n_sql = len({_s for _srcs in _refs.values() for _s in _srcs})
+                _ok_t, _bad_t = _check_table_access(project, list(_refs))
+                if not _bad_t:
+                    out.append(("Query table access", "ok",
+                                f"all {len(_ok_t)} table(s) referenced across {_n_sql} .sql file(s) "
+                                "are accessible", ""))
+                else:
+                    _lst = "\n".join(
+                        f"- `{_t}` — {_why}  (used in: {', '.join(_refs.get(_t, []))})"
+                        for _t, _why in _bad_t)
+                    out.append(("Query table access", "fail",
+                                f"{len(_bad_t)} of {len(_refs)} referenced table(s) NOT accessible:\n\n{_lst}",
+                                "Ask an admin to grant BigQuery read/query access to the listed tables "
+                                "(or their datasets)."))
+        except Exception as _e:  # noqa: BLE001
+            out.append(("Query table access", "warn",
+                        f"table-access scan could not complete ({type(_e).__name__}: {str(_e)[:120]})", ""))
+    else:
+        out.append(("Query table access", "skip", "sign in first, then re-check", ""))
     # 4. gcloud CLI — ONLY needed to (re)authenticate. Credentials work WITHOUT it (ADC reads a
     # stored file), so this is never a problem while ADC is valid; it only matters if you must sign in.
     _gc = _find_gcloud()
@@ -1440,6 +1517,35 @@ with tab_fc:
                 try:
                     synth_mode = not run_live and not load_baseline
 
+                    # Echo the EXACT inputs this run used, so the log is self-documenting.
+                    _fs = forecast_settings
+                    _mode = ("live BigQuery pipeline" if run_live
+                             else "load previously-run outputs" if load_baseline
+                             else "synthesised from attempts (no BigQuery)")
+                    log("── Input settings used ──")
+                    log(f"   mode: {_mode}")
+                    if run_live and use_yaml_asis:
+                        log("   NOTE: 'Use config/settings.yaml as-is' is ON — the widget settings below are "
+                            "IGNORED; the pipeline runs straight from config/settings.yaml.")
+                    log(f"   company={_fs['company']} · scheme={_fs['card_scheme']} · month={_fs['month_var']} · "
+                        f"month_0={_fs['month_0']}")
+                    log(f"   split_go_live={_fs['split_go_live_date']} · future_anchor={_fs['future_anchor_date']}")
+                    log(f"   use_live_actuals={_fs['use_live_actuals']} · "
+                        f"actuals_window={_fs['start_date']} → {_fs['end_date']}")
+                    log(f"   force_actuals_for={_fs['force_actuals_for'] or '(none)'}")
+                    log(f"   use config/settings.yaml as-is={use_yaml_asis} · "
+                        f"reuse_cached_curves={_fs['reuse_cached_curves']}")
+                    log(f"   use_cached_inputs={_fs['use_cached_inputs']} · "
+                        f"cached_inputs_path={_fs['cached_inputs_path'] or '(none)'}")
+                    log(f"   shrink_strength={_fs['shrink_strength']} · t0_lookback_months={_fs['t0_lookback_months']} · "
+                        f"decay_factor={_fs['decay_factor']} · thermometer_sample_months={_fs['thermometer_sample_months']}")
+                    log(f"   m0_total_transactions={_fs['m0_total_transactions']:,} · "
+                        f"m0_weightings={_fs['m0_transaction_weightings']}")
+                    log(f"   test_gateways set={bool(_fs.get('test_gateways'))} · "
+                        f"gateway_volume_overrides set={bool(_fs.get('gateway_volume_overrides'))} · "
+                        f"thermometer_config_loaded={_fs['thermometer_config_loaded']}")
+                    log(f"   MID list: {_fs['mid_list_file']}")
+
                     log("── Forecast (risk / VAMP baseline) ──")
                     forecast_path, fc_src = None, "synthesised from attempts"
                     if run_live:
@@ -1654,10 +1760,10 @@ with tab_eng:
                 st.markdown("##### Genetic search budget")
                 _bc1, _bc2 = st.columns(2)
                 _bc1.number_input(
-                    "GA generations", min_value=20, max_value=400, value=80, step=10,
+                    "GA generations", min_value=20, max_value=400, value=150, step=10,
                     key="ga_generations",
                     help="How many evolution rounds the search runs. More = potentially better plans, "
-                         "but slower. 80 = current.")
+                         "but slower. 150 = default.")
                 _bc2.number_input(
                     "No Candidate Splits", min_value=0, max_value=300, value=64, step=10,
                     key="ga_pop_override",
@@ -1672,10 +1778,10 @@ with tab_eng:
                          "single parallel wave (avoids hyperthread oversubscription that thrashes "
                          "memory bandwidth). Applies to both Genetic and GA - Numba.")
                 _bc4.number_input(
-                    "Restarts per seed", min_value=1, max_value=10, value=4, step=1,
+                    "Restarts per seed", min_value=1, max_value=10, value=2, step=1,
                     key="ga_restarts",
                     help="Each seed re-launches from a fresh spread this many times, keeping the best. "
-                         "More = better odds of the best split, longer.")
+                         "More = better odds of the best split, longer. 2 = default.")
                 # Candidate-split RANGE + ETA — same maths as before, just recomputed live here.
                 # Restart strategy stays in the form, so its last-submitted value (Lean default) is
                 # read from session_state; Lean keeps λ constant → floor == ceiling (single value).
@@ -1868,7 +1974,7 @@ with tab_eng:
                     # budget" panel) so editing them refreshes the count LIVE — form members don't rerun
                     # until submit, which is why the old in-form readout stayed frozen until you ran.
                     st.checkbox(
-                        "Diverse-seed search (experimental)", value=False, key="ga_diverse_seeds",
+                        "Diverse-seed search (experimental)", value=True, key="ga_diverse_seeds",
                         help="Spread the parallel seeds across the revenue↔risk axis with varied "
                              "explore/exploit settings, instead of near-identical searches. SAME time "
                              "(same seeds, generations, restarts, population — one parallel wave); it "
@@ -5415,7 +5521,7 @@ with tab_eng:
                                         # gain_max). warm_shares stays length-1 per worker so the restart
                                         # count is UNCHANGED (n_r = max(n_restarts, #seeds)); same seeds,
                                         # generations, pop → same one-wave wall time. Off → byte-identical.
-                                        _diverse = bool(ss.get("ga_diverse_seeds", False)) and int(_N_SEED) > 1
+                                        _diverse = bool(ss.get("ga_diverse_seeds", True)) and int(_N_SEED) > 1
                                         _seed_ctx = [ctx] * int(_N_SEED)
                                         _seed_gm = [_GA_GAIN_MAX] * int(_N_SEED)
                                         if _diverse:

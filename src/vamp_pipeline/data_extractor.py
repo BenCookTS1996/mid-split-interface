@@ -345,9 +345,18 @@ class DataExtractor:
         """
         logger.info("   > [CHUNKED MODE] Loading rules from local .xlsx files...")
         if not os.path.exists(self.chunked_dir):
+            logger.warning("   > ⚠️  SPLIT-RULES DIRECTORY NOT FOUND: %s — the forecast has NO routing "
+                           "rules, so EVERY transaction / VI-Txn output will be ZERO (VAMP is unaffected). "
+                           "Place this month's split-rule .xlsx files in that folder and re-run.",
+                           self.chunked_dir)
             return pd.DataFrame()
-            
+
         excel_files = [f for f in os.listdir(self.chunked_dir) if f.endswith('.xlsx')]
+        if not excel_files:
+            logger.warning("   > ⚠️  NO .xlsx SPLIT-RULE FILES in %s — the forecast has NO routing rules, "
+                           "so EVERY transaction / VI-Txn output will be ZERO (VAMP is unaffected). "
+                           "Add this month's rule files and re-run.", self.chunked_dir)
+            return pd.DataFrame()
         df_list = []
         cat_cols = ['Company', 'Brand', 'company', 'brand', 'riskDefinedProductSubscriptionType', 'RPGT', 'rpgt', 'currency', 'Currency', 'paymentMethodProvider', 'paymentmethodprovider', 'STICKY', 'sticky', 'Country', 'country']
         blend_future = self.config['run_settings'].get('blend_future_sheet_rules', False)
@@ -370,7 +379,12 @@ class DataExtractor:
             except Exception as e:
                 logger.warning(f"Could not open {file}. Error: {e}")
 
-        return pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
+        if not df_list:
+            logger.warning("   > ⚠️  SPLIT-RULE files in %s were all empty / unreadable (or filtered out "
+                           "by the future-go-live threshold) — forecast transaction volume will be ZERO. "
+                           "Check the .xlsx contents and the GO LIVE dates.", self.chunked_dir)
+            return pd.DataFrame()
+        return pd.concat(df_list, ignore_index=True)
 
     def _fetch_direct_rules(self) -> pd.DataFrame:
         """

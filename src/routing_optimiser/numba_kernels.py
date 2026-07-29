@@ -33,7 +33,7 @@ import time
 
 import numpy as np
 
-__build__ = "2026-07-28b-ga-numba-persistent-cache+precompile"
+__build__ = "2026-07-29-ga-numba-persistent-cache+precompile+fixed-quadratic-breach"
 
 # PERSISTENT compile cache — set BEFORE numba is imported (this module is the ONLY importer
 # of numba in the project, so setting it here wins). Numba's default cache lives inside a
@@ -83,7 +83,7 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                 n_bands, b_mi, b_bval, b_ceil, b_floor, b_has_ceil, b_has_floor,
                 has_base, base_vol,
                 max_share, floor_val,
-                rmw, has_vfr, vfr):
+                rmw, has_vfr, vfr, bfix, qwt):
     """One fused pass: ACTUAL genome batch G (P, 3M[+K]) -> (obj (P,), viol (P,)).
 
     Mirrors `_decode_midtilt3` (softmax tilt -> per-cell renorm -> floor-then-cap water-fill)
@@ -192,12 +192,12 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                     rate = midvr[m] / midv[m] if midv[m] > 1e-12 else 0.0
                     t = rate / denom - 1.0
                     if t > 0.0:
-                        v += t
+                        v += bfix + qwt * t * t
             if has_volcap == 1:
                 for m in range(M):
                     t = midv[m] / volcap[m] - 1.0     # volcap has +inf sentinel for <=0 caps
                     if t > 0.0:
-                        v += t
+                        v += bfix + qwt * t * t
             if n_bands > 0:
                 for b in range(n_bands):
                     m = b_mi[b]
@@ -210,26 +210,28 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                         cc_ = b_ceil[b] if b_ceil[b] > 1e-9 else 1e-9
                         t = proj / cc_ - 1.0
                         if t > 0.0:
-                            v += t
+                            v += bfix + qwt * t * t
                     if b_has_floor[b] == 1 and b_floor[b] > 0.0:
                         ff_ = b_floor[b] if b_floor[b] > 1e-9 else 1e-9
                         t = 1.0 - proj / ff_
                         if t > 0.0:
-                            v += t
+                            v += bfix + qwt * t * t
         # ---- structural safety nets (cap + floor), matching _obj_viol ----------------
         if max_share < 1.0:
             denom = max_share if max_share > 1e-9 else 1e-9
             for g in range(N):
                 t = X[g] - max_share
                 if t > 0.0:
-                    v += t / denom
+                    ov = t / denom
+                    v += bfix + qwt * ov * ov
         if floor_val > 0.0:
             denom = floor_val if floor_val > 1e-9 else 1e-9
             for g in range(N):
                 if elig[g] > 0.5 and nec_col[g] >= 2.0:
                     t = fl_col[g] - X[g]
                     if t > 0.0:
-                        v += t / denom
+                        ov = t / denom
+                        v += bfix + qwt * ov * ov
         # ---- risk-minimisation secondary objective ----------------------------------
         if rmw > 0.0:
             if has_vfr == 1:
@@ -331,6 +333,9 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
     _vfr = ctx.get("vamp_floor_route")
     has_vfr = 1 if _vfr is not None else 0
     vfr = np.asarray(_vfr, np.float64) if _vfr is not None else np.zeros(M, np.float64)
+    # Breach penalty (must match genetic_global._obj_viol._pen): fixed hit + quadratic overage.
+    bfix = float(ctx.get("breach_fixed", 0.0) or 0.0)
+    qwt = float(ctx.get("breach_quad", 1.0) or 1.0)
 
     def eval_actual(G):
         G = np.ascontiguousarray(G, dtype=np.float64)
@@ -342,7 +347,7 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
                            n_bands, b_mi, b_bval, b_ceil, b_floor, b_has_ceil, b_has_floor,
                            has_base, base_vol,
                            max_share, floor_val,
-                           rmw, has_vfr, vfr)
+                           rmw, has_vfr, vfr, bfix, qwt)
 
     return eval_actual
 

@@ -33,6 +33,15 @@ data/cache/
 data/outputs/
 data/exported_rules/
 
+# ─── Split-rule INPUTS — MUST stay in the repo ───────────────────────────────
+# The forecast reads its routing rules from data/rules/<MONTH>/<COMPANY>/*.xlsx.
+# These are NOT generated outputs — without them every VI-Txn is 0 — so keep them
+# tracked. (data/rules/ isn't matched by any ignore above; these explicit un-ignores
+# just guard against a future broad pattern accidentally excluding the rule files.)
+!data/rules/
+!data/rules/**/
+!data/rules/**/*.xlsx
+
 # ─── Bundled Google Cloud SDK / installer (not project source) ─
 google-cloud-sdk/
 google-cloud-cli-*.tar.gz

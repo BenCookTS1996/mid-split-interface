@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__build__ = "2026-07-29-riskmin-diverse-seeds+optional-eligibility-in-score"
+__build__ = "2026-07-29-riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach"
 
 
 def _mid_sums(vol, mid_rows, M, S=None):
@@ -490,10 +490,14 @@ def _obj_viol(shares, ctx):
     """Split the score into (objective, violation) for feasibility-first ranking.
 
     objective (P,) = revenue [− risk_min term], MAXIMISED among FEASIBLE splits.
-    violation (P,) = summed RELATIVE constraint overage across the per-vampMid VAMP-rate
-        cap, per-MID volume caps and projected bands — CONTINUOUS and exactly 0 when
-        compliant (the smooth 'wall', improvement #4). No fixed step, no λ.
-    Mirrors the risk maths in `_fitness` so the two engines agree on what a breach is."""
+    violation (P,) = summed breach penalty across the per-vampMid VAMP-rate cap, per-MID volume
+        caps and projected bands. Each breaching term contributes a FIXED hit
+        (ctx['breach_fixed'] — the UI 'Cap-breach penalty') the instant it goes over, PLUS a
+        QUADRATIC in the relative overage (ctx['breach_quad'], default 1.0). Exactly 0 when
+        compliant. NOTE: the fixed hit reintroduces a non-smooth step, so the memetic gradient
+        polish (which follows the smooth-violation gradient) becomes less effective; set
+        breach_fixed=0 to recover the pure smooth wall. Mirrors `_fitness` / the full-matrix
+        engine AND the numba kernel (`numba_kernels._fused_eval`) — keep all three in lock-step."""
     _eop = ctx.get("elig_op")
     if _eop is not None:                                     # score the ACTUALLY-ROUTABLE shares —
         from .eligibility import apply_elig_pop              # bans + wallet/USA capability folded in
@@ -505,6 +509,14 @@ def _obj_viol(shares, ctx):
     revenue = (shares * rc[None, :]).sum(axis=1)
     obj = revenue.astype(float).copy()
     viol = np.zeros(P, dtype=float)
+    # BREACH PENALTY = fixed hit (the instant a constraint is over) + quadratic in the relative
+    # overage. _bfix = ctx['breach_fixed'] (UI 'Cap-breach penalty'); _qwt scales the quadratic.
+    # _pen(over) is applied identically here and in numba_kernels._fused_eval — keep them in sync.
+    _bfix = float(ctx.get("breach_fixed", 0.0) or 0.0)
+    _qwt = float(ctx.get("breach_quad", 1.0) or 1.0)
+
+    def _pen(_ov):                                           # _ov = relative overage array (>= 0)
+        return _bfix * (_ov > 0.0) + _qwt * _ov * _ov
     if M and (ctx.get("vamp_cap") is not None or ctx.get("mid_vol_cap") is not None
               or ctx.get("midband")):
         vol = shares * cv[None, :]
@@ -513,10 +525,10 @@ def _obj_viol(shares, ctx):
             midvr = _mid_sums(vol * risk[None, :], mid_rows, M, S=_S)
             with np.errstate(divide="ignore", invalid="ignore"):
                 rate = np.where(midv > 1e-12, midvr / midv, 0.0)
-            viol += np.maximum(rate / max(ctx["vamp_cap"], 1e-9) - 1.0, 0.0).sum(axis=1)
+            viol += _pen(np.maximum(rate / max(ctx["vamp_cap"], 1e-9) - 1.0, 0.0)).sum(axis=1)
         if ctx.get("mid_vol_cap") is not None:
             _cap_v = np.where(ctx["mid_vol_cap"] > 0, ctx["mid_vol_cap"], np.inf)
-            viol += np.maximum(midv / _cap_v[None, :] - 1.0, 0.0).sum(axis=1)
+            viol += _pen(np.maximum(midv / _cap_v[None, :] - 1.0, 0.0)).sum(axis=1)
         _bands = ctx.get("midband")
         if _bands:
             _bvol = ctx.get("mid_base_vol")
@@ -527,15 +539,15 @@ def _obj_viol(shares, ctx):
                 _mi, _bval, _ceil, _floor = _b[0], _b[1], _b[2], _b[3]
                 _proj = _fmid[:, _mi] * float(_bval)
                 if _ceil is not None:
-                    viol += np.maximum(_proj / max(float(_ceil), 1e-9) - 1.0, 0.0)
+                    viol += _pen(np.maximum(_proj / max(float(_ceil), 1e-9) - 1.0, 0.0))
                 if _floor is not None and float(_floor) > 0:
-                    viol += np.maximum(1.0 - _proj / max(float(_floor), 1e-9), 0.0)
+                    viol += _pen(np.maximum(1.0 - _proj / max(float(_floor), 1e-9), 0.0))
     # Structural caps AND the exploration floor are hard-enforced in the decode, so these are
     # ≈0 — kept as a symmetric safety net so a split the decode could not fully repair still
     # ranks as infeasible (previously only the cap was checked, not the floor).
     _cap = float(ctx.get("max_share", 1.0) or 1.0)
     if _cap < 1.0:
-        viol += (np.maximum(shares - _cap, 0.0) / max(_cap, 1e-9)).sum(axis=1)
+        viol += _pen(np.maximum(shares - _cap, 0.0) / max(_cap, 1e-9)).sum(axis=1)
     _floor = float(ctx.get("floor", 0.0) or 0.0)
     if _floor > 0.0 and ctx.get("cell_starts") is not None:
         _cs = np.asarray(ctx["cell_starts"]); _cc = np.asarray(ctx["cell_counts"])
@@ -543,8 +555,8 @@ def _obj_viol(shares, ctx):
         _nec = np.repeat(np.add.reduceat(_el, _cs), _cc)         # eligible gateways per cell
         _fl = np.minimum(_floor, np.where(_nec > 0, 1.0 / np.maximum(_nec, 1.0), 0.0))
         _mask = (_el > 0.5) & (_nec >= 2)                        # single-gateway cells can't be floored
-        viol += (np.maximum(_fl[None, :] - shares, 0.0) * _mask[None, :]
-                 / max(_floor, 1e-9)).sum(axis=1)
+        viol += _pen(np.maximum(_fl[None, :] - shares, 0.0) * _mask[None, :]
+                     / max(_floor, 1e-9)).sum(axis=1)
     # RISK-MINIMISATION secondary objective (safe compliant endpoint only). Among equally
     # compliant splits, prefer the one that also carries LESS total risk. Auto-scaled by
     # the caller via ctx['risk_min_w']; 0 leaves the pure-revenue objective unchanged.
