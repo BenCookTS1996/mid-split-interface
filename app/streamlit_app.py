@@ -802,6 +802,145 @@ def _impact_eval_frame(split, cache, by_rpgt=False):
     return ev
 
 
+# ─────────────────────────── Startup preflight / environment check ───────────────────────────
+# First thing the app shows: a clear checklist (packages → gcloud → credentials → BigQuery access)
+# so a fresh clone surfaces "here's what's missing and how to fix it" instead of a stack trace when
+# the first query runs. Non-blocking — cached / previously-run outputs still work below even if
+# BigQuery isn't reachable. Cached per session; re-run via the buttons. Can't test gcloud/BigQuery
+# outside a real environment, so this is best-effort and fails safe.
+def _find_gcloud():
+    """Resolve the gcloud binary — PATH first, then common install locations. A GUI/venv-launched
+    Streamlit process often has a narrower PATH than the user's shell, so shutil.which alone can
+    miss a gcloud that's actually installed and working."""
+    import shutil, os as _os
+    _p = shutil.which("gcloud")
+    if _p:
+        return _p
+    _home = _os.path.expanduser("~")
+    for _cand in (_os.path.join(_home, "google-cloud-sdk", "bin", "gcloud"),
+                  "/usr/local/bin/gcloud", "/opt/homebrew/bin/gcloud",
+                  "/usr/local/google-cloud-sdk/bin/gcloud", "/snap/bin/gcloud",
+                  _os.path.join(_home, ".local", "bin", "gcloud")):
+        if _os.path.exists(_cand):
+            return _cand
+    return None
+
+
+def _run_preflight(project):
+    """Return [(label, status, detail, fix)]; status ∈ ok / warn / fail / skip."""
+    out = []
+    try:                                              # 1. client libraries importable
+        from google.cloud import bigquery  # noqa: F401
+        import google.auth  # noqa: F401
+        out.append(("Python packages", "ok", "BigQuery client libraries importable", ""))
+    except Exception as _e:  # noqa: BLE001
+        out.append(("Python packages", "fail", f"{type(_e).__name__}: {_e}",
+                    "Install dependencies:  pip install -r requirements.txt"))
+        return out
+    _adc = False                                      # 2. Application Default Credentials
+    try:
+        import google.auth
+        from google.auth.transport.requests import Request as _GReq
+        _creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        if not getattr(_creds, "valid", False):
+            _creds.refresh(_GReq())
+        _adc = bool(getattr(_creds, "valid", False))
+        out.append(("Google credentials (ADC)", "ok" if _adc else "fail",
+                    "valid — BigQuery calls are authenticated" if _adc else "present but could not be refreshed",
+                    "" if _adc else "Use 'Sign in to Google Cloud' below, or run "
+                    "'gcloud auth application-default login' in a terminal, then Re-check."))
+    except Exception as _e:  # noqa: BLE001
+        out.append(("Google credentials (ADC)", "fail", f"{type(_e).__name__}: {str(_e)[:180]}",
+                    "Use 'Sign in to Google Cloud' below, or run "
+                    "'gcloud auth application-default login' in a terminal, then Re-check."))
+    if _adc:                                          # 3. BigQuery query permission (trivial SELECT 1)
+        try:
+            from google.cloud import bigquery
+            list(bigquery.Client(project=project).query("SELECT 1 AS ok").result(timeout=30))
+            out.append(("BigQuery access", "ok", f"test query ran on {project}", ""))
+        except Exception as _e:  # noqa: BLE001
+            out.append(("BigQuery access", "fail", f"{type(_e).__name__}: {str(_e)[:180]}",
+                        f"Signed in, but no query access to {project}. Ask an admin to grant BigQuery "
+                        "Job User + Data Viewer on that project."))
+    else:
+        out.append(("BigQuery access", "skip", "sign in first, then re-check", ""))
+    # 4. gcloud CLI — ONLY needed to (re)authenticate. Credentials work WITHOUT it (ADC reads a
+    # stored file), so this is never a problem while ADC is valid; it only matters if you must sign in.
+    _gc = _find_gcloud()
+    if _gc:
+        out.append(("gcloud CLI", "ok", f"found ({_gc})", ""))
+    elif _adc:
+        out.append(("gcloud CLI", "ok",
+                    "not detected on PATH — not needed (credentials already work; gcloud is only used "
+                    "by the in-app sign-in button)", ""))
+    else:
+        out.append(("gcloud CLI", "warn", "not found on PATH",
+                    "Only needed to sign in. Either install the Cloud CLI "
+                    "(https://cloud.google.com/sdk/docs/install), or run "
+                    "'gcloud auth application-default login' yourself in a terminal, then Re-check."))
+    return out
+
+
+def _render_preflight(project):
+    _pf = ss.get("_preflight")
+    if _pf is None:
+        with st.spinner("Checking environment…"):
+            _pf = _run_preflight(project)
+        ss["_preflight"] = _pf
+    _icon = {"ok": "✅", "warn": "⚠️", "fail": "❌", "skip": "⏭️"}
+    _has_issue = any(_c[1] in ("fail", "warn") for _c in _pf)
+    _title = "Environment check — ⚠️ action needed" if _has_issue else "Environment check — ✅ ready"
+    with st.expander(_title, expanded=_has_issue):
+        for _lbl, _stt, _detail, _fix in _pf:
+            _line = f"{_icon.get(_stt, '•')} **{_lbl}** — {_detail}"
+            if _fix:
+                _line += f"  \n&nbsp;&nbsp;&nbsp;&nbsp;↳ {_fix}"
+            st.markdown(_line)
+        _gc = _find_gcloud()
+        _reqs = os.path.join(PROJECT_ROOT, "requirements.txt")
+        _b1, _b2, _b3, _spc = st.columns([1, 1.5, 1.6, 3])
+        _do_recheck = _b1.button("Re-check", key="_pf_recheck")
+        _do_signin = (_b2.button("Sign in to Google Cloud", key="_pf_signin", type="primary")
+                      if _gc else False)
+        _do_pip = (_b3.button("Install / update packages", key="_pf_pip")
+                   if os.path.exists(_reqs) else False)
+        if _do_recheck:
+            ss.pop("_preflight", None)
+            st.rerun()
+        if _do_signin:
+            import subprocess as _sp2
+            with st.spinner("A browser window should have opened — complete Google sign-in there. "
+                            "(If not, check the terminal where you launched Streamlit.)"):
+                try:
+                    _r = _sp2.run([_gc, "auth", "application-default", "login"],
+                                  capture_output=True, text=True, timeout=300)
+                    if _r.returncode != 0:
+                        st.error("gcloud sign-in did not complete:\n\n" + (_r.stderr or "")[-800:])
+                except Exception as _e:  # noqa: BLE001
+                    st.error(f"Could not launch gcloud: {type(_e).__name__}: {_e}")
+            ss.pop("_preflight", None)
+            st.rerun()
+        if _do_pip:
+            # In-app install for a RUNNING app (e.g. requirements.txt changed after a git pull, or an
+            # optional package is missing). Installs into THIS interpreter's environment via pip.
+            # Newly-installed packages only take effect after a restart (already-imported modules stay).
+            import subprocess as _sp3, sys as _sys3
+            with st.spinner("pip install -r requirements.txt … (first run can take a few minutes)"):
+                try:
+                    _r = _sp3.run([_sys3.executable, "-m", "pip", "install", "-r", _reqs],
+                                  capture_output=True, text=True, timeout=1800)
+                    if _r.returncode == 0:
+                        ss.pop("_preflight", None)
+                        st.success("Packages installed / up to date. Restart the app (Ctrl+C, then "
+                                   "re-launch) so any newly-installed packages take effect.")
+                    else:
+                        st.error("pip failed:\n\n" + ((_r.stdout or "") + (_r.stderr or ""))[-1500:])
+                except Exception as _e:  # noqa: BLE001
+                    st.error(f"Could not run pip: {type(_e).__name__}: {_e}")
+
+
+_render_preflight(GCP_PROJECT)
+
 tab_fc, tab_eng, tab_imp, tab_cfg = st.tabs([
     "1 · Baseline & Validate",
     "2 · Routing engine",
