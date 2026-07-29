@@ -880,6 +880,18 @@ def _check_table_access(project, tables):
 def _run_preflight(project):
     """Return [(label, status, detail, fix)]; status ∈ ok / warn / fail / skip."""
     out = []
+    import sys as _sys                                # 0. Python version vs the pinned target
+    _vi = _sys.version_info
+    _pyv = f"{_vi.major}.{_vi.minor}.{_vi.micro}"
+    if _vi[:2] == (3, 8):
+        out.append(("Python version", "ok", f"{_pyv} — matches the pinned target (3.8)", ""))
+    elif (3, 9) <= (_vi.major, _vi.minor) <= (3, 11):
+        out.append(("Python version", "ok",
+                    f"{_pyv} — supported by the pinned dependencies (the project targets 3.8)", ""))
+    else:
+        out.append(("Python version", "warn", f"{_pyv} — outside the supported range",
+                    "Use Python 3.8–3.11 (3.8.10 is the tested target). The pinned requirements "
+                    "(numba 0.58 / llvmlite 0.41, etc.) won't install or run on 3.12+ or below 3.8."))
     try:                                              # 1. client libraries importable
         from google.cloud import bigquery  # noqa: F401
         import google.auth  # noqa: F401
@@ -1591,6 +1603,22 @@ with tab_fc:
                 finally:
                     root_logger.removeHandler(handler)
                     root_logger.setLevel(prev_level)
+                    # Persist the full run log to a folder so it survives tab switches / app restarts
+                    # and can be shared when diagnosing a run (success OR failure both land here).
+                    try:
+                        import datetime as _dt
+                        _logs_dir = os.path.join(PROJECT_ROOT, "logs")
+                        os.makedirs(_logs_dir, exist_ok=True)
+                        _co = str(forecast_settings.get("company", "run")).replace(" ", "")
+                        _mo = str(forecast_settings.get("month_var", ""))
+                        _log_path = os.path.join(
+                            _logs_dir, f"forecast_{_co}_{_mo}_{_dt.datetime.now():%Y%m%d_%H%M%S}.log")
+                        with open(_log_path, "w", encoding="utf-8") as _lf:
+                            _lf.write("\n".join(log_lines) + "\n")
+                        ss["last_forecast_log_path"] = _log_path
+                        log(f"── run log saved: {_log_path}")
+                    except Exception as _lge:  # noqa: BLE001
+                        log(f"[warning] could not save run log to disk ({type(_lge).__name__}: {_lge})")
 
                 status.update(
                     label=f"Forecast ready for {company} ({month_var}); baseline: {fc_src}",
