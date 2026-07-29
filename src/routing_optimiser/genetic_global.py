@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__build__ = "2026-07-29-riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach"
+__build__ = "2026-07-29-riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel"
 
 
 def _mid_sums(vol, mid_rows, M, S=None):
@@ -839,13 +839,12 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     #                      so skip the per-worker re-check (it was 16× redundant — one NumPy eval and
     #                      one comparison per worker). Build the kernel and use it directly.
     ga_numba_info = {"requested": bool(numba), "used": False, "reason": "not requested"}
-    # Eligibility-in-scoring (ctx['elig_op']) lives only in the NumPy fitness (_obj_viol/_mid_over);
-    # the fused numba kernel has no eligibility, so its NumPy-vs-kernel verification would mismatch
-    # and workers would optimise a DIFFERENT (unrestricted) fitness than the main process scores.
-    # Force the NumPy path so the whole search is consistent when eligibility scoring is active.
-    if numba and ctx.get("elig_op") is not None:
-        ga_numba_info["reason"] = "disabled: eligibility-in-scoring active (numba kernel has no eligibility)"
-        numba = False
+    # Eligibility-in-scoring (ctx['elig_op']): the fused kernel now REPLICATES apply_elig_pop
+    # (bans->0+renorm, wallet/USA blend) on the decoded shares before scoring — see
+    # numba_kernels._fused_eval — so the Numba fitness == the NumPy _obj_viol fitness even when
+    # eligibility scoring is active. No longer force-disabled; verify() below (or the main-process
+    # pre-compile) still cross-checks NumPy-vs-kernel and falls back to NumPy on ANY mismatch, so a
+    # divergent build can never silently optimise the wrong fitness.
     if numba:
         ga_numba_info["reason"] = ""
         try:
@@ -883,7 +882,10 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
                             pass
                     _vs += list(_vrng.random((6, D)))
                     _sampleG = _to_actual(np.clip(np.asarray(_vs, float), 0.0, 1.0))
-                    _vr = _nbk.verify(_np_eval_actual, _nb_eval_actual, _sampleG)
+                    # Pass the fixed-breach magnitude so verify tolerates knife-edge step flips
+                    # (whole-bfix jumps) while still catching genuine smooth-term divergence.
+                    _vr = _nbk.verify(_np_eval_actual, _nb_eval_actual, _sampleG,
+                                      bfix=float(ctx.get("breach_fixed", 0.0) or 0.0))
                     ga_numba_info.update(_vr)
                     _accept = bool(_vr.get("ok"))
                 if _accept:

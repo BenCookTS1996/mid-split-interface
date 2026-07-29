@@ -40,6 +40,20 @@ warnings.filterwarnings("ignore", message="divide by zero encountered in divide"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+# Route Numba's compile cache to a STABLE sibling dir (NOT __pycache__, which the routine
+# "clear __pycache__ before every run" wipes → a ~2–3 min cold recompile every single run).
+# Set it HERE, before anything can import numba, so it's authoritative regardless of import
+# order (numba_kernels also setdefault()s the same path as a backup). Matches
+# numba_kernels._NB_CACHE_DIR = <src>/routing_optimiser/_numba_cache.
+os.environ.setdefault(
+    "NUMBA_CACHE_DIR",
+    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src",
+                                 "routing_optimiser", "_numba_cache")))
+try:
+    os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
+except Exception:  # noqa: BLE001 - a read-only dir must never stop the app loading
+    pass
+
 from routing_optimiser import (  # noqa: E402
     HardConstraints, OptimiserSettings, SoftConstraints, build_cell_problems,
     build_configs, build_pipeline_config, cell_baseline_vs_proposed,
@@ -837,8 +851,10 @@ def _query_table_refs(queries_dir):
     refs = {}
     if not _os.path.isdir(queries_dir):
         return refs
-    _bt = _re.compile(r"`([A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-\$]+){1,2})`")
-    _fj = _re.compile(r"\b(?:FROM|JOIN)\s+`?([A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-\$]+){1,2})`?",
+    # Allow '*' in the dataset/table parts so BigQuery WILDCARD tables (e.g. `ds.transactions_*`)
+    # are captured WITH their star — otherwise the prefix alone looks like a missing table (404).
+    _bt = _re.compile(r"`([A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-\$\*]+){1,2})`")
+    _fj = _re.compile(r"\b(?:FROM|JOIN)\s+`?([A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-\$\*]+){1,2})`?",
                       _re.IGNORECASE)
     for _f in sorted(_glob.glob(_os.path.join(queries_dir, "*.sql"))):
         try:
@@ -857,11 +873,15 @@ def _query_table_refs(queries_dir):
 
 def _check_table_access(project, tables):
     """DRY-RUN a `SELECT 1 FROM <table> LIMIT 0` per table (free — no bytes billed) to test that the
-    signed-in user can resolve AND read it. Returns (ok_list, bad_list[(table, reason)])."""
+    signed-in user can resolve AND read it. Returns (ok, denied, unverified):
+      • denied[(t, why)]     — a real 403 permission block (the thing worth flagging red),
+      • unverified[(t, why)] — 404 / partition-filter / other probe errors that are commonly just
+        wildcard or partitioned tables the naive `SELECT 1 … LIMIT 0` can't validate — NOT a
+        confirmed access problem, so surfaced only as a soft amber note."""
     from google.cloud import bigquery
     _client = bigquery.Client(project=project)
     _cfg = bigquery.QueryJobConfig(dry_run=True, use_query_cache=False)
-    ok, bad = [], []
+    ok, denied, unverified = [], [], []
     for _t in tables:
         try:
             _client.query("SELECT 1 FROM `%s` LIMIT 0" % _t, job_config=_cfg)
@@ -869,12 +889,12 @@ def _check_table_access(project, tables):
         except Exception as _e:  # noqa: BLE001
             _code = getattr(_e, "code", None)
             if _code == 403:
-                bad.append((_t, "no permission (403)"))
+                denied.append((_t, "no permission (403)"))
             elif _code == 404:
-                bad.append((_t, "not found (404)"))
+                unverified.append((_t, "probe couldn't resolve it (404 — likely a wildcard/date-sharded table)"))
             else:
-                bad.append((_t, f"{type(_e).__name__}: {str(_e)[:80]}"))
-    return ok, bad
+                unverified.append((_t, f"probe inconclusive ({_code or type(_e).__name__})"))
+    return ok, denied, unverified
 
 
 def _run_preflight(project):
@@ -935,19 +955,30 @@ def _run_preflight(project):
                             f"no table references found in {SQL_DIR} (nothing to check)", ""))
             else:
                 _n_sql = len({_s for _srcs in _refs.values() for _s in _srcs})
-                _ok_t, _bad_t = _check_table_access(project, list(_refs))
-                if not _bad_t:
+                _ok_t, _denied, _unver = _check_table_access(project, list(_refs))
+                if _denied:                            # only a real 403 is a hard failure
+                    _lst = "\n".join(
+                        f"- `{_t}` — {_why}  (used in: {', '.join(_refs.get(_t, []))})"
+                        for _t, _why in _denied)
+                    out.append(("Query table access", "fail",
+                                f"{len(_denied)} of {len(_refs)} referenced table(s) DENIED "
+                                f"(permission):\n\n{_lst}",
+                                "Ask an admin to grant BigQuery read/query access to the listed tables "
+                                "(or their datasets)."))
+                elif _unver:                           # 404 / wildcard / partition — NOT a confirmed block
+                    _lst = "\n".join(
+                        f"- `{_t}` — {_why}  (used in: {', '.join(_refs.get(_t, []))})"
+                        for _t, _why in _unver)
+                    out.append(("Query table access", "warn",
+                                f"{len(_ok_t)} accessible; {len(_unver)} could NOT be auto-verified "
+                                f"(usually fine — wildcard / date-sharded / partitioned tables the simple "
+                                f"probe can't check):\n\n{_lst}",
+                                "These are NOT confirmed permission problems — ignore if your run works; "
+                                "only investigate a specific table if a query actually fails on it."))
+                else:
                     out.append(("Query table access", "ok",
                                 f"all {len(_ok_t)} table(s) referenced across {_n_sql} .sql file(s) "
                                 "are accessible", ""))
-                else:
-                    _lst = "\n".join(
-                        f"- `{_t}` — {_why}  (used in: {', '.join(_refs.get(_t, []))})"
-                        for _t, _why in _bad_t)
-                    out.append(("Query table access", "fail",
-                                f"{len(_bad_t)} of {len(_refs)} referenced table(s) NOT accessible:\n\n{_lst}",
-                                "Ask an admin to grant BigQuery read/query access to the listed tables "
-                                "(or their datasets)."))
         except Exception as _e:  # noqa: BLE001
             out.append(("Query table access", "warn",
                         f"table-access scan could not complete ({type(_e).__name__}: {str(_e)[:120]})", ""))
@@ -1736,21 +1767,20 @@ with tab_eng:
         # Entropy is retired from the UI; 'genetic_ref' (the revenue reference) is not offered as a
         # standalone engine — it stays in the backend as the genetic engine's internal reference.
         choices = [(k, lbl) for k, lbl in engine_choices() if k not in ("entropy", "genetic_ref")]
-        # 'genetic' is served by the cross-cell tilt GA (genetic_global.run_midtilt_ga), which the
-        # app dispatches directly (see engine_key == "genetic" below) — it is NOT a registry engine,
-        # so its dropdown option is injected here rather than sourced from ENGINES.
-        if "genetic" not in {k for k, _ in choices}:
-            choices.append(("genetic", "Genetic algorithm"))
-        # 'genetic_numba' is the SAME cross-cell tilt GA with a Numba-compiled float64 fused
-        # decode+objective (opt-in, verify-or-fallback). Dispatched exactly like 'genetic' but
-        # with numba=True; if Numba is missing or the kernel doesn't verify it falls back to the
-        # NumPy path, so it can never produce a different split — see genetic_global/numba_kernels.
+        # The Genetic algorithm is the cross-cell per-vampMid tilt GA (genetic_global.run_midtilt_ga),
+        # dispatched directly by the app (not a registry engine). CONSOLIDATED: the former separate
+        # 'genetic' (NumPy) and 'genetic_numba' options are gone — there is now ONE genetic engine:
+        # the Numba fused kernel (verify-or-fallback to NumPy, so it can never produce a different
+        # split) run on a rule-safe PRE-CLUSTERED problem (near-lossless; see routing_optimiser.
+        # precluster). It keys as 'genetic_numba' so all engine logic is unchanged; pre-clustering is
+        # turned on for it below (ss['ga_precluster']; set ROUTING_GA_PRECLUSTER=0 to disable as an
+        # escape hatch). If Numba is unavailable it self-falls-back to the NumPy path.
         if "genetic_numba" not in {k for k, _ in choices}:
-            choices.append(("genetic_numba", "GA - Numba (experimental, self-verifying)"))
+            choices.append(("genetic_numba", "Genetic algorithm (Numba + pre-clustering)"))
         labels = {k: lbl for k, lbl in choices}
         keys = [k for k, _ in choices]
         # Default to the Genetic algorithm (the production engine); fall back to softmax/first.
-        default_idx = (keys.index("genetic") if "genetic" in keys
+        default_idx = (keys.index("genetic_numba") if "genetic_numba" in keys
                        else (keys.index("softmax") if "softmax" in keys else 0))
         # Sections 1 & 2 sit side by side (Engine Type 1/3 | Data & Pre-Processing 2/3),
         # BOTH outside the form so the engine / method selectors show/hide inputs live.
@@ -1776,12 +1806,17 @@ with tab_eng:
         # them reruns the tab and refreshes the readout IMMEDIATELY — widgets inside a form don't
         # rerun until submit, which froze the old in-form readout at its last-submitted values.
         # They write to the same session_state keys the compute path reads via ss.get, so nothing
-        # downstream changes. Only shown for the genetic engines; engine is read from session_state
-        # (default genetic) since the engine selector itself lives inside the form.
+        # downstream changes. Only shown for the genetic engine; engine is read from session_state
+        # (default = the genetic engine 'genetic_numba') since the engine selector lives in the form.
+        # Must default to a key that EXISTS in the dropdown — after consolidation the genetic key is
+        # 'genetic_numba' (the old 'genetic' is gone), so defaulting to it keeps this panel visible
+        # on a fresh session where engine_key_select isn't set yet.
         _pre_keys = [k for k, _ in choices]
-        _pre_default = ("genetic" if "genetic" in _pre_keys
+        _pre_default = ("genetic_numba" if "genetic_numba" in _pre_keys
                         else ("softmax" if "softmax" in _pre_keys else (_pre_keys[0] if _pre_keys else "")))
         _pre_engine = str(ss.get("engine_key_select", _pre_default) or _pre_default)
+        if _pre_engine not in _pre_keys:      # stale session value (e.g. a removed key) → default
+            _pre_engine = _pre_default
         if _pre_engine in ("genetic", "genetic_numba"):
             _cpu_seeds_default = max(1, min(_physical_cpu_count(), 16))
             with st.container(border=True):
@@ -1843,18 +1878,20 @@ with tab_eng:
                     _m = _secs / 60.0
                     return f"{_m:.0f} min" if _m >= 1.5 else f"{max(1, int(_secs))}s"
                 if _rate > 0:
-                    _lo = _fixed + _lo_c / _rate
                     _hi = _fixed + _hi_c / _rate
-                    _eta_sub = (f"est. end-to-end ~{_fmt_eta(_lo)}–{_fmt_eta(_hi)}"
+                    _eta_sub = (f"est. end-to-end up to ~{_fmt_eta(_hi)}"
                                 + (f" (last run {_fmt_eta(_ltot)} total)" if _ltot > 0 else ""))
                 else:
                     _eta_sub = "est. time: run once to calibrate the throughput"
-                _rng_lbl = ("Candidate splits (est.)" if _ratio > 0 else "Candidate splits (range)")
+                # Show a single UPPER BOUND ("up to X") rather than a floor–ceiling band: early-stop
+                # only ever lands the run BELOW this, so it's the honest one-number cap. _hi_c is the
+                # calibrated high end once a run exists, else the theoretical ceiling.
+                _rng_lbl = ("Candidate splits (est. max)" if _ratio > 0 else "Candidate splits (max)")
                 st.markdown(
                     "<div style='font-size:0.78rem; color:var(--tav-muted); line-height:1.2;'>"
                     f"{_rng_lbl}<br>"
                     f"<span style='font-size:1.1rem; font-weight:800; color:var(--tav-ink);'>"
-                    f"{int(_lo_c):,} – {int(_hi_c):,}</span>"
+                    f"up to {int(_hi_c):,}</span>"
                     f"<div style='font-size:0.72rem;'>{_eta_sub}</div></div>", unsafe_allow_html=True)
 
         _engine_form = st.form("engine_master_form", border=False)
@@ -1867,11 +1904,25 @@ with tab_eng:
                 engine_key = st.selectbox("Split engine", keys, index=default_idx,
                                           format_func=lambda k: labels[k], key="engine_key_select",
                                           help="Method used to choose the split.")
-                # 'genetic_numba' shares ALL of the Genetic engine's UI/dispatch; the only
-                # difference is numba=True at the GA call. These two flags keep the rest of the
-                # tab from having to special-case the extra key everywhere.
+                # The single genetic engine ('genetic_numba') ALWAYS runs Numba + pre-clustering.
+                # Record the intent in ss — the GA block reads ss['ga_precluster'] to swap in the
+                # pre-clustering wrapper at the call. Escape hatch: ROUTING_GA_PRECLUSTER=0 disables
+                # pre-clustering (falls back to the plain Numba search) for debugging / A/B.
+                ss["ga_precluster"] = (engine_key == "genetic_numba"
+                                       and os.environ.get("ROUTING_GA_PRECLUSTER", "1") != "0")
+                # These two flags keep the rest of the tab from special-casing the genetic key.
+                # ('genetic' is retained here only so any legacy session/state value still resolves.)
                 _is_genetic = engine_key in ("genetic", "genetic_numba")
                 _use_numba = (engine_key == "genetic_numba")
+                if _is_genetic:
+                    st.checkbox(
+                        "Bypass enforcement (diagnostic — NON-COMPLIANT)", value=False,
+                        key="ga_bypass_enforcement",
+                        help="Deliver the RAW GA search split with NO compliance layer — no VAMP-cap, "
+                             "per-MID band, or eligibility projection. Lets you see what the search wanted "
+                             "BEFORE compliance. ⚠️ The result may breach the VAMP cap and per-MID bands and "
+                             "route to wallet-incapable / USA-only / banned gateways, so it is NOT safe to "
+                             "export as a production config. Leave OFF for real runs.")
 
                 st.divider()
                 # ---- Split scope & grain (RPGTs, grain, hold-others, auto-explore) ----
@@ -3375,6 +3426,17 @@ with tab_eng:
                     from routing_optimiser.optimiser import (enforce_mid_vamp_caps, enforce_mid_volume_caps,
                                                              vamp_frontier_lp)
                     from routing_optimiser.genetic_global import run_midtilt_ga as _run_midtilt_ga
+                    # The Genetic engine runs on a rule-safe PRE-CLUSTERED problem by default
+                    # (ss['ga_precluster'], set above; ROUTING_GA_PRECLUSTER=0 disables it). The wrapper
+                    # is a drop-in for run_midtilt_ga — it rule-safely clusters cells, runs the SAME GA on
+                    # the reduced problem, and expands the result back (near-lossless; see
+                    # routing_optimiser.precluster). Same call/return contract, so every call site (incl.
+                    # the parallel loky workers and the numba pre-compile) is unchanged. If it's off,
+                    # `_run_midtilt_ga` stays the plain Numba search.
+                    if bool(ss.get("ga_precluster")):
+                        from routing_optimiser.precluster import run_midtilt_ga_preclustered as _run_midtilt_ga
+                        log("   pre-clustering ON → GA runs on rule-safe pre-clustered cells "
+                            "(near-lossless; expand-back before enforcement).")
                     log(f"   optimiser build: {getattr(_optmod, '__build__', 'UNKNOWN — stale bytecode?')} "
                         "(expect 2026-07-16-vamp-frontier-lp — if not, clear __pycache__).")
                     # Softmax and Thompson are per-cell engines: the reference IS their
@@ -5220,10 +5282,51 @@ with tab_eng:
                                 _elig_op = None
                                 log(f"   [Warning] GA eligibility operator build failed ({type(_ee).__name__}: {_ee}) "
                                     "— GA scores unrestricted; eligibility still applied downstream in enforcement.")
+                        # AUTO-BLOCK folded into the GA eligibility (QUALITY, not speed). A bank-blocked
+                        # (bank, gateway) — ≥N most-recent consecutive failed attempts — is marked
+                        # INELIGIBLE for the search, so the GA never routes real volume to a door the bank
+                        # has closed and instead optimises the redistribution itself, rather than the
+                        # post-hoc enforcement cap doing it afterward. Same detector + parent-bank keying
+                        # as the enforcement cap. GUARD: a cell whose gateways are ALL blocked is left
+                        # untouched (nowhere to move the volume — mirrors _apply_blocked_caps). Enforcement
+                        # still caps to the floor as a safety net. Only ~0.1% of rows, so no material speed
+                        # effect. NOTE: excluded rows get 0 share in the search (vs the exploration floor
+                        # under the old post-hoc cap) — treating a dead door as unroutable, by design.
+                        _ga_elig = np.ones(len(G))
+                        if bool(ss.get("block_gw_cb", False)):
+                            try:
+                                _bapre_ga = orig_adf.copy()
+                                _b2b_ga = ss.get("bin_to_bank") or {}
+                                if _b2b_ga and "bank" in _bapre_ga.columns:
+                                    _bapre_ga["bank"] = _bapre_ga["bank"].map(
+                                        lambda _b: _b2b_ga.get(_b, _b2b_ga.get(str(_b), _b)))
+                                _bdf_ga = detect_blocked_gateways(
+                                    _bapre_ga, float(ss.get("block_min_inp", 100) or 100))
+                                _bflag_ga = _bdf_ga[_bdf_ga["blocked"]] if not _bdf_ga.empty else _bdf_ga
+                                _blk_ga = set(zip(
+                                    _bflag_ga["bank"].astype(str).str.strip().str.lower(),
+                                    _bflag_ga["gateway"].astype(str).str.strip().str.lower()))
+                                if _blk_ga:
+                                    _row_blk = np.array([(b, g) in _blk_ga
+                                                         for b, g in zip(_pb_l, _gw_l)], dtype=bool)
+                                    # per-cell counts: exclude blocked rows ONLY in cells that still keep a
+                                    # non-blocked gateway (a fully-blocked cell is left for enforcement).
+                                    _blk_per_cell = np.add.reduceat(_row_blk.astype(float), _cell_starts)
+                                    _cell_mixed = (_blk_per_cell > 0) & (_blk_per_cell < _counts.astype(float))
+                                    _excl = _row_blk & np.repeat(_cell_mixed, _counts)
+                                    _ga_elig[_excl] = 0.0
+                                    _n_excl = int(_excl.sum())
+                                    if _n_excl:
+                                        log(f"   auto-block (pre-GA): {len(_blk_ga)} bank×gateway pair(s) → "
+                                            f"{_n_excl} row(s) marked INELIGIBLE for the search (GA optimises "
+                                            "the routable set; fully-blocked cells left to enforcement).")
+                            except Exception as _bge:  # noqa: BLE001 — never break the run over this
+                                log(f"   [Warning] pre-GA auto-block skipped ({type(_bge).__name__}: {_bge}); "
+                                    "enforcement-time cap still applies.")
                         ctx = {
                             "n_row": len(G), "n_mid": len(_mids_u),
                             "cell_starts": _cell_starts, "cell_counts": _counts,
-                            "elig": np.ones(len(G)),   # per-cell HARD floor/cap only; bans/wallet/USA now in elig_op (scoring) + enforcement
+                            "elig": _ga_elig,   # per-cell HARD floor/cap + bank-blocked rows excluded pre-GA (bans/wallet/USA still in elig_op + enforcement)
                             "elig_op": _elig_op,       # optional: GA scores eligibility-adjusted (routable) shares
                             "base": _base, "cell_vol": _cvol, "sr": _srr, "risk": _rkr, "ticket": _tick,
                             "rev_coef": _rev_coef,
@@ -5254,6 +5357,48 @@ with tab_eng:
                         ctx["ref_share"] = _ref_share_G          # θ=0 decode base (revenue-optimal)
                         ss["_ga_ctx"] = ctx                      # stash for the experimental NSGA-II / full-matrix explorer
                         _n_cells = int(len(_counts)); _n_mid = int(len(_mids_u))
+                        # ── GA problem size (surfaced so the k-means pre-clustering decision is data-driven) ──
+                        # `cells` = rpgt×currency×bank problems the search steers; genome D = 3·vampMids
+                        # (a risk-tilt, a revenue-tilt and a gain per MID). CMA-ES per-generation cost grows
+                        # with D² (rank-µ covariance update) and D³ at each periodic eigen-refresh — so D,
+                        # NOT the cell count, is what k-means pre-clustering would actually shrink. Small D
+                        # ⇒ clustering is a rounding error; large D ⇒ the cube term makes it a real win.
+                        _ga_D = 3 * _n_mid
+                        log(f"   GA problem size: {_n_cells} cells (rpgt×currency×bank), {int(len(G))} "
+                            f"cell×gateway rows, {_n_mid} vampMids → genome D = {_ga_D}. "
+                            f"CMA-ES per-generation cost ∝ D² (covariance update) and ∝ D³ (eigen-refresh); "
+                            f"D is the dimension k-means pre-clustering would reduce.")
+                        # ── Compressibility probe (READ-ONLY; changes nothing) — the k-means ceiling ──
+                        # The 48-knob genome decodes each cell's shares from its gateways' (vampMid,
+                        # reference share, risk) alone, so two cells whose eligible gateways carry the SAME
+                        # signature decode IDENTICALLY under EVERY genome and could share one representative
+                        # (carrying their summed volume) at ~no loss. Counting DISTINCT signatures gives the
+                        # rough CEILING on how far pre-clustering could shrink the 58,745-row hot loop. This
+                        # ONLY measures. Optimistic (a truly lossless merge also needs matching success /
+                        # ticket rates); a real clusterer trades a controllable error for more compression.
+                        try:
+                            _mid_a = np.asarray(ctx["mid_id"])
+                            _ref_a = np.asarray(ctx["ref_share"], float)
+                            _risk_a = np.asarray(ctx["risk"], float)
+                            _elig_a = np.asarray(ctx["elig"], float) > 0.5
+                            _sig_all = set()
+                            _single = 0
+                            for _ci in range(len(_counts)):
+                                _s0 = int(_cell_starts[_ci]); _s1 = _s0 + int(_counts[_ci])
+                                if (_s1 - _s0) <= 1:
+                                    _single += 1
+                                _sig_all.add(tuple(sorted(
+                                    (int(_mid_a[g]), round(float(_ref_a[g]), 5), round(float(_risk_a[g]), 6))
+                                    for g in range(_s0, _s1) if _elig_a[g])))
+                            _distinct = max(1, len(_sig_all))
+                            _ratio = _n_cells / _distinct
+                            log(f"   Compressibility probe: {_n_cells} cells → ~{_distinct} distinct "
+                                f"decode-signatures (≈{_ratio:.1f}× cell-reduction CEILING); {_single} "
+                                f"single-gateway cells are genome-invariant. Upper bound on what k-means "
+                                f"pre-clustering could trim from the {int(len(G))}-row hot loop — optimistic "
+                                f"(true lossless merge also needs matching success/ticket rates).")
+                        except Exception as _e:  # noqa: BLE001 — a read-only probe must never break a run
+                            log(f"   [Warning] compressibility probe skipped ({type(_e).__name__}: {_e}).")
                         _pop_ovr = int(ss.get("ga_pop_override", 0) or 0)   # 0 = auto-size
                         _ga_pop = _pop_ovr if _pop_ovr > 0 else int(np.clip(round(4 * _n_mid), 30, 80))
                         _ga_gen = int(ss.get("ga_generations", 80) or 80)
@@ -5485,16 +5630,23 @@ with tab_eng:
                                             "cached to .numba_cache and reused by every later run "
                                             "and every split/settings combination)…")
                                         # Cache diagnostic: where Numba caches + how many kernel files
-                                        # exist BEFORE we compile. If this shows 0 files every run, the
-                                        # cache isn't persisting (recompiles every run → workers slow).
+                                        # exist BEFORE we compile. Numba writes .nbi/.nbc into a SUBFOLDER
+                                        # (…/_numba_cache/<pkg>_<pathhash>/), so count RECURSIVELY — a flat
+                                        # listdir always reads 0 and falsely looks like the cache failed.
                                         try:
+                                            import glob as _nbglob
                                             _nbcd = os.environ.get("NUMBA_CACHE_DIR", "(default __pycache__)")
-                                            _nbn = (len([_f for _f in os.listdir(_nbcd)
-                                                         if _f.endswith((".nbi", ".nbc"))])
-                                                    if os.path.isdir(_nbcd) else -1)
+                                            if os.path.isdir(_nbcd):
+                                                _nbn = len(_nbglob.glob(os.path.join(_nbcd, "**", "*.nbi"),
+                                                                        recursive=True)) + \
+                                                       len(_nbglob.glob(os.path.join(_nbcd, "**", "*.nbc"),
+                                                                        recursive=True))
+                                            else:
+                                                _nbn = -1
                                             log(f"      numba cache: dir={_nbcd} · exists="
                                                 f"{os.path.isdir(_nbcd)} · {_nbn} kernel file(s) present "
-                                                "before compile (0 every run ⇒ cache NOT persisting)")
+                                                "before compile (>0 ⇒ a prior compile persisted; 0 on the "
+                                                "FIRST run after a kernel/code change is normal)")
                                         except Exception:  # noqa: BLE001
                                             pass
                                         # Warmup does the FULL verify (no trust flag yet); the copy
@@ -5512,9 +5664,9 @@ with tab_eng:
                                             # redundant, incl. 16 pointless NumPy evals).
                                             _extra_kw["numba_trust"] = True
                                             _verdict = ("loaded from cache" if _wsecs < 8
-                                                        else "RE-COMPILED (cache miss — the persistent "
-                                                             ".numba_cache didn't carry over; check it "
-                                                             "survives your __pycache__ clears)")
+                                                        else "COMPILED (first run after a kernel/code change "
+                                                             "— expected once; later runs with the SAME code "
+                                                             "load this from .numba_cache in <1s)")
                                             log(f"   GA-Numba: kernel {_verdict} in "
                                                 f"{_wsecs:.1f}s (max rel-obj diff "
                                                 f"{_wn.get('max_rel_obj', float('nan')):.1e}, "
@@ -6018,7 +6170,45 @@ with tab_eng:
                         # aggregate-MID feasibility check. Enforced through the same full pass (VAMP cap +
                         # per-MID bands + eligibility + auto-block + max-share/floor).
                         _deliver_G = _safe_endpoint_G
-                        _comp_gran = _enforce_endpoint(_deliver_G)
+                        # Raw GA endpoint as a granular split (the INPUT to enforcement) — reused for
+                        # the diagnostic bypass path and the GA→enforced movement metric.
+                        _ga_gran = _explode(_endpoint_agg(_deliver_G))
+                        if bool(ss.get("ga_bypass_enforcement")):
+                            # DIAGNOSTIC: deliver the raw GA split with NO compliance layer. Still floor
+                            # dead (bank-blocked) gateways — that's data-driven, not a projection.
+                            if _blk_pairs_pre:
+                                _ga_gran, _ = _apply_blocked_caps(_ga_gran, _blk_pairs_pre, float(floor))
+                            _comp_gran = _ga_gran
+                            log("   ⚠️ ENFORCEMENT BYPASSED (diagnostic): the delivered split is the RAW GA "
+                                "search output — it MAY breach the VAMP cap and per-MID bands and route to "
+                                "wallet-incapable / USA-only / banned gateways. NOT compliant — do NOT export "
+                                "this as a production config.")
+                        else:
+                            _comp_gran = _enforce_endpoint(_deliver_G)
+                            # GA → enforced movement: how much compliance had to reroute the GA split.
+                            try:
+                                _mk = ["rpgt", "currency", "bank", "gateway"]
+                                _p0 = _ga_gran[_mk + ["share"]].rename(columns={"share": "_s0"})
+                                _p1 = _comp_gran[_mk + ["share"]].rename(columns={"share": "_s1"})
+                                _mvj = _p0.merge(_p1, on=_mk, how="outer")
+                                if "cell_volume" in _ga_gran.columns:
+                                    _cvc = (_ga_gran.groupby(_mk[:3])["cell_volume"].first()
+                                            .rename("_cv").reset_index())
+                                    _mvj = _mvj.merge(_cvc, on=_mk[:3], how="left")
+                                    _cvv = pd.to_numeric(_mvj["_cv"], errors="coerce").fillna(0.0).to_numpy()
+                                    _totv = float(_cvc["_cv"].sum())
+                                else:
+                                    _cvv = np.ones(len(_mvj)); _totv = float(len(_mvj))
+                                _s0 = pd.to_numeric(_mvj["_s0"], errors="coerce").fillna(0.0).to_numpy()
+                                _s1 = pd.to_numeric(_mvj["_s1"], errors="coerce").fillna(0.0).to_numpy()
+                                _moved = float((np.abs(_s1 - _s0) * _cvv).sum()) / 2.0
+                                _nrows = int((np.abs(_s1 - _s0) > 1e-6).sum())
+                                log(f"   GA → enforced movement: compliance rerouted ~{_moved:,.0f} of "
+                                    f"~{_totv:,.0f} forecast volume (~{100.0 * _moved / max(_totv, 1e-9):.1f}%) "
+                                    f"across {_nrows:,} gateway-row(s) — 0% ⇒ the GA split was already compliant.")
+                            except Exception as _me:  # noqa: BLE001 — a diagnostic must never break a run
+                                log(f"   [Warning] GA→enforced movement metric skipped "
+                                    f"({type(_me).__name__}: {_me}).")
                         _progress(_f_var, "Building variations…")
                         # DIAL 100 (per spec): RAW softmax revenue reference — eligibility only, NO
                         # VAMP / MID / max-share caps — the unconstrained revenue ceiling. May breach.
@@ -6397,6 +6587,7 @@ with tab_eng:
                             ss["_pool_comp"] = _cache_pc
                         else:
                             # Sequential fallback (also the path when there is only one dial).
+                            _t_seq_pc = _pt.time()   # compression-only timer (parallel path logs its own)
                             for _iv_pc, (_sig_pc, _w_pc, _spl) in enumerate(_jobs_pc, 1):
                                 _progress(_f_eng_end + (1.0 - _f_eng_end) * (_iv_pc - 1) / _nvar_pc,
                                           f"Compressing pools {_iv_pc}/{_nvar_pc}…")
@@ -6409,6 +6600,10 @@ with tab_eng:
                                 except Exception as _pce:  # noqa: BLE001
                                     log(f"      dial {int(round(_w_pc * 100))}: compression FAILED "
                                         f"({type(_pce).__name__}: {_pce}) — tab 3 will compute it on Export.")
+                            log(f"   compression (sequential, {_nvar_pc} dial(s), "
+                                f"method={ss.get('compress_method', 'ward')}/"
+                                f"{ss.get('compress_allocation', 'knapsack')}) finished in "
+                                f"{_pt.time() - _t_seq_pc:.1f}s")
 
                     _stage_end()
                     if _t6_0 is not None:   # persist compression secs → next run's adaptive ETA

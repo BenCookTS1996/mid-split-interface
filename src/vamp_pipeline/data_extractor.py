@@ -11,7 +11,7 @@ logger = setup_logger(__name__)
 
 # Bump this when data_extractor.py changes; run_vamp_pipeline logs it so a stale
 # .pyc (old code) is immediately obvious in the run log.
-__build__ = "2026-07-03-baseline-normaliser"
+__build__ = "2026-07-29-readsession-fallback"
 
 class DataExtractor:
     """
@@ -46,7 +46,35 @@ class DataExtractor:
         self.mid_df = pd.DataFrame()
         self.split_df = pd.DataFrame()
         
-        self.longterm_fcast_df = pd.DataFrame() 
+        self.longterm_fcast_df = pd.DataFrame()
+
+    def _query_to_df(self, query: str) -> pd.DataFrame:
+        """Run a query and materialise a DataFrame.
+
+        By default google-cloud-bigquery downloads results over the fast BigQuery Storage
+        API, which requires the extra `bigquery.readsessions.create` permission. Some users
+        can RUN queries but lack that Storage-API permission, so `.to_dataframe()` blows up
+        with PERMISSION_DENIED on `readsessions.create` even though the query itself is fine.
+
+        We try the fast path first (no behaviour change for users who have the permission),
+        and on that specific denial fall back to the slower REST download
+        (`create_bqstorage_client=False`), which only needs ordinary query permissions.
+        Results get cached to parquet afterwards, so the slower path is a one-off per cache-miss.
+        """
+        from google.api_core.exceptions import Forbidden, PermissionDenied
+        job = self.bq.query(query)
+        try:
+            return job.to_dataframe()
+        except (Forbidden, PermissionDenied) as e:  # noqa: BLE001
+            if "readsessions.create" not in str(e):
+                raise  # a real access problem — surface it loudly
+            logger.warning(
+                "   > ⚠️  No 'bigquery.readsessions.create' permission — the fast BigQuery "
+                "Storage download is unavailable for this user. Falling back to the slower "
+                "REST download (this only affects download speed, not the result). Ask an admin "
+                "for role 'roles/bigquery.readSessionUser' on project "
+                f"'{getattr(self.bq, 'project', '?')}' to restore the fast path.")
+            return job.to_dataframe(create_bqstorage_client=False)
 
     # =========================================================================
     # === 1. DATAFRAME FORMATTING HELPERS
@@ -213,7 +241,7 @@ class DataExtractor:
 
         logger.info(f"   > 📡 Cache miss. Running BigQuery for {cache_filename}...")
         query = self._read_sql_file(sql_filename)
-        df = self.bq.query(query).to_dataframe()
+        df = self._query_to_df(query)
         logger.info(f"   > BigQuery returned {cache_filename}: {len(df):,} rows{self._txn_total(df)}")
         self._log_head(df, cache_filename)
 
@@ -319,7 +347,7 @@ class DataExtractor:
 
         logger.info("   > 📡 Cache miss. Running BigQuery for MR Daily Weights (mr_weights.sql)...")
         query = self._read_sql_file('mr_weights.sql')
-        df = self.bq.query(query).to_dataframe()
+        df = self._query_to_df(query)
 
         mr_daily_weights = {}
         for _, row in df.iterrows():

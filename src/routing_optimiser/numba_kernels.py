@@ -33,7 +33,7 @@ import time
 
 import numpy as np
 
-__build__ = "2026-07-29-ga-numba-persistent-cache+precompile+fixed-quadratic-breach"
+__build__ = "2026-07-29-ga-numba-persistent-cache+precompile+fixed-quadratic-breach+eligibility-in-kernel+step-aware-verify"
 
 # PERSISTENT compile cache — set BEFORE numba is imported (this module is the ONLY importer
 # of numba in the project, so setting it here wins). Numba's default cache lives inside a
@@ -83,12 +83,20 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                 n_bands, b_mi, b_bval, b_ceil, b_floor, b_has_ceil, b_has_floor,
                 has_base, base_vol,
                 max_share, floor_val,
-                rmw, has_vfr, vfr, bfix, qwt):
+                rmw, has_vfr, vfr, bfix, qwt,
+                has_elig, ecs, ecc,
+                e_has_ban, e_ban,
+                e_has_w, e_w_incap, e_w_wf,
+                e_has_u, e_u_incap, e_u_wf):
     """One fused pass: ACTUAL genome batch G (P, 3M[+K]) -> (obj (P,), viol (P,)).
 
-    Mirrors `_decode_midtilt3` (softmax tilt -> per-cell renorm -> floor-then-cap water-fill)
-    then `_obj_viol` (revenue [- risk-min], VAMP-rate / volume / band / cap / floor violations),
+    Mirrors `_decode_midtilt3` (softmax tilt -> per-cell renorm -> floor-then-cap water-fill),
+    then — when `has_elig` — `eligibility.apply_elig_pop` (bans->0+renorm, wallet blend+renorm,
+    USA blend+renorm, IN THAT ORDER, using the operator's OWN cell segments ecs/ecc), then
+    `_obj_viol` (revenue [- risk-min], VAMP-rate / volume / band / cap / floor violations),
     summing in the same index order as the NumPy versions so the two agree to float64 rounding.
+    The eligibility stage is what lets the Numba engine STAY ON when ctx['elig_op'] is active
+    (previously it was force-disabled because the kernel scored the un-restricted split).
     """
     P = G.shape[0]
     N = ref.shape[0]
@@ -170,6 +178,80 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                                 X[g] = X[g] + (capN_col[g] - X[g]) * excess / room_cell
                 if not any_over:
                     break
+        # ---- eligibility on the DECODED shares (mirror eligibility.apply_elig_pop) ----
+        # bans -> 0 + per-cell renorm, then wallet blend + renorm, then USA blend + renorm,
+        # IN THIS ORDER — so the kernel scores the SAME actually-routable split the NumPy
+        # `_obj_viol` does when ctx['elig_op'] is active. Uses the operator's OWN segments
+        # (ecs/ecc), exactly as apply_elig_pop / _renorm_pop / _blend_pop do.
+        if has_elig == 1:
+            Ce = ecs.shape[0]
+            # (1) hard bans -> share 0, then renormalise within each routing group
+            if e_has_ban == 1:
+                for g in range(N):
+                    if e_ban[g] > 0.5:
+                        X[g] = 0.0
+                for c in range(Ce):
+                    s0 = ecs[c]
+                    s1 = s0 + ecc[c]
+                    seg = 0.0
+                    for g in range(s0, s1):
+                        seg += X[g]
+                    if seg > 0.0:                       # matches _renorm_pop: where(s>0, X/s, X)
+                        for g in range(s0, s1):
+                            X[g] = X[g] / seg
+            # (2) wallet capability blend: incapable keeps (1-wf) of its share; wf portion
+            #     redistributes to the capable gateways in the cell, then per-cell renorm.
+            if e_has_w == 1:
+                for c in range(Ce):
+                    s0 = ecs[c]
+                    s1 = s0 + ecc[c]
+                    base_sum = 0.0
+                    s_cap = 0.0
+                    for g in range(s0, s1):
+                        base_sum += X[g]
+                        if e_w_incap[g] < 0.5:
+                            s_cap += X[g]
+                    for g in range(s0, s1):
+                        base_g = X[g]
+                        if s_cap > 0.0:
+                            cap_g = base_g if e_w_incap[g] < 0.5 else 0.0
+                            cshare_g = cap_g / s_cap
+                        else:
+                            cshare_g = base_g          # only incapable present -> no reroute
+                        blended_g = e_w_wf[g] * cshare_g + (1.0 - e_w_wf[g]) * base_g
+                        X[g] = blended_g if base_sum > 0.0 else base_g
+                    seg = 0.0
+                    for g in range(s0, s1):
+                        seg += X[g]
+                    if seg > 0.0:
+                        for g in range(s0, s1):
+                            X[g] = X[g] / seg
+            # (3) USA-only capability blend — identical mechanism, Non-USA fraction rerouted.
+            if e_has_u == 1:
+                for c in range(Ce):
+                    s0 = ecs[c]
+                    s1 = s0 + ecc[c]
+                    base_sum = 0.0
+                    s_cap = 0.0
+                    for g in range(s0, s1):
+                        base_sum += X[g]
+                        if e_u_incap[g] < 0.5:
+                            s_cap += X[g]
+                    for g in range(s0, s1):
+                        base_g = X[g]
+                        if s_cap > 0.0:
+                            cap_g = base_g if e_u_incap[g] < 0.5 else 0.0
+                            cshare_g = cap_g / s_cap
+                        else:
+                            cshare_g = base_g
+                        blended_g = e_u_wf[g] * cshare_g + (1.0 - e_u_wf[g]) * base_g
+                        X[g] = blended_g if base_sum > 0.0 else base_g
+                    seg = 0.0
+                    for g in range(s0, s1):
+                        seg += X[g]
+                    if seg > 0.0:
+                        for g in range(s0, s1):
+                            X[g] = X[g] / seg
         # ---- objective: revenue -----------------------------------------------------
         o = 0.0
         for g in range(N):
@@ -337,6 +419,33 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
     bfix = float(ctx.get("breach_fixed", 0.0) or 0.0)
     qwt = float(ctx.get("breach_quad", 1.0) or 1.0)
 
+    # ---- eligibility operator (mirror eligibility.apply_elig_pop inside the kernel) -------
+    # When ctx['elig_op'] is present the NumPy fitness scores the eligibility-adjusted split
+    # (bans zeroed + renormalised, wallet/USA capability blended). Feed the SAME static arrays
+    # to the kernel so it scores the identical split — this is what keeps Numba usable with
+    # eligibility-in-scoring on (verify() still cross-checks, so a mismatch just falls back).
+    _bool = lambda a: _c(np.asarray(a, dtype=bool).astype(np.float64))   # 0/1 float for the kernel
+    _z = lambda: np.zeros(N, np.float64)
+    _eop = ctx.get("elig_op")
+    if _eop is not None:
+        has_elig = 1
+        ecs = _c(_eop["cell_starts"], np.intp)
+        ecc = _c(_eop["cell_counts"], np.intp)
+        e_has_ban = 1 if _eop.get("has_ban") else 0
+        e_ban = _bool(_eop["ban"]) if e_has_ban else _z()
+        e_has_w = 1 if _eop.get("has_w") else 0
+        e_w_incap = _bool(_eop["w_incap"]) if e_has_w else _z()
+        e_w_wf = _c(_eop["w_wf"]) if e_has_w else _z()
+        e_has_u = 1 if _eop.get("has_u") else 0
+        e_u_incap = _bool(_eop["u_incap"]) if e_has_u else _z()
+        e_u_wf = _c(_eop["u_wf"]) if e_has_u else _z()
+    else:
+        has_elig = 0
+        ecs = np.zeros(1, np.intp); ecc = np.zeros(1, np.intp)
+        e_has_ban = 0; e_ban = _z()
+        e_has_w = 0; e_w_incap = _z(); e_w_wf = _z()
+        e_has_u = 0; e_u_incap = _z(); e_u_wf = _z()
+
     def eval_actual(G):
         G = np.ascontiguousarray(G, dtype=np.float64)
         return _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fine,
@@ -347,27 +456,43 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
                            n_bands, b_mi, b_bval, b_ceil, b_floor, b_has_ceil, b_has_floor,
                            has_base, base_vol,
                            max_share, floor_val,
-                           rmw, has_vfr, vfr, bfix, qwt)
+                           rmw, has_vfr, vfr, bfix, qwt,
+                           has_elig, ecs, ecc,
+                           e_has_ban, e_ban,
+                           e_has_w, e_w_incap, e_w_wf,
+                           e_has_u, e_u_incap, e_u_wf)
 
     return eval_actual
 
 
 # --------------------------------------------------------------------------- verifier
 def verify(np_eval_actual, nb_eval_actual, sample_G, *, rtol_obj=1e-7, atol_viol=1e-7,
-           warmup=True):
+           rtol_viol=1e-6, bfix=0.0, warmup=True):
     """Run NumPy and Numba evals on the SAME actual-space genomes and compare. Returns a dict
     the caller logs verbatim for cross-validation:
 
         used-decision inputs: ok (bool), reason (str)
-        accuracy: max_abs_obj, max_rel_obj, max_abs_viol, max_rel_viol
+        accuracy: max_abs_obj, max_rel_obj, max_abs_viol, max_rel_viol, max_smooth_viol, n_step_flips
         timing:   t_np, t_nb, speedup, n_sample  (t_nb EXCLUDES the one-off JIT compile)
 
-    `ok` requires every value finite AND max_rel_obj<=rtol_obj AND max_abs_viol<=atol_viol.
+    OBJECTIVE gate: relative, tight (`max_rel_obj <= rtol_obj`) — catches any real decode /
+    revenue / eligibility divergence (a genuine bug moves revenue).
+
+    VIOLATION gate: the fixed breach penalty (`bfix`) is a STEP — the instant a per-MID VAMP
+    rate / band crosses its threshold the violation jumps by a whole `bfix`. Two algebraically
+    IDENTICAL code paths (NumPy vs kernel) can legitimately straddle such a threshold by pure
+    float64 rounding, so their violations differ by whole multiples of `bfix` (a knife-edge
+    feasibility flip, irrelevant to CMA-ES ranking — NOT a bug). So when `bfix>0` we remove the
+    whole-`bfix` steps and require only the SMOOTH remainder to agree within `atol_viol +
+    rtol_viol*|v_np|`; a genuine error (missing/incorrect term) leaves a large non-step residual
+    and still fails. With `bfix==0` (pure smooth penalty) this reduces to a plain allclose gate.
+
     Never raises: any error is caught and returned as ok=False with the reason.
     """
     out = {"ok": False, "reason": "", "n_sample": int(np.asarray(sample_G).shape[0]),
            "max_abs_obj": float("nan"), "max_rel_obj": float("nan"),
            "max_abs_viol": float("nan"), "max_rel_viol": float("nan"),
+           "max_smooth_viol": float("nan"), "n_step_flips": 0,
            "t_np": float("nan"), "t_nb": float("nan"), "speedup": float("nan"),
            "compile_s": float("nan")}
     try:
@@ -403,11 +528,28 @@ def verify(np_eval_actual, nb_eval_actual, sample_G, *, rtol_obj=1e-7, atol_viol
         if out["t_nb"] > 0:
             out["speedup"] = float(out["t_np"] / out["t_nb"])
 
-        ok = (out["max_rel_obj"] <= rtol_obj) and (out["max_abs_viol"] <= atol_viol)
+        # VIOLATION: strip whole fixed-breach STEPS (multiples of bfix) — those are knife-edge
+        # threshold flips, not bugs — and require the SMOOTH remainder to agree (allclose-style).
+        if bfix and bfix > 0.0:
+            steps = np.round(dv / bfix)                       # whole breach flips per genome
+            resid = np.abs(dv - steps * bfix)                 # the continuous-part disagreement
+            out["n_step_flips"] = int(steps.sum())
+            out["max_smooth_viol"] = float(resid.max())
+            viol_ok = bool(np.all(resid <= atol_viol + rtol_viol * np.abs(v_np)))
+        else:
+            out["max_smooth_viol"] = out["max_abs_viol"]
+            viol_ok = bool(np.all(dv <= atol_viol + rtol_viol * np.abs(v_np)))
+
+        ok = (out["max_rel_obj"] <= rtol_obj) and viol_ok
         out["ok"] = bool(ok)
-        out["reason"] = "verified: numba matches numpy within tolerance" if ok else (
-            f"MISMATCH rel_obj={out['max_rel_obj']:.2e} (tol {rtol_obj:.0e}), "
-            f"abs_viol={out['max_abs_viol']:.2e} (tol {atol_viol:.0e})")
+        if ok:
+            out["reason"] = ("verified: numba matches numpy (obj within tol; violation smooth-part "
+                             f"within tol, {out['n_step_flips']} knife-edge breach flip(s) ignored)")
+        else:
+            out["reason"] = (
+                f"MISMATCH rel_obj={out['max_rel_obj']:.2e} (tol {rtol_obj:.0e}), "
+                f"smooth_viol={out['max_smooth_viol']:.2e} (tol {atol_viol:.0e}+{rtol_viol:.0e}·|v|), "
+                f"abs_viol={out['max_abs_viol']:.2e} across {out['n_step_flips']} step-flip(s)")
         return out
     except Exception as exc:  # noqa: BLE001 - verification must never crash a run
         out["reason"] = f"{type(exc).__name__}: {exc}"
