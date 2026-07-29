@@ -12,7 +12,7 @@ import streamlit as st
 
 from impact_calcs import build_split_exports
 
-__build__ = "2026-07-22-cfg-json-viewer-bin-filter"
+__build__ = "2026-07-29-cfg-json-viewer-bin-filter+single-variation-dial-guard"
 
 
 def render(ss, PROJECT_ROOT):
@@ -52,10 +52,22 @@ def render(ss, PROJECT_ROOT):
         _sldc, _sldsp = st.columns([0.9, 5.1])
         _prev_wc = ss.get("cfg_variation_sld", ss.get("selected_variation_weight"))
         _def_wc = _prev_wc if _prev_wc in _weights_c else _weights_c[len(_weights_c) // 2]
-        picked_w_cfg = _sldc.select_slider(
-            "**Risk  ↔  Conversion**", options=_weights_c, value=_def_wc,
-            format_func=lambda w: f"{int(round(w * 100))}", key="cfg_variation_sld",
-            help="Dial: safer routing ↔ more revenue.")
+        if len(_weights_c) > 1:
+            picked_w_cfg = _sldc.select_slider(
+                "**Risk  ↔  Conversion**", options=_weights_c, value=_def_wc,
+                format_func=lambda w: f"{int(round(w * 100))}", key="cfg_variation_sld",
+                help="Dial: safer routing ↔ more revenue.")
+        else:
+            # Single variation (dial-0-only run): a select_slider over ONE option gives the
+            # browser min==max and throws "RangeError: min (0) is equal/bigger than max (0)".
+            # Mirror the Impact tab — no dial, just a static label — when there's nothing to pick.
+            picked_w_cfg = _weights_c[0]
+            _sldc.markdown(
+                "<div style='padding-top:0.15rem;'>"
+                "<div style='font-size:0.82rem; font-weight:700; color:var(--tav-ink);'>Split</div>"
+                "<div style='font-size:0.85rem; color:var(--tav-muted); margin-top:0.1rem;'>"
+                "Risk-minimised · compliant</div></div>",
+                unsafe_allow_html=True)
 
         mode = "sales"   # Mode input removed — always 'sales'.
         emit_generic = False   # pool-generic emit removed (full mode only); always compressed 'sales'.

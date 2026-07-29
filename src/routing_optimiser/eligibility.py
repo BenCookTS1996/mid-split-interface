@@ -30,7 +30,7 @@ import os
 import numpy as np
 import pandas as pd
 
-__build__ = "2026-07-16-eligibility-ban-mask-cache"
+__build__ = "2026-07-29-eligibility-ban-mask-cache+population-operator"
 
 WALLET_VALUES = {"googlepay", "applepay"}
 
@@ -273,3 +273,122 @@ def apply_restrictions(split: pd.DataFrame, rules: list[dict], fid2vamp: dict,
     if "cell_volume" in df.columns:
         df["volume"] = df["cell_volume"] * df["share"]
     return df.drop(columns=[c for c in ["_gw", "_vm"] if c in df.columns])
+
+
+# ---------------------------------------------------------------------------
+# POPULATION OPERATOR — the SAME eligibility maths as `apply_restrictions`, but
+# precomputed ONCE for a fixed (cell, gateway) layout and then applied to a whole
+# population of share vectors with pure numpy (no per-candidate DataFrame / groupby).
+#
+# Purpose: let a search (e.g. the genetic engine) SCORE the actually-routable shares —
+# bans zeroed + renormalised, wallet / USA-only capability blended — inside its hot loop,
+# so it optimises what will really be routed instead of a split that eligibility later
+# perturbs. It is a fixed piecewise-linear transform of the share vector (masks + per-cell
+# fractions are static), so it needs no projection and costs ~two segment-sums per stage.
+#
+# `build_elig_operator` returns the static arrays; `apply_elig_pop(X, op)` applies them.
+# Proven row-for-row identical to `apply_restrictions` (see the backend equivalence test).
+# ---------------------------------------------------------------------------
+def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, *,
+                        wallet_incapable=frozenset(), wallet_frac: dict | None = None,
+                        wallet_default: float = 0.0,
+                        usa_only=frozenset(), nonusa_frac: dict | None = None,
+                        nonusa_default: float = 0.0) -> dict:
+    """Precompute static per-row eligibility arrays for a FIXED layout.
+
+    `cells`: one row per (cell, gateway) in the search's EXACT row order, rows CONTIGUOUS
+    per cell, with columns at least [cell, gateway, currency, bank] (+ optional rpgt / bin /
+    country, used only for ban matching). The cell segments this derives must equal the
+    (rpgt, currency, bank) groups `apply_restrictions` renormalises within, so make `cell`
+    that composite key. Returns a dict consumed by `apply_elig_pop`."""
+    df = cells.reset_index(drop=True)
+    n = len(df)
+    _gw = df["gateway"].astype(str).str.strip().str.lower().to_numpy()
+    _vm = pd.Series(_gw).map(fid2vamp).fillna(pd.Series(_gw)).to_numpy()
+    _cell = df["cell"].astype(str).to_numpy()
+    # contiguous cell segments (bit-for-bit the reduceat layout the caller's decode uses)
+    starts = [0] + [i for i in range(1, n) if _cell[i] != _cell[i - 1]]
+    cell_starts = np.asarray(starts, dtype=np.intp)
+    cell_counts = np.diff(np.append(cell_starts, n)).astype(np.intp)
+
+    prof_cols = [c for c in ("rpgt", "currency", "bank", "bin", "country") if c in df.columns]
+    if rules:
+        if prof_cols:
+            _p = df[prof_cols].astype(str)
+            profiles = [{c: _p.iat[i, j] for j, c in enumerate(prof_cols)} for i in range(n)]
+        else:
+            profiles = [{}] * n
+        ban = np.fromiter((_row_banned(_gw[i], _vm[i], profiles[i], rules) for i in range(n)),
+                          dtype=bool, count=n)
+    else:
+        ban = np.zeros(n, dtype=bool)
+
+    _cur = (df["currency"].astype(str).str.strip().str.lower().to_numpy()
+            if "currency" in df.columns else np.array([""] * n))
+    _bnk = (df["bank"].astype(str).str.strip().str.lower().to_numpy()
+            if "bank" in df.columns else np.array([""] * n))
+
+    def _incap_mask(incapable):
+        if not incapable:
+            return np.zeros(n, dtype=bool)
+        _inc = frozenset(incapable)
+        return np.fromiter(((_gw[i] in _inc) or (_vm[i] in _inc) for i in range(n)),
+                           dtype=bool, count=n)
+
+    def _wf(frac_map, default):
+        fm = frac_map or {}
+        wf = np.fromiter((float(fm.get((_cur[i], _bnk[i]), default)) for i in range(n)),
+                         dtype=float, count=n)
+        wf = np.where(np.isnan(wf), 0.0, np.clip(wf, 0.0, 1.0))
+        return wf
+
+    return {
+        "cell_starts": cell_starts, "cell_counts": cell_counts,
+        "ban": ban, "has_ban": bool(rules) and bool(ban.any()),
+        "w_incap": _incap_mask(wallet_incapable), "w_wf": _wf(wallet_frac, wallet_default),
+        "has_w": bool(wallet_incapable),
+        "u_incap": _incap_mask(usa_only), "u_wf": _wf(nonusa_frac, nonusa_default),
+        "has_u": bool(usa_only),
+    }
+
+
+def _renorm_pop(X: np.ndarray, cs: np.ndarray, cc: np.ndarray) -> np.ndarray:
+    """Per-cell renormalise to sum 1, leaving all-zero cells (matches `_renorm`)."""
+    s = np.repeat(np.add.reduceat(X, cs, axis=1), cc, axis=1)
+    return np.where(s > 0, X / np.where(s > 0, s, 1.0), X)
+
+
+def _blend_pop(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
+               cs: np.ndarray, cc: np.ndarray) -> np.ndarray:
+    """Vectorised twin of `_capability_blend` + its trailing `_renorm`, over a population.
+    An incapable gateway keeps (1-wf) of its share; the wf portion redistributes to the
+    capable gateways in the cell (renormalised among themselves). Cells with zero total,
+    or with no capable gateway, are left unchanged — exactly as the scalar version."""
+    base = X
+    base_sum = np.repeat(np.add.reduceat(base, cs, axis=1), cc, axis=1)
+    capX = base * (~incap)[None, :]
+    s_cap = np.repeat(np.add.reduceat(capX, cs, axis=1), cc, axis=1)
+    cshare = np.where(s_cap > 0, capX / np.where(s_cap > 0, s_cap, 1.0), base)
+    wfb = wf[None, :]
+    blended = wfb * cshare + (1.0 - wfb) * base
+    out = np.where(base_sum > 0, blended, base)      # skip zero-total cells (the `continue`)
+    return _renorm_pop(out, cs, cc)
+
+
+def apply_elig_pop(X: np.ndarray, op: dict) -> np.ndarray:
+    """Apply the prebuilt eligibility operator to shares X ((N,) or (P, N)). Reproduces
+    `apply_restrictions` (bans -> 0 + renorm; wallet blend + renorm; USA blend + renorm),
+    in the SAME order, as a pure-numpy population transform. Returns the same shape as X."""
+    Xa = np.asarray(X, dtype=float)
+    single = Xa.ndim == 1
+    if single:
+        Xa = Xa[None, :]
+    cs, cc = op["cell_starts"], op["cell_counts"]
+    if op.get("has_ban"):
+        Xa = Xa * (~op["ban"])[None, :]
+        Xa = _renorm_pop(Xa, cs, cc)
+    if op.get("has_w"):
+        Xa = _blend_pop(Xa, op["w_incap"], op["w_wf"], cs, cc)
+    if op.get("has_u"):
+        Xa = _blend_pop(Xa, op["u_incap"], op["u_wf"], cs, cc)
+    return Xa[0] if single else Xa

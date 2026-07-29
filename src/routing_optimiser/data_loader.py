@@ -13,11 +13,14 @@ The output is a list of CellProblem objects, one per RPGT x Currency x Bank.
 """
 from __future__ import annotations
 
+import logging
 import os
 import warnings
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 from .engines import CellProblem
 from .success_rates import gateway_success_rates, load_success_data
@@ -176,11 +179,22 @@ def build_cell_problems(
     # forecast/success-rate keys probably don't line up (e.g. BIN vs bankName) and every
     # rate is really the pooled prior — a real, otherwise-invisible data bug.
     if _n_gw and _n_pool / _n_gw > 0.5:
-        warnings.warn(
-            f"build_cell_problems: {_n_pool}/{_n_gw} gateways ({100 * _n_pool / _n_gw:.0f}%) had "
-            f"no per-cell success data and fell back to the pooled prior — check the "
-            f"rpgt/currency/bank/gateway join keys (possible BIN-vs-bankName mismatch).",
-            stacklevel=2)
+        _matched = _n_gw - _n_pool
+        _pct = 100 * _n_pool / _n_gw
+        if _matched == 0:
+            # NOTHING joined → the two sides key on genuinely different values: a real bug.
+            warnings.warn(
+                f"build_cell_problems: 0/{_n_gw} gateways matched a per-cell success rate — the "
+                f"forecast and success-rate join keys don't line up AT ALL (likely a BIN-vs-bankName "
+                f"mismatch on 'bank'); every rate is the pooled prior.", stacklevel=2)
+        else:
+            # Keys ALIGN (some matched) but per-cell data is sparse — EXPECTED on a granular
+            # BIN-level forecast, where most BIN×gateway combos have no direct attempts and
+            # correctly inherit the pooled prior. Informational, not a key mismatch.
+            logger.info(
+                f"   build_cell_problems: {_n_pool}/{_n_gw} ({_pct:.0f}%) gateway-cells on the pooled "
+                f"prior (sparse per-cell attempts); {_matched} matched, so the join keys ARE aligned — "
+                f"expected at BIN grain, not a mismatch.")
     return problems
 
 

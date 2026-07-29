@@ -51,3 +51,7 @@ credentials*.json
 
 # ─────────────────────────── Logs ─────────────────────────────
 *.log
+
+# Numba persistent compile cache (survives __pycache__ clears)
+_numba_cache/
+**/_numba_cache/

@@ -21,7 +21,7 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict
 
-__build__ = "2026-07-15-connector-pool-configs-from-split-templates"
+__build__ = "2026-07-28-count-only-pool-count-fastpath"
 
 # --- Brand-specific constants (verbatim from the script) --------------------
 BRANDS = {
@@ -242,8 +242,13 @@ def normalize_weights(connectors, expected_total):
     return weighted
 
 
-def process_compressed_rows(cfg, rows, scheme_filter):
-    """BIN-specific pools (bin != 'Other'). Returns {name: pool}."""
+def process_compressed_rows(cfg, rows, scheme_filter, count_only=False):
+    """BIN-specific pools (bin != 'Other'). Returns {name: pool}.
+
+    count_only=True: the pool-budget SEARCH only needs len(pools), and the unique `name`
+    is fully determined before the pool payload is built — so we skip `normalize_weights`
+    + `make_pool` (the heavy part) and store {name: None}. len() and the exact key set are
+    identical to the full build, so the count the search reads is unchanged."""
     out = {}
     if not rows:
         return out
@@ -287,10 +292,6 @@ def process_compressed_rows(cfg, rows, scheme_filter):
                 orig_country = "USA" if country_label == "All" and "USA" in prov_to_countries[p_set[0]] else country_label
                 if orig_country == "All":
                     orig_country = None
-                raw = groups[(p_set[0], currency, orig_country, sig)]["raw"]
-                weighted = normalize_weights(raw, 1000)
-                is_apgp = all(p in ("APPLEPAY", "GOOGLEPAY") for p in p_set)
-                priority = get_priority(term, is_apgp, True, cfg.get("extra_priority", 200000))
                 if set(p_set) == {"APPLEPAY", "GOOGLEPAY"}:
                     tag = "-apgp"
                 elif set(p_set) == {"APPLEPAY", "GOOGLEPAY", "non_gp_ap"}:
@@ -302,13 +303,23 @@ def process_compressed_rows(cfg, rows, scheme_filter):
                 tag_n[f"{tag}{country_tag}"] += 1
                 n = tag_n[f"{tag}{country_tag}"]
                 name = f"{file_prefix}-{term}-{cfg['date']}-{scheme_filter}{tag}{country_tag}-bins-{n}"
+                if count_only:                       # search needs only len(pools) → skip payload
+                    out[name] = None
+                    continue
+                raw = groups[(p_set[0], currency, orig_country, sig)]["raw"]
+                weighted = normalize_weights(raw, 1000)
+                is_apgp = all(p in ("APPLEPAY", "GOOGLEPAY") for p in p_set)
+                priority = get_priority(term, is_apgp, True, cfg.get("extra_priority", 200000))
                 out[name] = make_pool(cfg, name, priority, {currency}, list(bins_tuple), p_set,
                                       scheme_filter, type_selectors, weighted, country_label)
     return out
 
 
-def process_backup_rows(cfg, rows, scheme_filter):
-    """Catch-all pools (bin == 'Other'). Returns {name: pool}."""
+def process_backup_rows(cfg, rows, scheme_filter, count_only=False):
+    """Catch-all pools (bin == 'Other'). Returns {name: pool}.
+
+    count_only=True: skip the payload build (see process_compressed_rows) and store
+    {name: None}; the distinct `name` set — and therefore len(pools) — is identical."""
     out = {}
     if not rows:
         return out
@@ -350,11 +361,6 @@ def process_backup_rows(cfg, rows, scheme_filter):
                 orig_country = "USA" if country_label == "All" and "USA" in prov_to_countries[p_set[0]] else country_label
                 if orig_country == "All":
                     orig_country = None
-                data = by_pc[(p_set[0], orig_country)]
-                raw, currencies = data["raw"], data["currencies"]
-                weighted = normalize_weights(raw, len(currencies) * 1000)
-                is_apgp = all(p in ("APPLEPAY", "GOOGLEPAY") for p in p_set)
-                priority = get_priority(term, is_apgp, False, cfg.get("extra_priority", 200000))
                 if set(p_set) == {"APPLEPAY", "GOOGLEPAY"}:
                     tag = "-apgp"
                 elif set(p_set) == {"APPLEPAY", "GOOGLEPAY", "non_gp_ap"}:
@@ -364,6 +370,14 @@ def process_backup_rows(cfg, rows, scheme_filter):
                 country_tag = "-us" if country_label == "USA" else ("-nonus" if country_label == "Non-USA" else "")
                 file_prefix = f"rr-{cfg['prefix']}" if term.endswith("-ren") else cfg["prefix"]
                 name = f"{file_prefix}-{term}-{cfg['date']}-{scheme_filter}{tag}{country_tag}"
+                if count_only:                       # search needs only len(pools) → skip payload
+                    out[name] = None
+                    continue
+                data = by_pc[(p_set[0], orig_country)]
+                raw, currencies = data["raw"], data["currencies"]
+                weighted = normalize_weights(raw, len(currencies) * 1000)
+                is_apgp = all(p in ("APPLEPAY", "GOOGLEPAY") for p in p_set)
+                priority = get_priority(term, is_apgp, False, cfg.get("extra_priority", 200000))
                 out[name] = make_pool(cfg, name, priority, currencies, None, p_set,
                                       scheme_filter, type_selectors, weighted, country_label)
     return out
@@ -393,7 +407,7 @@ def emit_pool_generic(cfg, pools):
 
 
 def generate_configs(exports, brand_key, date, scheme="vi", mode="sales",
-                     extra_priority_amount=200000, emit_generic=False):
+                     extra_priority_amount=200000, emit_generic=False, count_only=False):
     """Generate ConnectorPool configs from the export templates.
 
     exports: dict{(brand, rpgt): DataFrame} as returned by build_split_exports.
@@ -421,14 +435,16 @@ def generate_configs(exports, brand_key, date, scheme="vi", mode="sales",
             skipped.append(rows[0]["rpgt"])
             continue
         n_before = len(pools)
-        pools.update(process_compressed_rows(cfg, rows, scheme))
+        pools.update(process_compressed_rows(cfg, rows, scheme, count_only=count_only))
         if mode == "full":
-            pools.update(process_backup_rows(cfg, rows, scheme))
+            pools.update(process_backup_rows(cfg, rows, scheme, count_only=count_only))
         per_rpgt[str(rpgt_lbl)] = per_rpgt.get(str(rpgt_lbl), 0) + (len(pools) - n_before)
 
     generic = 0
     if emit_generic and mode == "full":
-        pools["pool-generic"] = emit_pool_generic(cfg, pools)
+        # count_only can't inspect real pool payloads for the generic connector union, but it
+        # ALWAYS adds exactly one pool — so the count is +1 either way.
+        pools["pool-generic"] = None if count_only else emit_pool_generic(cfg, pools)
         generic = 1
 
     counts = {

@@ -65,7 +65,7 @@ def _to_prepost(df: pd.DataFrame) -> pd.DataFrame:
     return vp
 
 
-def _render_prepost_table(vp: pd.DataFrame, fit_content: bool = False) -> None:
+def _render_prepost_table(vp: pd.DataFrame, fit_content: bool = False, bold: bool = True) -> None:
     """Same red-header / month-spacer / TOTAL-row table tab 3 uses.
 
     fit_content=True sizes the table to its content (width:auto) instead of stretching
@@ -107,7 +107,7 @@ def _render_prepost_table(vp: pd.DataFrame, fit_content: bool = False) -> None:
     for _, r in vp_view.iterrows():
         is_total = str(r["vampMid"]) == "TOTAL"
         tb = "border-top:2px solid var(--tav-ink);" if is_total else "border-bottom:1px solid var(--tav-line);"
-        wt = "800" if is_total else "600"
+        wt = ("800" if is_total else "600") if bold else ("600" if is_total else "400")
         # Conditional formatting (matches tab 3): a VAMP cell (and its paired VI Txn) is
         # RED when its VAMP rate > 1.5% and VAMP > 1500, AMBER when rate > 1.2% and VAMP > 1200.
         _bgmap = {}

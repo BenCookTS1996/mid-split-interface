@@ -15,11 +15,11 @@ import pandas as pd
 from .constraints import OptimiserSettings
 from .engines import CellProblem, get_engine
 
-__build__ = "2026-07-21-enforce-recip-order-precompute"
+__build__ = "2026-07-29-vamp-lp-singlegw-fixed-cell-revival"
 
 
 def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: float = 1.0,
-                 agg_cap: float = None):
+                 agg_cap: float = None, _reduce: bool = True):
     """Joint solve for the per-vampMid VAMP cap: the split CLOSEST to the reference
     (minimum total share movement) whose every vampMid AGGREGATE VAMP rate is <= cap,
     subject to per-cell shares summing to 1 and the exploration-floor / max-share
@@ -32,7 +32,17 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
     `agg_cap` (optional): also constrain the WHOLE-book aggregate VAMP rate to <= agg_cap.
     This is what the true-frontier sweep uses — starting from the revenue reference and
     tightening agg_cap dial-by-dial gives the min-movement (max-revenue) split at each
-    risk budget, i.e. a Pareto-optimal frontier point rather than a linear share blend."""
+    risk budget, i.e. a Pareto-optimal frontier point rather than a linear share blend.
+
+    BINDING-CELL REDUCTION (`_reduce`, speed #1, EXACT). With no aggregate budget the LP
+    SEPARATES by cell: the only cross-cell constraints are the per-MID rate rows, so a cell
+    is coupled to the solve ONLY if it contains a row of an over-cap MID. Every other cell's
+    minimum-movement optimum is exactly its own reference (already sums to 1 and within
+    [floor, max_share]), so we fix those cells to reference and build the LP over ONLY the
+    binding cells — a much smaller matrix, identical solution. A cell whose reference is NOT
+    bound-feasible is kept in the LP too, so nothing that could move is dropped. `_reduce=False`
+    forces the full all-cells LP (used by the self-test to prove the reduction is identical).
+    The reduction is skipped when `agg_cap` is set (that constraint couples every cell)."""
     try:
         from scipy.optimize import linprog
         import scipy.sparse as sp
@@ -45,39 +55,88 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
     n = len(d)
     if n == 0:
         return None
-    cell_rows = _group_indices(d["cell"].astype(str).to_numpy())
+    cell_lbl = d["cell"].astype(str).to_numpy()
+    cell_rows = _group_indices(cell_lbl)
     mid_rows = _group_indices(d["vampMid"].astype(str).to_numpy())
     # Only MIDs that CAN breach (some cell rate above the cap) need a constraint.
     over_mids = [m for m, r in mid_rows.items() if float(rate[r].max()) > cap + 1e-12]
     if not over_mids and agg_cap is None:
         return None   # reference already cap-compliant and no aggregate budget — greedy no-ops
+
+    # SINGLE-GATEWAY CELLS ARE STRUCTURALLY FIXED (EXACT, speed #2). A one-gateway cell has its
+    # share pinned at the reference (1.0 — it's the only option), so it can NEVER redistribute.
+    # It must not enter the LP: with max_share < 1 its forced share = 1.0 violates the
+    # [floor, max_share] bound, making the whole LP infeasible → the solve returns None and the
+    # caller silently drops to the slower greedy shave on EVERY run with max_share < 1. We fix
+    # these rows at their reference and fold their CONSTANT vol·(rate−cap)·ref contribution into
+    # the per-MID (and aggregate) right-hand sides, so the LP still accounts for their true,
+    # unmovable risk. With no single-gateway cells `fixed` is all-False and every expression below
+    # collapses to the original (RHS constants = 0), so the build is byte-identical in that case.
+    _cell_n = {c: len(idx) for c, idx in cell_rows.items()}
+    fixed = np.fromiter((_cell_n[cell_lbl[i]] < 2 for i in range(n)), dtype=bool, count=n)
+
+    # Which rows actually enter the LP. Full MOVABLE set unless the reduction applies.
+    if agg_cap is None and _reduce:
+        _keep_cells = set()
+        for _m in over_mids:                 # every cell holding a MOVABLE over-cap MID row is binding
+            for _i in mid_rows[_m]:
+                if not fixed[_i]:
+                    _keep_cells.add(cell_lbl[_i])
+        for _c, _idx in cell_rows.items():    # + any MULTI-gw cell whose reference isn't already feasible
+            if _c in _keep_cells or fixed[_idx[0]]:
+                continue
+            _rf = ref[_idx]
+            if (np.any(_rf < floor - 1e-9) or np.any(_rf > max_share + 1e-9)
+                    or abs(float(_rf.sum()) - 1.0) > 1e-9):
+                _keep_cells.add(_c)
+        keep = np.fromiter(((not fixed[i]) and (cell_lbl[i] in _keep_cells)
+                            for i in range(n)), dtype=bool, count=n)
+    else:
+        keep = ~fixed                        # agg_cap / full path: every MOVABLE row enters
+    if not keep.any():
+        return None
+    kidx = np.nonzero(keep)[0]
+    nk = int(len(kidx))
+    _loc = {int(gi): li for li, gi in enumerate(kidx)}   # global row -> local LP column
+
     rows, cols, data, b_ub = [], [], [], []
     _r = 0
-    for i in range(n):                       # L1:  x_i - u_i <= ref_i
-        rows += [_r, _r]; cols += [i, n + i]; data += [1.0, -1.0]; b_ub.append(float(ref[i])); _r += 1
-    for i in range(n):                       # L1: -x_i - u_i <= -ref_i
-        rows += [_r, _r]; cols += [i, n + i]; data += [-1.0, -1.0]; b_ub.append(-float(ref[i])); _r += 1
-    for m in over_mids:                      # Σ vol·(rate-cap)·x <= 0  (aggregate rate <= cap)
+    for li in range(nk):                     # L1:  x_i - u_i <= ref_i
+        gi = int(kidx[li])
+        rows += [_r, _r]; cols += [li, nk + li]; data += [1.0, -1.0]; b_ub.append(float(ref[gi])); _r += 1
+    for li in range(nk):                     # L1: -x_i - u_i <= -ref_i
+        gi = int(kidx[li])
+        rows += [_r, _r]; cols += [li, nk + li]; data += [-1.0, -1.0]; b_ub.append(-float(ref[gi])); _r += 1
+    for m in over_mids:                      # Σ_kept vol·(rate-cap)·x ≤ -Σ_fixed vol·(rate-cap)·ref
+        _const = 0.0
         for i in mid_rows[m]:
             _c = float(vol[i]) * (float(rate[i]) - cap)
-            if _c != 0.0:
-                rows.append(_r); cols.append(int(i)); data.append(_c)
-        b_ub.append(0.0); _r += 1
+            if fixed[i]:
+                _const += _c * float(ref[i])              # unmovable single-gw row → constant term
+            elif _c != 0.0:
+                rows.append(_r); cols.append(_loc[int(i)]); data.append(_c)
+        b_ub.append(-_const); _r += 1
     if agg_cap is not None:                  # whole-book aggregate rate <= agg_cap (frontier budget)
-        for i in range(n):
-            _c = float(vol[i]) * (float(rate[i]) - float(agg_cap))
+        for li in range(nk):
+            gi = int(kidx[li])
+            _c = float(vol[gi]) * (float(rate[gi]) - float(agg_cap))
             if _c != 0.0:
-                rows.append(_r); cols.append(int(i)); data.append(_c)
-        b_ub.append(0.0); _r += 1
-    A_ub = sp.coo_matrix((data, (rows, cols)), shape=(_r, 2 * n)).tocsr()
+                rows.append(_r); cols.append(li); data.append(_c)
+        _fx = np.nonzero(fixed)[0]                         # + fixed rows' constant aggregate contribution
+        _const = float((vol[_fx] * (rate[_fx] - float(agg_cap)) * ref[_fx]).sum()) if _fx.size else 0.0
+        b_ub.append(-_const); _r += 1
+    A_ub = sp.coo_matrix((data, (rows, cols)), shape=(_r, 2 * nk)).tocsr()
     erows, ecols, edata, b_eq, _e = [], [], [], [], 0
-    for _c, idx in cell_rows.items():        # each cell's shares sum to 1
-        for i in idx:
-            erows.append(_e); ecols.append(int(i)); edata.append(1.0)
+    for _c, idx in cell_rows.items():        # each KEPT cell's shares sum to 1 (dropped cells = ref)
+        _kept = [int(i) for i in idx if keep[i]]
+        if not _kept:
+            continue
+        for i in _kept:
+            erows.append(_e); ecols.append(_loc[i]); edata.append(1.0)
         b_eq.append(1.0); _e += 1
-    A_eq = sp.coo_matrix((edata, (erows, ecols)), shape=(_e, 2 * n)).tocsr()
-    c_obj = np.concatenate([np.zeros(n), np.ones(n)])
-    bounds = [(float(floor), float(max_share))] * n + [(0.0, None)] * n
+    A_eq = sp.coo_matrix((edata, (erows, ecols)), shape=(_e, 2 * nk)).tocsr()
+    c_obj = np.concatenate([np.zeros(nk), np.ones(nk)])
+    bounds = [(float(floor), float(max_share))] * nk + [(0.0, None)] * nk
     try:
         res = linprog(c_obj, A_ub=A_ub, b_ub=np.asarray(b_ub, float),
                       A_eq=A_eq, b_eq=np.asarray(b_eq, float), bounds=bounds, method="highs")
@@ -85,7 +144,8 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
         return None
     if not getattr(res, "success", False):
         return None
-    x = np.clip(np.asarray(res.x[:n], dtype=float), 0.0, max_share)
+    x = ref.copy()                           # dropped (non-binding, feasible) cells stay at reference
+    x[kidx] = np.clip(np.asarray(res.x[:nk], dtype=float), 0.0, max_share)
     for _c, idx in cell_rows.items():        # exact renormalise (guard tiny LP residuals)
         s = float(x[idx].sum())
         if s > 1e-9:

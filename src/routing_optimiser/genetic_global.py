@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__build__ = "2026-07-25e-riskmin-diverse-seeds-finecells-memetic-adaptiveeps"
+__build__ = "2026-07-29-riskmin-diverse-seeds+optional-eligibility-in-score"
 
 
 def _mid_sums(vol, mid_rows, M, S=None):
@@ -243,6 +243,10 @@ def _mid_over(shares, ctx, include_floor_shortfall=True):
     volume (VAMP-rate cap, per-MID volume cap, band CEILING). It omits band-FLOOR shortfalls —
     where a MID's projected metric is too LOW and needs MORE volume — because the Lamarckian
     repair raises θr (sheds volume), which would push a floor-short MID further from feasibility."""
+    _eop = ctx.get("elig_op")
+    if _eop is not None:                                     # steer on the ACTUALLY-ROUTABLE shares
+        from .eligibility import apply_elig_pop              # (consistent with the _obj_viol scorer)
+        shares = apply_elig_pop(shares, _eop)
     mid_rows, M = ctx["mid_rows"], int(ctx["n_mid"])
     P = shares.shape[0]
     over = np.zeros((P, M), dtype=float)
@@ -425,7 +429,11 @@ def _risk_z_per_cell(risk, cell_starts, cell_counts, N):
     sd = np.sqrt(np.maximum(var, 0.0))
     mean_row = np.repeat(smean, cell_counts)
     sd_row = np.repeat(sd, cell_counts)
-    z = np.where(sd_row > 1e-12, (risk - mean_row) / sd_row, 0.0)
+    # Divide by a SAFE denominator (1.0 where sd≈0) so the masked-out branch of np.where doesn't
+    # trigger a spurious "invalid value in divide" RuntimeWarning — single-gateway / zero-variance
+    # cells have no meaningful z, and are zeroed anyway.
+    _sd_safe = np.where(sd_row > 1e-12, sd_row, 1.0)
+    z = np.where(sd_row > 1e-12, (risk - mean_row) / _sd_safe, 0.0)
     return z, sd            # sd (per-cell) also used to pick the fine-tilt cells
 
 
@@ -486,6 +494,10 @@ def _obj_viol(shares, ctx):
         cap, per-MID volume caps and projected bands — CONTINUOUS and exactly 0 when
         compliant (the smooth 'wall', improvement #4). No fixed step, no λ.
     Mirrors the risk maths in `_fitness` so the two engines agree on what a breach is."""
+    _eop = ctx.get("elig_op")
+    if _eop is not None:                                     # score the ACTUALLY-ROUTABLE shares —
+        from .eligibility import apply_elig_pop              # bans + wallet/USA capability folded in
+        shares = apply_elig_pop(shares, _eop)                # so the search optimises what will route
     cv, risk, rc = ctx["cell_vol"], ctx["risk"], ctx["rev_coef"]
     mid_rows, M = ctx["mid_rows"], int(ctx["n_mid"])
     _S = ctx.get("_mid_S")                                   # precomputed incidence (fast path)
@@ -691,7 +703,7 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
                    adaptive_lambda=True, breach_lambda_boost=4.0,
                    archive_k=5, archive_min_dist=0.5, stop_check=None,
                    n_restarts=2, polish=True, ref_gamma=None, n_fine=0, progress_cb=None,
-                   numba=False):
+                   numba=False, restart_mode="lean", numba_trust=False):
     """Active-CMA-ES cross-cell per-vampMid tilt search — the live engine (see the block
     comment above for the full upgrade list). Genome = [θr | θq | g] (3·n_mid dims).
     Ranking is ε-relaxed feasibility-first (compliant always beats non-compliant at the end),
@@ -807,11 +819,21 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
 
     # ---- OPT-IN Numba fast path ("GA - Numba" engine only) --------------------------------
     # numba=False (the default, i.e. the production Genetic engine) leaves EVERYTHING above
-    # untouched. When numba=True we build a fused float64 kernel, VERIFY it produces the same
-    # (objective, violation) as the NumPy decode+objective on a deterministic genome sample, and
-    # only then swap it in for the hot per-generation eval. Any failure -> keep NumPy. The verify
-    # result is returned in info['numba'] so the caller can log it for cross-validation.
+    # untouched. When numba=True we build a fused float64 kernel and swap it in for the hot
+    # per-generation eval. Any failure -> keep NumPy. The verify result is returned in
+    # info['numba'] so the caller can log it for cross-validation.
+    #   numba_trust=False: VERIFY the kernel here (NumPy-vs-Numba on a genome sample) before use.
+    #   numba_trust=True : the main-process pre-compile ALREADY verified this exact kernel/signature,
+    #                      so skip the per-worker re-check (it was 16× redundant — one NumPy eval and
+    #                      one comparison per worker). Build the kernel and use it directly.
     ga_numba_info = {"requested": bool(numba), "used": False, "reason": "not requested"}
+    # Eligibility-in-scoring (ctx['elig_op']) lives only in the NumPy fitness (_obj_viol/_mid_over);
+    # the fused numba kernel has no eligibility, so its NumPy-vs-kernel verification would mismatch
+    # and workers would optimise a DIFFERENT (unrestricted) fitness than the main process scores.
+    # Force the NumPy path so the whole search is consistent when eligibility scoring is active.
+    if numba and ctx.get("elig_op") is not None:
+        ga_numba_info["reason"] = "disabled: eligibility-in-scoring active (numba kernel has no eligibility)"
+        numba = False
     if numba:
         ga_numba_info["reason"] = ""
         try:
@@ -822,21 +844,37 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
                 _nb_eval_actual = _nbk.make_numba_eval(M, ref, zr, zq, mid_id, cs, cc, elig,
                                                        _cap, _floor, _fine_idx, _zr_cell, _K,
                                                        cv, risk, rc, ctx)
-                _np_eval_actual = lambda G: _obj_viol(_decode(G), ctx)   # noqa: E731
-                # Deterministic verification sample: zero (θ=0 base), warm-start if any, + random.
-                _vrng = np.random.default_rng(int(seed) ^ 0x5A17)
-                _vs = [np.zeros(D)]
-                if warm_start is not None:
+                ga_numba_info["build"] = getattr(_nbk, "__build__", "")
+                if numba_trust:
+                    _accept = True                       # already verified by the main pre-compile
+                    ga_numba_info["trusted"] = True
+                    ga_numba_info["reason"] = "trusted (verified by main-process pre-compile)"
+                    # Time ONE eval so the caller can tell whether this worker LOADED the cached
+                    # kernel (fast, ~<1s) or had to RE-COMPILE it (slow, tens of seconds = cache
+                    # miss in the worker) — the key clue for a slow multi-seed search.
                     try:
-                        _vs.append(_to_unit(np.asarray(warm_start, float)))
+                        import time as _nt
+                        _t0 = _nt.time()
+                        _nb_eval_actual(_to_actual(np.zeros((1, D))))
+                        ga_numba_info["first_eval_s"] = float(_nt.time() - _t0)
                     except Exception:  # noqa: BLE001
                         pass
-                _vs += list(_vrng.random((6, D)))
-                _sampleG = _to_actual(np.clip(np.asarray(_vs, float), 0.0, 1.0))
-                _vr = _nbk.verify(_np_eval_actual, _nb_eval_actual, _sampleG)
-                ga_numba_info.update(_vr)
-                ga_numba_info["build"] = getattr(_nbk, "__build__", "")
-                if _vr.get("ok"):
+                else:
+                    _np_eval_actual = lambda G: _obj_viol(_decode(G), ctx)   # noqa: E731
+                    # Deterministic verification sample: zero (θ=0 base), warm-start if any, + random.
+                    _vrng = np.random.default_rng(int(seed) ^ 0x5A17)
+                    _vs = [np.zeros(D)]
+                    if warm_start is not None:
+                        try:
+                            _vs.append(_to_unit(np.asarray(warm_start, float)))
+                        except Exception:  # noqa: BLE001
+                            pass
+                    _vs += list(_vrng.random((6, D)))
+                    _sampleG = _to_actual(np.clip(np.asarray(_vs, float), 0.0, 1.0))
+                    _vr = _nbk.verify(_np_eval_actual, _nb_eval_actual, _sampleG)
+                    ga_numba_info.update(_vr)
+                    _accept = bool(_vr.get("ok"))
+                if _accept:
                     def eval_ov(V):                          # noqa: F811 - numba override
                         return _nb_eval_actual(_to_actual(V))
 
@@ -1023,19 +1061,46 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
                 _pol = None
         return _pol if (_pol is not None and better(score_of(_pol), score_of(u0))) else u0
 
+    # RESTART MODE (#7). "ipop" (default): each restart beyond the diverse seeds reseeds from the
+    # incumbent and DOUBLES λ (capped at _LAM_CAP) — thorough on multimodal problems, but the λ
+    # growth makes the restart budget super-linear. "lean": keep λ CONSTANT (no doubling) and
+    # reseed each restart from the point FARTHEST in genome space from everything explored so far
+    # (coordinated coverage), so a restart still escapes the current basin and lands on fresh
+    # ground, at linear cost. Same benefit (don't get stuck / cover the space), far cheaper.
+    _lean = str(restart_mode).lower() == "lean"
+
+    def _farthest_start(rng_seed, explored, n_try=24):
+        """A unit-box start point maximising the min distance to every already-explored genome
+        (the diverse seeds + finished restart winners) — farthest-point sampling, so each lean
+        restart deliberately probes the least-searched region instead of re-covering old ground."""
+        _rng = np.random.default_rng(int(rng_seed))
+        cand = _rng.random((int(n_try), D))
+        if not explored:
+            return cand[0]
+        P = np.asarray(explored, float)                      # (m, D)
+        d = np.min(np.linalg.norm(cand[:, None, :] - P[None, :, :], axis=2), axis=1)
+        return cand[int(np.argmax(d))]
+
     n_r = max(max(1, int(n_restarts)), len(_seeds))          # #3 a restart per diverse seed + IPOP
-    all_hist = []; restart_bests = []; best_fpop = (None, None)
+    all_hist = []; restart_bests = []; best_fpop = (None, None); restart_lams = []
     for r in range(n_r):
         if stop_check is not None and stop_check():
             break
         if r < len(_seeds):                                  # #1 seed each diverse start
             start = _seeds[r].copy(); s0 = 0.30; _lam_r = lam_cma
+        elif _lean:                                          # constant-λ + coordinated coverage
+            _lam_r = lam_cma                                 # NO doubling → linear restart cost
+            s0 = 0.45                                        # wide step to explore the fresh region
+            _explored = [np.asarray(u, float) for u in _seeds] + \
+                        [bx for (bx, _sv) in restart_bests]
+            start = _farthest_start(int(seed) + 1000 + r, _explored)
         else:                                                # #3/#7 IPOP: reseed from incumbent, grow λ
             _e = r - len(_seeds) + 1
             jit = np.random.default_rng(int(seed) + 1000 + r).normal(0.0, 0.15, size=D)
             start = np.clip(best_u + jit, 0.0, 1.0)
             s0 = min(0.55, 0.30 * (1.4 ** _e))
             _lam_r = min(int(lam_cma * (2 ** _e)), _LAM_CAP)
+        restart_lams.append(int(_lam_r))
         bx, bk, bov, tr, fpop = _cmaes(eval_ov, start, s0, np.zeros(D), np.ones(D),
                                        popsize=_lam_r, max_iter=int(generations),
                                        seed=int(seed) + r, stop_check=stop_check,
@@ -1064,11 +1129,10 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     # so best-so-far rises); the last two feed the σ and violation→feasibility charts.
     history = []; gi = 0; run_best = -np.inf; sigma_final = 0.0; cand_run = 0
     for _ri, tr in enumerate(all_hist):
-        # candidates evaluated per generation of THIS restart = that restart's λ (IPOP grows it:
-        # base λ for the diverse-seed restarts, then doubling capped at _LAM_CAP). Lets the UI plot
+        # candidates evaluated per generation of THIS restart = the ACTUAL λ used for it (recorded
+        # in restart_lams: constant in lean mode, IPOP-doubled in ipop mode). Lets the UI plot
         # score vs. CANDIDATES-evaluated (true x-axis), not just generation index.
-        _lam_r = (lam_cma if _ri < len(_seeds)
-                  else min(int(lam_cma * (2 ** (_ri - len(_seeds) + 1))), _LAM_CAP))
+        _lam_r = restart_lams[_ri] if _ri < len(restart_lams) else lam_cma
         for gk, mk, sg, vv, ee in tr:
             gi += 1
             cand_run += int(_lam_r)
@@ -1106,6 +1170,8 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
         "pop_obj": best_fpop[0],      # winning restart's final-population objectives (revenue-ish)
         "pop_viol": best_fpop[1],     # winning restart's final-population violations
         "engine": "cmaes",            # marker so stale bytecode / old GA is obvious in logs
+        "restart_mode": ("lean" if _lean else "ipop"),
+        "restart_lams": list(restart_lams),   # actual λ per restart (constant in lean, doubled in ipop)
         "numba": ga_numba_info,       # verify-or-fallback result (used? diffs? timings?) for logs
     }
     return best, info

@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-__build__ = "2026-07-22-enforced-split-frame-for-eval"
+__build__ = "2026-07-28-count-only-pool-search"
 
 
 def build_kill_eff(vamp2fids, fid_eff):
@@ -1607,7 +1607,8 @@ def count_pools_for_split(split_long, brand_name, go_live, *, wallet_incapable=f
         usa_only=usa_only, country_pres=country_pres, max_share=max_share)
     _pools, _counts = generate_configs(
         _exp, brand_key, date_tag, scheme=scheme, mode=mode,
-        extra_priority_amount=int(extra_priority_amount), emit_generic=bool(emit_generic))
+        extra_priority_amount=int(extra_priority_amount), emit_generic=bool(emit_generic),
+        count_only=True)   # search reads only len(_pools) → skip the make_pool payload build
     return len(_pools)
 
 

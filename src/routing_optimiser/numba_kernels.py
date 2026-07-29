@@ -28,11 +28,26 @@ Build marker is logged by the caller so stale bytecode is obvious.
 """
 from __future__ import annotations
 
+import os
 import time
 
 import numpy as np
 
-__build__ = "2026-07-28-ga-numba-fused-eval-verify-or-fallback"
+__build__ = "2026-07-28b-ga-numba-persistent-cache+precompile"
+
+# PERSISTENT compile cache — set BEFORE numba is imported (this module is the ONLY importer
+# of numba in the project, so setting it here wins). Numba's default cache lives inside a
+# __pycache__ folder next to the module, which the project's routine "clear __pycache__ before
+# every run" would delete — forcing a cold ~minutes-long recompile every single run. Pointing
+# the cache at a stable sibling folder (NOT named __pycache__) means it SURVIVES those clears,
+# so the kernel compiles once (per code/version change) and every later run loads it instantly.
+# setdefault so an explicit user NUMBA_CACHE_DIR still wins.
+_NB_CACHE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "_numba_cache"))
+try:
+    os.makedirs(_NB_CACHE_DIR, exist_ok=True)
+    os.environ.setdefault("NUMBA_CACHE_DIR", _NB_CACHE_DIR)
+except Exception:  # noqa: BLE001 - a read-only dir must never stop the engine loading
+    pass
 
 # --------------------------------------------------------------------------- numba guard
 try:                                            # Numba is optional; absent -> engine falls back.
