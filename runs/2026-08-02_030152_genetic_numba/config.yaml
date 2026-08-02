@@ -1,0 +1,25 @@
+engine: genetic_numba
+dials:
+- 0.0
+vamp_cap: 0.06
+max_pools: 500
+compress_method: ward
+compress_allocation: knapsack
+ga_search: breach_targeted+smart_init+adaptive_lambda+diversity_archive (always on)
+ga_risk_aversion: 0.0
+ga_breach_fixed: 250.0
+ga_band_mult: 195.2
+ga_generations: 400
+ga_pop_override: 120
+ga_perf:
+  secs: 8067.244306087494
+  budget: 48000
+  gen: 400
+  pop: 120
+  seeds: 8
+  restarts: 6
+  nvar: 1
+  n: 109316
+  compress_secs: 225.14160108566284
+  pool_target: 500
+total_secs: 8926.3

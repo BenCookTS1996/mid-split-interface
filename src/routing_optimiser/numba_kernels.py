@@ -33,7 +33,7 @@ import time
 
 import numpy as np
 
-__build__ = "2026-07-29-ga-numba-persistent-cache+precompile+fixed-quadratic-breach+eligibility-in-kernel+step-aware-verify"
+__build__ = "2026-07-31-ga-numba-persistent-cache+precompile+fixed-quadratic-breach+eligibility-in-kernel+step-aware-verify+vol-weighted-viol+penalty-shape+active-priority+breach-tol"
 
 # PERSISTENT compile cache — set BEFORE numba is imported (this module is the ONLY importer
 # of numba in the project, so setting it here wins). Numba's default cache lives inside a
@@ -41,8 +41,14 @@ __build__ = "2026-07-29-ga-numba-persistent-cache+precompile+fixed-quadratic-bre
 # every run" would delete — forcing a cold ~minutes-long recompile every single run. Pointing
 # the cache at a stable sibling folder (NOT named __pycache__) means it SURVIVES those clears,
 # so the kernel compiles once (per code/version change) and every later run loads it instantly.
-# setdefault so an explicit user NUMBA_CACHE_DIR still wins.
-_NB_CACHE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "_numba_cache"))
+# setdefault so an explicit user NUMBA_CACHE_DIR (e.g. set by app/streamlit_app.py) still wins.
+# CRITICAL: use the LOCAL OS temp dir, NOT a folder inside the project — the project can live
+# under a cloud-synced / FUSE mount (Downloads, iCloud/Dropbox/OneDrive), where Numba's file-lock
+# + mmap cache load HANGS the parallel workers (they launch, then wedge with no progress, and
+# `.fuse_hidden*` files accumulate). Temp is a real local disk, never synced; it survives the
+# routine "clear __pycache__" and only a reboot clears it (one ~90s cold recompile after).
+import tempfile as _tempfile
+_NB_CACHE_DIR = os.path.join(_tempfile.gettempdir(), "routing_optimiser_numba_cache")
 try:
     os.makedirs(_NB_CACHE_DIR, exist_ok=True)
     os.environ.setdefault("NUMBA_CACHE_DIR", _NB_CACHE_DIR)
@@ -80,10 +86,10 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                 cv, risk, rc,
                 has_vcap, vcap,
                 has_volcap, volcap,
-                n_bands, b_mi, b_bval, b_ceil, b_floor, b_has_ceil, b_has_floor,
-                has_base, base_vol,
+                n_bands, b_mi, b_bval, b_ceil, b_floor, b_has_ceil, b_has_floor, b_pmul,
+                has_base, base_vol, wm,
                 max_share, floor_val,
-                rmw, has_vfr, vfr, bfix, qwt,
+                rmw, has_vfr, vfr, bfix, qwt, pexp,
                 has_elig, ecs, ecc,
                 e_has_ban, e_ban,
                 e_has_w, e_w_incap, e_w_wf,
@@ -273,13 +279,13 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                 for m in range(M):
                     rate = midvr[m] / midv[m] if midv[m] > 1e-12 else 0.0
                     t = rate / denom - 1.0
-                    if t > 0.0:
-                        v += bfix + qwt * t * t
+                    if t > 1e-9:                         # TOLERANCE: within 1e-9 of the cap = compliant
+                        v += wm[m] * (bfix + (qwt * t * t if pexp == 0 else qwt * (np.exp(t if t < 50.0 else 50.0) - 1.0)))
             if has_volcap == 1:
                 for m in range(M):
                     t = midv[m] / volcap[m] - 1.0     # volcap has +inf sentinel for <=0 caps
-                    if t > 0.0:
-                        v += bfix + qwt * t * t
+                    if t > 1e-9:
+                        v += wm[m] * (bfix + (qwt * t * t if pexp == 0 else qwt * (np.exp(t if t < 50.0 else 50.0) - 1.0)))
             if n_bands > 0:
                 for b in range(n_bands):
                     m = b_mi[b]
@@ -288,32 +294,31 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                     else:
                         fmid = 1.0
                     proj = fmid * b_bval[b]
+                    pw = b_pmul[b]                       # PRIORITY weight (5000^(1-p)); low priority yields
                     if b_has_ceil[b] == 1:
                         cc_ = b_ceil[b] if b_ceil[b] > 1e-9 else 1e-9
                         t = proj / cc_ - 1.0
-                        if t > 0.0:
-                            v += bfix + qwt * t * t
+                        if t > 1e-9:
+                            v += wm[m] * pw * (bfix + (qwt * t * t if pexp == 0 else qwt * (np.exp(t if t < 50.0 else 50.0) - 1.0)))
                     if b_has_floor[b] == 1 and b_floor[b] > 0.0:
                         ff_ = b_floor[b] if b_floor[b] > 1e-9 else 1e-9
                         t = 1.0 - proj / ff_
-                        if t > 0.0:
-                            v += bfix + qwt * t * t
+                        if t > 1e-9:
+                            v += wm[m] * pw * (bfix + (qwt * t * t if pexp == 0 else qwt * (np.exp(t if t < 50.0 else 50.0) - 1.0)))
         # ---- structural safety nets (cap + floor), matching _obj_viol ----------------
         if max_share < 1.0:
             denom = max_share if max_share > 1e-9 else 1e-9
             for g in range(N):
-                t = X[g] - max_share
-                if t > 0.0:
-                    ov = t / denom
-                    v += bfix + qwt * ov * ov
+                ov = (X[g] - max_share) / denom
+                if ov > 1e-9:                            # TOLERANCE: at the cap (rounding dust) = compliant
+                    v += bfix + (qwt * ov * ov if pexp == 0 else qwt * (np.exp(ov if ov < 50.0 else 50.0) - 1.0))
         if floor_val > 0.0:
             denom = floor_val if floor_val > 1e-9 else 1e-9
             for g in range(N):
                 if elig[g] > 0.5 and nec_col[g] >= 2.0:
-                    t = fl_col[g] - X[g]
-                    if t > 0.0:
-                        ov = t / denom
-                        v += bfix + qwt * ov * ov
+                    ov = (fl_col[g] - X[g]) / denom
+                    if ov > 1e-9:
+                        v += bfix + (qwt * ov * ov if pexp == 0 else qwt * (np.exp(ov if ov < 50.0 else 50.0) - 1.0))
         # ---- risk-minimisation secondary objective ----------------------------------
         if rmw > 0.0:
             if has_vfr == 1:
@@ -398,16 +403,26 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
     b_floor = np.zeros(max(n_bands, 1), np.float64)
     b_has_ceil = np.zeros(max(n_bands, 1), np.intp)
     b_has_floor = np.zeros(max(n_bands, 1), np.intp)
+    # PRIORITY weight per band (tuple slot 5, default 1.0). Multiplies the whole band penalty so
+    # lower-priority (higher-number) constraints yield first — SAME semantics the NumPy _obj_viol
+    # now applies, so verify() stays in lockstep. 1.0 for every band ⇒ byte-identical to before.
+    b_pmul = np.ones(max(n_bands, 1), np.float64)
     for _i, _b in enumerate(_bands):
         b_mi[_i] = int(_b[0]); b_bval[_i] = float(_b[1])
         if _b[2] is not None:
             b_has_ceil[_i] = 1; b_ceil[_i] = float(_b[2])
         if _b[3] is not None:
             b_has_floor[_i] = 1; b_floor[_i] = float(_b[3])
+        if len(_b) > 5:
+            b_pmul[_i] = float(_b[5])
 
     _base = ctx.get("mid_base_vol")
     has_base = 1 if _base is not None else 0
     base_vol = np.asarray(_base, np.float64) if _base is not None else np.zeros(M, np.float64)
+    # Per-MID VIOLATION weight (volume-weighting, #4). SAME helper the NumPy _obj_viol uses, so
+    # the two hard-verified paths stay bit-identical. All-ones ⇒ un-weighted (back-compat).
+    from .genetic_global import _mid_viol_weights
+    wm = np.ascontiguousarray(_mid_viol_weights(ctx, M), dtype=np.float64)
 
     max_share = float(ctx.get("max_share", 1.0) or 1.0)
     floor_val = float(ctx.get("floor", 0.0) or 0.0)
@@ -418,6 +433,9 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
     # Breach penalty (must match genetic_global._obj_viol._pen): fixed hit + quadratic overage.
     bfix = float(ctx.get("breach_fixed", 0.0) or 0.0)
     qwt = float(ctx.get("breach_quad", 1.0) or 1.0)
+    # penalty shape: 0 = quadratic (qwt·over²), 1 = exponential (qwt·(exp(over)−1), over clipped 50).
+    # MUST match genetic_global._obj_viol._pen — verify() cross-checks and falls back on mismatch.
+    pexp = 1 if str(ctx.get("breach_shape", "quadratic")).lower() == "exponential" else 0
 
     # ---- eligibility operator (mirror eligibility.apply_elig_pop inside the kernel) -------
     # When ctx['elig_op'] is present the NumPy fitness scores the eligibility-adjusted split
@@ -453,10 +471,10 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
                            cv, risk, rc,
                            has_vcap, vcap,
                            has_volcap, volcap,
-                           n_bands, b_mi, b_bval, b_ceil, b_floor, b_has_ceil, b_has_floor,
-                           has_base, base_vol,
+                           n_bands, b_mi, b_bval, b_ceil, b_floor, b_has_ceil, b_has_floor, b_pmul,
+                           has_base, base_vol, wm,
                            max_share, floor_val,
-                           rmw, has_vfr, vfr, bfix, qwt,
+                           rmw, has_vfr, vfr, bfix, qwt, pexp,
                            has_elig, ecs, ecc,
                            e_has_ban, e_ban,
                            e_has_w, e_w_incap, e_w_wf,

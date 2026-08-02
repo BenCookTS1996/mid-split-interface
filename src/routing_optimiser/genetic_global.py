@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__build__ = "2026-07-29-riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel"
+__build__ = "2026-07-31-riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel+vol-weighted-viol+penalty-shape+repair-input+sigma-controls+fitness-trace+active-priority+viol-breakdown+capcell-detail+breach-tol+band-workings"
 
 
 def _mid_sums(vol, mid_rows, M, S=None):
@@ -486,6 +486,36 @@ def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, cell_starts, cell_counts, e
     return X
 
 
+def _mid_viol_weights(ctx, M):
+    """Per-MID VIOLATION weight (VOLUME-WEIGHTING of the feasibility violation).
+
+    weight[m] = MID baseline volume / mean(baseline volume over MIDs with volume > 0), so the
+    AVERAGE MID keeps weight ≈ 1 (the overall violation scale — and hence the feasibility
+    tolerance and the breach_quad meaning — is preserved), while a high-volume MID's breach
+    counts proportionally MORE than a tiny MID's. This stops the search wasting its gradient
+    flattening hundreds of trivially-small breaches it cannot tell apart from the ones that
+    matter (see the 5-txn cad cells vs the 44,000-txn usd cells in the run profiles).
+
+    Returns ALL-ONES — i.e. behaviour byte-identical to the un-weighted violation — when
+    ctx['viol_vol_weight'] is off or there is no baseline-volume basis. SINGLE SOURCE OF TRUTH:
+    both `_obj_viol` (numpy) and the numba kernel builder call THIS, so the two hard-verified
+    scoring paths cannot drift apart."""
+    M = int(M)
+    if not bool(ctx.get("viol_vol_weight", False)) or M <= 0:
+        return np.ones(max(M, 1), dtype=float)
+    _base = ctx.get("mid_base_vol")
+    if _base is None:
+        return np.ones(M, dtype=float)
+    base = np.ascontiguousarray(np.asarray(_base, dtype=float))
+    if base.shape[0] != M:
+        return np.ones(M, dtype=float)
+    _pos = base[base > 0.0]
+    _bmean = float(_pos.mean()) if _pos.size else 0.0
+    if _bmean <= 0.0:
+        return np.ones(M, dtype=float)
+    return np.where(base > 0.0, base / _bmean, 1.0).astype(float)
+
+
 def _obj_viol(shares, ctx):
     """Split the score into (objective, violation) for feasibility-first ranking.
 
@@ -514,9 +544,23 @@ def _obj_viol(shares, ctx):
     # _pen(over) is applied identically here and in numba_kernels._fused_eval — keep them in sync.
     _bfix = float(ctx.get("breach_fixed", 0.0) or 0.0)
     _qwt = float(ctx.get("breach_quad", 1.0) or 1.0)
+    # PENALTY SHAPE: how the smooth part grows with the relative overage `over`.
+    #   quadratic  (default): qwt · over²          — double the overage → 4× penalty
+    #   exponential          : qwt · (exp(over) − 1) — grows far faster the further out (over clipped
+    #                          at 50 so it can never overflow to inf). Identical form in the kernel.
+    _pexp = (str(ctx.get("breach_shape", "quadratic")).lower() == "exponential")
 
     def _pen(_ov):                                           # _ov = relative overage array (>= 0)
+        # TOLERANCE: a constraint met to within 1e-9 (relative) is COMPLIANT — don't let the fixed
+        # hit fire on floating-point rounding dust (e.g. the decode water-fills a share to exactly
+        # the cap and lands at cap+1e-12). Mirrored in numba_kernels._fused_eval; keep in lockstep.
+        _ov = np.where(_ov > 1e-9, _ov, 0.0)
+        if _pexp:
+            return _bfix * (_ov > 0.0) + _qwt * (np.exp(np.minimum(_ov, 50.0)) - 1.0)
         return _bfix * (_ov > 0.0) + _qwt * _ov * _ov
+    # VOLUME-WEIGHTING (#4): per-MID importance weight so a high-volume MID's breach outranks a
+    # trivially-small one. ones ⇒ un-weighted (byte-identical). Same vector the numba kernel uses.
+    _wm = _mid_viol_weights(ctx, M)
     if M and (ctx.get("vamp_cap") is not None or ctx.get("mid_vol_cap") is not None
               or ctx.get("midband")):
         vol = shares * cv[None, :]
@@ -525,10 +569,12 @@ def _obj_viol(shares, ctx):
             midvr = _mid_sums(vol * risk[None, :], mid_rows, M, S=_S)
             with np.errstate(divide="ignore", invalid="ignore"):
                 rate = np.where(midv > 1e-12, midvr / midv, 0.0)
-            viol += _pen(np.maximum(rate / max(ctx["vamp_cap"], 1e-9) - 1.0, 0.0)).sum(axis=1)
+            viol += (_pen(np.maximum(rate / max(ctx["vamp_cap"], 1e-9) - 1.0, 0.0))
+                     * _wm[None, :]).sum(axis=1)
         if ctx.get("mid_vol_cap") is not None:
             _cap_v = np.where(ctx["mid_vol_cap"] > 0, ctx["mid_vol_cap"], np.inf)
-            viol += _pen(np.maximum(midv / _cap_v[None, :] - 1.0, 0.0)).sum(axis=1)
+            viol += (_pen(np.maximum(midv / _cap_v[None, :] - 1.0, 0.0))
+                     * _wm[None, :]).sum(axis=1)
         _bands = ctx.get("midband")
         if _bands:
             _bvol = ctx.get("mid_base_vol")
@@ -537,11 +583,12 @@ def _obj_viol(shares, ctx):
                          if _bvol is not None else np.ones_like(midv))
             for _b in _bands:
                 _mi, _bval, _ceil, _floor = _b[0], _b[1], _b[2], _b[3]
+                _pmul = float(_b[5]) if len(_b) > 5 else 1.0   # PRIORITY weight (5000^(1-p)); low prio yields
                 _proj = _fmid[:, _mi] * float(_bval)
                 if _ceil is not None:
-                    viol += _pen(np.maximum(_proj / max(float(_ceil), 1e-9) - 1.0, 0.0))
+                    viol += _pen(np.maximum(_proj / max(float(_ceil), 1e-9) - 1.0, 0.0)) * _wm[_mi] * _pmul
                 if _floor is not None and float(_floor) > 0:
-                    viol += _pen(np.maximum(1.0 - _proj / max(float(_floor), 1e-9), 0.0))
+                    viol += _pen(np.maximum(1.0 - _proj / max(float(_floor), 1e-9), 0.0)) * _wm[_mi] * _pmul
     # Structural caps AND the exploration floor are hard-enforced in the decode, so these are
     # ≈0 — kept as a symmetric safety net so a split the decode could not fully repair still
     # ranks as infeasible (previously only the cap was checked, not the floor).
@@ -573,6 +620,149 @@ def _obj_viol(shares, ctx):
     return obj, viol
 
 
+def _violation_breakdown(shares, ctx, top_k=20):
+    """One-shot DECOMPOSITION of the _obj_viol violation for a SINGLE split (diagnostic only —
+    NEVER on the hot path; called once per run on the winning candidate). Mirrors _obj_viol
+    term-for-term but keeps every component separate so the caller can SEE what the ranked
+    violation is actually made of, instead of inferring it:
+        • vamp_cap      — the per-vampMid aggregate VAMP-rate cap (0.06)
+        • bands         — the per-MID month bands, split BY PRIORITY TIER + top offenders
+        • max_share     — the structural per-cell max-gateway-share cap (0.97)
+        • floor         — the structural exploration floor (0.01)
+      plus how far the eligibility mask moved the split (L1 + rows zeroed), how many TERMS breach
+      in each component (the fixed-hit count is what scales the total when breach_fixed is large),
+      and how many cells are structurally infeasible (floor can't be given to every gateway).
+    Returns a plain dict (JSON-ish). Recomputed in NumPy; matches the ranked violation to ~1e-12."""
+    import math
+    shares = np.asarray(shares, float)
+    if shares.ndim == 1:
+        shares = shares[None, :]
+    shares = shares[:1]                                       # a single split only
+    pre = shares.copy()
+    out = {"elig_l1": 0.0, "elig_zeroed": 0}
+    _eop = ctx.get("elig_op")
+    if _eop is not None:
+        from .eligibility import apply_elig_pop
+        shares = apply_elig_pop(shares, _eop)                # SAME masking _obj_viol scores through
+        out["elig_l1"] = float(np.abs(shares - pre).sum())
+        out["elig_zeroed"] = int(((pre > 1e-9) & (shares <= 1e-12)).sum())
+    cv, risk = ctx["cell_vol"], ctx["risk"]
+    mid_rows, M = ctx["mid_rows"], int(ctx["n_mid"])
+    _S = ctx.get("_mid_S")
+    _bfix = float(ctx.get("breach_fixed", 0.0) or 0.0)
+    _qwt = float(ctx.get("breach_quad", 1.0) or 1.0)
+    _pexp = (str(ctx.get("breach_shape", "quadratic")).lower() == "exponential")
+
+    def _pen(_ov):
+        _ov = np.asarray(_ov, float)
+        _ov = np.where(_ov > 1e-9, _ov, 0.0)                 # at-boundary within tol = compliant (see _obj_viol)
+        if _pexp:
+            return _bfix * (_ov > 0.0) + _qwt * (np.exp(np.minimum(_ov, 50.0)) - 1.0)
+        return _bfix * (_ov > 0.0) + _qwt * _ov * _ov
+
+    _wm = _mid_viol_weights(ctx, M)
+    x = shares[0]
+    vol = x * cv
+    midv = _mid_sums(vol[None, :], mid_rows, M, S=_S)[0] if M else np.zeros(0)
+    # --- VAMP-rate cap ---
+    vamp_total = 0.0; vamp_over = 0
+    if ctx.get("vamp_cap") is not None and M:
+        midvr = _mid_sums((vol * risk)[None, :], mid_rows, M, S=_S)[0]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rate = np.where(midv > 1e-12, midvr / midv, 0.0)
+        ov = np.maximum(rate / max(ctx["vamp_cap"], 1e-9) - 1.0, 0.0)
+        vamp_total = float((_pen(ov) * _wm).sum()); vamp_over = int((ov > 0).sum())
+    # --- per-MID month bands (split by priority tier + worst offenders) ---
+    bands_total = 0.0; bands_tier = {}; offenders = []
+    _bands = ctx.get("midband")
+    if _bands and M:
+        _bvol = ctx.get("mid_base_vol")
+        with np.errstate(divide="ignore", invalid="ignore"):
+            fmid = (np.where(_bvol > 1e-12, midv / _bvol, 1.0) if _bvol is not None else np.ones(M))
+        def _pen_split(_o):
+            # RAW (pre-weight) fixed + quadratic penalty parts, so the log can show the workings.
+            _o = _o if _o > 1e-9 else 0.0                     # same tolerance as _pen
+            _f = _bfix if _o > 0.0 else 0.0
+            _q = (_qwt * (math.exp(min(_o, 50.0)) - 1.0)) if _pexp else (_qwt * _o * _o)
+            return _f, _q
+        for _b in _bands:
+            _mi, _bval, _ceil, _floor = _b[0], _b[1], _b[2], _b[3]
+            _pmul = float(_b[5]) if len(_b) > 5 else 1.0
+            _w = float(_wm[_mi]) * _pmul                       # priority × volume weight applied to the band
+            proj = float(fmid[_mi] * float(_bval))
+            ratio = None; kind = None; _ovr = 0.0; _fx = 0.0; _qd = 0.0
+            if _ceil is not None:
+                ov = max(proj / max(float(_ceil), 1e-9) - 1.0, 0.0)
+                if ov > 1e-9:
+                    _fx, _qd = _pen_split(ov)
+                    ratio = proj / max(float(_ceil), 1e-9); kind = "ceil"; _ovr = ov
+            if _floor is not None and float(_floor) > 0:
+                un = max(1.0 - proj / max(float(_floor), 1e-9), 0.0)
+                if un > 1e-9:
+                    _fx, _qd = _pen_split(un)
+                    ratio = proj / max(float(_floor), 1e-9); kind = "floor"; _ovr = un
+            c = (_fx + _qd) * _w                               # applied contribution (== _pen(ov)·w)
+            if c > 0:
+                bands_total += c
+                pr = int(round(1.0 - math.log(_pmul) / math.log(5000.0))) if _pmul > 0 else 99
+                bands_tier[pr] = bands_tier.get(pr, 0.0) + c
+                offenders.append({"mid": int(_mi), "kind": kind, "proj": proj,
+                                  "ratio": (float(ratio) if ratio is not None else None),
+                                  "prio": pr, "contrib": float(c), "over": float(_ovr),
+                                  "fixed": float(_fx), "quad": float(_qd), "weight": float(_w)})
+        offenders.sort(key=lambda d: -d["contrib"]); offenders = offenders[:top_k]
+    # --- structural max-share cap ---
+    _cap = float(ctx.get("max_share", 1.0) or 1.0)
+    cap_total = 0.0; cap_rows = 0; cap_offenders = []
+    if _cap < 1.0:
+        ov = np.maximum(x - _cap, 0.0) / max(_cap, 1e-9)
+        cap_total = float(_pen(ov).sum()); cap_rows = int((ov > 0).sum())
+        # WHICH rows are over the cap, and WHY: the decode can only leave a row over-cap when its
+        # cell has <2 ELIGIBLE gateways (a lone usable gateway must be ~100%). Capture each over-cap
+        # cell's eligible/present gateway counts + volume + vampMid so the log can confirm the cause.
+        _ovi = np.where(ov > 0)[0]
+        if _ovi.size and ctx.get("cell_starts") is not None:
+            _cs2 = np.asarray(ctx["cell_starts"]); _cc2 = np.asarray(ctx["cell_counts"])
+            _el2 = np.asarray(ctx["elig"], float)
+            _nec_by_cell = np.add.reduceat(_el2, _cs2)               # eligible gateways per cell
+            _row2cell = np.repeat(np.arange(len(_cs2)), _cc2)        # row index -> its cell index
+            _cvv = ctx.get("cell_vol"); _mid_id = ctx.get("mid_id")
+            for _ri in _ovi[:20]:
+                _ci = int(_row2cell[_ri])
+                cap_offenders.append({
+                    "share": float(x[_ri]),
+                    "cell_eligible": int(round(float(_nec_by_cell[_ci]))),
+                    "cell_present": int(_cc2[_ci]),
+                    "cell_vol": (float(_cvv[_ri]) if _cvv is not None else None),
+                    "mid": (int(_mid_id[_ri]) if _mid_id is not None else -1),
+                })
+    # --- structural exploration floor ---
+    _floor = float(ctx.get("floor", 0.0) or 0.0)
+    floor_total = 0.0; floor_rows = 0; floor_infeasible_cells = 0
+    if _floor > 0.0 and ctx.get("cell_starts") is not None:
+        _cs = np.asarray(ctx["cell_starts"]); _cc = np.asarray(ctx["cell_counts"])
+        _el = np.asarray(ctx["elig"], float)
+        _nec = np.repeat(np.add.reduceat(_el, _cs), _cc)
+        _fl = np.minimum(_floor, np.where(_nec > 0, 1.0 / np.maximum(_nec, 1.0), 0.0))
+        _mask = (_el > 0.5) & (_nec >= 2)
+        short = np.maximum(_fl - x, 0.0) * _mask / max(_floor, 1e-9)
+        floor_total = float(_pen(short).sum()); floor_rows = int((short > 0).sum())
+        _nec_cell = np.add.reduceat(_el, _cs)
+        floor_infeasible_cells = int((_nec_cell * _floor > 1.0 + 1e-9).sum())
+    out.update({
+        "total": float(vamp_total + bands_total + cap_total + floor_total),
+        "vamp_cap": {"total": vamp_total, "mids_over": vamp_over},
+        "bands": {"total": bands_total, "by_prio": bands_tier, "offenders": offenders,
+                  "n_bands": (len(_bands) if _bands else 0)},
+        "max_share": {"total": cap_total, "rows_over": cap_rows, "cap": _cap,
+                      "offenders": cap_offenders},
+        "floor": {"total": floor_total, "rows_under": floor_rows,
+                  "infeasible_cells": floor_infeasible_cells, "floor": _floor},
+        "bfix": _bfix, "qwt": _qwt,
+    })
+    return out
+
+
 _FEAS_TOL = 1e-9
 
 
@@ -595,7 +785,8 @@ def _feas_keys(obj, viol, tol=_FEAS_TOL):
 
 
 def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=None,
-           eps0=0.0, repair=None, progress_cb=None):
+           eps0=0.0, repair=None, progress_cb=None, no_early_stop=False,
+           sigma_floor=0.0, damps_mult=1.0):
     """Active (μ/μ_w, λ)-CMA-ES over the box [lo, hi] (bounds via clipping). `eval_ov(X)`
     returns (objective, violation) per row; ranking is feasibility-first with an
     ε-CONSTRAINED tolerance that starts at `eps0` and shrinks to 0 (early generations may
@@ -621,7 +812,7 @@ def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=N
     cs = (mueff + 2) / (D + mueff + 5)
     c1 = 2.0 / ((D + 1.3) ** 2 + mueff)
     cmu = min(1 - c1, 2 * (mueff - 2 + 1 / mueff) / ((D + 2) ** 2 + mueff))
-    damps = 1 + 2 * max(0.0, np.sqrt((mueff - 1) / (D + 1)) - 1) + cs
+    damps = (1 + 2 * max(0.0, np.sqrt((mueff - 1) / (D + 1)) - 1) + cs) * float(max(damps_mult, 1e-6))
     w = wp.copy()
     w[:mu] = w_pos / w_pos.sum()                             # positive weights sum to 1
     if w_neg.size:
@@ -650,11 +841,6 @@ def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=N
         obj, viol = eval_ov(Xc)
         obj = np.asarray(obj, float); viol = np.asarray(viol, float)
         counteval += lam
-        if progress_cb is not None:                        # live candidate-count reporting (best-effort)
-            try:
-                progress_cb(int(lam))
-            except Exception:  # noqa: BLE001
-                pass
         eps_it = float(eps0) * max(0.0, 1.0 - it / max(1.0, 0.8 * max_iter))   # relax early, strict late
         rkeys = _feas_keys(obj, viol, tol=max(eps_it, _FEAS_TOL))              # SELECTION (relaxed)
         skeys = _feas_keys(obj, viol, tol=_FEAS_TOL)                          # BEST-TRACK (strict)
@@ -665,8 +851,31 @@ def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=N
             best_ov = (float(obj[_b]), float(viol[_b])); _stall = 0
         else:
             _stall += 1
+        if progress_cb is not None:                        # live count + best-so-far score (score = -key,
+            # higher = better) + the FITNESS (objective/revenue-ish) of that incumbent split, so the
+            # live log/chart can show BOTH what the search RANKS on (score = -violation while
+            # infeasible) and the incumbent's revenue. Degrades gracefully to 2-arg / 1-arg callbacks.
+            _cur_fit = float(best_ov[0]) if np.isfinite(best_ov[0]) else float("nan")
+            try:
+                progress_cb(int(lam), float(-best_key), _cur_fit)
+            except TypeError:
+                try:
+                    progress_cb(int(lam), float(-best_key))
+                except TypeError:                          # oldest 1-arg progress_cb → count only
+                    try:
+                        progress_cb(int(lam))
+                    except Exception:  # noqa: BLE001
+                        pass
+                except Exception:  # noqa: BLE001
+                    pass
+            except Exception:  # noqa: BLE001
+                pass
         gen_trace.append((float(skeys.min()), float(skeys.mean()), float(sigma),
-                          float(viol[_b]), float(eps_it)))     # + best violation, ε tolerance
+                          float(viol[_b]), float(eps_it),
+                          float(best_ov[0]) if np.isfinite(best_ov[0]) else float("nan")))
+        # ^ + best violation, ε tolerance, and incumbent FITNESS (best_ov[0]; revenue−riskmin of the
+        #   current best-so-far split) — feeds the fitness series in the UI convergence chart.
+        _fin_obj, _fin_viol = obj, viol                       # last generation's population
         _fin_obj, _fin_viol = obj, viol                       # last generation's population
         Xsorted = Xc[idx]
         xold = xmean.copy()
@@ -687,12 +896,17 @@ def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=N
         C = ((1 - c1 - cmu * float(np.sum(w)) + c1 * cdelta) * C
              + c1 * np.outer(pc, pc) + cmu * rank_mu)
         sigma *= np.exp((cs / damps) * (np.linalg.norm(ps) / chiN - 1))
+        if sigma_floor > 0.0 and np.isfinite(sigma):
+            sigma = max(sigma, float(sigma_floor))   # UI 'Min step-size': stop σ collapsing to micro-steps
         if not np.isfinite(sigma) or sigma <= 0:
             break
         # Convergence early-stop: no strict-best improvement for a while (TolFun), or the
         # search distribution has collapsed below a floor (TolX) — the covariance is spent,
         # so further generations just burn evaluations. Restarts still re-explore afterwards.
-        if _stall >= _stall_max or sigma * float(np.max(Dd)) < 1e-11:
+        # `no_early_stop` (UI: "Run all generations") disables BOTH so every restart runs the full
+        # max_iter — exact candidate count, longer, usually no better result. The non-finite-sigma
+        # guard above always stays (it's a numerical safety, not a convergence stop).
+        if (not no_early_stop) and (_stall >= _stall_max or sigma * float(np.max(Dd)) < 1e-11):
             break
         if counteval - eigeneval > lam / max(c1 + cmu, 1e-12) / D / 10:
             eigeneval = counteval
@@ -1012,7 +1226,7 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     # of a band FLOOR — which needs MORE volume, not less — is never pushed the wrong way. The
     # nudge is a BOUNDED, dimensionless unit-space step: over/(1+over) squashes any relative
     # overage into [0,1), so the θr move is ≤ _REPAIR_LR regardless of the overage scale.
-    _REPAIR_LR = 0.30
+    _REPAIR_LR = float(ctx.get("repair_lr", 0.30) or 0.0)   # UI 'Repair strength' (0 disables the nudge)
 
     def _repair(Vpop):
         over = _mid_over(_decode(_to_actual(Vpop)), ctx, include_floor_shortfall=False)   # (P, M)
@@ -1115,10 +1329,19 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
             s0 = min(0.55, 0.30 * (1.4 ** _e))
             _lam_r = min(int(lam_cma * (2 ** _e)), _LAM_CAP)
         restart_lams.append(int(_lam_r))
-        bx, bk, bov, tr, fpop = _cmaes(eval_ov, start, s0, np.zeros(D), np.ones(D),
+        # UI step-size controls: σ₀ multiplier (wider/narrower starting stride), σ floor (don't let
+        # the stride collapse to micro-steps), damping multiplier (adapt σ more slowly). All default
+        # to no-op (1.0 / 0.0 / 1.0) so behaviour is unchanged unless dialled.
+        _s0m = float(ctx.get("sigma0_mult", 1.0) or 1.0)
+        bx, bk, bov, tr, fpop = _cmaes(eval_ov, start, s0 * _s0m, np.zeros(D), np.ones(D),
                                        popsize=_lam_r, max_iter=int(generations),
                                        seed=int(seed) + r, stop_check=stop_check,
-                                       eps0=_EPS0, repair=_repair, progress_cb=progress_cb)
+                                       eps0=_EPS0,
+                                       repair=(_repair if bool(ctx.get("repair_enabled", True)) else None),
+                                       progress_cb=progress_cb,
+                                       no_early_stop=bool(ctx.get("no_early_stop", False)),
+                                       sigma_floor=float(ctx.get("sigma_floor", 0.0) or 0.0),
+                                       damps_mult=float(ctx.get("damps_mult", 1.0) or 1.0))
         all_hist.append(tr)
         bx = _polish_genome(bx)                              # #2 polish EVERY restart's winner
         sv = score_of(bx)
@@ -1133,28 +1356,37 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     best = _decode(best_G)[0]
     best_rev = float((best * rc).sum())
     best_obj, best_viol = best_sv
+    # One-shot violation DECOMPOSITION of the winning candidate (diagnostic; off the hot path).
+    try:
+        _vbd = _violation_breakdown(best[None, :], ctx)
+    except Exception:  # noqa: BLE001 - a diagnostic must NEVER break a run
+        _vbd = None
     best_feas = best_viol <= _FEAS_TOL
     best_fit = best_obj if best_feas else (-1e15 - best_viol)
     init_fit = init_sv[0] if init_sv[1] <= _FEAS_TOL else (-1e15 - init_sv[1])
 
-    # Per-generation trace for the UI charts, as 7-tuples:
-    # (gen, best-so-far score, this-gen best score, this-gen mean score, sigma, violation, ε).
-    # The first five match the old convergence chart (scores = maximised feasibility-aware −key,
-    # so best-so-far rises); the last two feed the σ and violation→feasibility charts.
+    # Per-generation trace for the UI charts, as 9-tuples:
+    # (gen, best-so-far score, this-gen best score, this-gen mean score, sigma, violation, ε,
+    #  candidates-so-far, incumbent FITNESS). The first five match the old convergence chart
+    # (scores = maximised feasibility-aware −key, so best-so-far rises); violation/ε feed the σ and
+    # violation→feasibility charts; the last is the incumbent split's revenue-ish objective so the
+    # chart can show fitness alongside the ranked score.
     history = []; gi = 0; run_best = -np.inf; sigma_final = 0.0; cand_run = 0
     for _ri, tr in enumerate(all_hist):
         # candidates evaluated per generation of THIS restart = the ACTUAL λ used for it (recorded
         # in restart_lams: constant in lean mode, IPOP-doubled in ipop mode). Lets the UI plot
         # score vs. CANDIDATES-evaluated (true x-axis), not just generation index.
         _lam_r = restart_lams[_ri] if _ri < len(restart_lams) else lam_cma
-        for gk, mk, sg, vv, ee in tr:
+        for _row in tr:
+            gk, mk, sg, vv, ee = _row[:5]
+            fo = float(_row[5]) if len(_row) > 5 else float("nan")   # incumbent fitness (back-compat)
             gi += 1
             cand_run += int(_lam_r)
             gen_best = -gk
             run_best = max(run_best, gen_best)
             sigma_final = float(sg)
             history.append((gi, float(run_best), float(gen_best), float(-mk), float(sg),
-                            float(vv), float(ee), int(cand_run)))
+                            float(vv), float(ee), int(cand_run), float(fo)))
 
     # Diversity archive (improvement #7 output): the restart winners that are >= archive_min_dist
     # apart in genome space, best (feasibility-first) first, for warm-starting a later run.
@@ -1181,6 +1413,7 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
         "genome": best_G[0].copy(),   # 3·n_mid -> warm_start on a subsequent run
         "archive": archive,           # (K, 3M) good-but-different genomes (best first)
         "history": history,           # per-generation scoring trace (for the UI charts)
+        "viol_breakdown": _vbd,       # one-shot decomposition of the winning candidate's violation
         "pop_obj": best_fpop[0],      # winning restart's final-population objectives (revenue-ish)
         "pop_viol": best_fpop[1],     # winning restart's final-population violations
         "engine": "cmaes",            # marker so stale bytecode / old GA is obvious in logs

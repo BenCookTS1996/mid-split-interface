@@ -1162,7 +1162,12 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # × scope, WITHOUT pro_rata) at the ORIGINATION cell, and multiply by the go-live pro_rata
     # of the APPEARANCE month (the t0 pro_rata at that period). VI-txn (t=0) is unchanged
     # because appearance == origination there.
-    t0["_gf"] = np.where(t0["prop_sum"] > 0, t0["fcp1_frac"], 0.0)
+    # BUGFIX: gate the VAMP move on the MID being ACTIVE (_keep>0), not just the cell being routed
+    # (prop_sum>0). A switched-off vampMid (target=0 → _keep=0) has no transactions to re-route, so
+    # its residual/baseline VAMP must pass through unchanged (VAMP_Post == VAMP_Pre). Previously the
+    # cell-level go-live ramp "moved out" fraud from 0-transaction MIDs (e.g. EPX), draining it into
+    # the pool and breaking the monthly Σ VAMP_Post == Σ VAMP_Pre conservation.
+    t0["_gf"] = np.where((t0["prop_sum"] > 0) & (t0["_keep"] > 0), t0["fcp1_frac"], 0.0)
     if scoped_rpgts:
         t0.loc[_oos, "_gf"] = 0.0
     _prapp = t0[_sub + ["period", "pro_rata"]].drop_duplicates(_sub + ["period"]).rename(
@@ -1177,9 +1182,17 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     pp["_pr_app"] = pp["_pr_app"].fillna(0.0)
     # Originated before the window (orig_m<0) never moves; otherwise move = factor × appearance wt.
     pp["_move"] = np.where(pp["orig_m"] >= 0, pp["_gf"] * pp["_pr_app"], 0.0)
+    # CONSERVATION: the moved VAMP pool must fully redistribute, so the recipient shares must sum to
+    # 1 within each redistribution group. Merge misses / source differences can leave Σ_pshare < 1,
+    # which leaks fraud out of the monthly total. Renormalise per group; and where a group has NO
+    # valid VAMP recipient (Σ_pshare = 0) keep the VAMP in place (no move) rather than vanish it.
+    _gk = _sub + ["period", "t"]
+    _psum = pp.groupby(_gk)["_pshare"].transform("sum")
+    pp["_move"] = np.where(_psum > 1e-12, pp["_move"], 0.0)               # no recipient → passthrough
+    pp["_pshare"] = np.where(_psum > 1e-12, pp["_pshare"] / _psum, 0.0)   # recipients sum to exactly 1
     pp["VAMP_Pre"] = pp["vampCount"]
     pp["_moved_v"] = pp["vampCount"] * pp["_move"]
-    pp["_moved_vpool"] = pp.groupby(_sub + ["period", "t"])["_moved_v"].transform("sum")
+    pp["_moved_vpool"] = pp.groupby(_gk)["_moved_v"].transform("sum")
     pp["VAMP_Post"] = pp["vampCount"] * (1.0 - pp["_move"]) + pp["_moved_vpool"] * pp["_pshare"]
 
     _tp = t0[_sub + ["vampMid", "period", "post_txn"]]
@@ -1187,6 +1200,21 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     pp["VI_Txn_Pre"] = np.where(pp["t"] == 0, pp["VI_Txn_Count"], 0.0)
     pp["VI_Txn_Post"] = np.where(pp["t"] == 0, pp["post_txn"].fillna(0.0), 0.0)
     _dump_projection_diag(t0, pp_path, prop_items, _enforced, _by_rpgt)   # heavy diagnostics
+    # SELF-CHECK: VAMP (and VI-Txn) must conserve per period — Σ Post == Σ Pre. Warn (non-fatally) if
+    # either drifts, so any future regression of the redistribution / passthrough logic is caught.
+    try:
+        _chk = pp.groupby("period")[["VAMP_Pre", "VAMP_Post", "VI_Txn_Pre", "VI_Txn_Post"]].sum()
+        for _pre_c, _post_c, _lbl in (("VAMP_Pre", "VAMP_Post", "VAMP"),
+                                      ("VI_Txn_Pre", "VI_Txn_Post", "VI-Txn")):
+            _rel = ((_chk[_post_c] - _chk[_pre_c]).abs()
+                    / _chk[_pre_c].abs().clip(lower=1.0)).max()
+            if float(_rel) > 1e-6:
+                import warnings as _w
+                _w.warn(f"compute_vamp_prepost_granular: {_lbl} not conserved per period "
+                        f"(max rel drift {float(_rel):.2e}) — redistribution/passthrough regression?",
+                        stacklevel=2)
+    except Exception:  # noqa: BLE001
+        pass
     # Collapse the pmp / Country sub-cells back to the reported grain (sums are exact).
     return (pp.groupby(["vampMid", "RPGT", "BIN", "Currency", "period", "t"], as_index=False)
               [["VAMP_Pre", "VAMP_Post", "VI_Txn_Pre", "VI_Txn_Post"]].sum())

@@ -26,7 +26,7 @@ from datetime import datetime
 
 import numpy as np
 
-__build__ = "2026-07-24-run-bundle+graceful-stop"
+__build__ = "2026-07-24-run-bundle+graceful-stop+fitness-field"
 
 STOP_FILENAME = "_stop"
 
@@ -147,18 +147,33 @@ class _ProgressWriter:
     parallel seed reports its own live count to its own file — the main process sums the files
     to show an aggregate "candidate splits evaluated so far" while the search runs. Best-effort:
     any write failure is swallowed so progress reporting can NEVER break a run."""
-    __slots__ = ("path", "total")
+    __slots__ = ("path", "total", "best", "best_fit")
 
     def __init__(self, path: str):
         self.path = path
         self.total = 0
+        self.best = None                  # best-so-far engine score for this seed (higher = better)
+        self.best_fit = None              # FITNESS (revenue-ish objective) of that best-so-far split
 
-    def __call__(self, inc: int) -> None:
+    def __call__(self, inc: int, score=None, fitness=None) -> None:
         try:
             self.total += int(inc)
+            if score is not None:
+                _s = float(score)
+                # Track fitness ALONGSIDE the best score (not its own max): we want the revenue of
+                # the split that owns the current best score, so they stay a matched pair.
+                if self.best is None or _s > self.best:
+                    self.best = _s
+                    if fitness is not None:
+                        self.best_fit = float(fitness)
             _tmp = self.path + ".tmp"
             with open(_tmp, "w") as _f:
-                _f.write(str(self.total))
-            os.replace(_tmp, self.path)   # atomic swap so the poller never reads a torn count
+                # "total|best|fit" — best/fit blank until a score is reported (back-compatible: the
+                # poller reads field 0 as the count, and treats missing fields 1/2 as None).
+                _f.write("{}|{}|{}".format(
+                    self.total,
+                    "" if self.best is None else repr(self.best),
+                    "" if self.best_fit is None else repr(self.best_fit)))
+            os.replace(_tmp, self.path)   # atomic swap so the poller never reads a torn record
         except Exception:  # noqa: BLE001
             pass

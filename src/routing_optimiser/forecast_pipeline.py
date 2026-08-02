@@ -290,6 +290,76 @@ def _canonical_gateway(name) -> str:
     return s[:-2] if s.endswith("-x") else s
 
 
+# Set by `_normalise_pre` on each load so the caller (app) can surface the VAMP-shrinkage
+# status + per-level fitted kappa in its own run-log. {'on': bool, 'levels': [(name, kappa), …]}.
+_LAST_VAMP_SHRINK: dict = {"on": None, "levels": None}
+
+
+def _mm_kappa(vg, ng, fallback: float = 50.0, kmax: float = 5000.0) -> float:
+    """Method-of-moments Beta-Binomial concentration (kappa) for one back-off LEVEL,
+    from that level's per-group pooled (vamps vg, count ng). Mirrors success_rates.
+    _empirical_bayes_kappa: kappa = mu(1-mu)/true_var - 1, where true_var = observed
+    count-weighted variance of group rates MINUS mean binomial sampling variance.
+    Tight spread → large kappa (shrink hard toward the coarser level); wide spread →
+    small kappa (trust this level). Needs ≥2 groups with data, else `fallback`."""
+    import numpy as _np
+    vg = _np.asarray(vg, float); ng = _np.asarray(ng, float)
+    m = ng > 0
+    vg, ng = vg[m], ng[m]
+    if ng.sum() <= 0 or len(ng) < 2:
+        return float(fallback)
+    mu = float(vg.sum() / ng.sum())
+    if mu <= 0.0 or mu >= 1.0:
+        return float(kmax)
+    p = vg / ng
+    obs_var = float((ng * (p - mu) ** 2).sum() / ng.sum())        # count-weighted spread
+    samp_var = float(mu * (1.0 - mu) * len(ng) / ng.sum())         # mean binomial noise
+    true_var = obs_var - samp_var
+    if true_var <= 1e-12:
+        return float(kmax)
+    return float(min(max(mu * (1.0 - mu) / true_var - 1.0, 1.0), kmax))
+
+
+def _hier_vamp_shrink(d: pd.DataFrame, fallback_kappa: float = 50.0, kmax: float = 5000.0):
+    """FULLY-AUTOMATIC hierarchical empirical-Bayes shrinkage of the per-cell VAMP rate.
+
+    Walks a BANK-FIRST back-off chain (risk clusters by issuing BIN, not by MID — verified
+    on bin_rpgt_impact_export: BIN explains ~16% of rate variance vs vampMid ~3%):
+
+        global → vampMid → RPGT → Bank → Bank×RPGT → Bank×RPGT×Currency → cell
+
+    At each level a method-of-moments kappa is fit from the spread of that level's group
+    rates vs binomial sampling noise (no hand-tuning), and the level's pooled rate is shrunk
+    toward the running (coarser) estimate: est = (pooled_vamps + kappa·est) / (pooled_n + kappa).
+    A thin/noisy cell (e.g. 0.74 VAMP on 1.2 txns → raw 61.55%) is pulled toward its BANK's
+    stable rate; a high-volume cell is essentially unchanged. Because kappa is fit in the SAME
+    units as the counts, the pro-rated Txn_Pre scale self-calibrates. Returns a (n,) array."""
+    import numpy as _np
+    n = len(d)
+    v = pd.to_numeric(d["_vamps"], errors="coerce").fillna(0.0).to_numpy(float)
+    q = pd.to_numeric(d["volume"], errors="coerce").fillna(0.0).to_numpy(float)
+    tot_v = float(v.sum()); tot_q = float(q.sum())
+    est = _np.full(n, (tot_v / tot_q) if tot_q > 0 else 0.0)       # coarsest level = global rate
+    _t = d[["gateway", "rpgt", "bank", "currency"]].copy()
+    _t["_v"] = v; _t["_q"] = q
+    # coarse → fine; the final key set is the full cell grain, so its shrink is the cell itself
+    chain = [["gateway"], ["rpgt"], ["bank"], ["bank", "rpgt"],
+             ["bank", "rpgt", "currency"], ["bank", "rpgt", "currency", "gateway"]]
+    levels_log = []
+    for keys in chain:
+        _gt = _t.groupby(keys)[["_v", "_q"]]
+        _sum = _gt.transform("sum")
+        gv = _sum["_v"].to_numpy(float); gn = _sum["_q"].to_numpy(float)
+        _grp = _t.groupby(keys)[["_v", "_q"]].sum()
+        kap = _mm_kappa(_grp["_v"].to_numpy(float), _grp["_q"].to_numpy(float),
+                        fallback=fallback_kappa, kmax=kmax)
+        with _np.errstate(divide="ignore", invalid="ignore"):
+            est = (gv + kap * est) / (gn + kap)
+        est = _np.where(_np.isfinite(est), est, 0.0)
+        levels_log.append((("x".join(keys)), round(kap, 1)))
+    return est, levels_log
+
+
 def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
     """
     Normalise a pipeline export into the optimiser's baseline contract:
@@ -341,7 +411,22 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
     d = (d.groupby(["rpgt", "currency", "bank", "gateway"], as_index=False)
            .agg(volume=("volume", "sum"), _vamps=("_vamps", "sum")))
 
-    d["risk_rate"] = (d["_vamps"] / d["volume"].replace(0, pd.NA)).fillna(0.0)
+    # RISK RATE: hierarchical empirical-Bayes shrinkage (default on; ROUTING_VAMP_SHRINK=0
+    # disables → raw ratio). Fixes noisy thin-cell rates (e.g. 0.74 VAMP on 1.2 txns → raw
+    # 61.55%) by pulling them toward the stable BANK-level rate; high-volume cells stay put.
+    _raw_rr = (d["_vamps"] / d["volume"].replace(0, pd.NA)).fillna(0.0)
+    global _LAST_VAMP_SHRINK
+    if os.environ.get("ROUTING_VAMP_SHRINK", "1") != "0" and len(d) >= 2:
+        try:
+            _rr, _lvls = _hier_vamp_shrink(d)
+            d["risk_rate"] = _rr
+            _LAST_VAMP_SHRINK = {"on": True, "levels": _lvls, "n_cells": int(len(d))}
+        except Exception:  # noqa: BLE001
+            d["risk_rate"] = _raw_rr        # never let shrinkage break the pipeline
+            _LAST_VAMP_SHRINK = {"on": False, "levels": None, "error": True}
+    else:
+        d["risk_rate"] = _raw_rr
+        _LAST_VAMP_SHRINK = {"on": False, "levels": None}
     tot = d.groupby(["rpgt", "currency", "bank"])["volume"].transform("sum")
     d["baseline_share"] = (d["volume"] / tot).fillna(0.0)
     return d[["rpgt", "currency", "bank", "gateway", "volume",

@@ -45,10 +45,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 # Set it HERE, before anything can import numba, so it's authoritative regardless of import
 # order (numba_kernels also setdefault()s the same path as a backup). Matches
 # numba_kernels._NB_CACHE_DIR = <src>/routing_optimiser/_numba_cache.
+# CRITICAL: keep this OFF any cloud-synced / FUSE-backed folder (Downloads, iCloud/Dropbox/
+# OneDrive-managed dirs). Numba's on-disk cache uses file locks + mmap, which HANG on FUSE —
+# the symptom is the parallel GA workers launching and then wedging forever with no progress
+# (and stray `.fuse_hidden*` files piling up in the cache). The project dir lives under
+# Downloads (synced), so we route the cache to the LOCAL OS temp dir instead — a real local
+# disk, never synced. It survives app restarts within a session (only a reboot clears it, then
+# one ~90s cold recompile), and `clear __pycache__` never touches it.
+import tempfile as _tempfile
 os.environ.setdefault(
     "NUMBA_CACHE_DIR",
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src",
-                                 "routing_optimiser", "_numba_cache")))
+    os.path.join(_tempfile.gettempdir(), "routing_optimiser_numba_cache"))
 try:
     os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
 except Exception:  # noqa: BLE001 - a read-only dir must never stop the app loading
@@ -1845,6 +1852,13 @@ with tab_eng:
                     key="ga_restarts",
                     help="Each seed re-launches from a fresh spread this many times, keeping the best. "
                          "More = better odds of the best split, longer. 2 = default.")
+                st.checkbox(
+                    "Run all generations (no early-stopping)", value=False, key="ga_no_early_stop",
+                    help="OFF (default): each seed stops early once it converges (no improvement for a "
+                         "while, or the search collapses to a point) — saves time and rarely changes the "
+                         "result. ON: every seed runs the FULL generation cap regardless, so the candidate "
+                         "count becomes exact (= seeds × restarts × generations × λ) and the run is longer, "
+                         "usually with no better split. Use for a deterministic, maximum-budget search.")
                 # Candidate-split RANGE + ETA — same maths as before, just recomputed live here.
                 # Restart strategy stays in the form, so its last-submitted value (Lean default) is
                 # read from session_state; Lean keeps λ constant → floor == ceiling (single value).
@@ -1957,18 +1971,12 @@ with tab_eng:
                 _auto_explore = True       # auto-explore capable-but-untested gateways
                 ss["eng_rpgt_hold_others"] = True
                 ss["eng_auto_explore"] = True
-                # OPT-IN speed trade: skip injecting exploration fallback gateways into cells whose
-                # forecast volume is below this floor. Those tiny cells barely move the objective but
-                # bloat every GA matrix op. 0 = inject everywhere (today's behaviour, byte-identical);
-                # a small value (e.g. 50) drops only near-empty cells for a small result change.
-                st.number_input(
-                    "Exploration min cell volume (0 = explore all)", min_value=0, max_value=100_000,
-                    value=50, step=50, key="explore_min_cell_vol",
-                    help="Cells with forecast volume below this get NO injected fallback gateways (they "
-                         "stay single-gateway), shrinking the search matrix to speed up the engine. "
-                         "0 keeps today's behaviour exactly. Non-zero changes the result slightly — A/B it: "
-                         "run once at 0 and once at your value, then compare the logged dial-0 VAMP rate, "
-                         "revenue, MIDs-over-cap and total gateway-rows.")
+                # Exploration min cell volume gate REMOVED (input deleted) and pinned to 0 = explore
+                # all. Non-zero left single-gateway cells with an UNSATISFIABLE 97% max-share cap
+                # (a lone gateway is forced to 100%), which floored the GA at a large structural
+                # violation and made every run infeasible. 0 injects a fallback gateway into every
+                # single-gateway cell, so the search stays feasible.
+                ss["explore_min_cell_vol"] = 0
                 _grc1, _grc2 = st.columns(2)
                 _score_grain = _grc1.selectbox(
                     "Engine Score grain",
@@ -2018,25 +2026,22 @@ with tab_eng:
                              "value. Both still meet every risk constraint.")
                     # Compliance target is FIXED to the GA / CMA-ES risk-minimised endpoint — the dropdown
                     # was removed because its only other option (Max approvals / greedy+LP) didn't use the
-                    # GA. Risk aversion (below) tunes how far below the cap it pushes; at 0 it maximises
-                    # approvals subject to compliance.
+                    # GA. It maximises approvals subject to compliance (no extra risk-minimisation).
+                    # Risk-aversion dial REMOVED — this engine ALWAYS runs the revenue-shaped risk-min
+                    # endpoint (equivalent to ga_risk_aversion = 0: no EXTRA risk-minimisation beyond
+                    # meeting the caps, closest to Max approvals). The value is forced to 0.0 at the GA
+                    # call site, so removing the widget doesn't fall back to a non-zero default.
                     _ga1, _ga2 = st.columns(2)
-                    _ga1.slider(
-                        "Risk aversion (safety ↔ revenue)", 0.0, 2.0, 0.0, 0.05, key="ga_risk_aversion",
-                        help="Higher = the safe (dial-0) end gives up more revenue to cut risk. 0 (default) = no "
-                             "EXTRA risk-minimisation beyond meeting the cap — the risk-min endpoint stays "
-                             "revenue-shaped (close to Max approvals). Raise it to push risk further below the cap.")
-                    _ga2.number_input(
+                    _ga1.number_input(
                         "Cap-breach penalty", min_value=0, max_value=2000, value=250, step=50,
                         key="ga_breach_fixed",
                         help="How hard a split that goes over a VAMP/volume cap is punished (× MID revenue). "
                              "Higher = the cap acts more like a wall. 250 = current.")
-                    _ga3, _ga4 = st.columns(2)
-                    _ga3.slider(
+                    _ga2.slider(
                         "Band penalty strength", 0.1, 3.0, 1.0, 0.1, key="ga_band_mult",
                         help="Multiplier on how hard the month per-MID VAMP/txn bands are enforced at the "
                              "compliant end. 1.0 = current; higher sits further inside every band.")
-                    _ga4.selectbox(
+                    st.selectbox(
                         "Restart strategy",
                         ["Lean (constant-λ, spread-out)", "IPOP (thorough)"],
                         index=0, key="ga_restart_mode",
@@ -2048,6 +2053,26 @@ with tab_eng:
                              "but the doubling makes each restart cost more than the last. A/B them using "
                              "the ④ efficiency readout in the run log. Applies to both Genetic and "
                              "GA - Numba.")
+                    st.number_input(
+                        "Re-projection budget (s)", min_value=0, max_value=3600, value=300, step=30,
+                        key="ga_reproj_budget_s",
+                        help="Time budget for the post-GA re-projection correction that reconciles the "
+                             "GA's band PROXY with the TRUE pro-rata projection (shrinks the proxy↔true "
+                             "gap). Each round re-scales the over-cap MIDs and re-checks the REAL breach, "
+                             "stopping early once satisfied. 300s = current — if the run log shows "
+                             "'WALL-CAP …s hit' with a residual breach, raise this so more rounds can run.")
+                    st.selectbox(
+                        "GA parallelism", ["loky", "threading", "sequential"], index=0,
+                        key="ga_parallel_backend",
+                        format_func=lambda _v: {
+                            "loky": "Parallel — loky processes (default, fastest)",
+                            "threading": "Parallel — threads (fallback)",
+                            "sequential": "Sequential (slowest, most robust)"}.get(_v, _v),
+                        help="How the multi-seed GA runs its 8 seeds. 'loky' spawns worker PROCESSES "
+                             "(true multi-core, fastest). If the run log shows the seeds LAUNCH and then "
+                             "hang with no progress (a macOS loky/Numba worker wedge), switch to "
+                             "'Sequential' — it runs the seeds one at a time in this process (no worker "
+                             "pool), slower but immune to that hang. 'threading' is an in-between fallback.")
                     # Search-BUDGET inputs (GA generations, population λ, seeds, restarts) plus the
                     # candidate-split range / ETA readout now live ABOVE this form (the "Genetic search
                     # budget" panel) so editing them refreshes the count LIVE — form members don't rerun
@@ -2539,6 +2564,8 @@ with tab_eng:
                               f"time_decay={('on ' + str(_gv('decay_half')) + 'd') if _gv('apply_decay') else 'off'} · "
                               f"xborder_penalty={_gv('xborder_penalty')}")
                         _diag(f"      max_pools_target={_gv('max_configs')}")
+                        _diag(f"      reproj_budget={int(ss.get('ga_reproj_budget_s', 300) or 300)}s "
+                              f"(post-GA proxy→true band correction wall-cap)")
                         _pk = {k: params.get(k) for k in ("temperature", "temp_method",
                                                           "explore_cap_total", "explore_cap_each", "n_variations")
                                if isinstance(params, dict) and k in params}
@@ -3607,15 +3634,17 @@ with tab_eng:
                     _mid_month_rules = []   # (mid_lower, month|None, metric, target, tol, direction)
                     # PRIORITY lookups (1 = highest). _prio_lookup keyed per constraint; _prio_by_mid
                     # keeps the highest importance (lowest number) per MID for the greedy weighting.
-                    # LEXICOGRAPHIC-STYLE priority with a 5000× gap per tier: p1=1.0, p2=2e-4, p3=4e-8, …
-                    # (prio-1 = 5000× prio-2 = 2.5e7× prio-3). The gap far exceeds the largest achievable
-                    # within-tier badness (bounded by the constraint count, ≤ ~100), so ANY prio-1 miss
-                    # outweighs the WHOLE of prio-2 — higher-priority bands are effectively always
-                    # protected and lower ones only break ties; the solver won't trade a prio-1 to shave
-                    # prio-2s. VAMP-cap compliance is UNAFFECTED — it ranks far above every band via
-                    # _VAMP_W. Retune via _PRIORITY_GAP: bigger = stronger dominance (was 1e4 = 10,000×);
-                    # a small value (~1.67) would instead make it soft/proportional.
-                    _PRIORITY_GAP = 5000.0
+                    # PRIORITY tiering with a per-tier gap: p1=1.0, p2=1/GAP, p3=1/GAP², …
+                    # (higher number = lower priority). GAP=8 (restored — the 14:35-run value): the OLD
+                    # gap of 5000 made prio-2 weight 0.0002, so a prio-2 VAMP-ceiling breach contributed
+                    # ≈0 to the GA's ranked violation and the search treated those ceilings as decorative
+                    # (it would push a MID far over a prio-2 cap and still call the split "feasible").
+                    # GAP=8 keeps a clear hierarchy (prio-1 = 8× prio-2 = 64× prio-3) while giving prio-2
+                    # a MATERIAL weight (0.125), so the search itself drives prio-2 ceilings down. VAMP-cap
+                    # compliance is UNAFFECTED (it ranks far above every band via _VAMP_W). The GA "hang"
+                    # this was briefly blamed for turned out to be the silent progress poller (FUSE),
+                    # now fixed — so this is safe to keep. Retune here: bigger = more decorative low tiers.
+                    _PRIORITY_GAP = 8.0
                     _prio_lookup, _prio_by_mid = {}, {}
                     for _rec in _all_rules:
                         _pmk = str(_rec.get("vampMid", "")).strip().lower()
@@ -3623,8 +3652,15 @@ with tab_eng:
                         _prio_lookup[(_pmk, _rec.get("month"), _rec.get("metric", "txn"))] = _pp
                         _prio_by_mid[_pmk] = min(_prio_by_mid.get(_pmk, 99), _pp)
                     def _prio_mult(_p):
-                        # p1 → 1, p2 → 1/5000, p3 → 1/5000², … (higher number = lower priority).
+                        # p1 → 1, p2 → 1/GAP, p3 → 1/GAP², … (higher number = lower priority).
                         return float(_PRIORITY_GAP ** (1 - max(int(_p), 1)))
+                    try:
+                        _prios_used = sorted({int(_v) for _v in _prio_lookup.values()})
+                        log("   priority→band weight (GAP={:.0f}): ".format(_PRIORITY_GAP)
+                            + " · ".join("prio{}={:.4g}".format(_p, _prio_mult(_p)) for _p in _prios_used)
+                            + "  (higher weight ⇒ the GA works harder to satisfy that tier)")
+                    except Exception:  # noqa: BLE001 - logging must never break a run
+                        pass
                     for _rec in _all_rules:
                         if _rec.get("rpgt") is None:                 # aggregate + month-only
                             _mid_month_rules.append((
@@ -5355,6 +5391,9 @@ with tab_eng:
                         # (seconds). dial 100 = softmax revenue reference; dial 0 = this search's best
                         # compliant split; blended, both endpoints hard-enforced (2 VAMP solves).
                         ctx["ref_share"] = _ref_share_G          # θ=0 decode base (revenue-optimal)
+                        # "Run all generations" toggle: disables the CMA-ES convergence early-stop so
+                        # every restart runs the full generation cap (exact candidate count, longer).
+                        ctx["no_early_stop"] = bool(ss.get("ga_no_early_stop", False))
                         ss["_ga_ctx"] = ctx                      # stash for the experimental NSGA-II / full-matrix explorer
                         _n_cells = int(len(_counts)); _n_mid = int(len(_mids_u))
                         # ── GA problem size (surfaced so the k-means pre-clustering decision is data-driven) ──
@@ -5489,7 +5528,15 @@ with tab_eng:
                             # also byte-identical. ctx is read-only inside the GA, so pickling a copy
                             # to each worker is safe.
                             _seed_results = None
-                            if int(_N_SEED) > 1:
+                            # UI-selectable parallelism (Tab 3). "sequential" skips the worker pool
+                            # entirely — the most robust path when loky workers wedge (e.g. a macOS
+                            # fork/Numba interaction), at the cost of running the seeds one-by-one.
+                            _ga_backend_sel = str(ss.get("ga_parallel_backend",
+                                                  os.environ.get("ROUTING_GA_PARALLEL_BACKEND", "loky"))).strip().lower()
+                            if _ga_backend_sel == "sequential":
+                                log("   GA parallelism: SEQUENTIAL (worker pool disabled via Tab 3) — "
+                                    "seeds run one at a time; slower but immune to loky worker hangs.")
+                            if int(_N_SEED) > 1 and _ga_backend_sel != "sequential":
                                 import time as _st_t
                                 from joblib import Parallel, delayed
                                 import inspect as _insp_jl
@@ -5509,9 +5556,7 @@ with tab_eng:
                                 # errors we cascade loky→threading→sequential, so we can never end up
                                 # slower than the old shared-memory threading path. Override with
                                 # ROUTING_GA_PARALLEL_BACKEND=threading.
-                                _ga_backend = os.environ.get("ROUTING_GA_PARALLEL_BACKEND", "loky").strip().lower()
-                                if _ga_backend not in ("loky", "threading", "multiprocessing"):
-                                    _ga_backend = "loky"
+                                _ga_backend = _ga_backend_sel if _ga_backend_sel in ("loky", "threading", "multiprocessing") else "loky"
                                 _try_backends = [_ga_backend] + (["threading"] if _ga_backend != "threading" else [])
                                 _njobs = min(int(_N_SEED), os.cpu_count() or 1)
                                 # Can we stream results as each seed returns? (joblib >=1.3 has
@@ -5556,7 +5601,15 @@ with tab_eng:
                                     from routing_optimiser.run_bundle import _ProgressWriter as _PW
                                 except Exception:  # noqa: BLE001
                                     _PW = None
-                                _prog_dir = os.path.join(PROJECT_ROOT, "runs", "_gaprog")
+                                # CRITICAL: keep the per-seed progress files on a LOCAL disk, NOT inside
+                                # the project (which lives under a cloud-synced/FUSE mount). The loky
+                                # WORKER processes write these files and the MAIN process (poller) reads
+                                # them; on FUSE, cross-process writes don't propagate promptly, so the
+                                # poller reads empty files, reports 0 candidates, and prints NO live
+                                # progress — the run looks dead for 25 min even though the seeds are
+                                # running. The OS temp dir is a real local fs with immediate visibility.
+                                import tempfile as _tf_prog
+                                _prog_dir = os.path.join(_tf_prog.gettempdir(), "routing_optimiser_gaprog")
                                 try:
                                     _shutil.rmtree(_prog_dir, ignore_errors=True)
                                     os.makedirs(_prog_dir, exist_ok=True)
@@ -5577,15 +5630,23 @@ with tab_eng:
                                         return
                                     _done = 0
                                     _active = 0
+                                    _best = None; _best_fit = None
                                     try:
                                         for _fn in os.listdir(_prog_dir):
                                             if _fn.endswith(".txt"):
                                                 try:
                                                     with open(os.path.join(_prog_dir, _fn)) as _pf:
-                                                        _v = int((_pf.read().strip() or "0"))
+                                                        _parts = _pf.read().split("|")   # "total|best|fit"
+                                                    _v = int(((_parts[0]).strip() or "0"))
                                                     _done += _v
                                                     if _v > 0:
                                                         _active += 1
+                                                    if len(_parts) > 1 and _parts[1].strip():
+                                                        _bs = float(_parts[1])
+                                                        if _best is None or _bs > _best:
+                                                            _best = _bs
+                                                            _best_fit = (float(_parts[2]) if (len(_parts) > 2
+                                                                         and _parts[2].strip()) else None)
                                                 except Exception:  # noqa: BLE001
                                                     pass
                                     except Exception:  # noqa: BLE001
@@ -5610,9 +5671,11 @@ with tab_eng:
                                     # each IPOP restart, so a fixed "of Y" would read past 100%.
                                     if _done > _emit["n"] and (_now - _emit["t"]) >= 8.0:
                                         _emit["n"], _emit["t"] = _done, _now
+                                        _bstr = (f" · best score {_best:,.0f}" if _best is not None else "")
+                                        _fstr = (f" · fitness {_best_fit:,.0f}" if _best_fit is not None else "")
                                         log(f"   GA progress: ≈ {_done:,} candidate splits evaluated so far "
                                             f"({_active}/{int(_nseed)} seeds active, {_rate:,.0f}/s) · "
-                                            f"t+{_now - _t0:.0f}s")
+                                            f"t+{_now - _t0:.0f}s{_bstr}{_fstr}")
 
                                 # ---- GA-Numba: PRE-COMPILE the kernel ONCE in the main process ----
                                 # Otherwise all 16 loky workers cold-compile the fused kernel
@@ -5761,7 +5824,8 @@ with tab_eng:
                                                     if _fn.endswith(".txt"):
                                                         try:
                                                             with open(os.path.join(_prog_dir, _fn)) as _pf:
-                                                                _fin_cands += int((_pf.read().strip() or "0"))
+                                                                # "total|best|fit" — take field 0 (the count).
+                                                                _fin_cands += int(((_pf.read().split("|")[0]).strip() or "0"))
                                                         except Exception:  # noqa: BLE001
                                                             pass
                                             if _fin_cands > 0:
@@ -5881,6 +5945,12 @@ with tab_eng:
                                     log("   ───────────────────────────────────────────────────────")
                             except Exception as _nle:  # noqa: BLE001 - logging must never break a run
                                 log(f"   [Warning] GA-Numba diagnostics log skipped ({_nle}).")
+                            # Preserve the MAIN search's full generation history so the convergence
+                            # chart shows all N generations — the re-projection loop below may swap
+                            # _info for a SHORT correction run (its history is only a handful of gens,
+                            # which was why the chart showed e.g. 109 instead of the 300 that ran).
+                            _main_hist = (list(_info.get("history"))
+                                          if (isinstance(_info, dict) and _info.get("history")) else None)
                             if ctx["midband"]:
                                 try:
                                     import time as _rpt
@@ -5889,7 +5959,10 @@ with tab_eng:
                                     # time-based stop_check, so even a single round halts at the next
                                     # generation and keeps its best-so-far; the loop is no-regression
                                     # (a round is accepted only if the true breach actually drops).
-                                    _REPROJ_BUDGET_S = 300.0
+                                    # USER-CONTROLLABLE (Tab 3 · "Re-projection budget (s)", default 300).
+                                    _REPROJ_BUDGET_S = float(ss.get("ga_reproj_budget_s", 300) or 300)
+                                    log(f"   GA re-projection budget: {int(_REPROJ_BUDGET_S)}s "
+                                        "(raise via Tab 3 if the correction hits its wall-cap with a residual breach).")
                                     _rp_t0 = _rpt.time(); _rp_deadline = _rp_t0 + _REPROJ_BUDGET_S
                                     _base_stop = _ga_stop
 
@@ -5916,6 +5989,11 @@ with tab_eng:
                                         _rp_done += 1
                                         _br2 = _ga_true_breach(_sh2)
                                         if _br2 < _br - 1e-9:
+                                            # Accept the better SPLIT but keep the MAIN search's full
+                                            # generation history — the reproj run is wall-capped so its
+                                            # own history is short (that's why the chart showed 109).
+                                            if isinstance(_info2, dict) and _main_hist is not None:
+                                                _info2 = {**_info2, "history": _main_hist}
                                             _sh, _info, _br = _sh2, _info2, _br2   # accept: truly better
                                         else:
                                             break
@@ -5931,6 +6009,15 @@ with tab_eng:
                             ctx["band_weight"] = 8.0   # reset to defaults for anything downstream
                             ctx["band_fixed"] = 20.0
                             ctx["ref_gamma"] = _rg_default
+                            # Restore the main search's full-length history for the convergence chart.
+                            if _main_hist is not None and isinstance(_info, dict):
+                                _info = {**_info, "history": _main_hist}
+                            try:
+                                log(f"   convergence history: {len(_info.get('history') or [])} "
+                                    f"generation(s) recorded (main search; the re-projection run's own "
+                                    f"short history is NOT used for the chart).")
+                            except Exception:  # noqa: BLE001
+                                pass
                             return _sh, _info
 
                         import time as _gatime
@@ -5978,7 +6065,7 @@ with tab_eng:
                         # aggregate VAMP without degenerating (the θ-tilt keeps it revenue-shaped per cell).
                         _rev_ref = max(_rev_of(_ref_share_G), 1.0)
                         _vamp_ref = max(float((_cvol * _ref_share_G * _rkr).sum()), 1.0)
-                        _risk_aversion = float(ss.get("ga_risk_aversion", 0.5))   # UI: safety ↔ revenue
+                        _risk_aversion = 0.0   # FIXED: dial removed — always revenue-shaped (no extra risk-min beyond the caps)
                         _safe_wall0 = _gatime.time()
                         # risk-min endpoint (dial 0): same GA + re-projection correction, with the
                         # risk-min term AND a TOUGHER per-MID band penalty (4× the dial-99 weight) so
@@ -6642,7 +6729,7 @@ with tab_eng:
                             "compress_method": str(ss.get("compress_method", "ward")),
                             "compress_allocation": str(ss.get("compress_allocation", "knapsack")),
                             "ga_search": "breach_targeted+smart_init+adaptive_lambda+diversity_archive (always on)",
-                            "ga_risk_aversion": float(ss.get("ga_risk_aversion", 0.5)),
+                            "ga_risk_aversion": 0.0,   # dial removed — fixed at the revenue-shaped endpoint
                             "ga_breach_fixed": float(ss.get("ga_breach_fixed", 250) or 250),
                             "ga_band_mult": float(ss.get("ga_band_mult", 1.0) or 1.0),
                             "ga_generations": int(ss.get("ga_generations", 80) or 80),
@@ -7300,59 +7387,80 @@ with tab_imp:
                 and set(_rscope["selected"]) != set(_rscope.get("all", ())):
             _scoped_rpgts = tuple(_rscope["selected"])
 
-        def _cc_render_compliance_cost(_tab):
-            """Compliance Cost sub-tab: the before→after share dumbbell showing how the selected
-            compliant split (dial 0) re-routes volume versus the revenue reference (dial 100)."""
+        def _fin_render_share_chart(_evframe, _target=None):
+            """Before → after volume-share chart at vampMid grain, rendered inside Financial Impact.
+            Three series per vampMid: current baseline (grey), proposed split (red) and a
+            max-approval-rate hypothetical (green). The hypothetical routes each cell 100% to its
+            highest-success ELIGIBLE gateway — it respects eligibility (wallet/USA/bans, i.e. the
+            candidate set already present in the split) but ignores the VAMP and max-share caps."""
+            _tc = _target or st
             if not HAS_PLOTLY:
-                st.info("Plotly unavailable — compliance-cost charts skipped.")
-                return
-            _vars = ss.get("variations") or []
-            _sel = ss.get("split")
-            if not _vars or _sel is None or getattr(_sel, "empty", True):
-                st.info("Compute split variations on Tab 3 first — no split to compare yet.")
                 return
             try:
                 import plotly.graph_objects as _go
-                _ref = max(_vars, key=lambda v: float(v.get("weight", 0)))["split"]
-                _sel_w = float(ss.get("selected_variation_weight", 0.0)) * 100.0
-                _mv = gateway_move_vs_reference(_ref, _sel)
-                _mv = _mv[(_mv["ref_volume"] + _mv["prop_volume"]) > 0].copy()
-                if _mv.empty:
-                    st.info("No gateway movement between the reference and the selected split.")
+                _sc = _evframe.copy()
+                if _sc is None or getattr(_sc, "empty", True):
                     return
-                _top = _mv.reindex(_mv["delta_volume"].abs().sort_values(ascending=False).index).head(15)
-                _d = _top.iloc[::-1]                       # smallest-move at bottom for the h-chart
-                _colors = np.where(_d["delta_share"].to_numpy() >= 0, "#1D9E75", "#D85A30")
-
-                st.markdown("###### Before → after share")
-                _xs, _ys = [], []
-                for _, _r in _d.iterrows():
-                    _xs += [_r["ref_share"] * 100, _r["prop_share"] * 100, None]
-                    _ys += [str(_r["gateway"]), str(_r["gateway"]), None]
+                # Cell key = (rpgt, currency, bank); cell_volume is the cell total on every row.
+                _sc["_cellk"] = (_sc["rpgt_join"].astype(str) + "|"
+                                 + _sc["currency_join"].astype(str) + "|"
+                                 + _sc["bank_join"].astype(str))
+                _sc["cell_volume"] = pd.to_numeric(_sc.get("cell_volume", 0), errors="coerce").fillna(0.0)
+                _sc["gw_sr"] = pd.to_numeric(_sc.get("gw_sr", 0), errors="coerce").fillna(0.0)
+                # Max-approval hypothetical: the single highest-gw_sr eligible gateway per cell takes
+                # the whole cell's volume (ignores VAMP / share caps; eligibility already implied by
+                # the candidate set present in the frame).
+                _sc["_maxwin"] = 0.0
+                _valid = _sc[_sc["cell_volume"] > 0]
+                if not _valid.empty:
+                    _win = _valid.groupby("_cellk")["gw_sr"].idxmax()
+                    _sc.loc[_win, "_maxwin"] = _sc.loc[_win, "cell_volume"]
+                _g = _sc.groupby("_vmid", as_index=False).agg(
+                    cur=("pre_vol", "sum"), prop=("post_vol", "sum"), maxa=("_maxwin", "sum"))
+                _tot = float(_g[["cur", "prop", "maxa"]].to_numpy().sum() / 3.0) or 1.0
+                for _c in ("cur", "prop", "maxa"):
+                    _g[_c] = 100.0 * _g[_c] / _tot
+                _g = _g[(_g[["cur", "prop", "maxa"]].abs().sum(axis=1)) > 1e-9]
+                if _g.empty:
+                    return
+                _g = _g.sort_values("prop", ascending=True)          # largest at top of h-chart
+                _lbl = _g["_vmid"].astype(str).str.replace("_", " ").str.strip().str[:40].tolist()
+                _tc.markdown("###### Before → after volume share (by vampMid)")
                 _f1 = _go.Figure()
-                _f1.add_scatter(x=_xs, y=_ys, mode="lines", line=dict(color="#B4B2A9", width=2),
+                # connector line spanning the three points per vampMid
+                _xs, _ys = [], []
+                for _i, _r in _g.iterrows():
+                    _lo = min(_r["cur"], _r["prop"], _r["maxa"]); _hi = max(_r["cur"], _r["prop"], _r["maxa"])
+                    _yl = str(_r["_vmid"]).replace("_", " ").strip()[:40]
+                    _xs += [_lo, _hi, None]; _ys += [_yl, _yl, None]
+                _f1.add_scatter(x=_xs, y=_ys, mode="lines", line=dict(color="#C7D0DE", width=2),
                                 hoverinfo="skip", showlegend=False)
-                _f1.add_scatter(x=(_d["ref_share"] * 100), y=_d["gateway"].astype(str), mode="markers",
-                                marker=dict(color="#B4B2A9", size=9), name="reference",
-                                hovertemplate="%{y}<br>reference %{x:.1f}%<extra></extra>")
-                _f1.add_scatter(x=(_d["prop_share"] * 100), y=_d["gateway"].astype(str), mode="markers",
-                                marker=dict(color=_colors, size=9), name="selected",
-                                hovertemplate="%{y}<br>selected %{x:.1f}%<extra></extra>")
-                _f1.update_layout(height=max(260, 30 * len(_d) + 60),
+                _f1.add_scatter(x=_g["maxa"], y=_lbl, mode="markers",
+                                marker=dict(color="#e63748", size=10), name="max-approval (ceiling)",
+                                hovertemplate="%{y}<br>max-approval %{x:.1f}%<extra></extra>")
+                _f1.add_scatter(x=_g["cur"], y=_lbl, mode="markers",
+                                marker=dict(color="#8A93A6", size=10), name="current baseline",
+                                hovertemplate="%{y}<br>current %{x:.1f}%<extra></extra>")
+                _f1.add_scatter(x=_g["prop"], y=_lbl, mode="markers",
+                                marker=dict(color="#22C36B", size=10), name="proposed split",
+                                hovertemplate="%{y}<br>proposed %{x:.1f}%<extra></extra>")
+                _f1.update_layout(height=max(260, 30 * len(_g) + 70),
                                   margin=dict(l=10, r=10, t=10, b=10),
-                                  xaxis_title="share of volume (%)",
-                                  legend=dict(orientation="h", y=1.08))
-                st.plotly_chart(_f1, use_container_width=True)
+                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                  font=dict(color="#0B1F3A", size=9),
+                                  xaxis=dict(title="", showgrid=False, ticksuffix="%",
+                                             tickfont=dict(color="#0B1F3A", size=9)),
+                                  yaxis=dict(showgrid=False, tickfont=dict(color="#0B1F3A", size=9)),
+                                  legend=dict(orientation="h", y=1.08, font=dict(color="#0B1F3A", size=9)))
+                _tc.plotly_chart(_f1, use_container_width=True)
             except Exception as _e:  # noqa: BLE001
-                st.info(f"Compliance-cost charts unavailable: {type(_e).__name__}: {_e}")
+                _tc.caption(f"Share chart unavailable: {type(_e).__name__}: {_e}")
 
-        (_t_risk, _t_fin, _t_ccost, _t_riskdetail, _t_middet, _t_gwdet, _t_bank,
+        (_t_risk, _t_fin, _t_middet, _t_gwdet, _t_bank,
          _t_engwork) = st.tabs(
-            ["Risk Impact", "Financial Impact", "Compliance Cost", "Risk Detail", "Mid Detail",
+            ["Risk Impact", "Financial Impact", "Mid Detail",
              "Gateway Detail", "Bank Detail", "Engine Workings"])
 
-        with _t_ccost:
-            _cc_render_compliance_cost(_t_ccost)
         with _t_middet:
             _md_bank_slot = st.container()    # per-vampMid bank table + revenue bridge
             _md_charts_slot = st.container()  # vampMid-level SR + gateway-share charts
@@ -7362,46 +7470,61 @@ with tab_imp:
             # ABOVE the Bank x Currency Impact section (its code lives further down).
             _rev_slot = st.container(border=True)
 
-            # -------------- Bank-blocked gateways (auto-block) --------------
+            # -------- Bank-blocked gateways + before/after share chart (same row) --------
+            # Bank-blocked table narrowed 35% (0.5 → 0.325 of the row); share chart takes the rest.
+            _bbc_col, _bsc_col = st.columns([0.65, 1.35])
+            # Right column: before → after volume-share chart (filled once _evv is computed below).
+            _finshare_slot = _bsc_col.container(border=True)
             _blk_df = ss.get("blocked_gateways")
             if (_blk_df is not None and not getattr(_blk_df, "empty", True)
                     and "blocked" in getattr(_blk_df, "columns", []) and bool(_blk_df["blocked"].any())):
-                with st.container(border=True):
+                with _bbc_col.container(border=True):
                     st.markdown("##### Bank-blocked gateways")
                     _bf = _blk_df[_blk_df["blocked"]].copy()
-                    _cols_bf = [c for c in ["bank", "gateway", "consec_failed", "last_success_date"]
+                    # The 'bank' column holds the BIN; add the parent Bank Name beside it.
+                    _b2b_blk = ss.get("bin_to_bank", {})
+                    _bf["bank_name"] = _bf["bank"].map(
+                        lambda b: _b2b_blk.get(b, _b2b_blk.get(str(b).strip().lower(), ""))).astype(str)
+                    _cols_bf = [c for c in ["bank", "bank_name", "gateway", "consec_failed", "last_success_date"]
                                 if c in _bf.columns]
                     if "consec_failed" in _bf.columns:
                         _bf = _bf.sort_values("consec_failed", ascending=False)
                     # Styled HTML table (red sticky header / card bg / ink text) so the format matches
                     # the app's other data tables.
-                    _hdr_bf = {"bank": "Bank", "gateway": "Gateway",
-                               "consec_failed": "Consecutive failed attempts",
+                    _hdr_bf = {"bank": "BIN", "bank_name": "Bank Name", "gateway": "Gateway",
+                               "consec_failed": "Failed Attempts",
                                "last_success_date": "Last success"}
                     _bkh = ['<div style="display:inline-block; max-width:100%; '
                             'box-shadow:0 4px 12px rgba(0,0,0,0.08); border-radius:0; '
                             'overflow:auto; max-height:360px; background-color:var(--tav-card); '
                             'border:1px solid var(--tav-line);">'
                             '<table style="width:auto; border-collapse:collapse; font-family:inherit; '
-                            'font-size:0.72rem; line-height:1.2;"><tr>']
+                            'font-size:0.72rem; line-height:1.2; table-layout:auto;"><tr>']
                     for _c in _cols_bf:
-                        _al = "left" if _c in ("bank", "gateway") else "right"
+                        _al = "left" if _c in ("bank", "bank_name", "gateway") else "right"
+                        # Header wraps (white-space:normal) so a long label like "Consecutive failed
+                        # attempts" no longer forces the column wider than its (short) values.
                         _bkh.append(f'<th style="background-color:var(--tav-red); color:#FFF; '
-                                    f'font-weight:bold; padding:3px 8px; text-align:{_al}; '
-                                    f'position:sticky; top:0; white-space:nowrap;">{_hdr_bf.get(_c, _c)}</th>')
+                                    f'font-weight:bold; padding:3px 6px; text-align:{_al}; '
+                                    f'position:sticky; top:0; white-space:normal; '
+                                    f'word-break:break-word; width:1%;">{_hdr_bf.get(_c, _c)}</th>')
                     _bkh.append('</tr>')
                     for _, _rbk in _bf.iterrows():
                         _bkh.append('<tr>')
                         for _c in _cols_bf:
-                            _al = "left" if _c in ("bank", "gateway") else "right"
+                            _al = "left" if _c in ("bank", "bank_name", "gateway") else "right"
                             _cv = _rbk[_c]
                             if _c == "consec_failed":
                                 _cn = pd.to_numeric(_cv, errors="coerce")
                                 _txt = f"{_cn:,.0f}" if pd.notna(_cn) else "—"
+                            elif _c == "last_success_date":
+                                _dt = pd.to_datetime(_cv, errors="coerce")
+                                _txt = _dt.strftime("%Y-%m-%d") if pd.notna(_dt) else "—"
                             else:
                                 _txt = "—" if (_cv is None or (isinstance(_cv, float) and pd.isna(_cv))) else str(_cv)
-                            _bkh.append(f'<td style="padding:2px 8px; text-align:{_al}; color:var(--tav-ink); '
-                                        f'border-bottom:1px solid var(--tav-line); white-space:nowrap;">{_txt}</td>')
+                            _bkh.append(f'<td style="padding:2px 6px; text-align:{_al}; color:var(--tav-ink); '
+                                        f'border-bottom:1px solid var(--tav-line); white-space:nowrap; '
+                                        f'width:1%;">{_txt}</td>')
                         _bkh.append('</tr>')
                     _bkh.append('</table></div>')
                     st.markdown("".join(_bkh), unsafe_allow_html=True)
@@ -7412,154 +7535,95 @@ with tab_imp:
             # Renders into the "Bank Detail" sub-tab (its RPGT-table slot is filled later).
             with _t_bank.container(border=True):
                 st.markdown("##### Bank x Currency Impact")
-                # Filters — RPGT + sort column + order, all on one row.
-                _rpgt_opts_bk = (["(All)"] + sorted(eval_df["rpgt"].astype(str).dropna().unique().tolist())
-                                 if "rpgt" in eval_df.columns else ["(All)"])
-                _sort_opts = ["30D $ Impact", "Attempts", "Baseline Success", "Expected Success",
-                              "Old Success Rate", "New Success Rate", "Bank"]
-                _rpf1, _fcol1, _fcol2, _rpf_sp = st.columns([1, 1, 1, 5])
-                _rpgt_sel_bk = _rpf1.selectbox("RPGT", _rpgt_opts_bk, index=0, key="bank_rpgt_filter")
-                _sort_by = _fcol1.selectbox("Sort by", _sort_opts, index=0, key="bank_sort_by")
-                _sort_dir = _fcol2.selectbox("Order", ["Descending", "Ascending"], index=0, key="bank_sort_dir")
-                _eval_bk, _cellagg_bk = eval_df, cell_agg
-                if _rpgt_sel_bk != "(All)":
-                    _kbk = str(_rpgt_sel_bk).strip().lower()
-                    if "rpgt_join" in eval_df.columns:
-                        _eval_bk = eval_df[eval_df["rpgt_join"].astype(str).str.strip().str.lower() == _kbk]
-                    if "rpgt_join" in cell_agg.columns:
-                        _cellagg_bk = cell_agg[cell_agg["rpgt_join"].astype(str).str.strip().str.lower() == _kbk]
-                cell_impact = _eval_bk.groupby(["rpgt_join", "currency_join", "bank_join"]).agg(exp_succ=("exp_succ", "sum"), exp_rev=("exp_rev", "sum"), pre_rev=("pre_rev", "sum")).reset_index()
-                cell_full = _cellagg_bk.merge(cell_impact, on=["rpgt_join", "currency_join", "bank_join"], how="left").fillna(0)
-                bank_display_map = eval_df[["bank_join", "bank"]].drop_duplicates().set_index("bank_join")["bank"].to_dict()
-
-                bank_table = cell_full.groupby(["bank_join", "currency_join"]).agg(old_att=("cell_att", "sum"), old_succ=("cell_succ", "sum"), old_rev=("cell_rev", "sum"), old_rev_pre=("pre_rev", "sum"), new_succ=("exp_succ", "sum"), new_rev=("exp_rev", "sum"), avg_ticket=("avg_ticket", "first")).reset_index()
-                # Baseline revenue on the MODELLED pre_rev basis (cell_att × baseline_share × gw_sr ×
-                # avg_ticket) — the SAME basis as the Expected Revenue card and every other bridge, so
-                # all revenue bridges reconcile.
-                bank_table["old_rev"] = bank_table["old_rev_pre"]
-                bank_table["Bank"] = (bank_table["bank_join"].map(bank_display_map).fillna(bank_table["bank_join"]).astype(str)
-                                      + " - " + bank_table["currency_join"].astype(str).str.upper())
-                bank_table["Attempts"] = bank_table["old_att"]
-                bank_table["Baseline Success"] = bank_table["old_succ"]
-                bank_table["Expected Success"] = bank_table["new_succ"]
-                bank_table["Old Success Rate"] = np.where(bank_table["old_att"] > 0, (bank_table["old_succ"] / bank_table["old_att"]) * 100, 0)
-                bank_table["New Success Rate"] = np.where(bank_table["old_att"] > 0, (bank_table["new_succ"] / bank_table["old_att"]) * 100, 0)
-                bank_table["30D $ Impact"] = bank_table["new_rev"] - bank_table["old_rev"]
-
-                total_old_att = bank_table["old_att"].sum()
-                total_row = {
-                    "Bank": "TOTAL", "Attempts": total_old_att, "Baseline Success": bank_table["old_succ"].sum(), "Expected Success": bank_table["new_succ"].sum(),
-                    "Old Success Rate": (bank_table["old_succ"].sum() / total_old_att * 100) if total_old_att > 0 else 0,
-                    "New Success Rate": (bank_table["new_succ"].sum() / total_old_att * 100) if total_old_att > 0 else 0,
-                    "30D $ Impact": bank_table["new_rev"].sum() - bank_table["old_rev"].sum()
-                }
-
-                # (RPGT / Sort by / Order filters render together on one row above.)
-                _nb = int(len(bank_table))
-                _rows = 20
-
-                bank_view = (bank_table.sort_values(_sort_by, ascending=(_sort_dir == "Ascending"))
-                             .head(int(_rows)).reset_index(drop=True))
-
-                _cols = ["Bank", "Attempts", "Baseline Success", "Expected Success",
-                         "Old Success Rate", "New Success Rate", "30D $ Impact"]
-
-                def _fmt_cell(col, v):
-                    if col == "Bank":
-                        _s = str(v)
-                        return (_s[:30] + "…") if len(_s) > 30 else _s
-                    if col in ("Old Success Rate", "New Success Rate"):
-                        return f"{float(v):.2f}%"
-                    if col == "30D $ Impact":
-                        return f"${float(v):+,.0f}"
-                    return f"{float(v):,.0f}"
-
-                # HTML table styled like the 'Forecast VAMP impact' table below.
-                # Height is not fixed here: the equal-height flex CSS stretches this
-                # card to match the revenue-bridge waterfall beside it, and scrolls
-                # if the content is taller.
-                # Numeric columns ~half width (smaller font + tight padding + wrapping headers);
-                # the Bank column keeps its size. Table hugs content so overall width ~halves.
-                def _bcw(_c):
-                    return ("padding:4px 8px; font-size:0.74rem;" if _c == "Bank"
-                            else "padding:1px 2px; font-size:0.35rem;")
-                _h = ['<div style="box-shadow:0 4px 12px rgba(0,0,0,0.08); border-radius:0; '
-                      'overflow:auto; margin-bottom:1rem; '   # gap before the RPGT table beneath it
-                      'background-color:var(--tav-card); border:1px solid var(--tav-line);">']
-                _h.append('<table style="width:100%; border-collapse:collapse; font-family:inherit; line-height:1.15;"><tr>')
-                for _c in _cols:
-                    _al = "left" if _c == "Bank" else "right"
-                    _ws = "nowrap" if _c == "Bank" else "normal"
-                    _h.append(f'<th style="background-color:var(--tav-red); color:#FFF; font-weight:bold; '
-                              f'{_bcw(_c)} text-align:{_al}; white-space:{_ws};">{_c}</th>')
-                _h.append('</tr>')
-
-                def _bank_row_html(r, is_total=False):
-                    _tb = "border-top:2px solid var(--tav-line);" if is_total else ""
-                    _cells = []
-                    for _c in _cols:
-                        _al = "left" if _c == "Bank" else "right"
-                        _fw = "800" if is_total else ("600" if _c == "Bank" else "normal")
-                        _clr = "var(--tav-ink)"
-                        if _c == "30D $ Impact" and not is_total:
-                            _clr = "#22C36B" if float(r[_c]) >= 0 else "#e63748"
-                        _cells.append(f'<td style="{_bcw(_c)} text-align:{_al}; color:{_clr}; '
-                                      f'font-weight:{_fw}; {_tb} white-space:nowrap;">{_fmt_cell(_c, r[_c])}</td>')
-                    return "<tr>" + "".join(_cells) + "</tr>"
-
-                for _, _r in bank_view.iterrows():
-                    _h.append(_bank_row_html(_r))
-                _h.append(_bank_row_html(total_row, is_total=True))
-                _h.append("</table></div>")
 
                 # Shared revenue-bridge waterfall builder (used by the top-of-tab bridge AND the
-                # per-vampMid bridge below), so every bridge has the SAME format. X-axis: min =
-                # lower of Current/Proposed − $20k; max = Current + all increases + $20k. Y labels
-                # show the FULL name (automargin + a wide left margin), never truncated.
-                def _rev_bridge_waterfall(pre, post, names, deltas, money=True):
+                # per-vampMid / success bridges below), so every bridge has the SAME format. Defined
+                # at this (outer) scope — the fragment below and the later pre/post section both call
+                # it. X-axis min = running trough − pad; max = running peak + pad. Y labels show the
+                # FULL name (automargin + a wide left margin), never truncated.
+                def _rev_bridge_waterfall(pre, post, names, deltas, money=True, pct=False, wide_min=False,
+                                          height=560, tick_size=9, left_margin=None):
                     if not HAS_PLOTLY:
                         return None
                     import plotly.graph_objects as _gwf
                     pre, post = float(pre), float(post)
                     _dl = [float(d) for d in deltas]
                     _xs = ["Current"] + [str(n) for n in names] + ["Proposed"]
+                    # Auto-size the left margin to the LONGEST y-label so short-name bridges (RPGT)
+                    # don't get dead space and long-name ones (Bank×Currency) aren't clipped.
+                    if left_margin is None:
+                        _maxlab = max((len(str(s)) for s in _xs), default=6)
+                        left_margin = int(min(240, max(30, _maxlab * tick_size * 0.62 + 14)))
                     _ys = [pre] + _dl + [0.0]
                     _labs = [pre] + _dl + [post]
                     _meas = ["absolute"] + ["relative"] * len(_dl) + ["total"]
-                    _incsum = sum(d for d in _dl if d > 0)
-                    _span = max(abs(pre), abs(post), abs(pre + _incsum), 1.0)
-                    _pad = 0.06 * _span
-                    _lo = min(pre, post) - _pad
-                    _hi = pre + _incsum + _pad
+                    # Tight x-range = the ACTUAL running-total envelope the waterfall traverses
+                    # (Current → each cumulative step → Proposed), so there's no dead whitespace on
+                    # the right from summing every increase. The pad scales to the VISIBLE movement
+                    # (peak−trough), not the absolute magnitude, so a large-$ bridge with small moves
+                    # doesn't get a huge margin; the right side gets extra room for outside labels.
+                    _cum = pre
+                    _peak = max(pre, post); _trough = min(pre, post)
+                    for _d in _dl:
+                        _cum += _d
+                        _peak = max(_peak, _cum); _trough = min(_trough, _cum)
+                    _span = max(abs(_peak - _trough), 1.0)
+                    # wide_min: force the floor further left when a caller wants every bar fully shown.
+                    _lo = ((min(pre, post) - sum(abs(d) for d in _dl) - 0.06 * _span) if wide_min
+                           else (_trough - 0.06 * _span))
+                    _hi = _peak + 0.16 * _span
                     if _hi <= _lo:
                         _hi = _lo + 1.0
 
                     def _fmt(_v):
+                        if pct:
+                            return f"{_v:,.2f}%"
                         if money:
                             return (f"${_v/1e6:,.2f}M" if abs(_v) >= 1e6 else f"${_v/1e3:,.1f}k")
                         return (f"{_v/1e6:,.2f}M" if abs(_v) >= 1e6 else f"{_v:,.0f}")
                     _text = [_fmt(_v) for _v in _labs]
+                    # Right edge (value axis) of each bar, so EVERY value label sits to the RIGHT of
+                    # its bar via annotations (rather than plotly's directional "outside", which puts
+                    # decreasing-bar labels on the left).
+                    _rights = [max(0.0, pre)]
+                    _cum2 = pre
+                    for _d in _dl:
+                        _nxt = _cum2 + _d
+                        _rights.append(max(_cum2, _nxt))
+                        _cum2 = _nxt
+                    _rights.append(max(0.0, post))
+                    _r_margin = int(max(40, (max((len(t) for t in _text), default=6)) * tick_size * 0.62 + 12))
                     # Tooltip shows the FULL amount as $###,### (Current = pre, Proposed = post, each
                     # intermediate = its delta), instead of the abbreviated $x.xxM outside labels.
-                    _hovfmt = ("%{y}<br>$%{customdata:,.0f}<extra></extra>" if money
-                               else "%{y}<br>%{customdata:,.0f}<extra></extra>")
+                    _hovfmt = ("%{y}<br>%{customdata:,.2f}%<extra></extra>" if pct
+                               else ("%{y}<br>$%{customdata:,.0f}<extra></extra>" if money
+                                     else "%{y}<br>%{customdata:,.0f}<extra></extra>"))
                     _wf = _gwf.Figure(_gwf.Waterfall(
                         orientation="h", measure=_meas, y=_xs, x=_ys,
-                        text=_text, textposition="outside", textfont=dict(size=8, color='#0B1F3A'),
+                        text=_text, textposition="none",
+                        cliponaxis=False,
                         customdata=_labs, hovertemplate=_hovfmt,
                         connector=dict(line=dict(color="#B9C6DA")),
                         increasing=dict(marker=dict(color="#22C36B")),
                         decreasing=dict(marker=dict(color="#e63748")),
                         totals=dict(marker=dict(color="#0B1F3A")), showlegend=False))
+                    # Value labels pinned to the RIGHT of each bar.
+                    for _yc, _xr, _tt in zip(_xs, _rights, _text):
+                        _wf.add_annotation(x=_xr, y=_yc, text=_tt, showarrow=False,
+                                           xanchor="left", xshift=3, yanchor="middle",
+                                           font=dict(color="#0B1F3A", size=tick_size))
                     _wf.update_layout(
-                        height=560, margin=dict(l=170, r=40, t=14, b=10),   # wide left margin for full names
+                        # automargin (below) grows the left margin to fit the full names; left_margin
+                        # is the floor so short-name bridges still line up; r_margin fits the right labels.
+                        height=height, margin=dict(l=left_margin, r=_r_margin, t=14, b=10),
                         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                         font=dict(color='#0B1F3A', family="inherit"))
                     _wf.update_xaxes(range=[_lo, _hi], showgrid=True, gridcolor='lightgrey',
-                                     tickprefix=("$" if money else ""),
-                                     tickfont=dict(color='#0B1F3A', size=8), title=None)
+                                     tickprefix=("$" if (money and not pct) else ""),
+                                     ticksuffix=("%" if pct else ""),
+                                     tickfont=dict(color='#0B1F3A', size=tick_size), title=None)
                     _wf.update_yaxes(type="category", autorange="reversed", showgrid=False,
-                                     tickfont=dict(color='#0B1F3A', size=8), title=None, automargin=True,
+                                     tickfont=dict(color='#0B1F3A', size=tick_size), title=None, automargin=True,
                                      tickmode="array", tickvals=_xs, ticktext=[str(s) for s in _xs])  # full names
                     return _wf
 
@@ -7590,35 +7654,137 @@ with tab_imp:
                     _deltas = _sel["_dd"].tolist() + ([_o] if _has_other else [])
                     return _pre_t, _post_t, _names, _deltas
 
-                # Revenue bridge across the top 10 most-impacted Bank×Currency cells.
-                _bank_wf = None
-                if HAS_PLOTLY and not bank_table.empty:
-                    _bt = bank_table.copy()
-                    _bt["delta"] = _bt["new_rev"] - _bt["old_rev"]
-                    _bt = _bt[(_bt["old_rev"].abs() + _bt["new_rev"].abs()) > 0]
-                    # Top 7 increases + top 7 decreases; everything else rolls into 'Other banks'.
-                    _inc7 = _bt[_bt["delta"] > 0].sort_values("delta", ascending=False).head(7)
-                    _dec7 = _bt[_bt["delta"] < 0].sort_values("delta", ascending=True).head(7)
-                    _bt = pd.concat([_inc7, _dec7]).sort_values("delta", ascending=False)
-                    if not _bt.empty:
-                        # Bridge the FULL portfolio: total current -> top-10 deltas ->
-                        # aggregate of all other banks -> total proposed, so it reconciles.
-                        _pre = float(bank_table["old_rev"].sum())
-                        _post = float(bank_table["new_rev"].sum())
-                        _has_other = len(bank_table) > len(_bt)
-                        _other = (_post - _pre) - float(_bt["delta"].sum())
-                        _names = _bt["Bank"].tolist() + (["Other banks"] if _has_other else [])
-                        _deltas = _bt["delta"].tolist() + ([_other] if _has_other else [])
-                        _bank_wf = _rev_bridge_waterfall(_pre, _post, _names, _deltas)
+                # The filter row + bank table + revenue bridge live in a st.fragment, so changing the
+                # RPGT / Sort / Order filters reruns ONLY this section — no full-page whiteout, other
+                # sub-tabs stay put. The RPGT revenue table (_rpgt_tab_slot) is created OUTSIDE the
+                # fragment and filled later from the pre/post section, so a filter change never blanks
+                # it. Falls back to a plain call on Streamlit builds without st.fragment.
+                def _bank_detail_fragment():
+                    # Filters — RPGT + sort column + order, all on one row.
+                    _rpgt_opts_bk = (["(All)"] + sorted(eval_df["rpgt"].astype(str).dropna().unique().tolist())
+                                     if "rpgt" in eval_df.columns else ["(All)"])
+                    _sort_opts = ["30D $ Impact", "Attempts", "Baseline Success", "Expected Success",
+                                  "Old Success Rate", "New Success Rate", "Bank"]
+                    _rpf1, _fcol1, _fcol2, _rpf_sp = st.columns([1, 1, 1, 5])
+                    _rpgt_sel_bk = _rpf1.selectbox("RPGT", _rpgt_opts_bk, index=0, key="bank_rpgt_filter")
+                    _sort_by = _fcol1.selectbox("Sort by", _sort_opts, index=0, key="bank_sort_by")
+                    _sort_dir = _fcol2.selectbox("Order", ["Descending", "Ascending"], index=0, key="bank_sort_dir")
+                    _eval_bk, _cellagg_bk = eval_df, cell_agg
+                    if _rpgt_sel_bk != "(All)":
+                        _kbk = str(_rpgt_sel_bk).strip().lower()
+                        if "rpgt_join" in eval_df.columns:
+                            _eval_bk = eval_df[eval_df["rpgt_join"].astype(str).str.strip().str.lower() == _kbk]
+                        if "rpgt_join" in cell_agg.columns:
+                            _cellagg_bk = cell_agg[cell_agg["rpgt_join"].astype(str).str.strip().str.lower() == _kbk]
+                    cell_impact = _eval_bk.groupby(["rpgt_join", "currency_join", "bank_join"]).agg(exp_succ=("exp_succ", "sum"), exp_rev=("exp_rev", "sum"), pre_rev=("pre_rev", "sum")).reset_index()
+                    cell_full = _cellagg_bk.merge(cell_impact, on=["rpgt_join", "currency_join", "bank_join"], how="left").fillna(0)
+                    bank_display_map = eval_df[["bank_join", "bank"]].drop_duplicates().set_index("bank_join")["bank"].to_dict()
 
-                # One row: Bank table + RPGT revenue table + SR-by-RPGT chart stacked in the left
-                # column (all same width); revenue-bridge waterfall spanning them on the right.
-                # The RPGT visuals are built in the Pre/post section and render into these slots.
-                _left_col, _right_col = st.columns([1, 2])
-                _left_col.markdown("".join(_h), unsafe_allow_html=True)
-                _rpgt_tab_slot = _left_col.container()
-                if _bank_wf is not None:
-                    _right_col.plotly_chart(_bank_wf, use_container_width=True)
+                    bank_table = cell_full.groupby(["bank_join", "currency_join"]).agg(old_att=("cell_att", "sum"), old_succ=("cell_succ", "sum"), old_rev=("cell_rev", "sum"), old_rev_pre=("pre_rev", "sum"), new_succ=("exp_succ", "sum"), new_rev=("exp_rev", "sum"), avg_ticket=("avg_ticket", "first")).reset_index()
+                    # Baseline revenue on the MODELLED pre_rev basis (same basis as the Expected
+                    # Revenue card and every other bridge, so all revenue bridges reconcile).
+                    bank_table["old_rev"] = bank_table["old_rev_pre"]
+                    bank_table["Bank"] = (bank_table["bank_join"].map(bank_display_map).fillna(bank_table["bank_join"]).astype(str)
+                                          + " - " + bank_table["currency_join"].astype(str).str.upper())
+                    bank_table["Attempts"] = bank_table["old_att"]
+                    bank_table["Baseline Success"] = bank_table["old_succ"]
+                    bank_table["Expected Success"] = bank_table["new_succ"]
+                    bank_table["Old Success Rate"] = np.where(bank_table["old_att"] > 0, (bank_table["old_succ"] / bank_table["old_att"]) * 100, 0)
+                    bank_table["New Success Rate"] = np.where(bank_table["old_att"] > 0, (bank_table["new_succ"] / bank_table["old_att"]) * 100, 0)
+                    bank_table["30D $ Impact"] = bank_table["new_rev"] - bank_table["old_rev"]
+
+                    total_old_att = bank_table["old_att"].sum()
+                    total_row = {
+                        "Bank": "TOTAL", "Attempts": total_old_att, "Baseline Success": bank_table["old_succ"].sum(), "Expected Success": bank_table["new_succ"].sum(),
+                        "Old Success Rate": (bank_table["old_succ"].sum() / total_old_att * 100) if total_old_att > 0 else 0,
+                        "New Success Rate": (bank_table["new_succ"].sum() / total_old_att * 100) if total_old_att > 0 else 0,
+                        "30D $ Impact": bank_table["new_rev"].sum() - bank_table["old_rev"].sum()
+                    }
+
+                    _rows = 20
+                    bank_view = (bank_table.sort_values(_sort_by, ascending=(_sort_dir == "Ascending"))
+                                 .head(int(_rows)).reset_index(drop=True))
+
+                    _cols = ["Bank", "Attempts", "Baseline Success", "Expected Success",
+                             "Old Success Rate", "New Success Rate", "30D $ Impact"]
+
+                    def _fmt_cell(col, v):
+                        if col == "Bank":
+                            _s = str(v)
+                            return (_s[:30] + "…") if len(_s) > 30 else _s
+                        if col in ("Old Success Rate", "New Success Rate"):
+                            return f"{float(v):.2f}%"
+                        if col == "30D $ Impact":
+                            return f"${float(v):+,.0f}"
+                        return f"{float(v):,.0f}"
+
+                    def _bcw(_c):
+                        return ("padding:4px 8px; font-size:0.74rem;" if _c == "Bank"
+                                else "padding:1px 2px; font-size:0.35rem;")
+                    _h = ['<div style="box-shadow:0 4px 12px rgba(0,0,0,0.08); border-radius:0; '
+                          'overflow:auto; margin-bottom:1rem; '   # gap before the RPGT table beneath it
+                          'background-color:var(--tav-card); border:1px solid var(--tav-line);">']
+                    _h.append('<table style="width:100%; border-collapse:collapse; font-family:inherit; line-height:1.15;"><tr>')
+                    for _c in _cols:
+                        _al = "left" if _c == "Bank" else "right"
+                        _ws = "nowrap" if _c == "Bank" else "normal"
+                        _h.append(f'<th style="background-color:var(--tav-red); color:#FFF; font-weight:bold; '
+                                  f'{_bcw(_c)} text-align:{_al}; white-space:{_ws};">{_c}</th>')
+                    _h.append('</tr>')
+
+                    def _bank_row_html(r, is_total=False):
+                        _tb = "border-top:2px solid var(--tav-line);" if is_total else ""
+                        _cells = []
+                        for _c in _cols:
+                            _al = "left" if _c == "Bank" else "right"
+                            _fw = "800" if is_total else ("600" if _c == "Bank" else "normal")
+                            _clr = "var(--tav-ink)"
+                            if _c == "30D $ Impact" and not is_total:
+                                _clr = "#22C36B" if float(r[_c]) >= 0 else "#e63748"
+                            _cells.append(f'<td style="{_bcw(_c)} text-align:{_al}; color:{_clr}; '
+                                          f'font-weight:{_fw}; {_tb} white-space:nowrap;">{_fmt_cell(_c, r[_c])}</td>')
+                        return "<tr>" + "".join(_cells) + "</tr>"
+
+                    for _, _r in bank_view.iterrows():
+                        _h.append(_bank_row_html(_r))
+                    _h.append(_bank_row_html(total_row, is_total=True))
+                    _h.append("</table></div>")
+
+                    # Revenue bridge across the top 10 most-impacted Bank×Currency cells.
+                    _bank_wf = None
+                    if HAS_PLOTLY and not bank_table.empty:
+                        _bt = bank_table.copy()
+                        _bt["delta"] = _bt["new_rev"] - _bt["old_rev"]
+                        _bt = _bt[(_bt["old_rev"].abs() + _bt["new_rev"].abs()) > 0]
+                        # Top 7 increases + top 7 decreases; everything else rolls into 'Other banks'.
+                        _inc7 = _bt[_bt["delta"] > 0].sort_values("delta", ascending=False).head(7)
+                        _dec7 = _bt[_bt["delta"] < 0].sort_values("delta", ascending=True).head(7)
+                        _bt = pd.concat([_inc7, _dec7]).sort_values("delta", ascending=False)
+                        if not _bt.empty:
+                            # Bridge the FULL portfolio: total current -> top-10 deltas ->
+                            # aggregate of all other banks -> total proposed, so it reconciles.
+                            _pre = float(bank_table["old_rev"].sum())
+                            _post = float(bank_table["new_rev"].sum())
+                            _has_other = len(bank_table) > len(_bt)
+                            _other = (_post - _pre) - float(_bt["delta"].sum())
+                            _names = _bt["Bank"].tolist() + (["Other banks"] if _has_other else [])
+                            _deltas = _bt["delta"].tolist() + ([_other] if _has_other else [])
+                            # Same defaults as the Bank Analysis bridge (9px text, auto left margin),
+                            # so the two bridges are visually consistent.
+                            _bank_wf = _rev_bridge_waterfall(_pre, _post, _names, _deltas)
+
+                    # Bank table (left third) + revenue bridge (right two-thirds) on one row.
+                    _left_col, _right_col = st.columns([1, 2])
+                    _left_col.markdown("".join(_h), unsafe_allow_html=True)
+                    if _bank_wf is not None:
+                        _right_col.plotly_chart(_bank_wf, use_container_width=True)
+
+                (st.fragment(_bank_detail_fragment) if hasattr(st, "fragment") else _bank_detail_fragment)()
+
+                # RPGT revenue table + SR-by-RPGT chart slot — created OUTSIDE the fragment so a
+                # filter-only rerun never blanks it (it's populated later from the pre/post section).
+                # Kept ~1/3 width + left-aligned, so it sits just under the bank table above.
+                _rpgt_tab_slot = st.columns([1, 2])[0].container()
 
 
             # -------------- 30D revenue by vampMid × month (pre vs post) --------------
@@ -7784,7 +7950,8 @@ with tab_imp:
                 st.markdown("##### Bank Analysis")
                 # Match the styling of the other Plotly charts on this tab.
                 st.markdown("""<style>
-                    [data-testid="stPlotlyChart"] { background-color: var(--tav-card) !important; box-shadow: 0 4px 12px rgba(0,0,0,0.06) !important; border: 1px solid var(--tav-line) !important; border-radius: 0 !important; padding: 12px !important; margin-bottom: 1rem; }
+                    [data-testid="stPlotlyChart"] { background-color: var(--tav-card) !important; box-shadow: 0 4px 12px rgba(0,0,0,0.06) !important; border: 1px solid var(--tav-line) !important; border-radius: 0 !important; padding: 12px !important; margin-bottom: 1rem; overflow: hidden !important; }
+                    [data-testid="stPlotlyChart"] > div, [data-testid="stPlotlyChart"] .js-plotly-plot, [data-testid="stPlotlyChart"] .plot-container { max-width: 100% !important; }
                 </style>""", unsafe_allow_html=True)
 
                 _adf_raw = ss.get("adf")
@@ -7845,7 +8012,7 @@ with tab_imp:
                             daily["sr"] = daily["sr"].clip(upper=100.0)
 
                             import plotly.graph_objects as go
-                            _afont = dict(color='#0B1F3A', size=8, family="inherit")
+                            _afont = dict(color='#0B1F3A', size=9, family="inherit")
 
                             def _style(fig):
                                 fig.update_layout(
@@ -7880,7 +8047,7 @@ with tab_imp:
                             fig_a.update_layout(
                                 showlegend=True,
                                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5,
-                                            font=dict(color="#0B1F3A", size=8)),
+                                            font=dict(color="#0B1F3A", size=9)),
                                 yaxis2=dict(overlaying="y", side="right", range=[_y2lo, _y2hi],
                                             showgrid=False, showticklabels=False))
                             _att_nz = daily.loc[daily["attempts"] > 0, "attempts"]     # left axis min = min bar − 20%
@@ -7898,7 +8065,7 @@ with tab_imp:
                             fig_s.update_layout(
                                 showlegend=True,
                                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5,
-                                            font=dict(color="#0B1F3A", size=8)))
+                                            font=dict(color="#0B1F3A", size=9)))
                             _suc_nz = daily.loc[daily["success"] > 0, "success"]       # left axis min = min bar − 20%
                             fig_s.update_yaxes(range=[float(_suc_nz.min()) * 0.8 if not _suc_nz.empty else 0.0,
                                                       float(daily["success"].max()) * 1.1 if daily["success"].max() > 0 else 1.0])
@@ -7914,10 +8081,13 @@ with tab_imp:
             # -------------- Technical Impact Charts & Specific Details --------
             with st.container():
                 _vmbr_slot = _rpgtbr_slot = None   # revenue-bridge slots (filled from the pre/post section)
+                _vmsr_slot = _rpgtsr_slot = None   # approval-rate (success) bridge slots (Batch C)
+                _finshare_slot = locals().get("_finshare_slot", None)  # before/after share chart slot
                 st.markdown("<div style='height: 1rem;'></div>", unsafe_allow_html=True)
 
                 st.markdown("""<style>
-                    [data-testid="stPlotlyChart"] { background-color: var(--tav-card) !important; box-shadow: 0 4px 12px rgba(0,0,0,0.06) !important; border: 1px solid var(--tav-line) !important; border-radius: 0 !important; padding: 12px !important; margin-bottom: 2rem; }
+                    [data-testid="stPlotlyChart"] { background-color: var(--tav-card) !important; box-shadow: 0 4px 12px rgba(0,0,0,0.06) !important; border: 1px solid var(--tav-line) !important; border-radius: 0 !important; padding: 12px !important; margin-bottom: 2rem; overflow: hidden !important; }
+                    [data-testid="stPlotlyChart"] > div, [data-testid="stPlotlyChart"] .js-plotly-plot, [data-testid="stPlotlyChart"] .plot-container { max-width: 100% !important; }
                 </style>""", unsafe_allow_html=True)
             
                 eval_df["bank_currency"] = eval_df["bank"] + " - " + eval_df["currency"].str.upper()
@@ -7970,10 +8140,10 @@ with tab_imp:
                     if HAS_PLOTLY:
                         import plotly.express as px
                         import plotly.graph_objects as go
-                        axis_layout_config = dict(tickfont=dict(color='#0B1F3A', size=8, family="inherit"), title_font=dict(color='#0B1F3A', size=10, family="inherit"), automargin=True)
-                    
+                        axis_layout_config = dict(tickfont=dict(color='#0B1F3A', size=9, family="inherit"), title_font=dict(color='#0B1F3A', size=9, family="inherit"), automargin=True)
+
                         _leg_top = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
-                                        font=dict(color='#0B1F3A', size=8), title_text=None)
+                                        font=dict(color='#0B1F3A', size=9), title_text=None)
                         # Colour = DARKNESS tied to VOLUME so higher-opacity lines are ALSO darker:
                         # sort the palette by luminance (darkest first) and give the darkest shades to
                         # the highest-volume gateways, matching the opacity ramp below.
@@ -8117,11 +8287,11 @@ with tab_imp:
                                 figw.update_layout(
                                     height=460, margin=dict(l=35, r=40, t=14, b=10),
                                     paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                                    font=dict(color='#0B1F3A', family="inherit"))
+                                    font=dict(color='#0B1F3A', family="inherit", size=9))
                                 figw.update_xaxes(range=[_wlo, _whi], showgrid=True, gridcolor='lightgrey',
-                                                  tickprefix="$", tickfont=dict(color='#0B1F3A', size=8), title=None, automargin=True)
+                                                  tickprefix="$", tickfont=dict(color='#0B1F3A', size=9), title=None, automargin=True)
                                 figw.update_yaxes(type="category", autorange="reversed", showgrid=False,
-                                                  tickfont=dict(color='#0B1F3A', size=8), title=None, automargin=True)
+                                                  tickfont=dict(color='#0B1F3A', size=9), title=None, automargin=True)
                                 _gw_wf = figw
                     else:
                         st.caption("Plotly is required to render these interactive charts.")
@@ -8279,15 +8449,18 @@ with tab_imp:
 
                     # Revenue bridges (by vampMid / by RPGT) — reserved ABOVE the SR / share charts,
                     # filled later from the pre/post section once _evv / _rp are computed.
-                    # Shared controls: metric (Revenue $ / Transactions) + which movers to show.
-                    _br_metric = st.radio("Bridge metric", ["Revenue", "Transactions"],
-                                          horizontal=True, key="tab_imp_br_metric",
-                                          label_visibility="collapsed")
+                    # (Revenue/Transactions toggle removed — the revenue bridge is the only view.)
                     _br_sort = "Top absolute movers"   # fixed: always show the biggest absolute movers
-                    _br_money = (_br_metric == "Revenue")
-                    _brc1, _brc2 = st.columns(2)
-                    _vmbr_slot = _brc1.container()
-                    _rpgtbr_slot = _brc2.container()
+                    _br_money = True                   # Revenue bridge only (Txn toggle removed)
+                    # Row 1 = vampMid bridges (revenue | success); Row 2 = RPGT bridges (revenue |
+                    # success). A trailing spacer keeps each pair's combined width within the pre/post
+                    # impact table's footprint rather than spanning the whole tab.
+                    _vmc1, _vmc2, _vmc3 = st.columns([1, 1, 0.9])
+                    _vmbr_slot = _vmc1.container()     # revenue by vampMid
+                    _vmsr_slot = _vmc2.container()     # success by vampMid
+                    _rpc1, _rpc2, _rpc3 = st.columns([1, 1, 0.9])
+                    _rpgtbr_slot = _rpc1.container()   # revenue by RPGT
+                    _rpgtsr_slot = _rpc2.container()   # success by RPGT
 
                     # SR + gateway-share charts (now vampMid-level, no headers) render on the
                     # Mid Detail tab, side by side.
@@ -8345,8 +8518,8 @@ with tab_imp:
                                     hovertemplate=("MID: %{text}<br>30D raw volume: %{x:,.0f}"
                                                    "<br>30D raw SR %% : %{y:.2%}<extra></extra>"))
                                 _scfig.update_yaxes(tickformat=".0%", title_text=None,
-                                                    tickfont=dict(color="#0B1F3A", size=8), gridcolor="lightgrey")
-                                _scfig.update_xaxes(title_text=None, tickfont=dict(color="#0B1F3A", size=8))
+                                                    tickfont=dict(color="#0B1F3A", size=9), gridcolor="lightgrey")
+                                _scfig.update_xaxes(title_text=None, tickfont=dict(color="#0B1F3A", size=9))
                                 _scfig.update_layout(
                                     height=430, margin=dict(l=45, r=10, t=20, b=20),
                                     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -8400,7 +8573,7 @@ with tab_imp:
                                     hovertemplate=_hov_tr), row=_r, col=_c)
                             _fig_tr.update_annotations(font=dict(size=11, color="#0B1F3A"))
                             _fig_tr.update_yaxes(tickformat=".0%", showgrid=True, gridcolor="lightgrey",
-                                                 tickfont=dict(color="#0B1F3A", size=8))
+                                                 tickfont=dict(color="#0B1F3A", size=9))
                             _fig_tr.update_xaxes(showticklabels=False, showgrid=False)
                             _fig_tr.update_layout(
                                 height=max(468, 273 * _nrow_tr), margin=dict(l=30, r=20, t=30, b=10),
@@ -8467,6 +8640,10 @@ with tab_imp:
                 _evv["_vmid"] = (_evv["gateway"].astype(str).str.strip().str.lower().map(_f2v_bi)
                                  .fillna(_evv["gateway"].astype(str)))
 
+                # Before → after volume-share chart (now in Financial Impact, next to the
+                # bank-block table) — needs _evv with _vmid, so render it into the reserved slot here.
+                _fin_render_share_chart(_evv, _finshare_slot)
+
                 # ---- Portfolio revenue bridges: by vampMid and by RPGT (side by side) ----
                 # Same waterfall format as the Bank×Currency bridge. The vampMid bridge uses the
                 # per-vampMid pre/post revenue (as the per-vampMid bank table does); the RPGT bridge
@@ -8491,7 +8668,8 @@ with tab_imp:
                             _rpx = _rpx.merge(_rpvol, on="_rl", how="left").fillna({"pre_vol": 0.0, "post_vol": 0.0})
                             _rbi = _bridge_items(_rpx, "rpgt", _bpre, _bpost, _br_sort, "Other RPGTs", _max_n=None)
                             if _rbi is not None:
-                                _rpgt_wf_all = _rev_bridge_waterfall(*_rbi, money=_br_money)
+                                # Left margin auto-sizes to the RPGT label length.
+                                _rpgt_wf_all = _rev_bridge_waterfall(*_rbi, money=_br_money, height=392)
                     except NameError:
                         _rpgt_wf_all = None
                     # Render into the slots reserved above the SR / gateway-share charts
@@ -8501,8 +8679,48 @@ with tab_imp:
                     if _rpgt_wf_all is not None:
                         (_rpgtbr_slot or st).plotly_chart(_rpgt_wf_all, use_container_width=True)
 
+                    # ---- Approval-rate (success) bridges: current → proposed success %, by vampMid
+                    #      and by RPGT (Batch C). Reconciled EXACTLY to the "Expected Success Rate
+                    #      (30D)" red card: same denominator (base_att = 30D attempts), same endpoints
+                    #      (current = base_sr = base_succ/base_att, proposed = exp_sr = new_succ/
+                    #      base_att). Proposed per-group uses the modelled post_succ (sums to new_succ);
+                    #      the modelled per-group baseline is rescaled so it sums to the card's
+                    #      base_succ, so the Current bar lands on base_sr to the last decimal.
+                    try:
+                        _sev = _evv.copy()
+                        _D = float(base_att) or 1.0                      # card denominator (30D attempts)
+                        _sum_pre = float(pd.to_numeric(_sev.get("pre_succ"), errors="coerce")
+                                         .fillna(0.0).sum()) or 1.0
+                        _cur_scale = float(base_succ) / _sum_pre         # modelled baseline → card base_succ
+
+                        def _sr_bridge(_grp_col, _other):
+                            _g = _sev.groupby(_grp_col, as_index=False).agg(
+                                pre_succ=("pre_succ", "sum"), post_succ=("post_succ", "sum"))
+                            _g["pre_rate"] = 100.0 * _g["pre_succ"] * _cur_scale / _D
+                            _g["post_rate"] = 100.0 * _g["post_succ"] / _D
+                            return _bridge_items(_g, _grp_col, "pre_rate", "post_rate", _br_sort,
+                                                 _other, _max_n=None)
+
+                        _vsbi = _sr_bridge("_vmid", "Other vampMids")
+                        if _vsbi is not None:
+                            (_vmsr_slot or st).plotly_chart(
+                                _rev_bridge_waterfall(*_vsbi, money=False, pct=True),
+                                use_container_width=True)
+                        # by RPGT (title-cased label)
+                        _sev["_rl"] = _sev["rpgt"].astype(str).str.strip().str.title()
+                        _rsbi = _sr_bridge("_rl", "Other RPGTs")
+                        if _rsbi is not None:
+                            (_rpgtsr_slot or st).plotly_chart(
+                                _rev_bridge_waterfall(*_rsbi, money=False, pct=True, height=392),
+                                use_container_width=True)
+                    except Exception as _sbe:  # noqa: BLE001
+                        (_vmsr_slot or st).caption(
+                            f"Approval bridges unavailable: {type(_sbe).__name__}: {_sbe}")
+
                 _gopts = sorted(_evv["_vmid"].dropna().astype(str).unique().tolist())
-                with _md_bank_slot:
+                # Mid Detail filter + treemap + table + bridge live in a st.fragment, so changing the
+                # Mid / Top-banks controls reruns ONLY this section (no full-page whiteout).
+                def _md_detail_fragment():
                     if _gopts:
                         _gf1, _gf2, _gf3 = st.columns([1, 1, 4])   # picker + top-N banks control
                         _gsel = _gf1.selectbox("Mid", _gopts, key="tab_imp_vm_sel")
@@ -8703,40 +8921,82 @@ with tab_imp:
                     else:
                         st.info("No vampMids in this variation's split.")
 
+                with _md_bank_slot:
+                    (st.fragment(_md_detail_fragment) if hasattr(st, "fragment") else _md_detail_fragment)()
+
             # -------------- FILTERABLE ENGINE WORKINGS EXPANDER & DEBUGGER --------------
             # --- Banks per vampMid: how widely each MID is spread across banks ---
             _bpm_split = ss.get("split")
             if (HAS_PLOTLY and _bpm_split is not None and not getattr(_bpm_split, "empty", True)
                     and {"gateway", "bank", "share"}.issubset(getattr(_bpm_split, "columns", []))):
-                with _t_engwork.expander("🏦 Banks per vampMid (how widely each MID is spread)",
-                                         expanded=False):
-                    st.caption("For each vampMid (merchant account), the number of DISTINCT banks it "
-                               "carries routed share in, on the selected split (share > 0). A wide bar "
-                               "= the MID touches many banks; a short one = concentrated on a few.")
+                with _t_engwork.container():
                     try:
                         import plotly.graph_objects as _gbp
                         _f2v = (ss.get("wallet_ctx") or {}).get("fid2vamp") or {}
+                        _b2b = ss.get("bin_to_bank", {})
                         _d = _bpm_split.copy()
-                        _d["_sh"] = pd.to_numeric(_d["share"], errors="coerce").fillna(0.0)
-                        _d = _d[_d["_sh"] > 1e-9]
+                        _d["_shp"] = pd.to_numeric(_d["share"], errors="coerce").fillna(0.0)
+                        _d["_shb"] = (pd.to_numeric(_d["baseline_share"], errors="coerce").fillna(0.0)
+                                      if "baseline_share" in _d.columns else 0.0)
                         _gwl = _d["gateway"].astype(str).str.strip().str.lower()
                         _d["_vm"] = (_gwl.map(_f2v).fillna(_d["gateway"].astype(str)) if _f2v
                                      else _d["gateway"].astype(str))
-                        _bpm = _d.groupby("_vm")["bank"].nunique().sort_values(ascending=True)
-                        if _bpm.empty:
+                        # 'bank' holds the BIN; map it to its parent bank for the distinct-banks view.
+                        _d["_pb"] = _d["bank"].map(
+                            lambda b: _b2b.get(b, _b2b.get(str(b).strip().lower(), b))).astype(str)
+
+                        def _spread_fig(_col, _unit):
+                            # distinct count of _col per vampMid: Current (baseline_share>0) vs
+                            # Proposed (share>0), grouped bars.
+                            _pro = _d[_d["_shp"] > 1e-9].groupby("_vm")[_col].nunique()
+                            _pre = _d[_d["_shb"] > 1e-9].groupby("_vm")[_col].nunique()
+                            _idx = _pro.index.union(_pre.index)
+                            if len(_idx) == 0:
+                                return None
+                            _pro = _pro.reindex(_idx, fill_value=0)
+                            _pre = _pre.reindex(_idx, fill_value=0)
+                            _order = _pro.sort_values(ascending=True).index[-30:]   # most-spread at top
+                            _pro = _pro.reindex(_order); _pre = _pre.reindex(_order)
+                            _ylab = [str(m).replace("_", " ").strip()[:40] for m in _order]
+                            _f = _gbp.Figure()
+                            _f.add_bar(x=_pre.to_numpy(), y=_ylab, orientation="h", name="Current",
+                                       marker=dict(color="#8A93A6"),
+                                       text=[f"{int(v):,}" for v in _pre.to_numpy()], textposition="outside",
+                                       textfont=dict(color="#0B1F3A", size=9), cliponaxis=False,
+                                       hovertemplate="%{y}<br>current %{x} " + _unit + "<extra></extra>")
+                            _f.add_bar(x=_pro.to_numpy(), y=_ylab, orientation="h", name="Proposed",
+                                       marker=dict(color="#e63748"),
+                                       text=[f"{int(v):,}" for v in _pro.to_numpy()], textposition="outside",
+                                       textfont=dict(color="#0B1F3A", size=9), cliponaxis=False,
+                                       hovertemplate="%{y}<br>proposed %{x} " + _unit + "<extra></extra>")
+                            # Same styling as the Risk Impact bar charts: light-grey value gridlines,
+                            # top-centred horizontal legend, transparent bg, 9px ink text.
+                            _f.update_layout(
+                                barmode="group", bargap=0.08,
+                                height=max(280, 26 * len(_order) + 70),
+                                margin=dict(l=10, r=35, t=22, b=4),
+                                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                font=dict(color="#0B1F3A", family="inherit", size=9),
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5,
+                                            font=dict(color="#0B1F3A", size=9), title_text=None),
+                                xaxis=dict(title="", showgrid=True, gridcolor="lightgrey",
+                                           tickfont=dict(color="#0B1F3A", size=9)),
+                                yaxis=dict(showgrid=False, automargin=True,
+                                           tickfont=dict(color="#0B1F3A", size=9)))
+                            return _f
+
+                        _fig_bin = _spread_fig("bank", "BIN(s)")
+                        _fig_bank = _spread_fig("_pb", "bank(s)")
+                        if _fig_bin is None and _fig_bank is None:
                             st.info("No routed share in the selected split.")
                         else:
-                            _bpm = _bpm.tail(30)                 # up to 30 MIDs, most-spread at top
-                            _fbp = _gbp.Figure(_gbp.Bar(
-                                x=_bpm.to_numpy(), y=[str(m)[:34] for m in _bpm.index],
-                                orientation="h", marker=dict(color="#378ADD"),
-                                hovertemplate="%{y}<br>%{x} bank(s)<extra></extra>"))
-                            _fbp.update_layout(height=max(280, 22 * len(_bpm) + 60),
-                                               margin=dict(l=10, r=10, t=10, b=10),
-                                               xaxis_title="distinct banks with routed share")
-                            st.plotly_chart(_fbp, use_container_width=True)
-                            st.caption(f"{len(_bpm)} vampMid(s) shown (most-spread first) · median "
-                                       f"{int(_bpm.median())} bank(s) per MID.")
+                            _sc1, _sc2 = st.columns(2)
+                            _sc1.markdown("**Distinct BINs (current vs proposed)**")
+                            if _fig_bin is not None:
+                                _sc1.plotly_chart(_fig_bin, use_container_width=True)
+                            _sc2.markdown("**Distinct banks (current vs proposed)**")
+                            if _fig_bank is not None:
+                                _sc2.plotly_chart(_fig_bank, use_container_width=True)
                     except Exception as _e:  # noqa: BLE001
                         st.info(f"Banks-per-vampMid chart unavailable: {type(_e).__name__}: {_e}")
 
@@ -8749,64 +9009,39 @@ with tab_imp:
                 def _conv_df(h):
                     if not h:
                         return None
-                    _cols = ["gen", "best", "gen_best", "gen_mean", "sigma", "viol", "eps", "cands"][:len(h[0])]
-                    return _pd.DataFrame(h, columns=_cols)
+                    _names = ["gen", "best", "gen_best", "gen_mean", "sigma", "viol", "eps", "cands"]
+                    # History rows can be ragged (main run vs re-projection rounds record different
+                    # widths). Pad short rows to the widest width with None (rather than dropping
+                    # columns) so the DataFrame never trips on "N columns passed, data had M" and the
+                    # convergence / σ / violation charts keep every field a row does have.
+                    try:
+                        _w = max(len(_r) for _r in h)
+                    except TypeError:
+                        return None
+                    _w = min(int(_w), len(_names))
+                    if _w <= 0:
+                        return None
+                    _rows = [tuple(_r[:_w]) + (None,) * (_w - min(len(_r), _w)) for _r in h]
+                    return _pd.DataFrame(_rows, columns=_names[:_w])
+
+                # Effort scale for the candidate-based charts below: the convergence trace is ONE
+                # (winning) seed, but N seeds ran in PARALLEL, so `_seed_scale` maps the per-seed
+                # candidate x-axis up to the RUN TOTAL (e.g. 51k → 409,600).
+                _tot_cands = int(ss.get("last_ga_cands", 0) or 0)
+                _d2s = _conv_df(_hist_safe)
+                _seed_scale = 1.0
+                if _d2s is not None and len(_d2s) and "cands" in _d2s.columns:
+                    _perseed = float(_d2s["cands"].max())
+                    _seed_scale = (_tot_cands / _perseed) if (_tot_cands > 0 and _perseed > 0) else 1.0
 
                 # NEW: engine score vs. candidate splits EVALUATED (the true search-effort x-axis),
                 # plus the marginal gain per 10k candidates — shows where the search plateaus, i.e.
                 # whether more budget (seeds/restarts/generations) would still be buying improvement.
-                if _hist_safe and len(_hist_safe) and len(_hist_safe[0]) >= 8:
-                    with _t_engwork.expander("📈 Engine score vs candidate splits evaluated "
-                                             "(winning seed)", expanded=True):
-                        st.caption("Best score so far (HIGHER is better) against how many candidate "
-                                   "splits the WINNING SEED evaluated — this is one seed's own "
-                                   "trajectory, so its x-axis ≈ the run-log total ÷ number of seeds. "
-                                   "A flattening curve means extra search is no longer improving the "
-                                   "result (diminishing returns); a still-rising curve means more "
-                                   "budget would likely help. (If the run ended infeasible, the score "
-                                   "is effectively negative-violation rising toward 0.)")
-                        _d2 = _conv_df(_hist_safe)
-                        # Log y-axis so the tiny later-generation improvements stay visible next to
-                        # the big early jump — but ONLY when every best-so-far value is positive
-                        # (a log axis can't render the negative scores of an INFEASIBLE run, where
-                        # the score is negative-violation; there we keep linear so it still shows).
-                        _ylog = bool(len(_d2) and (_d2["best"].to_numpy(float) > 0).all())
-                        _fsc = _gof.Figure()
-                        _fsc.add_scatter(x=_d2["cands"], y=_d2["best"], mode="lines",
-                                         name="best score", line=dict(color="#1D9E75", width=2))
-                        _fsc.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10),
-                                           xaxis_title="candidate splits evaluated (winning seed)",
-                                           yaxis_title=("engine score (best so far · higher = better · log)"
-                                                        if _ylog else
-                                                        "engine score (best so far · higher = better)"),
-                                           yaxis_type=("log" if _ylog else "linear"),
-                                           legend=dict(orientation="h", y=1.16))
-                        st.plotly_chart(_fsc, use_container_width=True)
-                        # Marginal gain: Δ(best score) per 10,000 candidates — a falling-to-zero
-                        # curve confirms the search has converged.
-                        try:
-                            import numpy as _np_mg
-                            _cx = _d2["cands"].to_numpy(float)
-                            _by = _d2["best"].to_numpy(float)
-                            if _cx.size >= 3:
-                                _dc = _np_mg.diff(_cx); _db = _np_mg.diff(_by)
-                                _rate = _np_mg.where(_dc > 0, _db / _dc, 0.0) * 10000.0
-                                _fmg = _gof.Figure()
-                                _fmg.add_scatter(x=_cx[1:], y=_rate, mode="lines",
-                                                 name="Δscore / 10k candidates",
-                                                 line=dict(color="#B4762C"), fill="tozeroy",
-                                                 fillcolor="rgba(180,118,44,0.12)")
-                                _fmg.update_layout(height=240, margin=dict(l=10, r=10, t=30, b=10),
-                                                   xaxis_title="candidate splits evaluated (winning seed)",
-                                                   yaxis_title="score gain per 10k",
-                                                   legend=dict(orientation="h", y=1.2))
-                                st.markdown("###### Marginal gain — improvement per 10,000 candidates "
-                                            "(→ 0 means converged)")
-                                st.plotly_chart(_fmg, use_container_width=True)
-                        except Exception:  # noqa: BLE001
-                            pass
+                # (Removed: "📈 Engine score vs candidate splits evaluated (winning seed)" chart
+                #  + its marginal-gain sub-chart, per request.)
 
-                with _t_engwork.expander("📈 GA scoring over time (convergence)", expanded=True):
+                _t_engwork.markdown("##### 📈 GA scoring over time (convergence)")
+                with _t_engwork.container():
                     st.caption("How the search's score improved each generation, for each end of the "
                                "dial. Higher is better; 'best so far' is the best plan yet, 'population "
                                "mean' the average candidate.")
@@ -8821,8 +9056,13 @@ with tab_imp:
                         f.add_scatter(x=d["gen"], y=d["gen_mean"], mode="lines", name="population mean",
                                       line=dict(color="#B4B2A9", dash="dot"))
                         f.update_layout(height=300, margin=dict(l=10, r=10, t=36, b=10), title=title,
-                                        xaxis_title="generation", yaxis_title="fitness",
-                                        legend=dict(orientation="h", y=1.16))
+                                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                        font=dict(color="#0B1F3A", family="inherit", size=9),
+                                        xaxis=dict(title="", showgrid=False,
+                                                   tickfont=dict(color="#0B1F3A", size=9)),
+                                        yaxis=dict(title="", showgrid=False,
+                                                   tickfont=dict(color="#0B1F3A", size=9)),
+                                        legend=dict(orientation="h", y=1.16, font=dict(color="#0B1F3A", size=9)))
                         return f
                     _cvc1, _cvc2 = st.columns(2)
                     _figr = _mk_conv(_hist_rev, "Revenue-max endpoint (dial 100)")
@@ -8840,12 +9080,39 @@ with tab_imp:
                             _has_sig = True
                             _fsig.add_scatter(x=_d["gen"], y=_d["sigma"], mode="lines", name=_nm,
                                               line=dict(color=_col, dash=_dash))
+                    # Step size (σ) | Winning tilt genome — two per row.
+                    _gwr1, _gwr2 = st.columns(2)
                     if _has_sig:
-                        st.markdown("###### Step size (σ) — big steps early, refines late, jumps on restart")
+                        _gwr1.markdown("###### Step size (σ) — big steps early, refines late, jumps on restart")
                         _fsig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10),
-                                            xaxis_title="generation", yaxis_title="step size σ",
-                                            yaxis_type="log", legend=dict(orientation="h", y=1.15))
-                        st.plotly_chart(_fsig, use_container_width=True)
+                                            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                            font=dict(color="#0B1F3A", family="inherit", size=9),
+                                            xaxis=dict(title="", showgrid=False,
+                                                       tickfont=dict(color="#0B1F3A", size=9)),
+                                            yaxis=dict(title="", type="log", showgrid=False,
+                                                       tickfont=dict(color="#0B1F3A", size=9)),
+                                            legend=dict(orientation="h", y=1.15, font=dict(color="#0B1F3A", size=9)))
+                        _gwr1.plotly_chart(_fsig, use_container_width=True)
+                    _genome_g = ss.get("ga_genome"); _mlabels_g = ss.get("ga_mid_labels")
+                    if _genome_g is not None and _mlabels_g:
+                        _gg = np.asarray(_genome_g, float); _Mg = len(_mlabels_g)
+                        if _gg.size >= 3 * _Mg and _Mg > 0:
+                            _gwr2.markdown("###### 🧬 Winning tilt genome (per vampMid) — θr risk-tilt, "
+                                           "θq revenue-tilt, gain")
+                            _matg = np.vstack([_gg[:_Mg], _gg[_Mg:2 * _Mg], _gg[2 * _Mg:3 * _Mg]])
+                            _fhm = _gof.Figure(_gof.Heatmap(
+                                z=_matg, x=[str(m)[:22] for m in _mlabels_g],
+                                y=["θr risk-tilt", "θq revenue-tilt", "gain"],
+                                colorscale=[[0.0, "#D85A30"], [0.5, "#EEF3FB"], [1.0, "#1D9E75"]],
+                                zmid=0.0, colorbar=dict(
+                                    title=dict(text="value", font=dict(color="#0B1F3A")),
+                                    tickfont=dict(color="#0B1F3A"))))
+                            _fhm.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10),
+                                               paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                               font=dict(color="#0B1F3A", family="inherit", size=9),
+                                               xaxis=dict(tickangle=-45, tickfont=dict(color="#0B1F3A", size=9)),
+                                               yaxis=dict(tickfont=dict(color="#0B1F3A", size=9)))
+                            _gwr2.plotly_chart(_fhm, use_container_width=True)
 
                     def _mk_viol(h, title):
                         d = _conv_df(h)
@@ -8859,8 +9126,13 @@ with tab_imp:
                             f.add_scatter(x=d["gen"], y=d["eps"], mode="lines", name="ε tolerance",
                                           line=dict(color="#888780", dash="dot"))
                         f.update_layout(height=280, margin=dict(l=10, r=10, t=36, b=10), title=title,
-                                        xaxis_title="generation", yaxis_title="total violation",
-                                        legend=dict(orientation="h", y=1.16))
+                                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                        font=dict(color="#0B1F3A", family="inherit", size=9),
+                                        xaxis=dict(title="", showgrid=False,
+                                                   tickfont=dict(color="#0B1F3A", size=9)),
+                                        yaxis=dict(title="", showgrid=False,
+                                                   tickfont=dict(color="#0B1F3A", size=9)),
+                                        legend=dict(orientation="h", y=1.16, font=dict(color="#0B1F3A", size=9)))
                         return f
                     _fvr = _mk_viol(_hist_rev, "Revenue-max endpoint (dial 100)")
                     _fvs = _mk_viol(_hist_safe, "Risk-min endpoint (dial 0)")
@@ -8872,96 +9144,66 @@ with tab_imp:
                         if _fvs is not None:
                             _vvc2.plotly_chart(_fvs, use_container_width=True)
 
-                _genome = ss.get("ga_genome"); _mlabels = ss.get("ga_mid_labels")
-                if _genome is not None and _mlabels:
-                    with _t_engwork.expander("🧬 Winning tilt genome (per vampMid)", expanded=False):
-                        st.caption("What the search decided for each vampMid: θr pulls it toward its "
-                                   "LOW-risk cells, θq toward its HIGH-revenue cells, gain moves its "
-                                   "overall presence across cells. Larger magnitude = a stronger move.")
-                        _g = np.asarray(_genome, float); _M = len(_mlabels)
-                        if _g.size >= 3 * _M and _M > 0:
-                            _mat = np.vstack([_g[:_M], _g[_M:2 * _M], _g[2 * _M:3 * _M]])
-                            _fhm = _gof.Figure(_gof.Heatmap(
-                                z=_mat, x=[str(m)[:22] for m in _mlabels],
-                                y=["θr risk-tilt", "θq revenue-tilt", "gain"],
-                                colorscale=[[0.0, "#D85A30"], [0.5, "#EEF3FB"], [1.0, "#1D9E75"]],
-                                zmid=0.0, colorbar=dict(title="value")))
-                            _fhm.update_layout(height=240, margin=dict(l=10, r=10, t=10, b=10),
-                                               xaxis=dict(tickangle=-45))
-                            st.plotly_chart(_fhm, use_container_width=True)
-                        else:
-                            st.info("Genome shape doesn't match the MID labels — skipped.")
-
-                _pobj = ss.get("ga_pop_obj"); _pviol = ss.get("ga_pop_viol")
-                if _pobj is not None and _pviol is not None:
-                    with _t_engwork.expander("⚖️ Feasibility-first population (final generation)", expanded=False):
-                        st.caption("Every candidate in the last generation of the revenue-max search, "
-                                   "by constraint violation (x) and objective ≈ revenue (y). Any "
-                                   "compliant point (violation ≈ 0) outranks every breaching one, so the "
-                                   "winner sits atop the feasible wall on the left.")
-                        _po = np.asarray(_pobj, float); _pv = np.asarray(_pviol, float)
-                        if _po.size and _pv.size and _po.size == _pv.size:
-                            _feas = _pv <= 1e-9
-                            _fsc = _gof.Figure()
-                            _fsc.add_scatter(x=_pv[~_feas], y=_po[~_feas], mode="markers", name="breaching",
-                                             marker=dict(color="#D85A30", size=7, opacity=0.65))
-                            _fsc.add_scatter(x=_pv[_feas], y=_po[_feas], mode="markers", name="feasible",
-                                             marker=dict(color="#1D9E75", size=8, opacity=0.8))
-                            _wi = (int(np.argmax(np.where(_feas, _po, -np.inf))) if _feas.any()
-                                   else int(np.argmin(_pv)))
-                            _fsc.add_scatter(x=[float(_pv[_wi])], y=[float(_po[_wi])], mode="markers",
-                                             name="winner", marker=dict(color="#0F6E56", size=14,
-                                             symbol="circle-open", line=dict(width=2)))
-                            _fsc.add_vline(x=0.0, line=dict(color="#1D9E75", dash="dot", width=1))
-                            _fsc.update_layout(height=340, margin=dict(l=10, r=10, t=10, b=10),
-                                               xaxis_title="constraint violation",
-                                               yaxis_title="objective (≈ revenue)",
-                                               legend=dict(orientation="h", y=1.12))
-                            st.plotly_chart(_fsc, use_container_width=True)
-                        else:
-                            st.info("No final-population data captured for this run.")
+                # (Winning-tilt genome heatmap moved up to sit 2-up beside the Step-size chart.)
+                # (Removed: "⚖️ Feasibility-first population (final generation)" chart, per request.)
 
             # --- Time-decay weighting curve (how older attempts count less in the SR estimate) ---
             if HAS_PLOTLY:
-                with _t_engwork.expander("⏳ Time-decay weighting (how older data counts less)", expanded=False):
+                _t_engwork.markdown("##### ⏳ Time-decay weighting (how older data counts less)")
+                with _t_engwork.container():
                     _dc_on = bool(ss.get("apply_decay", ss.get("apply_decay_cb", True)))
                     _hl = float(ss.get("decay_half_inp", 15) or 15)
-                    st.caption("Each attempt is exponentially down-weighted by its age when the "
-                               "success rates are estimated: weight = 0.5^(age ÷ half-life). At the "
-                               "half-life an attempt counts half as much; at twice the half-life, a "
-                               "quarter. " + (f"Currently ON, half-life {_hl:.0f} days."
-                               if _dc_on else "Currently OFF — every attempt counts fully (flat line)."))
                     import numpy as _np2
                     import plotly.graph_objects as _gdc
-                    _xmax = max(90.0, _hl * 4.0)
-                    _age = _np2.linspace(0.0, _xmax, 240)
-                    _w = _np2.power(0.5, _age / max(_hl, 1e-9)) if _dc_on else _np2.ones_like(_age)
+                    # Build the x-axis from the ACTUAL attempts dates (window ending at attempts_end),
+                    # so weight is shown per calendar day rather than an abstract "age in days".
+                    _adf_dc = ss.get("adf")
+                    _dates = None
+                    try:
+                        if _adf_dc is not None and not getattr(_adf_dc, "empty", True):
+                            _dcol = ("date" if "date" in _adf_dc.columns
+                                     else ("Date" if "Date" in _adf_dc.columns else None))
+                            if _dcol:
+                                _dser = pd.to_datetime(_adf_dc[_dcol], errors="coerce").dropna()
+                                if not _dser.empty:
+                                    _end = _dser.max().normalize()
+                                    _start = _dser.min().normalize()
+                                    _dates = pd.date_range(_start, _end, freq="D")
+                    except Exception:  # noqa: BLE001
+                        _dates = None
+                    if _dates is None or len(_dates) < 2:
+                        # Fallback: a synthetic window ending today if no dated attempts are loaded.
+                        _end = pd.Timestamp.today().normalize()
+                        _dates = pd.date_range(_end - pd.Timedelta(days=int(max(90.0, _hl * 4.0))), _end, freq="D")
+                    _aged = (_dates[-1] - _dates).days.to_numpy().astype(float)
+                    _w = _np2.power(0.5, _aged / max(_hl, 1e-9)) if _dc_on else _np2.ones_like(_aged)
                     _fdc = _gdc.Figure()
-                    _fdc.add_scatter(x=_age, y=_w, mode="lines", name="weight",
+                    _fdc.add_scatter(x=_dates, y=_w, mode="lines", name="weight",
                                      line=dict(color="#1D9E75", width=2), fill="tozeroy",
                                      fillcolor="rgba(29,158,117,0.12)",
-                                     hovertemplate="age %{x:.0f}d<br>weight %{y:.2f}<extra></extra>")
+                                     hovertemplate="%{x|%Y-%m-%d}<br>weight %{y:.0%}<extra></extra>")
                     if _dc_on:
-                        _fdc.add_scatter(x=_age, y=_np2.ones_like(_age), mode="lines", name="no decay",
-                                         line=dict(color="#B4B2A9", width=1, dash="dot"), hoverinfo="skip")
-                        _fdc.add_shape(type="line", x0=_hl, x1=_hl, y0=0.0, y1=0.5,
+                        _hldate = _dates[-1] - pd.Timedelta(days=int(_hl))
+                        _fdc.add_shape(type="line", x0=_hldate, x1=_hldate, y0=0.0, y1=0.5,
                                        line=dict(color="#D85A30", dash="dot", width=1))
-                        _fdc.add_shape(type="line", x0=0.0, x1=_hl, y0=0.5, y1=0.5,
-                                       line=dict(color="#D85A30", dash="dot", width=1))
-                        _fdc.add_scatter(x=[_hl], y=[0.5], mode="markers+text",
+                        _fdc.add_scatter(x=[_hldate], y=[0.5], mode="markers+text",
                                          marker=dict(color="#D85A30", size=9),
-                                         text=[f"half-life {_hl:.0f}d → 0.50"], textposition="top right",
-                                         textfont=dict(size=11, color="#D85A30"), showlegend=False,
-                                         hovertemplate="half-life %{x:.0f}d → weight 0.50<extra></extra>")
+                                         text=[f"half-life {_hl:.0f}d → 50%"], textposition="top left",
+                                         textfont=dict(size=9, color="#0B1F3A"), showlegend=False,
+                                         hovertemplate="half-life %{x|%Y-%m-%d} → 50%<extra></extra>")
                     _fdc.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10),
-                                       xaxis_title="age of attempt (days)",
-                                       yaxis_title="weight in the estimate",
-                                       yaxis=dict(range=[0.0, 1.05]),
-                                       legend=dict(orientation="h", y=1.12))
+                                       paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                       font=dict(color="#0B1F3A", family="inherit", size=9),
+                                       showlegend=False,
+                                       xaxis=dict(title="", showgrid=False,
+                                                  tickfont=dict(color="#0B1F3A", size=9)),
+                                       yaxis=dict(title="", range=[0.0, 1.05], tickformat=".0%", showgrid=False,
+                                                  tickfont=dict(color="#0B1F3A", size=9)))
                     st.plotly_chart(_fdc, use_container_width=True)
 
             # --- Experimental: full-matrix GA & NSGA-II frontier (self-contained; NOT the production dial) ---
-            with _t_engwork.expander("⚙️ View Algorithm Scoring Workings (Pre-Softmax) & Granular BIN Impact", expanded=True):
+            _t_engwork.markdown("##### ⚙️ Algorithm Scoring Workings (Pre-Softmax) & Granular BIN Impact")
+            with _t_engwork.container():
                 st.markdown("<div style='font-size: 0.85rem; color: #0B1F3A; margin-bottom: 1rem;'>This table exposes the granular BIN/Currency level details. You can sort and filter any column by clicking the column headers.</div>", unsafe_allow_html=True)
             
                 debug_mode = st.checkbox("🛠️ Toggle Debug Diagnostics (Click if table is missing or empty)")
@@ -9703,15 +9945,16 @@ with tab_imp:
                             'box-shadow:0 4px 12px rgba(0,0,0,0.08); '
                             'border-radius:0; overflow:auto; max-height:560px; background-color:var(--tav-card); '
                             'border:1px solid var(--tav-line);">']
+                    # Table shrunk (font 0.72rem → 0.43rem → 0.34rem, a further 20% + tighter padding).
                     _rth.append('<table style="width:auto !important; border-collapse:collapse; font-family:inherit; '
-                                'font-size:0.72rem; line-height:1.1;"><tr>')
+                                'font-size:0.34rem; line-height:1.1;"><tr>')
                     for _c in _rtcols:
                         _al = "left" if _c in ("vampMid", "RPGT") else "right"
                         # Wrap numeric headers at underscores so each column fits its value width.
                         _hdr = _c if _c in ("vampMid", "RPGT") else _c.replace("_", "_<wbr>")
                         _ws = "nowrap" if _c in ("vampMid", "RPGT") else "normal"
                         _rth.append(f'<th style="background-color:var(--tav-red); color:#FFF; font-weight:bold; '
-                                    f'padding:3px 4px; text-align:{_al}; white-space:{_ws}; position:sticky; top:0; width:1%;">{_hdr}</th>')
+                                    f'padding:2px 3px; text-align:{_al}; white-space:{_ws}; position:sticky; top:0; width:1%;">{_hdr}</th>')
                     _rth.append('</tr>')
                     for _, _rr in _rt.iterrows():
                         _rth.append('<tr>')
@@ -9739,10 +9982,12 @@ with tab_imp:
                         _tcols[0].markdown("".join(_dh), unsafe_allow_html=True)
                         _tcols[2].markdown("".join(_lth), unsafe_allow_html=True)
                     else:
-                        # Impact tab: vampMid × RPGT table (left) + VAMP/Txn bar charts (right).
-                        _rlo = st.columns([1, 1], gap="medium")
+                        # Impact tab: vampMid × RPGT table + the VAMP and Txn bar charts, all three
+                        # side by side on one row.
+                        _rlo = st.columns([1, 1, 1], gap="medium")
                         _rlo[0].markdown("".join(_rth), unsafe_allow_html=True)
-                        _ts_slot = _rlo[1].container()
+                        _ts_slot = _rlo[1].container()    # VAMP bar chart
+                        _ts_slot2 = _rlo[2].container()   # Txn bar chart
 
                     # Bar chart: actual months (thermometer) leading into the
                     # forecast, with forecast VAMP Pre vs Post (day-scaled).
@@ -9926,7 +10171,7 @@ with tab_imp:
                         _yticks = list(np.linspace(_ylo, _yhi, 5))
                         # Header removed above the chart → give the space back to the plot.
                         _fig.update_layout(
-                            height=270, margin=dict(l=35, r=45, t=22, b=4), bargap=0.08, barmode="stack",
+                            height=270, margin=dict(l=35, r=35, t=22, b=4), bargap=0.08, barmode="stack",
                             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                             font=dict(color='#0B1F3A', family="inherit"),
                             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5,
@@ -9989,7 +10234,7 @@ with tab_imp:
                             textposition="top center", textfont=dict(size=8, color="#22C36B")))
                         # Header removed above the chart → give the space back to the plot.
                         _txfig.update_layout(
-                            height=270, margin=dict(l=35, r=45, t=22, b=4), bargap=0.08, barmode="stack",
+                            height=270, margin=dict(l=35, r=35, t=22, b=4), bargap=0.08, barmode="stack",
                             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                             font=dict(color='#0B1F3A', family="inherit"),
                             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5,
@@ -10112,9 +10357,10 @@ with tab_imp:
                                 st.plotly_chart(_txn_pct_fig, use_container_width=True)
                             _c3_slot = _c3.container()   # T-stacked charts render here (below)
                         else:
-                            # Impact tab: VAMP + Transactions bar charts (with the VAMP ratio line).
+                            # Impact tab: VAMP + Transactions bar charts (with the VAMP ratio line),
+                            # side by side with the table (each in its own column of the row above).
                             _ts_slot.plotly_chart(_fig, use_container_width=True)
-                            _ts_slot.plotly_chart(_txfig, use_container_width=True)
+                            _ts_slot2.plotly_chart(_txfig, use_container_width=True)
 
 
                         # VAMP age (T-stacked): VAMP by month, stacked by age t.
@@ -10548,10 +10794,7 @@ with tab_imp:
             if _gr_shared is not None:
                 _prepost_render("impact")
 
-        with _t_riskdetail:
-            if _gr_shared is not None:
-                _prepost_render("detail")
-
+        # (Risk Detail sub-tab removed per request.)
 
 
 # ============================================================================
@@ -10561,5 +10804,4 @@ with tab_cfg:
     # Config-generator tab body lives in tab_configs.py (per-tab split).
     import tab_configs
     tab_configs.render(ss, PROJECT_ROOT)
-
 
