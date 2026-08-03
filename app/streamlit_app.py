@@ -2073,6 +2073,14 @@ with tab_eng:
                              "hang with no progress (a macOS loky/Numba worker wedge), switch to "
                              "'Sequential' — it runs the seeds one at a time in this process (no worker "
                              "pool), slower but immune to that hang. 'threading' is an in-between fallback.")
+                    st.checkbox(
+                        "EXACT band scoring in search (gate 2)", value=False, key="ga_exact_bands",
+                        help="Replaces the volume-ratio band PROXY with the exact pro-rata projection, "
+                             "scored per generation for the whole population. Turns pre-clustering OFF "
+                             "(so the search runs at parent-bank grain; ~1.4× slower search, but the "
+                             "post-hoc re-projection correction should largely vanish). The delivered "
+                             "split logs an incidence SELF-CHECK — trust exact bands only if it reads ~0. "
+                             "Falls back to the proxy on any setup failure.")
                     # Search-BUDGET inputs (GA generations, population λ, seeds, restarts) plus the
                     # candidate-split range / ETA readout now live ABOVE this form (the "Genetic search
                     # budget" panel) so editing them refreshes the count LIVE — form members don't rerun
@@ -4274,6 +4282,352 @@ with tab_eng:
                                           for c, b, v, s in pr[["currency", "bank", "_vm", "share"]].itertuples(index=False))
                         return _blend_ga(_prop)
 
+                    # ---- GATE-1 diagnostic: collapsed BandProjector vs the TRUE _project_capped ----
+                    # Proves the exact linear collapse (src/routing_optimiser/band_projection.py)
+                    # reproduces _project_capped on THIS run's real scaffold, before we ever let it
+                    # score the search. Toggle: Tab 3 "Band-projection collapse diagnostic". One-shot,
+                    # fully guarded — a failure only skips the log line, never the run.
+                    _band_diag_state = {"bp": None, "done": False, "cost_done": False,
+                                        "frames": None, "pbp": None, "slope_done": False}
+
+                    def _band_frames():
+                        """Adapter (T0a, Pca, pool, sorted band-set, by_rpgt) for the collapse
+                        projectors, cached per run. None if this run built no cap scaffold."""
+                        if _band_diag_state["frames"] is not None:
+                            return _band_diag_state["frames"]
+                        if _T0 is None or _Pc is None or _Pc_movedvpool_a is None:
+                            return None
+                        _em = (_T0_emask_a if _T0_emask_a is not None else np.zeros(len(_T0), bool))
+                        _T0a = pd.DataFrame({
+                            "cur": _T0["_cur"].to_numpy(), "bin": _T0["_bin"].to_numpy(),
+                            "rpgt": _T0["_rpgt"].to_numpy(), "pmp": _T0["_pmp"].to_numpy(),
+                            "ctry": _T0["_ctry"].to_numpy(), "mid": _T0["_mid"].to_numpy(),
+                            "midl": _T0["_midl"].to_numpy(), "per": _T0["_per"].to_numpy(),
+                            "vi": _T0["_vi"].to_numpy(), "vc": _T0["_vc"].to_numpy(),
+                            "pr": _T0["_pr"].to_numpy(), "fcp": _T0["_fcp"].to_numpy(),
+                            "bf": _T0["_bf"].to_numpy(), "excl": _T0["_excl"].to_numpy(),
+                            "emask": np.asarray(_em, bool),
+                            "iscap": _T0["_midl"].isin(_capped_l).to_numpy(), "_av": _T0["_av"].to_numpy()})
+                        _Pca = pd.DataFrame({
+                            "cur": _Pc["_cur"].to_numpy(), "bin": _Pc["_bin"].to_numpy(),
+                            "rpgt": _Pc["_rpgt"].to_numpy(), "pmp": _Pc["_pmp"].to_numpy(),
+                            "ctry": _Pc["_ctry"].to_numpy(), "mid": _Pc["_mid"].to_numpy(),
+                            "midl": _Pc["_midl"].to_numpy(), "per": _Pc["_per"].to_numpy(),
+                            "t": _Pc["_t"].to_numpy(), "vc": _Pc["_vc"].to_numpy()})
+                        # ONLY the actually-constrained (midl, period) pairs — restricting the band
+                        # set here is what lets the reduced scaffold shrink (fewer banded rows →
+                        # fewer relevant cells). Derived from the live per-MID month rules.
+                        _bset = set()
+                        for (_mk, _mo, _mtr, _tg, _tl, _dir) in _mid_month_rules:
+                            if _mtr not in ("txn", "vamp"):
+                                continue
+                            _mkl = str(_mk).strip().lower()
+                            if _mo is None:
+                                for _m in range(6):
+                                    _bset.add((_mkl, _m))
+                            else:
+                                _bset.add((_mkl, int(_mo)))
+                        _band_diag_state["frames"] = (_T0a, _Pca, np.asarray(_Pc_movedvpool_a, float),
+                                                      sorted(_bset), bool(_opt_by_rpgt))
+                        return _band_diag_state["frames"]
+
+                    def _band_collapse_diag(prop_items, label):
+                        if not ss.get("ga_band_diag", False) or _band_diag_state["done"]:
+                            return
+                        _band_diag_state["done"] = True
+                        try:
+                            from routing_optimiser.band_projection import BandProjector as _BP
+                            if _band_diag_state["bp"] is None:
+                                _fr = _band_frames()
+                                if _fr is None:
+                                    log("   [gate-1 band diagnostic: no cap scaffold this run — skipped]")
+                                    return
+                                _T0a, _Pca, _poolarr, _bset, _byr = _fr
+                                _band_diag_state["bp"] = _BP(_T0a, _Pca, _poolarr, _bset, by_rpgt=_byr)
+                            _bp = _band_diag_state["bp"]
+                            _prop = {tuple(t[:-1]): float(t[-1]) for t in prop_items}
+                            _fast = _bp.project(_prop)
+                            _true = _project_capped(list(prop_items), _use_cache=False)
+                            log(f"   ── COLLAPSED vs TRUE band projection ({label}) · gate-1 diagnostic ──")
+                            log(f"      {'band':<32} {'metric':<5} {'true':>13} {'collapsed':>13} {'|gap|':>11}")
+                            _maxg = 0.0; _seen = set()
+                            for (_mk, _mo, _mtr, _tg, _tl, _dir) in _mid_month_rules:
+                                if _mtr not in ("txn", "vamp"):
+                                    continue
+                                _rk = (_mk, _mo, _mtr)
+                                if _rk in _seen:
+                                    continue
+                                _seen.add(_rk)
+                                _months = [int(_mo)] if _mo is not None else list(range(4))
+                                _ix = 1 if _mtr == "txn" else 0
+                                _tv = float(sum(_true.get((_mk, m), (0.0, 0.0))[_ix] for m in _months))
+                                _fv = float(sum(_fast.get((_mk, m), [0.0, 0.0])[_ix] for m in _months))
+                                _g = abs(_tv - _fv); _maxg = max(_maxg, _g)
+                                _mo_s = f"M{int(_mo)}" if _mo is not None else "M0-3"
+                                log(f"      {(_mk + ' ' + _mo_s)[:32]:<32} {_mtr:<5} "
+                                    f"{_tv:>13,.1f} {_fv:>13,.1f} {_g:>11,.2e}")
+                            log(f"      → max |gap| = {_maxg:,.3e}  (≈0 ⇒ the collapse == the true "
+                                "projection on THIS scaffold; ready to wire into the GA score)")
+                        except Exception as _bde:  # noqa: BLE001 - diagnostic must never break a run
+                            log(f"   [gate-1 band diagnostic skipped: {type(_bde).__name__}: {_bde}]")
+
+                    def _band_cost_probe():
+                        """Measure the REAL reduced-scaffold size + one population project_pop time,
+                        so we know the per-generation cost of exact NumPy band scoring BEFORE wiring
+                        it into the worker fitness. Toggle: Tab 3 'Band-score cost probe (gate 2)'.
+                        One-shot, fully guarded — never breaks a run."""
+                        if not ss.get("ga_band_cost", False) or _band_diag_state["cost_done"]:
+                            return
+                        _band_diag_state["cost_done"] = True
+                        try:
+                            import time as _time
+                            from routing_optimiser.band_projection import PopulationBandProjector as _PBP
+                            _fr = _band_frames()
+                            if _fr is None:
+                                log("   [gate-2 cost probe: no cap scaffold this run — skipped]")
+                                return
+                            _T0a, _Pca, _poolarr, _bset, _byr = _fr
+                            _tb = _time.perf_counter()
+                            _pbp = _PBP(_T0a, _Pca, _poolarr, _bset, by_rpgt=_byr)
+                            _build_ms = (_time.perf_counter() - _tb) * 1000.0
+                            _K = len(_pbp.prop_keys); _B = len(_pbp.band_order)
+                            _ncell = int(_pbp._ngc); _nrel = int(len(_pbp._gcode))
+                            _npc = int(len(_pbp._pc_bandcol)); _ncap = int(len(_pbp._t_rows))
+                            log(f"   ── gate-2 band-score COST probe ── reduced scaffold: "
+                                f"cells={_ncell:,} · t0_rows={_nrel:,} · prop_keys={_K:,} · "
+                                f"banded_aged_rows={_npc:,} · cap_rows={_ncap:,} · bands={_B} · "
+                                f"build={_build_ms:.0f}ms")
+                            _rng = np.random.default_rng(0)
+                            for _P in (25, 64):
+                                _pr = _rng.random((_P, max(_K, 1)))
+                                _pr /= _pr.sum(axis=1, keepdims=True)
+                                _r0 = _time.perf_counter()
+                                for _ in range(5):
+                                    _pbp.project_pop(_pr)
+                                _ms = (_time.perf_counter() - _r0) / 5 * 1000.0
+                                log(f"      project_pop(P={_P}) = {_ms:.1f} ms/call "
+                                    f"(≈ per-generation band-score cost at λ={_P})")
+                            log("      → compare to the numba step (~9 ms/gen). If project_pop is a small "
+                                "multiple, per-generation exact scoring is viable; if ≫, we cadence it.")
+                        except Exception as _cpe:  # noqa: BLE001 - diagnostic must never break a run
+                            log(f"   [gate-2 cost probe skipped: {type(_cpe).__name__}: {_cpe}]")
+
+                    def _band_compress_probe():
+                        """How far could the EXACT projection scaffold shrink losslessly? The candidate
+                        only decides at (cur,bin,rpgt); the projection is carried ~15× finer (× pmp ×
+                        ctry). Rows/cells that respond IDENTICALLY to the candidate merge losslessly.
+                        The exact merge key is (cur,bin,rpgt,per, active-MID signature) — the signature =
+                        the set of MIDs that are active (not excl / not emask) and which carry VAMP
+                        (vc>0), because the wallet/USA mask is what varies across pmp/ctry. This probe
+                        COUNTS those groups vs the raw scaffold, so we know the compression ceiling (and
+                        thus whether exact-in-loop is revived) before building the compressed projector.
+                        Toggle: Tab 3 'Band-score compression probe (gate 2)'. One-shot, guarded."""
+                        if not ss.get("ga_band_compress", False) or _band_diag_state.get("compress_done"):
+                            return
+                        _band_diag_state["compress_done"] = True
+                        try:
+                            _fr = _band_frames()
+                            if _fr is None:
+                                log("   [gate-2 compression probe: no cap scaffold this run — skipped]")
+                                return
+                            _T0a = _fr[0]
+                            _gk = ["cur", "bin", "rpgt", "pmp", "ctry", "per"]
+                            _active = ~(_T0a["excl"].to_numpy(bool) | _T0a["emask"].to_numpy(bool))
+                            _act = _T0a.loc[_active].copy()
+                            # order-independent set signature per fine cell = Σ hash(midl|vc>0)
+                            _item = (_act["midl"].astype(str) + "|"
+                                     + (_act["vc"].to_numpy(float) > 0).astype(int).astype(str))
+                            _ih = pd.util.hash_pandas_object(_item, index=False).to_numpy().astype("uint64")
+                            _cc, _ = pd.factorize(_act[_gk].astype(str).agg("|".join, axis=1))
+                            _act = _act.assign(_cc=_cc, _ih=_ih)
+                            _g = _act.groupby("_cc")
+                            _cellinfo = _g[_gk].first()
+                            _cellinfo["sig"] = _g["_ih"].sum().to_numpy().astype("int64")
+                            _cellinfo["coarse"] = (_cellinfo["cur"] + "|" + _cellinfo["bin"] + "|"
+                                                   + _cellinfo["rpgt"] + "|" + _cellinfo["per"].astype(str))
+                            _cur_rows = int(len(_T0a)); _cur_cells = int(_T0a.drop_duplicates(_gk).shape[0])
+                            _coll_cells = int(_cellinfo["coarse"].nunique())              # collapse pmp/ctry only
+                            _exact_cells = int(_cellinfo.drop_duplicates(["coarse", "sig"]).shape[0])
+                            _act2 = _act.merge(_cellinfo.reset_index()[["_cc", "sig", "coarse"]], on="_cc")
+                            _coll_rows = int(_act2.drop_duplicates(["coarse", "midl"]).shape[0])
+                            _exact_rows = int(_act2.drop_duplicates(["coarse", "sig", "midl"]).shape[0])
+                            _sig_per_coarse = _cellinfo.groupby("coarse")["sig"].nunique()
+                            _mean_sig = float(_sig_per_coarse.mean()); _max_sig = int(_sig_per_coarse.max())
+                            log("   ── gate-2 band-score COMPRESSION probe (lossless minimal grain) ──")
+                            log(f"      raw scaffold            : t0_rows={_cur_rows:,} · fine_cells={_cur_cells:,}")
+                            log(f"      collapse pmp/ctry only  : rows={_coll_rows:,} ({_cur_rows/max(_coll_rows,1):.1f}×) "
+                                f"· cells={_coll_cells:,} ({_cur_cells/max(_coll_cells,1):.1f}×)")
+                            log(f"      exact (mask-signature)  : rows={_exact_rows:,} ({_cur_rows/max(_exact_rows,1):.1f}×) "
+                                f"· cells={_exact_cells:,} ({_cur_cells/max(_exact_cells,1):.1f}×)")
+                            log(f"      distinct signatures per (cur,bin,rpgt,per): mean={_mean_sig:.2f} · max={_max_sig} "
+                                "(≈1 ⇒ masking is uniform ⇒ near-full collapse; ≫1 ⇒ masking splits cells)")
+                            log(f"      → exact projection cost scales with rows, so ≈{_cur_rows/max(_exact_rows,1):.0f}× "
+                                "cheaper is the ceiling. Apply to the last project_pop time to see if exact-in-loop "
+                                "(or even per-candidate) is revived.")
+                        except Exception as _cme:  # noqa: BLE001 - diagnostic must never break a run
+                            log(f"   [gate-2 compression probe skipped: {type(_cme).__name__}: {_cme}]")
+
+                    def _get_pbp():
+                        """Build & cache the population band projector on this run's real scaffold."""
+                        if _band_diag_state["pbp"] is not None:
+                            return _band_diag_state["pbp"]
+                        _fr = _band_frames()
+                        if _fr is None:
+                            return None
+                        from routing_optimiser.band_projection import PopulationBandProjector as _PBP
+                        _T0a, _Pca, _poolarr, _bset, _byr = _fr
+                        _band_diag_state["pbp"] = _PBP(_T0a, _Pca, _poolarr, _bset, by_rpgt=_byr)
+                        return _band_diag_state["pbp"]
+
+                    def _band_slope_probe(ref_prop_items, end_prop_items):
+                        """Does a FIRST-ORDER (slope) band model stay accurate over the search's ACTUAL
+                        move? Walk the straight line from the reference split to the delivered endpoint,
+                        evaluate the EXACT band values at α=0,.25,.5,.75,1, and compare a slope
+                        extrapolation (calibrated from α:0→.25) to the exact value at the endpoint. A big
+                        gap ⇒ the tilts are too large for a pure slope model (needs the quadratic term).
+                        Toggle: Tab 3 'Band-score slope-accuracy probe (gate 2)'. One-shot, guarded."""
+                        if not ss.get("ga_band_slope", False) or _band_diag_state["slope_done"]:
+                            return
+                        _band_diag_state["slope_done"] = True
+                        try:
+                            _pbp = _get_pbp()
+                            if _pbp is None:
+                                log("   [gate-2 slope probe: no cap scaffold this run — skipped]")
+                                return
+                            _ref = {tuple(t[:-1]): float(t[-1]) for t in ref_prop_items}
+                            _end = {tuple(t[:-1]): float(t[-1]) for t in end_prop_items}
+                            _keys = set(_ref) | set(_end)
+                            _alphas = [0.0, 0.25, 0.5, 0.75, 1.0]
+                            _props = [{k: _ref.get(k, 0.0) + _a * (_end.get(k, 0.0) - _ref.get(k, 0.0))
+                                       for k in _keys} for _a in _alphas]
+                            _vamp, _txn = _pbp.project_pop_from_props(_props)      # (5, B) each
+                            _bpos = {b: i for i, b in enumerate(_pbp.band_order)}
+                            log("   ── gate-2 band-score SLOPE-ACCURACY probe (reference → delivered endpoint) ──")
+                            log(f"      {'band':<30} {'mtr':<4} {'exact@ref':>11} {'exact@end':>11} "
+                                f"{'slope@end':>11} {'|gap|':>10} {'rel%':>6}")
+                            _maxrel = 0.0; _seen = set()
+                            for (_mk, _mo, _mtr, _tg, _tl, _dir) in _mid_month_rules:
+                                if _mtr not in ("txn", "vamp"):
+                                    continue
+                                _mkl = str(_mk).strip().lower()
+                                _rk = (_mkl, _mo, _mtr)
+                                if _rk in _seen:
+                                    continue
+                                _seen.add(_rk)
+                                _months = [int(_mo)] if _mo is not None else list(range(6))
+                                _mat = _txn if _mtr == "txn" else _vamp
+
+                                def _col(_ai):
+                                    return float(sum(_mat[_ai, _bpos[(_mkl, m)]]
+                                                     for m in _months if (_mkl, m) in _bpos))
+                                _v0 = _col(0); _vend = _col(4)
+                                _slope_end = _v0 + (_col(1) - _v0) / 0.25          # extrapolate slope to α=1
+                                _gap = abs(_vend - _slope_end)
+                                _rel = _gap / max(abs(_vend), 1.0); _maxrel = max(_maxrel, _rel)
+                                _mo_s = f"M{int(_mo)}" if _mo is not None else "M*"
+                                log(f"      {(_mk + ' ' + _mo_s)[:30]:<30} {_mtr:<4} {_v0:>11,.1f} "
+                                    f"{_vend:>11,.1f} {_slope_end:>11,.1f} {_gap:>10,.1f} {_rel*100:>5.1f}%")
+                            log(f"      → max first-order (slope) error = {_maxrel*100:.1f}% of the band value "
+                                "at the delivered endpoint. Small ⇒ a slope model is accurate enough to wire "
+                                "into the search; large ⇒ the tilts need the quadratic (curvature) term.")
+                        except Exception as _spe:  # noqa: BLE001 - diagnostic must never break a run
+                            log(f"   [gate-2 slope probe skipped: {type(_spe).__name__}: {_spe}]")
+
+                    def _band_enabler_probes(ref_prop_items, end_prop_items):
+                        """Measure the two enablers of the 'near-exact + incredibly fast' path:
+                        (1) VOLUME PRUNING — drop the near-zero-volume cell tail, report the row shrink,
+                            the project_pop speedup, and the per-band error vs the full exact projection.
+                        (2) LOCAL-LINEAR — fit a linear model at the delivered endpoint from a tiny step
+                            and test it over a few-generations-sized step; if it stays accurate LOCALLY
+                            (unlike the 54% global slope error), a cheap local surrogate is viable.
+                        Toggle: Tab 3 'Band-score enabler probes (gate 2)'. One-shot, guarded."""
+                        if not ss.get("ga_band_enablers", False) or _band_diag_state.get("enab_done"):
+                            return
+                        _band_diag_state["enab_done"] = True
+                        try:
+                            import time as _time
+                            from routing_optimiser.band_projection import PopulationBandProjector as _PBP
+                            _fr = _band_frames()
+                            if _fr is None:
+                                log("   [gate-2 enabler probes: no cap scaffold this run — skipped]")
+                                return
+                            _T0a, _Pca, _poolarr, _bset, _byr = _fr
+                            _end = {tuple(t[:-1]): float(t[-1]) for t in end_prop_items}
+                            _ref = {tuple(t[:-1]): float(t[-1]) for t in ref_prop_items}
+                            _rules = [(str(_mk).strip().lower(), _mo, _mtr)
+                                      for (_mk, _mo, _mtr, _tg, _tl, _dir) in _mid_month_rules
+                                      if _mtr in ("txn", "vamp")]
+                            _rules = list(dict.fromkeys(_rules))
+
+                            def _val(vmat, tmat, border, row, mkl, mo, mtr):
+                                _bp = {b: i for i, b in enumerate(border)}
+                                _ms = [int(mo)] if mo is not None else list(range(6))
+                                _m = tmat if mtr == "txn" else vmat
+                                return float(sum(_m[row, _bp[(mkl, mm)]] for mm in _ms if (mkl, mm) in _bp))
+
+                            def _timeit(proj, P=25, reps=3):
+                                _K = max(len(proj.prop_keys), 1)
+                                _pr = np.random.default_rng(0).random((P, _K)); _pr /= _pr.sum(1, keepdims=True)
+                                proj.project_pop(_pr)                       # warm
+                                _r0 = _time.perf_counter()
+                                for _ in range(reps):
+                                    proj.project_pop(_pr)
+                                return (_time.perf_counter() - _r0) / reps * 1000.0
+
+                            _full = _get_pbp()
+                            _fv, _ft = _full.project_pop_from_props([_end])
+                            _full_ms = _timeit(_full)
+
+                            # ---- ENABLER 1: volume pruning ----
+                            def _ck(df):
+                                return (df["cur"] + "|" + df["bin"] + "|" + df["rpgt"] + "|"
+                                        + df["pmp"] + "|" + df["ctry"] + "|" + df["per"].astype(str))
+                            _cellvol = _T0a.assign(_k=_ck(_T0a)).groupby("_k")["vi"].sum().sort_values(ascending=False)
+                            _cum = _cellvol.cumsum() / max(float(_cellvol.sum()), 1e-9)
+                            _t0k = _ck(_T0a); _pck = _ck(_Pca)
+                            log("   ── gate-2 ENABLER 1: volume pruning (drop near-zero-volume cell tail) ──")
+                            log(f"      full: t0_rows={len(_T0a):,} · project_pop(P=25)={_full_ms:.0f}ms")
+                            for _cov in (0.99, 0.999):
+                                _keep = set(_cum.index[_cum.to_numpy() <= _cov]) | {_cum.index[0]}
+                                _m0 = _t0k.isin(_keep).to_numpy(); _mp = _pck.isin(_keep).to_numpy()
+                                _pp = _PBP(_T0a[_m0].reset_index(drop=True), _Pca[_mp].reset_index(drop=True),
+                                           _poolarr[_mp], _bset, by_rpgt=_byr)
+                                _pv, _pt = _pp.project_pop_from_props([_end])
+                                _pms = _timeit(_pp)
+                                _maxe = 0.0
+                                for (_mkl, _mo, _mtr) in _rules:
+                                    _tv = _val(_fv, _ft, _full.band_order, 0, _mkl, _mo, _mtr)
+                                    _pv2 = _val(_pv, _pt, _pp.band_order, 0, _mkl, _mo, _mtr)
+                                    _maxe = max(_maxe, abs(_tv - _pv2) / max(abs(_tv), 1.0))
+                                log(f"      keep {_cov*100:.1f}% vol: rows={int(_m0.sum()):,} "
+                                    f"({len(_T0a)/max(int(_m0.sum()),1):.1f}× smaller) · "
+                                    f"project_pop={_pms:.0f}ms ({_full_ms/max(_pms,1e-9):.1f}× faster) · "
+                                    f"max band error={_maxe*100:.2f}%")
+
+                            # ---- ENABLER 2: local-linear accuracy over a few-generation step ----
+                            _dir = {k: _ref.get(k, 0.0) - _end.get(k, 0.0) for k in set(_ref) | set(_end)}
+                            _steps = [0.0, 0.02, 0.10]      # 0=endpoint, 0.02=tiny(slope), 0.10≈a few gens back
+                            _lp = [{k: _end.get(k, 0.0) + _s * _dir[k] for k in _dir} for _s in _steps]
+                            _lv, _lt = _full.project_pop_from_props(_lp)
+                            log("   ── gate-2 ENABLER 2: LOCAL-linear accuracy (model refreshed at endpoint) ──")
+                            log(f"      {'band':<30} {'mtr':<4} {'exact':>11} {'local-lin':>11} {'err%':>6}")
+                            _maxle = 0.0
+                            for (_mkl, _mo, _mtr) in _rules:
+                                _v0 = _val(_lv, _lt, _full.band_order, 0, _mkl, _mo, _mtr)
+                                _vs = _val(_lv, _lt, _full.band_order, 1, _mkl, _mo, _mtr)
+                                _vt = _val(_lv, _lt, _full.band_order, 2, _mkl, _mo, _mtr)
+                                _slope = (_vs - _v0) / 0.02
+                                _pred = _v0 + _slope * 0.10
+                                _err = abs(_pred - _vt) / max(abs(_vt), 1.0); _maxle = max(_maxle, _err)
+                                _mo_s = f"M{int(_mo)}" if _mo is not None else "M*"
+                                log(f"      {(_mkl + ' ' + _mo_s)[:30]:<30} {_mtr:<4} {_vt:>11,.1f} "
+                                    f"{_pred:>11,.1f} {_err*100:>5.1f}%")
+                            log(f"      → max LOCAL-linear error = {_maxle*100:.1f}% over a ~10%-of-move step "
+                                "(≈4 generations). Small ⇒ a local surrogate refreshed each generation stays "
+                                "near-exact ⇒ the 'near-exact + incredibly fast' path is on the table.")
+                        except Exception as _epe:  # noqa: BLE001 - diagnostic must never break a run
+                            log(f"   [gate-2 enabler probes skipped: {type(_epe).__name__}: {_epe}]")
+
                     # Per-(currency, bank, gateway) INCREMENTAL-REVENUE rate = success_rate × avg ticket.
                     # Used below to redistribute a MID's freed volume to the HIGHEST-revenue alternative
                     # (cost-aware cuts, #4) rather than proportionally. Built once from the engine's
@@ -4609,6 +4963,8 @@ with tab_eng:
                         # KEEP WHICHEVER is least-violating — so the joint solve can only help.
                         if gran is None or getattr(gran, "empty", True):
                             return gran
+                        # GATE-1: on the FIRST delivered split, log collapsed-vs-true band gap (toggle).
+                        _band_collapse_diag(_prop_items_from_gran(gran), "delivered split, pre-enforcement")
                         if _T0 is not None and _mid_month_rules:
                             _lg, _lb, _lsc, _lmoved = _mid_caps_lp(gran)
                             if _lb <= 1e-6:                        # LP satisfied every band
@@ -5394,6 +5750,85 @@ with tab_eng:
                         # "Run all generations" toggle: disables the CMA-ES convergence early-stop so
                         # every restart runs the full generation cap (exact candidate count, longer).
                         ctx["no_early_stop"] = bool(ss.get("ga_no_early_stop", False))
+
+                        # ---- EXACT per-generation band scoring (gate 2) ------------------------------
+                        # Replace the volume-ratio band PROXY with the exact pro-rata projection, scored
+                        # once per generation for the whole population (band_scoring.ExactBandPenalty on
+                        # numba-projected values). Requires pre-clustering OFF so the search runs at
+                        # parent-bank grain and the column→prop-key map is a clean parent→BIN replicate.
+                        # Gated on the Tab-3 toggle; degrades to the proxy on ANY failure. The delivered
+                        # split gets a one-shot self-check that the incidence reproduces the TRUE
+                        # _prop_items_from_gran (which also folds in the backup catch-all blend) — if that
+                        # gap is not ~0, exact bands are NOT trustworthy yet (blend layer) and the log says so.
+                        if ss.get("ga_exact_bands", False) and _ga_bands and _mid_month_rules:
+                            try:
+                                import scipy.sparse as _spx
+                                from routing_optimiser.genetic_global import run_midtilt_ga as _plain_ga
+                                from routing_optimiser.band_scoring import ExactBandPenalty as _EBP, BandSpec as _BSpec
+                                _pbp_x = _get_pbp()
+                                if _pbp_x is None:
+                                    raise RuntimeError("no cap scaffold — exact bands need the pro-rata projection")
+                                _byr = bool(_opt_by_rpgt)
+                                _rpgt_g = (G["rpgt"].astype(str).str.strip().str.lower().tolist()
+                                           if "rpgt" in G.columns else [""] * len(G))
+                                # parent(bank) → its BIN-level banks, per (currency, rpgt) [explode replicate]
+                                _of = orig_forecast[["currency", "bank", "rpgt"]].drop_duplicates().copy()
+                                _of["_cur"] = _of["currency"].astype(str).str.strip().str.lower()
+                                _of["_bin"] = _of["bank"].astype(str).str.strip()
+                                _of["_rk"] = _of["rpgt"].astype(str).str.strip().str.lower()
+                                _of["_pb"] = _of["bank"].map(
+                                    lambda b: bin_to_bank.get(b, bin_to_bank.get(str(b).strip().lower(), b))
+                                ).astype(str).str.strip().str.lower()
+                                _bins_by = {}
+                                for _cx, _pbx, _rkx, _binx in zip(_of["_cur"], _of["_pb"],
+                                                                  _of["_rk"], _of["_bin"]):
+                                    _bins_by.setdefault((_cx, _pbx, _rkx), []).append(_binx)
+                                _kpos = {str(k): i for i, k in enumerate(_pbp_x.prop_keys)}
+                                _rows = []; _cols = []
+                                for _j in range(len(G)):
+                                    _vm = fid2vamp.get(_gw_l[_j])
+                                    if _vm is None:
+                                        continue
+                                    _vm = str(_vm).strip()
+                                    for _bin in _bins_by.get((_cur_l[_j], _pb_l[_j], _rpgt_g[_j]), ()):
+                                        _pk = (f"{_cur_l[_j]}|{_bin}|{_rpgt_g[_j]}|{_vm}" if _byr
+                                               else f"{_cur_l[_j]}|{_bin}|{_vm}")
+                                        _i = _kpos.get(_pk)
+                                        if _i is not None:
+                                            _rows.append(_i); _cols.append(_j)
+                                _inc = _spx.csr_matrix((np.ones(len(_rows)), (_rows, _cols)),
+                                                       shape=(max(len(_pbp_x.prop_keys), 1), len(G)))
+                                # specs from the rules (weight = pmul; wm≡1 since viol_vol_weight is off)
+                                _specs = []
+                                for (_mk, _mo, _mtr, _tg, _tl, _dir) in _mid_month_rules:
+                                    if _mtr not in ("txn", "vamp") or _mk not in _mid_index:
+                                        continue
+                                    _months = tuple(int(_mo) for _mo in ([int(_mo)] if _mo is not None else range(6)))
+                                    _tolb = float(_tl) if _tl is not None else 0.0
+                                    _ceilb = (_tg * (1.0 + _tolb)) if _dir in ("range", "ceiling") else None
+                                    _floorb = (_tg * (1.0 - _tolb)) if (_dir in ("range", "floor") and _tolb < 1.0) else None
+                                    if _ceilb is None and not (_floorb and _floorb > 0):
+                                        continue
+                                    _pmulx = _prio_mult(_prio_lookup.get((_mk, _mo, _mtr), 1))
+                                    _specs.append(_BSpec(midl=str(_mk).strip().lower(), months=_months,
+                                                         metric=_mtr, ceil=_ceilb, floor=_floorb, weight=float(_pmulx)))
+                                _epx = _EBP(_pbp_x, _specs,
+                                            breach_fixed=float(ctx.get("breach_fixed", 0.0) or 0.0),
+                                            breach_quad=float(ctx.get("breach_quad", 1.0) or 1.0),
+                                            breach_shape=str(ctx.get("breach_shape", "quadratic")))
+                                ctx["exact_bands"] = _epx
+                                ctx["band_incidence"] = _inc
+                                ctx["_exact_bands_selfcheck"] = {"inc": _inc, "done": False}
+                                _run_midtilt_ga = _plain_ga            # pre-clustering OFF for exact bands
+                                log(f"   GA fitness: EXACT per-generation band scoring ON — {len(_specs)} band(s), "
+                                    f"pre-clustering OFF, incidence {_inc.shape[0]}×{_inc.shape[1]} ({_inc.nnz} nnz). "
+                                    "Delivered split gets an incidence self-check (must read ~0 to trust).")
+                            except Exception as _ebe:  # noqa: BLE001
+                                log(f"   [Warning] exact band scoring setup failed ({type(_ebe).__name__}: {_ebe}); "
+                                    "falling back to the calibrated volume-ratio proxy.")
+                                ctx.pop("exact_bands", None); ctx.pop("band_incidence", None)
+                                ctx.pop("_exact_bands_selfcheck", None)
+
                         ss["_ga_ctx"] = ctx                      # stash for the experimental NSGA-II / full-matrix explorer
                         _n_cells = int(len(_counts)); _n_mid = int(len(_mids_u))
                         # ── GA problem size (surfaced so the k-means pre-clustering decision is data-driven) ──
@@ -5462,7 +5897,48 @@ with tab_eng:
                             _agg = G.drop(columns=["_cellk", "_ref_share", "_comp_share"]).copy()
                             _agg["share"] = np.asarray(_sh, float)
                             _agg["volume"] = _agg["cell_volume"] * _agg["share"]
-                            _proj = _project_capped(_prop_items_from_gran(_explode(_agg)))
+                            _tb_prop = _prop_items_from_gran(_explode(_agg))
+                            # GATE-1 (one-shot): collapsed-vs-true band gap on the delivered split.
+                            # Placed here so it fires even when per-MID enforcement is bypassed.
+                            _band_collapse_diag(_tb_prop, "delivered split (re-projection)")
+                            # EXACT-BANDS incidence self-check (one-shot): does the column→prop-key
+                            # incidence used IN the search reproduce the TRUE _prop_items_from_gran
+                            # (which also folds the backup catch-all blend)? Non-zero ⇒ don't trust it.
+                            _scx = ctx.get("_exact_bands_selfcheck") if isinstance(ctx, dict) else None
+                            _epx_sc = ctx.get("exact_bands") if isinstance(ctx, dict) else None
+                            if _scx is not None and _epx_sc is not None and not _scx["done"]:
+                                _scx["done"] = True
+                                try:
+                                    from routing_optimiser.band_scoring import shares_to_prop_raw as _s2pr_chk
+                                    _projx = _epx_sc.projector
+                                    _kpx = {str(k): i for i, k in enumerate(_projx.prop_keys)}
+                                    _pr_inc = _s2pr_chk(np.asarray(_sh, float)[None, :], _scx["inc"])[0]
+                                    _truth = np.zeros(len(_projx.prop_keys), dtype=float)
+                                    for _t in _tb_prop:
+                                        _k = ("|".join([str(_t[0]).strip().lower(), str(_t[1]).strip(),
+                                                        str(_t[2]).strip().lower(), str(_t[3]).strip()])
+                                              if _opt_by_rpgt else
+                                              "|".join([str(_t[0]).strip().lower(), str(_t[1]).strip(),
+                                                        str(_t[2]).strip()]))
+                                        _ix = _kpx.get(_k)
+                                        if _ix is not None:
+                                            _truth[_ix] += float(_t[-1])
+                                    _gap = float(np.abs(_pr_inc - _truth).max()) if len(_truth) else 0.0
+                                    log(f"   ── exact-bands incidence self-check ── max|prop_raw(incidence) − "
+                                        f"truth| = {_gap:.3e}  (Σtruth={_truth.sum():.1f}; ≈0 ⇒ the search's "
+                                        "column→prop-key map matches _prop_items_from_gran incl. the blend)")
+                                except Exception as _sce:  # noqa: BLE001
+                                    log(f"   [exact-bands self-check skipped: {type(_sce).__name__}: {_sce}]")
+                            _band_cost_probe()          # GATE-2 (one-shot): reduced-size + project_pop timing
+                            _band_compress_probe()      # GATE-2 (one-shot): lossless compression ceiling
+                            if ss.get("ga_band_slope", False) or ss.get("ga_band_enablers", False):
+                                _agg_r = G.drop(columns=["_cellk", "_ref_share", "_comp_share"]).copy()
+                                _agg_r["share"] = G["_ref_share"].to_numpy(float)
+                                _agg_r["volume"] = _agg_r["cell_volume"] * _agg_r["share"]
+                                _ref_prop = _prop_items_from_gran(_explode(_agg_r))
+                                _band_slope_probe(_ref_prop, _tb_prop)          # GATE-2 slope-accuracy
+                                _band_enabler_probes(_ref_prop, _tb_prop)       # GATE-2 pruning + local-linear
+                            _proj = _project_capped(_tb_prop)
                             _tot = 0.0
                             for (_mk, _mo, _mtr, _tg, _tl, _dir) in _mid_month_rules:
                                 if _mtr == "vamp_pct" or _mk not in _mid_index:

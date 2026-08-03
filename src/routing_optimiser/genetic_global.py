@@ -575,7 +575,10 @@ def _obj_viol(shares, ctx):
             _cap_v = np.where(ctx["mid_vol_cap"] > 0, ctx["mid_vol_cap"], np.inf)
             viol += (_pen(np.maximum(midv / _cap_v[None, :] - 1.0, 0.0))
                      * _wm[None, :]).sum(axis=1)
-        _bands = ctx.get("midband")
+        # EXACT BANDS (gate 2): under ctx['exact_bands'], the month bands are scored EXACTLY per
+        # generation in the eval wrapper (band_scoring.ExactBandPenalty), so drop the volume-ratio
+        # PROXY term here — the numba kernel drops it under the same flag, keeping both in lockstep.
+        _bands = None if ctx.get("exact_bands") else ctx.get("midband")
         if _bands:
             _bvol = ctx.get("mid_base_vol")
             with np.errstate(divide="ignore", invalid="ignore"):
@@ -1113,6 +1116,29 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
                     ga_numba_info["used"] = True
         except Exception as _e:  # noqa: BLE001 - any failure -> NumPy path, never crash a run
             ga_numba_info["reason"] = f"{type(_e).__name__}: {_e}"
+
+    # ---- EXACT per-generation band scoring (gate 2) ---------------------------------------
+    # If ctx supplies an ExactBandPenalty + a column→prop-key incidence, add the EXACT band
+    # violation on top of whichever base eval (NumPy or Numba) is active — both had the
+    # volume-ratio PROXY band term dropped (numba kernel + _obj_viol, under ctx['exact_bands']).
+    # Decoded shares → prop_raw (sparse matmul) → exact projection penalty. ONE projection per
+    # generation for the whole population; matches the post-GA re-projection truth by construction.
+    _exact_bands = ctx.get("exact_bands")
+    _band_inc = ctx.get("band_incidence")
+    if _exact_bands is not None and _band_inc is not None:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+        _base_eval_ov = eval_ov
+        _base_score_of = score_of
+
+        def eval_ov(V):                                      # noqa: F811 - exact-band override
+            _obj, _vio = _base_eval_ov(V)
+            _pr = _s2pr(_decode(_to_actual(V)), _band_inc)
+            return _obj, _vio + _exact_bands.penalty(_pr)
+
+        def score_of(gu):                                    # noqa: F811 - exact-band override
+            _o, _v = _base_score_of(gu)
+            _pr = _s2pr(_decode(_to_actual(np.asarray(gu, float)[None, :])), _band_inc)
+            return float(_o), float(_v) + float(_exact_bands.penalty(_pr)[0])
 
     # #9/#2 memetic gradients: analytic ∂revenue and ∂(smooth violation) through the
     # ref-weighted softmax decode, for a single genome (unit space). Used by the SLSQP

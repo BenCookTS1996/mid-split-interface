@@ -395,7 +395,11 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
     else:
         volcap = np.full(M, np.inf, np.float64)
 
-    _bands = ctx.get("midband") or []
+    # EXACT BANDS (gate 2): when ctx['exact_bands'] is set, the per-MID month bands are scored
+    # EXACTLY per generation OUTSIDE the kernel (genetic_global eval wrapper + band_scoring), so
+    # the kernel must NOT also apply the volume-ratio PROXY band term — otherwise it'd double-count
+    # and break lockstep with _obj_viol (which drops the proxy term under the same flag).
+    _bands = [] if ctx.get("exact_bands") else (ctx.get("midband") or [])
     n_bands = int(len(_bands))
     b_mi = np.zeros(max(n_bands, 1), np.intp)
     b_bval = np.zeros(max(n_bands, 1), np.float64)
