@@ -2053,14 +2053,9 @@ with tab_eng:
                              "but the doubling makes each restart cost more than the last. A/B them using "
                              "the ④ efficiency readout in the run log. Applies to both Genetic and "
                              "GA - Numba.")
-                    st.number_input(
-                        "Re-projection budget (s)", min_value=0, max_value=3600, value=300, step=30,
-                        key="ga_reproj_budget_s",
-                        help="Time budget for the post-GA re-projection correction that reconciles the "
-                             "GA's band PROXY with the TRUE pro-rata projection (shrinks the proxy↔true "
-                             "gap). Each round re-scales the over-cap MIDs and re-checks the REAL breach, "
-                             "stopping early once satisfied. 300s = current — if the run log shows "
-                             "'WALL-CAP …s hit' with a residual breach, raise this so more rounds can run.")
+                    # Re-projection budget input + the post-GA correction removed entirely — band scoring
+                    # is EXACT in-search, so the search satisfies the true bands directly. The delivered
+                    # split still gets a READ-ONLY true-band readout (+ incidence self-check) in the log.
                     st.selectbox(
                         "GA parallelism", ["loky", "threading", "sequential"], index=0,
                         key="ga_parallel_backend",
@@ -2073,14 +2068,10 @@ with tab_eng:
                              "hang with no progress (a macOS loky/Numba worker wedge), switch to "
                              "'Sequential' — it runs the seeds one at a time in this process (no worker "
                              "pool), slower but immune to that hang. 'threading' is an in-between fallback.")
-                    st.checkbox(
-                        "EXACT band scoring in search (gate 2)", value=False, key="ga_exact_bands",
-                        help="Replaces the volume-ratio band PROXY with the exact pro-rata projection, "
-                             "scored per generation for the whole population. Turns pre-clustering OFF "
-                             "(so the search runs at parent-bank grain; ~1.4× slower search, but the "
-                             "post-hoc re-projection correction should largely vanish). The delivered "
-                             "split logs an incidence SELF-CHECK — trust exact bands only if it reads ~0. "
-                             "Falls back to the proxy on any setup failure.")
+                    # EXACT band scoring is now the PERMANENT default (no toggle) — the search scores the
+                    # true pro-rata projection per generation, pre-clustering off, with an incidence
+                    # self-check on the delivered split and automatic fall-back to the proxy on any setup
+                    # failure. See the ctx build (_ga_bands present ⇒ exact bands on).
                     # Search-BUDGET inputs (GA generations, population λ, seeds, restarts) plus the
                     # candidate-split range / ETA readout now live ABOVE this form (the "Genetic search
                     # budget" panel) so editing them refreshes the count LIVE — form members don't rerun
@@ -2572,8 +2563,8 @@ with tab_eng:
                               f"time_decay={('on ' + str(_gv('decay_half')) + 'd') if _gv('apply_decay') else 'off'} · "
                               f"xborder_penalty={_gv('xborder_penalty')}")
                         _diag(f"      max_pools_target={_gv('max_configs')}")
-                        _diag(f"      reproj_budget={int(ss.get('ga_reproj_budget_s', 300) or 300)}s "
-                              f"(post-GA proxy→true band correction wall-cap)")
+                        _diag("      band scoring=EXACT in-search (per-generation pro-rata projection; "
+                              "no proxy, no post-hoc correction)")
                         _pk = {k: params.get(k) for k in ("temperature", "temp_method",
                                                           "explore_cap_total", "explore_cap_each", "n_variations")
                                if isinstance(params, dict) and k in params}
@@ -5756,11 +5747,11 @@ with tab_eng:
                         # once per generation for the whole population (band_scoring.ExactBandPenalty on
                         # numba-projected values). Requires pre-clustering OFF so the search runs at
                         # parent-bank grain and the column→prop-key map is a clean parent→BIN replicate.
-                        # Gated on the Tab-3 toggle; degrades to the proxy on ANY failure. The delivered
+                        # PERMANENT default (no toggle); degrades to the proxy on ANY failure. The delivered
                         # split gets a one-shot self-check that the incidence reproduces the TRUE
                         # _prop_items_from_gran (which also folds in the backup catch-all blend) — if that
-                        # gap is not ~0, exact bands are NOT trustworthy yet (blend layer) and the log says so.
-                        if ss.get("ga_exact_bands", False) and _ga_bands and _mid_month_rules:
+                        # gap is not ~0, exact bands are NOT trustworthy (blend/grain drift) and the log says so.
+                        if _ga_bands and _mid_month_rules:
                             try:
                                 import scipy.sparse as _spx
                                 from routing_optimiser.genetic_global import run_midtilt_ga as _plain_ga
@@ -5824,10 +5815,12 @@ with tab_eng:
                                     f"pre-clustering OFF, incidence {_inc.shape[0]}×{_inc.shape[1]} ({_inc.nnz} nnz). "
                                     "Delivered split gets an incidence self-check (must read ~0 to trust).")
                             except Exception as _ebe:  # noqa: BLE001
-                                log(f"   [Warning] exact band scoring setup failed ({type(_ebe).__name__}: {_ebe}); "
-                                    "falling back to the calibrated volume-ratio proxy.")
-                                ctx.pop("exact_bands", None); ctx.pop("band_incidence", None)
-                                ctx.pop("_exact_bands_selfcheck", None)
+                                # NO proxy fallback (removed per config): exact band scoring is mandatory.
+                                # Crash loudly so a broken setup is never silently downgraded to the proxy.
+                                log(f"   ✗ EXACT band scoring setup FAILED ({type(_ebe).__name__}: {_ebe}). "
+                                    "Proxy fallback is DISABLED — aborting the run. Clear __pycache__ + "
+                                    "restart; if it persists, paste this line and the traceback.")
+                                raise
 
                         ss["_ga_ctx"] = ctx                      # stash for the experimental NSGA-II / full-matrix explorer
                         _n_cells = int(len(_counts)); _n_mid = int(len(_mids_u))
@@ -6428,59 +6421,18 @@ with tab_eng:
                             _main_hist = (list(_info.get("history"))
                                           if (isinstance(_info, dict) and _info.get("history")) else None)
                             if ctx["midband"]:
+                                # Post-GA re-projection CORRECTION removed — band scoring is now EXACT
+                                # in-search, so the search already satisfies the true pro-rata bands (no
+                                # proxy→true gap to reconcile). This is a READ-ONLY compliance readout of
+                                # the delivered split (and it runs the incidence self-check inside
+                                # _ga_true_breach); it does NOT modify the split.
                                 try:
-                                    import time as _rpt
-                                    # HARD WALL CAP so a hard-to-satisfy band breach can't run away (it hit
-                                    # ~30 min on a tough input). The budget is passed INTO the GA as a
-                                    # time-based stop_check, so even a single round halts at the next
-                                    # generation and keeps its best-so-far; the loop is no-regression
-                                    # (a round is accepted only if the true breach actually drops).
-                                    # USER-CONTROLLABLE (Tab 3 · "Re-projection budget (s)", default 300).
-                                    _REPROJ_BUDGET_S = float(ss.get("ga_reproj_budget_s", 300) or 300)
-                                    log(f"   GA re-projection budget: {int(_REPROJ_BUDGET_S)}s "
-                                        "(raise via Tab 3 if the correction hits its wall-cap with a residual breach).")
-                                    _rp_t0 = _rpt.time(); _rp_deadline = _rp_t0 + _REPROJ_BUDGET_S
-                                    _base_stop = _ga_stop
-
-                                    def _reproj_stop():
-                                        if _rpt.time() > _rp_deadline:
-                                            return True
-                                        try:
-                                            return bool(_base_stop()) if callable(_base_stop) else False
-                                        except Exception:  # noqa: BLE001
-                                            return False
-                                    _br = _ga_true_breach(_sh); _rp_done = 0
-                                    for _r in range(int(_rounds)):
-                                        if _br <= 1e-6:
-                                            break   # real projection already satisfies every band
-                                        if _rpt.time() > _rp_deadline:
-                                            break   # out of budget → keep best so far
-                                        ctx["midband"] = (_build_ga_bands(_sh) or None)   # re-project
-                                        _sh2, _info2 = _run_midtilt_ga(ctx, lam=50.0, pop_size=_ga_pop,
-                                                                       generations=_ga_gen, seed=_seed,
-                                                                       auto=True, patience=_ga_pat,
-                                                                       warm_start=_info.get("genome"),
-                                                                       gain_max=_GA_GAIN_MAX, stop_check=_reproj_stop,
-                                                                       **_extra_kw)
-                                        _rp_done += 1
-                                        _br2 = _ga_true_breach(_sh2)
-                                        if _br2 < _br - 1e-9:
-                                            # Accept the better SPLIT but keep the MAIN search's full
-                                            # generation history — the reproj run is wall-capped so its
-                                            # own history is short (that's why the chart showed 109).
-                                            if isinstance(_info2, dict) and _main_hist is not None:
-                                                _info2 = {**_info2, "history": _main_hist}
-                                            _sh, _info, _br = _sh2, _info2, _br2   # accept: truly better
-                                        else:
-                                            break
-                                    _capped = _rpt.time() > _rp_deadline
-                                    log(f"   GA re-projection correction: true-band breach {_br:.4g} "
-                                        f"({_rp_done} round(s), {_rpt.time() - _rp_t0:.0f}s"
-                                        f"{f'; WALL-CAP {int(_REPROJ_BUDGET_S)}s hit — kept best so far' if _capped else ''}) "
-                                        "(0 = all month bands satisfied by the real pro-rata projection).")
+                                    _br = _ga_true_breach(_sh)
+                                    log(f"   delivered split — true-band breach {_br:.4g} "
+                                        "(0 = all month bands satisfied by the real pro-rata projection; "
+                                        "exact in-search scoring, no post-hoc correction).")
                                 except Exception as _e:  # noqa: BLE001
-                                    log(f"   [Warning] GA re-projection correction skipped ({_e}); "
-                                        "using proxy-only GA result.")
+                                    log(f"   [Warning] delivered-split band readout skipped ({_e}).")
                             ctx["risk_min_w"] = 0.0
                             ctx["band_weight"] = 8.0   # reset to defaults for anything downstream
                             ctx["band_fixed"] = 20.0
@@ -6543,7 +6495,8 @@ with tab_eng:
                         _vamp_ref = max(float((_cvol * _ref_share_G * _rkr).sum()), 1.0)
                         _risk_aversion = 0.0   # FIXED: dial removed — always revenue-shaped (no extra risk-min beyond the caps)
                         _safe_wall0 = _gatime.time()
-                        # risk-min endpoint (dial 0): same GA + re-projection correction, with the
+                        # risk-min endpoint (dial 0): same GA (EXACT in-search band scoring; read-only
+                        # true-band readout, no correction), with the
                         # risk-min term AND a TOUGHER per-MID band penalty (4× the dial-99 weight) so
                         # dial 0 sits inside every band harder. Intermediate dials inherit this via the
                         # frontier blend between the dial-0 and dial-99 endpoints.

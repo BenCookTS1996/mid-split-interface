@@ -109,6 +109,7 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
     C = cs.shape[0]
     obj = np.empty(P, dtype=np.float64)
     viol = np.empty(P, dtype=np.float64)
+    Xout = np.empty((P, N), dtype=np.float64)   # PRE-eligibility decoded shares (for exact bands)
     w = np.empty(N, dtype=np.float64)
     X = np.empty(N, dtype=np.float64)
     midv = np.empty(M, dtype=np.float64)
@@ -184,6 +185,11 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                                 X[g] = X[g] + (capN_col[g] - X[g]) * excess / room_cell
                 if not any_over:
                     break
+        # snapshot the PRE-ELIGIBILITY decode (this is what the exact-band projection consumes —
+        # it matches NumPy _decode / _prop_items_from_gran). Taken BEFORE the in-place eligibility
+        # stage below so the returned shares are the raw routed split, not the masked one.
+        for g in range(N):
+            Xout[p, g] = X[g]
         # ---- eligibility on the DECODED shares (mirror eligibility.apply_elig_pop) ----
         # bans -> 0 + per-cell renorm, then wallet blend + renorm, then USA blend + renorm,
         # IN THIS ORDER — so the kernel scores the SAME actually-routable split the NumPy
@@ -340,7 +346,7 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                 o -= rmw * tot
         obj[p] = o
         viol[p] = v
-    return obj, viol
+    return obj, viol, Xout
 
 
 # --------------------------------------------------------------------------- builder
@@ -530,7 +536,7 @@ def verify(np_eval_actual, nb_eval_actual, sample_G, *, rtol_obj=1e-7, atol_viol
             nb_eval_actual(G[:1])
             out["compile_s"] = time.perf_counter() - _t
         _t = time.perf_counter()
-        o_nb, v_nb = nb_eval_actual(G)
+        o_nb, v_nb = nb_eval_actual(G)[:2]   # kernel returns (obj, viol, Xdec); Xdec unused here
         out["t_nb"] = time.perf_counter() - _t
         o_nb = np.asarray(o_nb, float); v_nb = np.asarray(v_nb, float)
 

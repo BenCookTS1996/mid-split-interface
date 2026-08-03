@@ -972,7 +972,9 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     ctx["_mid_S"] = _S                                       # so _obj_viol uses the fast path
     _eidx = np.nonzero(elig > 0.5)[0].astype(np.intp)        # eligible columns (speed #4)
     _prep = _cap_floor_prep(cs, cc, elig, _cap, _floor)      # cap/floor constants (speed, identical)
-    _bands = ctx.get("midband")
+    # EXACT bands: drop the proxy band term from the SLSQP-polish gradient too (it was only a
+    # local direction hint; the accept test is exact). Under exact_bands there is NO proxy anywhere.
+    _bands = None if ctx.get("exact_bands") else ctx.get("midband")
     _base_v = ctx.get("mid_base_vol")
     _vcap = ctx.get("vamp_cap"); _volcap = ctx.get("mid_vol_cap")
 
@@ -1025,12 +1027,29 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     def _to_unit(x):
         return np.clip((np.asarray(x, float) - lo_a) / span, 0.0, 1.0)
 
+    # EXACT band penalty (gate 2): added to the violation for EVERY candidate, using the
+    # PRE-eligibility decoded shares. The numba kernel now RETURNS those shares, so there is NO
+    # NumPy re-decode on the hot path (the old double-decode). Zero when no exact bands configured.
+    _exact_bands = ctx.get("exact_bands")
+    _band_inc = ctx.get("band_incidence")
+    if _exact_bands is not None and _band_inc is not None:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+
+        def _bands_pen(X):
+            return _exact_bands.penalty(_s2pr(X, _band_inc))
+    else:
+        def _bands_pen(X):
+            return np.zeros(np.asarray(X).shape[0], dtype=float)
+
     def eval_ov(V):                                          # unit pop -> (objective, violation)
-        return _obj_viol(_decode(_to_actual(V)), ctx)
+        X = _decode(_to_actual(V))
+        obj, viol = _obj_viol(X, ctx)
+        return obj, viol + _bands_pen(X)
 
     def score_of(gu):                                        # unit genome -> (obj, viol)
-        obj, viol = _obj_viol(_decode(_to_actual(np.asarray(gu)[None, :])), ctx)
-        return float(obj[0]), float(viol[0])
+        X = _decode(_to_actual(np.asarray(gu)[None, :]))
+        obj, viol = _obj_viol(X, ctx)
+        return float(obj[0]), float(viol[0] + _bands_pen(X)[0])
 
     def better(a, b):                                        # feasibility-first strict-better
         ao, av = a; bo, bv = b
@@ -1107,38 +1126,20 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
                     _accept = bool(_vr.get("ok"))
                 if _accept:
                     def eval_ov(V):                          # noqa: F811 - numba override
-                        return _nb_eval_actual(_to_actual(V))
+                        _o, _v, _X = _nb_eval_actual(_to_actual(V))   # kernel returns pre-elig shares
+                        return _o, _v + _bands_pen(_X)
 
                     def score_of(gu):                        # noqa: F811 - numba override
-                        _o, _v = _nb_eval_actual(_to_actual(np.asarray(gu)[None, :]))
-                        return float(_o[0]), float(_v[0])
+                        _o, _v, _X = _nb_eval_actual(_to_actual(np.asarray(gu)[None, :]))
+                        return float(_o[0]), float(_v[0] + _bands_pen(_X)[0])
 
                     ga_numba_info["used"] = True
         except Exception as _e:  # noqa: BLE001 - any failure -> NumPy path, never crash a run
             ga_numba_info["reason"] = f"{type(_e).__name__}: {_e}"
 
-    # ---- EXACT per-generation band scoring (gate 2) ---------------------------------------
-    # If ctx supplies an ExactBandPenalty + a column→prop-key incidence, add the EXACT band
-    # violation on top of whichever base eval (NumPy or Numba) is active — both had the
-    # volume-ratio PROXY band term dropped (numba kernel + _obj_viol, under ctx['exact_bands']).
-    # Decoded shares → prop_raw (sparse matmul) → exact projection penalty. ONE projection per
-    # generation for the whole population; matches the post-GA re-projection truth by construction.
-    _exact_bands = ctx.get("exact_bands")
-    _band_inc = ctx.get("band_incidence")
-    if _exact_bands is not None and _band_inc is not None:
-        from .band_scoring import shares_to_prop_raw as _s2pr
-        _base_eval_ov = eval_ov
-        _base_score_of = score_of
-
-        def eval_ov(V):                                      # noqa: F811 - exact-band override
-            _obj, _vio = _base_eval_ov(V)
-            _pr = _s2pr(_decode(_to_actual(V)), _band_inc)
-            return _obj, _vio + _exact_bands.penalty(_pr)
-
-        def score_of(gu):                                    # noqa: F811 - exact-band override
-            _o, _v = _base_score_of(gu)
-            _pr = _s2pr(_decode(_to_actual(np.asarray(gu, float)[None, :])), _band_inc)
-            return float(_o), float(_v) + float(_exact_bands.penalty(_pr)[0])
+    # (EXACT band penalty is folded directly into eval_ov / score_of above via _bands_pen, using
+    # the kernel's returned PRE-eligibility shares — so there is no separate wrapper and no NumPy
+    # re-decode. The numba⇄NumPy verifier still compares the band-LESS core, so lockstep holds.)
 
     # #9/#2 memetic gradients: analytic ∂revenue and ∂(smooth violation) through the
     # ref-weighted softmax decode, for a single genome (unit space). Used by the SLSQP
