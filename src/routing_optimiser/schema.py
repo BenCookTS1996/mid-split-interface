@@ -71,6 +71,7 @@ SCENARIO_TO_RPGT = {
 }
 
 
+# [FN-221]
 def gateway_columns(columns) -> list[str]:
     """Return the gateway/MID columns from a template header."""
     cols = list(columns)

@@ -25,6 +25,7 @@ class GeneticRefEngine(BaseEngine):
                    "own conversion reference — independent of softmax (no "
                    "temperature/exponential).")
 
+    # [FN-431]
     def _solve(self, p: CellProblem) -> CellSolution:
         n = p.n()
         _, hi = self._bounds(p)

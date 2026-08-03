@@ -60,6 +60,7 @@ try:                                            # Numba is optional; absent -> e
     from numba import njit as _njit             # type: ignore
     NUMBA_OK = True
 
+    # [FN-183]
     def njit(*a, **k):                          # force our safe defaults (no fastmath: keep IEEE)
         k.setdefault("cache", True)
         k.setdefault("fastmath", False)
@@ -70,16 +71,19 @@ try:                                            # Numba is optional; absent -> e
 except Exception:                               # noqa: BLE001 - no numba -> identity decorator
     NUMBA_OK = False
 
+    # [FN-184]
     def njit(*a, **k):                          # type: ignore
         if a and callable(a[0]):
             return a[0]
 
+        # [FN-185]
         def deco(f):
             return f
         return deco
 
 
 # --------------------------------------------------------------------------- fused kernel
+# [FN-186]
 @njit
 def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fine,
                 nec_col, fl_col, capN_col, has_floor, has_cap,
@@ -361,6 +365,7 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
 
 
 # --------------------------------------------------------------------------- builder
+# [FN-187]
 def _prep_cols(cell_starts, cell_counts, elig, cap, floor):
     """Per-column nec / floor / capN constants, matching `genetic_global._cap_floor_prep`
     but as dense (N,) arrays the fused kernel can index directly."""
@@ -375,6 +380,7 @@ def _prep_cols(cell_starts, cell_counts, elig, cap, floor):
     return nec_col, fl_col, capN_col
 
 
+# [FN-188]
 def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
                     cap, floor, fine_idx, zr_cell, n_fine, cv, risk, rc, ctx):
     """Return a callable `eval_actual(G)->(obj, viol)` (G in ACTUAL genome space) backed by
@@ -485,6 +491,7 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
         e_has_w = 0; e_w_incap = _z(); e_w_wf = _z()
         e_has_u = 0; e_u_incap = _z(); e_u_wf = _z()
 
+    # [FN-189]
     def eval_actual(G):
         G = np.ascontiguousarray(G, dtype=np.float64)
         return _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fine,
@@ -505,6 +512,7 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
 
 
 # --------------------------------------------------------------------------- verifier
+# [FN-190]
 def verify(np_eval_actual, nb_eval_actual, sample_G, *, rtol_obj=1e-7, atol_viol=1e-7,
            rtol_viol=1e-6, bfix=0.0, warmup=True):
     """Run NumPy and Numba evals on the SAME actual-space genomes and compare. Returns a dict

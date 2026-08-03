@@ -28,6 +28,7 @@ __build__ = "2026-07-24-fullmatrix+nsga2"
 
 
 # --------------------------------------------------------------------------- helpers
+# [FN-090]
 def _renorm_cells(X, cs, cc):
     """Renormalise each contiguous cell segment of X (P, N) so every cell sums to 1."""
     seg = np.add.reduceat(X, cs, axis=1)
@@ -35,6 +36,7 @@ def _renorm_cells(X, cs, cc):
     return X / np.repeat(seg, cc, axis=1)
 
 
+# [FN-091]
 def _repair(X, cs, cc, elig, cap, floor):
     """Make every row a deployable split: non-negative, eligible-only, per-cell sum 1, then
     the SAME hard max-share cap + exploration floor the tilt GA uses. So the full-matrix GA
@@ -46,6 +48,7 @@ def _repair(X, cs, cc, elig, cap, floor):
     return X
 
 
+# [FN-092]
 def _objectives(pop, ctx):
     """(revenue [maximise], aggregate expected VAMP count [minimise]) per candidate.
     Revenue is the same $-quantity `_fitness` maximises; VAMP count = Σ share·cell_vol·risk,
@@ -56,6 +59,7 @@ def _objectives(pop, ctx):
 
 
 # --------------------------------------------------------------------------- NSGA-II core
+# [FN-093]
 def _fast_nondominated_sort(F):
     """NSGA-II non-dominated sort. F (P, M) minimisation. Returns list of fronts (each a list
     of member indices), best front first. The pairwise dominance matrix is built with numpy
@@ -84,6 +88,7 @@ def _fast_nondominated_sort(F):
     return fronts
 
 
+# [FN-094]
 def _crowding(F, idxs):
     """Crowding distance for members `idxs` (boundary points = inf)."""
     l = len(idxs)
@@ -103,14 +108,17 @@ def _crowding(F, idxs):
     return dist
 
 
+# [FN-095]
 def _nsga2(pop, ctx, rng, cs, cc, elig, cap, floor, generations, mutation_rate, mutation_sigma,
            stop_check=None):
     pop_size, N = pop.shape
 
+    # [FN-096]
     def objs_min(P):
         rev, vamp = _objectives(P, ctx)
         return np.column_stack([-rev, vamp])          # minimise (-revenue, vamp)
 
+    # [FN-097]
     def rank_and_crowd(F):
         fronts = _fast_nondominated_sort(F)
         rank = np.zeros(len(F), dtype=int)
@@ -122,9 +130,11 @@ def _nsga2(pop, ctx, rng, cs, cc, elig, cap, floor, generations, mutation_rate, 
                 crowd[i] = d[jj]
         return fronts, rank, crowd
 
+    # [FN-098]
     def breed(P, rank, crowd):
         children = np.empty_like(P)
 
+        # [FN-099]
         def better(i, j):
             if rank[i] != rank[j]:
                 return i if rank[i] < rank[j] else j
@@ -176,6 +186,7 @@ def _nsga2(pop, ctx, rng, cs, cc, elig, cap, floor, generations, mutation_rate, 
 
 
 # --------------------------------------------------------------------------- entry point
+# [FN-100]
 def run_fullmatrix_ga(ctx, lam, *, pop_size=60, generations=120, mutation_rate=0.2,
                       mutation_sigma=0.15, seed=42, elite_frac=0.2, patience=25,
                       multiobjective=False, warm_start=None, stop_check=None):
@@ -211,6 +222,7 @@ def run_fullmatrix_ga(ctx, lam, *, pop_size=60, generations=120, mutation_rate=0
                       generations, mutation_rate, mutation_sigma, stop_check=stop_check)
 
     # ---- single-objective GA (tournament + elitism), same fitness as the tilt GA ---------
+    # [FN-101]
     def fit_of(P):
         return _fitness(P, ctx, lam)
     fit = fit_of(pop)
@@ -224,6 +236,7 @@ def run_fullmatrix_ga(ctx, lam, *, pop_size=60, generations=120, mutation_rate=0
         order = np.argsort(-fit)
         elite = pop[order[:n_elite]].copy()
 
+        # [FN-102]
         def pick():
             c = rng.integers(0, pop_size, size=3)
             return c[np.argmax(fit[c])]

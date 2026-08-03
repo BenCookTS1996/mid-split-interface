@@ -25,6 +25,7 @@ from __future__ import annotations
 import numpy as np
 
 
+# [FN-202]
 def _cell_signatures(ctx, *, ref_dp: int = 9, risk_dp: int = 9, rev_dp: int = 9):
     """One hashable signature per cell. Two cells share a signature IFF, gateway-for-gateway
     (in row order), they have the same (vampMid, eligibility, reference share, risk, revenue-
@@ -48,6 +49,7 @@ def _cell_signatures(ctx, *, ref_dp: int = 9, risk_dp: int = 9, rev_dp: int = 9)
     return sigs
 
 
+# [FN-203]
 def build_clusters(ctx, **kw):
     """Group cells by identical signature. Returns a dict with:
       rep_cells   : list[int]            representative cell index per cluster (first occurrence)
@@ -66,6 +68,7 @@ def build_clusters(ctx, **kw):
             "cell2rep": cell2rep}
 
 
+# [FN-204]
 def reduce_ctx(ctx, clusters):
     """Build a REDUCED ctx over one representative cell per cluster. Intensive per-gateway fields
     (ref_share, risk, elig, mid_id, sr, ticket, baseline_share, zr/zq if present) are copied from
@@ -87,6 +90,7 @@ def reduce_ctx(ctx, clusters):
         for j in range(int(cc[r])):
             src_rows[n0 + j] = o0 + j
 
+    # [FN-205]
     def _take(name):
         return np.asarray(ctx[name])[src_rows]
 
@@ -127,6 +131,7 @@ def reduce_ctx(ctx, clusters):
     return rctx, expand
 
 
+# [FN-206]
 def run_midtilt_ga_preclustered(ctx, *args, **kw):
     """OPT-IN drop-in for `genetic_global.run_midtilt_ga` (same call/return contract). Clusters the
     ctx's cells rule-safely, runs the real GA on the REDUCED (fewer-row) problem, then expands the
@@ -162,6 +167,7 @@ def run_midtilt_ga_preclustered(ctx, *args, **kw):
     if _wsh is not None:                          # reduce row-aligned warm split(s) to rep rows
         src = expand["src_rows"]; nf = int(expand["n_row_full"])
 
+        # [FN-207]
         def _red(w):
             w = np.asarray(w, float)
             return w[src] if (w.ndim == 1 and w.shape[0] == nf) else w
@@ -179,6 +185,7 @@ def run_midtilt_ga_preclustered(ctx, *args, **kw):
     return best_full, info
 
 
+# [FN-208]
 def expand_shares(rep_shares, expand):
     """Copy each representative cell's per-gateway shares to ALL its member cells → full (N,)
     share vector in the ORIGINAL row layout. Direct copy (identical gateway layout)."""

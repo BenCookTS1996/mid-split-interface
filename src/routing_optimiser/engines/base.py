@@ -57,6 +57,7 @@ class CellProblem:
     # engine falls back to its global `temperature` param.
     temperature: float | None = None
 
+    # [FN-401]
     def n(self) -> int:
         """Number of gateways in this cell (length of every aligned array)."""
         return len(self.gateways)
@@ -86,6 +87,7 @@ class BaseEngine:
     label: str = "Base"
     description: str = ""
 
+    # [FN-402]
     def __init__(self, weight: float, hard: HardConstraints,
                  soft: SoftConstraints, **params):
         # `weight` is the risk<->conversion slider in [0, 1]:
@@ -98,6 +100,7 @@ class BaseEngine:
         # stage-by-stage debug lines here. None = tracing off (zero overhead).
         self._trace: list[str] | None = None
 
+    # [FN-403]
     def _t(self, msg: str) -> None:
         """Record one debug/trace line (a no-op unless tracing is switched on).
 
@@ -107,6 +110,7 @@ class BaseEngine:
         if self._trace is not None:
             self._trace.append(msg)
 
+    # [FN-404]
     def solve_traced(self, p: "CellProblem") -> tuple["CellSolution", list[str]]:
         """Solve one cell AND return the stage-by-stage trace for it.
 
@@ -120,6 +124,7 @@ class BaseEngine:
         return solution, trace_lines
 
     # -- helpers shared by every engine -------------------------------------
+    # [FN-405]
     def _bounds(self, p: CellProblem) -> tuple[np.ndarray, np.ndarray]:
         """Per-gateway (lower, upper) share bounds from the hard constraints.
 
@@ -160,6 +165,7 @@ class BaseEngine:
             pass
         return lower, upper
 
+    # [FN-406]
     @staticmethod
     def _project_box_simplex(v: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
         """Euclidean projection of ``v`` onto ``{x : sum(x)=1, lo<=x<=hi}``.
@@ -192,6 +198,7 @@ class BaseEngine:
                 break
         return np.clip(v - 0.5 * (dual_lo + dual_hi), lo, hi)
 
+    # [FN-407]
     def _project_qp(self, ref: np.ndarray, lo: np.ndarray, hi: np.ndarray,
                     risk: np.ndarray, cap: float) -> np.ndarray:
         """Closest valid split to ``ref`` whose portfolio risk meets a ceiling.
@@ -233,6 +240,7 @@ class BaseEngine:
                 break
         return self._project_box_simplex(ref - mult_hi * risk, lo, hi)
 
+    # [FN-408]
     def _score(self, p: CellProblem) -> np.ndarray:
         """Per-gateway linear score: reward conversion, penalise risk.
 
@@ -243,6 +251,7 @@ class BaseEngine:
         """
         return self.w * p.success_rates - (1.0 - self.w) * p.risk_rates
 
+    # [FN-409]
     def _ref_cache_key(self, p: CellProblem):
         """Fingerprint of everything the reference split depends on EXCEPT the risk dial.
 
@@ -257,6 +266,7 @@ class BaseEngine:
             round(float(self.hard.max_gateway_share), 9),
         ) + tuple(self._ref_param_key(p))
 
+    # [FN-410]
     def _ref_param_key(self, p: CellProblem):
         """Engine-specific reference parameters (softmax/base default).
 
@@ -277,6 +287,7 @@ class BaseEngine:
             round(float(self.params.get("explore_cap_each", 0.01) or 0.0), 9),
         )
 
+    # [FN-411]
     def _reference_split(self, p: CellProblem) -> np.ndarray:
         """Cached wrapper around `_reference_split_impl`.
 
@@ -298,6 +309,7 @@ class BaseEngine:
             pass
         return reference
 
+    # [FN-412]
     def _reference_split_impl(self, p: CellProblem) -> np.ndarray:
         """The slider=100 reference split: conversion only, no risk logic.
 
@@ -410,6 +422,7 @@ class BaseEngine:
                 + ", ".join(f"{gateway}={share:.3f}" for gateway, share in zip(p.gateways, weights)))
         return weights
 
+    # [FN-413]
     def _project_to_vamp(self, p: CellProblem, shares: np.ndarray) -> np.ndarray:
         """Nudge a split to the closest one that meets the VAMP (risk) cap.
 
@@ -432,6 +445,7 @@ class BaseEngine:
         lower, upper = self._bounds(p)
         return self._project_qp(shares, lower, upper, np.asarray(p.risk_rates, float), float(cap))
 
+    # [FN-414]
     def _finalise(self, p: CellProblem, shares: np.ndarray,
                   note: str = "") -> CellSolution:
         """Clean up a raw share vector into a valid CellSolution.
@@ -453,6 +467,7 @@ class BaseEngine:
         feasible = self._is_feasible(p, shares)
         return CellSolution(shares, expected_success, expected_risk, feasible, note)
 
+    # [FN-415]
     def _is_feasible(self, p: CellProblem, shares: np.ndarray) -> bool:
         """True only if `shares` satisfies EVERY hard constraint for this cell."""
         # A FAILED reference solve (e.g. Portfolio's SLSQP falling back to a return-weighted
@@ -475,6 +490,7 @@ class BaseEngine:
         return True
 
     # -- public API ---------------------------------------------------------
+    # [FN-416]
     def solve(self, p: CellProblem) -> CellSolution:
         """Public entry point: return the chosen split for one cell.
 
@@ -487,6 +503,7 @@ class BaseEngine:
             return self._finalise(p, np.array([1.0]), "single gateway")
         return self._solve(p)
 
+    # [FN-417]
     def _solve(self, p: CellProblem) -> CellSolution:  # pragma: no cover
         """Engine-specific split logic. Every concrete engine overrides this."""
         raise NotImplementedError

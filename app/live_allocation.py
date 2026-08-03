@@ -21,12 +21,14 @@ _ARTIFACTS = ("_actuarial_attempts.parquet", "_mid_df.parquet",
               "_mr_weights.pkl", "_pipeline_config.json")
 
 
+# [FN-282]
 def artifacts_present(forecast_dir: str) -> bool:
     """True iff the cached forecast artifacts exist (i.e. exact mode is available)."""
     return bool(forecast_dir) and all(
         os.path.exists(os.path.join(forecast_dir, f)) for f in _ARTIFACTS)
 
 
+# [FN-283]
 def _templates_to_split_df(templates: dict, config: dict) -> pd.DataFrame:
     """Melt the wide build_split_exports templates into the long split_df the
     AllocationEngine consumes — mirrors data_extractor._clean_google_sheets_rules."""
@@ -64,6 +66,7 @@ def _templates_to_split_df(templates: dict, config: dict) -> pd.DataFrame:
     return sdf
 
 
+# [FN-284]
 def run_exact_mid_level(project_root: str, forecast_dir: str, split, brand_name: str,
                         go_live, wallet_ctx: dict, mid_list_path: str) -> pd.DataFrame:
     """Run AllocationEngine + ExportManager on `split` using the cached forecast in

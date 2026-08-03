@@ -25,6 +25,7 @@ import numpy as np
 __build__ = "2026-07-31-riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel+vol-weighted-viol+penalty-shape+repair-input+sigma-controls+fitness-trace+active-priority+viol-breakdown+capcell-detail+breach-tol+band-workings"
 
 
+# [FN-103]
 def _mid_sums(vol, mid_rows, M, S=None):
     """Per-MID column sums of `vol` (P, N) -> (P, M).
 
@@ -43,6 +44,7 @@ def _mid_sums(vol, mid_rows, M, S=None):
     return out
 
 
+# [FN-104]
 def _build_mid_incidence(mid_id, M, N):
     """Sparse (M, N) 0/1 incidence for `_mid_sums`' fast path: entry (m, n)=1 iff row n
     belongs to vampMid m. Built once per problem; CSR so `S @ vol.T` is a single BLAS-ish
@@ -54,6 +56,7 @@ def _build_mid_incidence(mid_id, M, N):
     return _sp.csr_matrix((data, (mid_id, cols)), shape=(M, N))
 
 
+# [FN-105]
 def _fitness(pop, ctx, lam):
     """Vectorised fitness. Revenue is the SAME quantity tab 4 shows as incremental
     revenue (maximising it ≡ maximising the delta vs a fixed baseline): each row's
@@ -172,6 +175,7 @@ def _fitness(pop, ctx, lam):
 # the real per-MID cross-cell constraint, so it can retain more revenue at compliance
 # than the greedy shave on MIDs whose risk varies across cells.
 # ---------------------------------------------------------------------------
+# [FN-106]
 def _risk_z_per_mid(risk, mid_rows, n_mid, N):
     """Standardise each vampMid's per-cell risk across ITS rows, so θ_m tilts that
     MID toward its own lower-risk cells."""
@@ -186,6 +190,7 @@ def _risk_z_per_mid(risk, mid_rows, n_mid, N):
     return z
 
 
+# [FN-107]
 def _cap_floor_shares(X, cell_starts, cell_counts, elig, cap, floor):
     """HARD per-cell max-share cap + exploration floor on shares X (P, N), vectorised.
     Cells are contiguous segments (cell_starts / cell_counts). Applies the floor first
@@ -231,6 +236,7 @@ def _cap_floor_shares(X, cell_starts, cell_counts, elig, cap, floor):
     return X
 
 
+# [FN-108]
 def _mid_over(shares, ctx, include_floor_shortfall=True):
     """Per-candidate per-MID breach magnitude (P, M): the RELATIVE overage (actual/limit − 1,
     or floor short-fall) across the VAMP-rate cap, per-MID volume cap and projected bands —
@@ -327,6 +333,7 @@ def _mid_over(shares, ctx, include_floor_shortfall=True):
 # Deterministic given `seed`. Same (best_shares, info) contract as before, so the tab-3
 # caller and its warm-start / archive plumbing are unchanged.
 # ===========================================================================
+# [FN-109]
 def _ret_z_per_mid(ret, mid_rows, n_mid, N):
     """Standardise each vampMid's per-cell REVENUE-efficiency (rev_coef) across ITS
     rows, so the return-tilt axis θq pulls that MID toward its own higher-revenue
@@ -342,6 +349,7 @@ def _ret_z_per_mid(ret, mid_rows, n_mid, N):
     return z
 
 
+# [FN-110]
 def _leaned_ref(ref, risk, elig, cell_starts, cell_counts, gamma):
     """Lean the revenue reference gently toward LOWER global risk (γ ≥ 0): the θ=0
     base — and therefore where freed volume redistributes — starts a little compliant
@@ -365,6 +373,7 @@ def _leaned_ref(ref, risk, elig, cell_starts, cell_counts, gamma):
     return w / np.repeat(seg, cell_counts)
 
 
+# [FN-111]
 def _cap_floor_prep(cell_starts, cell_counts, elig, cap, floor):
     """Precompute the per-cell CONSTANTS the max-share/floor water-fill needs, so they
     are built ONCE per problem instead of on every decode (bit-identical, pure saving).
@@ -386,6 +395,7 @@ def _cap_floor_prep(cell_starts, cell_counts, elig, cap, floor):
             "cell_starts": np.asarray(cell_starts), "cell_counts": np.asarray(cell_counts)}
 
 
+# [FN-112]
 def _cap_floor_apply(X, prep):
     """HARD per-cell floor-then-cap water-fill using PRECOMPUTED constants (`prep` from
     `_cap_floor_prep`). Byte-identical to `_cap_floor_shares` — same order of operations,
@@ -419,6 +429,7 @@ def _cap_floor_apply(X, prep):
     return X
 
 
+# [FN-113]
 def _risk_z_per_cell(risk, cell_starts, cell_counts, N):
     """Standardise each CELL's per-gateway risk across ITS rows (mirror of `_risk_z_per_mid`
     but per cell), so a per-cell fine tilt can shift share within one cell toward its
@@ -437,6 +448,7 @@ def _risk_z_per_cell(risk, cell_starts, cell_counts, N):
     return z, sd            # sd (per-cell) also used to pick the fine-tilt cells
 
 
+# [FN-114]
 def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
                      cap=1.0, floor=0.0, *, eidx=None, prep=None,
                      fine_idx=None, zr_cell=None, n_fine=0):
@@ -491,6 +503,7 @@ def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, cell_starts, cell_counts, e
     return X
 
 
+# [FN-115]
 def _mid_viol_weights(ctx, M):
     """Per-MID VIOLATION weight (VOLUME-WEIGHTING of the feasibility violation).
 
@@ -521,6 +534,7 @@ def _mid_viol_weights(ctx, M):
     return np.where(base > 0.0, base / _bmean, 1.0).astype(float)
 
 
+# [FN-116]
 def _obj_viol(shares, ctx):
     """Split the score into (objective, violation) for feasibility-first ranking.
 
@@ -555,6 +569,7 @@ def _obj_viol(shares, ctx):
     #                          at 50 so it can never overflow to inf). Identical form in the kernel.
     _pexp = (str(ctx.get("breach_shape", "quadratic")).lower() == "exponential")
 
+    # [FN-117]
     def _pen(_ov):                                           # _ov = relative overage array (>= 0)
         # TOLERANCE: a constraint met to within 1e-9 (relative) is COMPLIANT — don't let the fixed
         # hit fire on floating-point rounding dust (e.g. the decode water-fills a share to exactly
@@ -628,6 +643,7 @@ def _obj_viol(shares, ctx):
     return obj, viol
 
 
+# [FN-118]
 def _violation_breakdown(shares, ctx, top_k=20):
     """One-shot DECOMPOSITION of the _obj_viol violation for a SINGLE split (diagnostic only —
     NEVER on the hot path; called once per run on the winning candidate). Mirrors _obj_viol
@@ -661,6 +677,7 @@ def _violation_breakdown(shares, ctx, top_k=20):
     _qwt = float(ctx.get("breach_quad", 1.0) or 1.0)
     _pexp = (str(ctx.get("breach_shape", "quadratic")).lower() == "exponential")
 
+    # [FN-119]
     def _pen(_ov):
         _ov = np.asarray(_ov, float)
         _ov = np.where(_ov > 1e-9, _ov, 0.0)                 # at-boundary within tol = compliant (see _obj_viol)
@@ -687,6 +704,7 @@ def _violation_breakdown(shares, ctx, top_k=20):
         _bvol = ctx.get("mid_base_vol")
         with np.errstate(divide="ignore", invalid="ignore"):
             fmid = (np.where(_bvol > 1e-12, midv / _bvol, 1.0) if _bvol is not None else np.ones(M))
+        # [FN-120]
         def _pen_split(_o):
             # RAW (pre-weight) fixed + quadratic penalty parts, so the log can show the workings.
             _o = _o if _o > 1e-9 else 0.0                     # same tolerance as _pen
@@ -774,6 +792,7 @@ def _violation_breakdown(shares, ctx, top_k=20):
 _FEAS_TOL = 1e-9
 
 
+# [FN-121]
 def _feas_keys(obj, viol, tol=_FEAS_TOL):
     """Deb feasibility-first ranking as a MINIMISABLE key (improvement #3). Feasible
     rows rank by −objective (so higher revenue wins); infeasible rows all rank ABOVE
@@ -792,6 +811,7 @@ def _feas_keys(obj, viol, tol=_FEAS_TOL):
     return key
 
 
+# [FN-122]
 def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=None,
            eps0=0.0, repair=None, progress_cb=None, no_early_stop=False,
            sigma_floor=0.0, damps_mult=1.0):
@@ -933,6 +953,7 @@ def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=N
     return best_x, best_key, best_ov, gen_trace, _fpop
 
 
+# [FN-123]
 def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
                    mutation_sigma=1.0, seed=42, elite_frac=0.2, auto=True,
                    patience=12, sigma_min=0.05, sigma_max=4.0, success_window=5,
@@ -1004,11 +1025,13 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
             _fine_idx[_s0:_s1] = _j
         _zr_cell = _cont(_zr_cell)
 
+    # [FN-124]
     def _decode(G):
         return _decode_midtilt3(G, M, ref, zr, zq, mid_id, cs, cc, elig, _cap, _floor,
                                 eidx=_eidx, prep=_prep,
                                 fine_idx=_fine_idx, zr_cell=_zr_cell, n_fine=_K)
 
+    # [FN-125]
     def _decode_precap(G):                                   # softmax shares w/o cap/floor (grads)
         return _decode_midtilt3(G, M, ref, zr, zq, mid_id, cs, cc, elig, 1.0, 0.0,
                                 eidx=_eidx, prep=None,
@@ -1031,9 +1054,11 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
                            np.full(_K, theta_max)])
     span = np.where(hi_a - lo_a > 1e-12, hi_a - lo_a, 1.0)
 
+    # [FN-126]
     def _to_actual(V):
         return lo_a[None, :] + np.asarray(V, float) * span[None, :]
 
+    # [FN-127]
     def _to_unit(x):
         return np.clip((np.asarray(x, float) - lo_a) / span, 0.0, 1.0)
 
@@ -1045,22 +1070,27 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     if _exact_bands is not None and _band_inc is not None:
         from .band_scoring import shares_to_prop_raw as _s2pr
 
+        # [FN-128]
         def _bands_pen(X):
             return _exact_bands.penalty(_s2pr(X, _band_inc))
     else:
+        # [FN-129]
         def _bands_pen(X):
             return np.zeros(np.asarray(X).shape[0], dtype=float)
 
+    # [FN-130]
     def eval_ov(V):                                          # unit pop -> (objective, violation)
         X = _decode(_to_actual(V))
         obj, viol = _obj_viol(X, ctx)
         return obj, viol + _bands_pen(X)
 
+    # [FN-131]
     def score_of(gu):                                        # unit genome -> (obj, viol)
         X = _decode(_to_actual(np.asarray(gu)[None, :]))
         obj, viol = _obj_viol(X, ctx)
         return float(obj[0]), float(viol[0] + _bands_pen(X)[0])
 
+    # [FN-132]
     def better(a, b):                                        # feasibility-first strict-better
         ao, av = a; bo, bv = b
         af = av <= _FEAS_TOL; bf = bv <= _FEAS_TOL
@@ -1068,9 +1098,11 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
             return af
         return ao > bo if af else av < bv
 
+    # [FN-133]
     def _cellrep(v):                                         # (N,) -> per-cell sum, repeated (N,)
         return np.repeat(np.add.reduceat(v, cs), cc)
 
+    # [FN-134]
     def _midsum1(v):                                         # (N,) -> (M,) per-MID sum (fast path)
         return (np.asarray(_S.dot(v)).ravel() if _S is not None
                 else _mid_sums(v[None, :], ctx["mid_rows"], M)[0])
@@ -1135,10 +1167,12 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
                     ga_numba_info.update(_vr)
                     _accept = bool(_vr.get("ok"))
                 if _accept:
+                    # [FN-135]
                     def eval_ov(V):                          # noqa: F811 - numba override
                         _o, _v, _X = _nb_eval_actual(_to_actual(V))   # kernel returns pre-elig shares
                         return _o, _v + _bands_pen(_X)
 
+                    # [FN-136]
                     def score_of(gu):                        # noqa: F811 - numba override
                         _o, _v, _X = _nb_eval_actual(_to_actual(np.asarray(gu)[None, :]))
                         return float(_o[0]), float(_v[0] + _bands_pen(_X)[0])
@@ -1155,12 +1189,14 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     # ref-weighted softmax decode, for a single genome (unit space). Used by the SLSQP
     # polish. The violation here is the SMOOTH pre-cap surrogate (VAMP-rate + volume + bands);
     # the accept test still uses the true post-cap feasibility-first score.
+    # [FN-137]
     def _fine_grad(vec):                                     # (N,) d or e -> (K,) fine-tilt gradient
         if _K <= 0 or _fine_idx is None:
             return np.zeros(0)
         _m = _fine_idx >= 0
         return -np.bincount(_fine_idx[_m], weights=(_zr_cell * vec)[_m], minlength=_K)
 
+    # [FN-138]
     def _grads(gu):
         G = _to_actual(np.clip(gu, 0.0, 1.0)[None, :])
         X = _decode_precap(G)[0]                             # (N,)
@@ -1211,11 +1247,13 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
 
     # #10 greedy warm-start: fit a genome whose decode ≈ a supplied FEASIBLE split so the
     # search starts INSIDE the feasible region (fitted once; cheap L-BFGS on ‖decode−target‖²).
+    # [FN-139]
     def _fit_to_target(target):
         t = np.clip(np.asarray(target, float), 0.0, None)
         try:
             from scipy.optimize import minimize as _minimize
 
+            # [FN-140]
             def _loss(z):
                 X = _decode_precap(_to_actual(np.clip(z, 0.0, 1.0)[None, :]))[0]
                 return 0.5 * float(((X - t) ** 2).sum())
@@ -1230,6 +1268,7 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     # (ctx['warm_shares'] may be ONE split OR a LIST — e.g. revenue-greedy AND risk-greedy),
     # fitted to a genome, plus the θ=0 leaned reference. Deduped, best (feasibility-first) first;
     # each seeds one restart so the search explores several corners, not just one.
+    # [FN-141]
     def _seed_key(sv):
         return (0 if sv[1] <= _FEAS_TOL else 1, -sv[0] if sv[1] <= _FEAS_TOL else sv[1])
     _seed_us = []
@@ -1265,6 +1304,7 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     # overage into [0,1), so the θr move is ≤ _REPAIR_LR regardless of the overage scale.
     _REPAIR_LR = float(ctx.get("repair_lr", 0.30) or 0.0)   # UI 'Repair strength' (0 disables the nudge)
 
+    # [FN-142]
     def _repair(Vpop):
         over = _mid_over(_decode(_to_actual(Vpop)), ctx, include_floor_shortfall=False)   # (P, M)
         if over.size == 0 or float(over.max()) <= 1e-12:
@@ -1282,6 +1322,7 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     # (feasible start → tiny; very infeasible → looser), instead of a fixed 0.15.
     _EPS0 = float(min(0.40, max(0.05, 0.6 * best_sv[1])))
 
+    # [FN-143]
     def _polish_genome(u0):
         """#2 memetic: SLSQP with analytic revenue + smooth-violation gradients (Nelder–Mead
         fallback). Returns u0 unless the TRUE post-cap feasibility-first score strictly improves."""
@@ -1292,6 +1333,7 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
             from scipy.optimize import minimize as _minimize
             _gcache = {}
 
+            # [FN-144]
             def _gc(z):
                 z = np.clip(np.asarray(z, float), 0.0, 1.0); _k = z.tobytes()
                 _r = _gcache.get(_k)
@@ -1314,6 +1356,7 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
             try:
                 from scipy.optimize import minimize as _minimize
 
+                # [FN-145]
                 def _sk(z):
                     _o, _v = score_of(np.clip(z, 0.0, 1.0))
                     return (-_o) if _v <= _FEAS_TOL else (1e12 + _v)
@@ -1334,6 +1377,7 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     # ground, at linear cost. Same benefit (don't get stuck / cover the space), far cheaper.
     _lean = str(restart_mode).lower() == "lean"
 
+    # [FN-146]
     def _farthest_start(rng_seed, explored, n_try=24):
         """A unit-box start point maximising the min distance to every already-explored genome
         (the diverse seeds + finished restart winners) — farthest-point sampling, so each lean
@@ -1427,6 +1471,7 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
 
     # Diversity archive (improvement #7 output): the restart winners that are >= archive_min_dist
     # apart in genome space, best (feasibility-first) first, for warm-starting a later run.
+    # [FN-147]
     def _rank_key(sv):
         return (0 if sv[1] <= _FEAS_TOL else 1, -sv[0] if sv[1] <= _FEAS_TOL else sv[1])
 

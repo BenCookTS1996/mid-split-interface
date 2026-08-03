@@ -35,6 +35,7 @@ __build__ = "2026-07-29-eligibility-ban-mask-cache+population-operator"
 WALLET_VALUES = {"googlepay", "applepay"}
 
 
+# [FN-053]
 def load_usa_only(path: str) -> frozenset:
     """Explicit list of gatewayFids that can ONLY process country='USA'.
 
@@ -52,6 +53,7 @@ def load_usa_only(path: str) -> frozenset:
     return frozenset(str(g).strip().lower() for g in (lst or []) if str(g).strip())
 
 
+# [FN-054]
 def load_explore_gateways(path: str) -> frozenset:
     """gatewayFids to treat as ELIGIBLE candidates even with no 30-day attempts, so
     capable-but-untested gateways can earn exploration volume (seeded with the pooled
@@ -72,6 +74,7 @@ def load_explore_gateways(path: str) -> frozenset:
     return frozenset(str(g).strip().lower() for g in (lst or []) if str(g).strip())
 
 
+# [FN-055]
 def load_restrictions(path: str) -> list[dict]:
     """Load and normalise ban rules. Missing/invalid file -> no rules."""
     if not path or not os.path.exists(path):
@@ -97,6 +100,7 @@ def load_restrictions(path: str) -> list[dict]:
     return out
 
 
+# [FN-056]
 def _resolve_field(field: str, profile: dict):
     """Value for a rule field, aliasing 'bin' onto the 'bank' column (BIN-level
     cells are keyed as 'bank' in this app). Returns None if unavailable."""
@@ -106,6 +110,7 @@ def _resolve_field(field: str, profile: dict):
     return pv
 
 
+# [FN-057]
 def _row_banned(gw: str, vmid: str, profile: dict, rules: list[dict]) -> bool:
     """True if any rule bans this gateway/vampMid for this traffic profile.
 
@@ -140,12 +145,14 @@ def _row_banned(gw: str, vmid: str, profile: dict, rules: list[dict]) -> bool:
 _BAN_MASK_CACHE: dict = {}
 
 
+# [FN-058]
 def _rules_signature(rules: list[dict]):
     return tuple((r.get("target", ""),
                   tuple(sorted((k, tuple(sorted(v))) for k, v in (r.get("match", {}) or {}).items())))
                  for r in rules)
 
 
+# [FN-059]
 def _banned_mask_cached(df: pd.DataFrame, rules: list[dict], prof_cols: list[str]) -> np.ndarray:
     cols = ["_gw", "_vm"] + [c for c in prof_cols if c in df.columns]
     try:
@@ -164,6 +171,7 @@ def _banned_mask_cached(df: pd.DataFrame, rules: list[dict], prof_cols: list[str
     return mask
 
 
+# [FN-060]
 def unenforceable_fields(rules: list[dict], available_cols) -> set:
     """Match-fields referenced by rules that can't be enforced at this grain
     (after aliasing BIN -> bank). The caller can warn about these (e.g. country)."""
@@ -178,12 +186,14 @@ def unenforceable_fields(rules: list[dict], available_cols) -> set:
     return missing
 
 
+# [FN-061]
 def _renorm(df: pd.DataFrame, group_keys: list[str], col: str) -> pd.Series:
     """Renormalise `col` to sum 1 within each group (leaves all-zero groups)."""
     s = df.groupby(group_keys, dropna=False)[col].transform("sum")
     return np.where(s > 0, df[col] / s, df[col])
 
 
+# [FN-062]
 def _capability_blend(df: pd.DataFrame, group_cols: list[str], incapable, frac_map: dict,
                       default: float) -> np.ndarray:
     """Volume-weighted capability blend, returning the new per-row share array.
@@ -223,6 +233,7 @@ def _capability_blend(df: pd.DataFrame, group_cols: list[str], incapable, frac_m
     return result_share
 
 
+# [FN-063]
 def apply_restrictions(split: pd.DataFrame, rules: list[dict], fid2vamp: dict,
                        wallet_incapable=frozenset(), wallet_frac: dict | None = None,
                        wallet_default: float = 0.0,
@@ -291,6 +302,7 @@ def apply_restrictions(split: pd.DataFrame, rules: list[dict], fid2vamp: dict,
 # `build_elig_operator` returns the static arrays; `apply_elig_pop(X, op)` applies them.
 # Proven row-for-row identical to `apply_restrictions` (see the backend equivalence test).
 # ---------------------------------------------------------------------------
+# [FN-064]
 def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, *,
                         wallet_incapable=frozenset(), wallet_frac: dict | None = None,
                         wallet_default: float = 0.0,
@@ -330,6 +342,7 @@ def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, 
     _bnk = (df["bank"].astype(str).str.strip().str.lower().to_numpy()
             if "bank" in df.columns else np.array([""] * n))
 
+    # [FN-065]
     def _incap_mask(incapable):
         if not incapable:
             return np.zeros(n, dtype=bool)
@@ -337,6 +350,7 @@ def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, 
         return np.fromiter(((_gw[i] in _inc) or (_vm[i] in _inc) for i in range(n)),
                            dtype=bool, count=n)
 
+    # [FN-066]
     def _wf(frac_map, default):
         fm = frac_map or {}
         wf = np.fromiter((float(fm.get((_cur[i], _bnk[i]), default)) for i in range(n)),
@@ -354,12 +368,14 @@ def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, 
     }
 
 
+# [FN-067]
 def _renorm_pop(X: np.ndarray, cs: np.ndarray, cc: np.ndarray) -> np.ndarray:
     """Per-cell renormalise to sum 1, leaving all-zero cells (matches `_renorm`)."""
     s = np.repeat(np.add.reduceat(X, cs, axis=1), cc, axis=1)
     return np.where(s > 0, X / np.where(s > 0, s, 1.0), X)
 
 
+# [FN-068]
 def _blend_pop(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
                cs: np.ndarray, cc: np.ndarray) -> np.ndarray:
     """Vectorised twin of `_capability_blend` + its trailing `_renorm`, over a population.
@@ -377,6 +393,7 @@ def _blend_pop(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
     return _renorm_pop(out, cs, cc)
 
 
+# [FN-069]
 def apply_elig_pop(X: np.ndarray, op: dict) -> np.ndarray:
     """Apply the prebuilt eligibility operator to shares X ((N,) or (P, N)). Reproduces
     `apply_restrictions` (bans -> 0 + renorm; wallet blend + renorm; USA blend + renorm),

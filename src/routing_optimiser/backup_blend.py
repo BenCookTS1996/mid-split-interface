@@ -48,10 +48,12 @@ _COUNTRY_ALL = ("usa", "non-usa")
 _PCT_SCALE = 100.0
 
 
+# [FN-001]
 def _norm(s) -> str:
     return str(s).strip().lower()
 
 
+# [FN-002]
 def parse_backup_catchall(backup_dir: str, rpgt_filter: str | None = None) -> Dict[Tuple[str, str, str, str], Dict[str, float]]:
     """Read every rule file in ``backup_dir`` and return the CATCH-ALL (BIN=Other/All)
     gateway shares, keyed by (currency, rpgt, pmp, country) — all lower-cased — with
@@ -111,6 +113,7 @@ def parse_backup_catchall(backup_dir: str, rpgt_filter: str | None = None) -> Di
     return out
 
 
+# [FN-003]
 def blend_cell_shares(specific: Dict[str, float], catchall: Dict[str, float]) -> Dict[str, float]:
     """Reproduce the pipeline's effective per-cell routing shares.
 
@@ -147,6 +150,7 @@ def blend_cell_shares(specific: Dict[str, float], catchall: Dict[str, float]) ->
     return eff
 
 
+# [FN-004]
 def _catchall_by_vampmid(catchall_cell: Dict[str, float], fid2vamp: Dict[str, str]) -> Dict[str, float]:
     """Map a cell's catch-all {gatewayFid: pct} onto {vampMid: pct} (summing fids that
     share a vampMid), using fid2vamp (lower-cased keys). Fids with no vampMid are dropped."""
@@ -159,6 +163,7 @@ def _catchall_by_vampmid(catchall_cell: Dict[str, float], fid2vamp: Dict[str, st
     return out
 
 
+# [FN-005]
 def blend_prop_items(prop_items, catchall, fid2vamp, by_rpgt=None):
     """Blend the backup catch-all into a projection's prop_items so the projected POST
     matches the deployed pipeline (tab 5).
@@ -185,6 +190,7 @@ def blend_prop_items(prop_items, catchall, fid2vamp, by_rpgt=None):
 
     # Pre-pool the catch-all for the coarse (4/5-tuple) callers: average pct across the
     # pmp/Country variants of each (cur, rpgt) — the finest info those grains can carry.
+    # [FN-006]
     def _pooled(cur, rpgt):
         acc, cnt = {}, 0
         for (c, r, _p, _ct), gw in catchall.items():
@@ -237,6 +243,7 @@ def blend_prop_items(prop_items, catchall, fid2vamp, by_rpgt=None):
     return out
 
 
+# [FN-007]
 def parse_rules_to_split(rules_dir: str) -> pd.DataFrame:
     """Reconstruct a proposed-split DataFrame from a folder of exported rule files.
 

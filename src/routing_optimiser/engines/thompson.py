@@ -47,6 +47,7 @@ _TAIL = 1e-4        # quantile range covered by the grid (per gateway)
 _trapz = getattr(np, "trapezoid", getattr(np, "trapz"))   # trapezoid on numpy>=2, trapz on 3.8's numpy
 
 
+# [FN-419]
 @lru_cache(maxsize=32)
 def _leggauss_cached(m: int):
     """Gauss–Legendre nodes/weights on [-1, 1] for m points. `leggauss` is a pure
@@ -65,6 +66,7 @@ class ThompsonEngine(SoftmaxEngine):
                    "analytically. Under-sampled gateways keep a share so you "
                    "never go blind. No dials — prior and precision are automatic.")
 
+    # [FN-420]
     def _ref_param_key(self, p: CellProblem):
         # Thompson's reference depends on its Beta prior and — via the γ tilt — temperature and
         # ref_risk_aversion. The auto-explore caps don't apply (it allocates from its own
@@ -79,6 +81,7 @@ class ThompsonEngine(SoftmaxEngine):
                 round(float(self.params.get("ref_risk_aversion", 0.0) or 0.0), 9),
                 round(float(temperature or 0.05), 9))
 
+    # [FN-421]
     def _beta_params(self, p: CellProblem):
         """Beta(alpha, beta) per gateway — a SELF-CONTAINED posterior from the
         (time-decayed) observed successes/attempts with a weak uniform prior (+1/+1).
@@ -115,6 +118,7 @@ class ThompsonEngine(SoftmaxEngine):
             beta = np.where(has_data, beta, (1.0 - pooled_rate) * pooled_pseudo_count + prior_beta)
         return alpha, beta
 
+    # [FN-422]
     def _reference_split_impl(self, p: CellProblem) -> np.ndarray:
         """slider=100 reference: analytic probability-of-being-best over SUCCESS.
         Same contract as ``SoftmaxEngine._reference_split_impl``. Wrapped by the

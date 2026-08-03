@@ -27,6 +27,7 @@ DEFAULT_TARGETS = {
 MAX_GATEWAY_CAP = 0.97  # keep >=3% on a backup, mirroring your script
 
 
+# [FN-156]
 def wallet_segment_split(split: pd.DataFrame, wallet_incapable, wallet_frac=None,
                          wallet_default: float = 0.0, fid2vamp=None,
                          wallet_label: str = "wallet", nonwallet_label: str = "non_gp_ap") -> pd.DataFrame:
@@ -78,6 +79,7 @@ def wallet_segment_split(split: pd.DataFrame, wallet_incapable, wallet_frac=None
     return out.drop(columns=[c for c in ["_gw", "_vm"] if c in out.columns])
 
 
+# [FN-157]
 def _cap_and_respill(vec: np.ndarray, cap: float) -> np.ndarray:
     """Cap every share at `cap` and re-spill the overflow onto the others (keeps the sum at 1).
 
@@ -104,6 +106,7 @@ def _cap_and_respill(vec: np.ndarray, cap: float) -> np.ndarray:
     return vec
 
 
+# [FN-158]
 def _weighted_accuracy(X: np.ndarray, recon: np.ndarray, w: np.ndarray) -> float:
     """% fidelity: 100 = identical. Uses L1 distance on share vectors."""
     l1 = np.abs(X - recon).sum(axis=1)          # in [0, 2]
@@ -111,6 +114,7 @@ def _weighted_accuracy(X: np.ndarray, recon: np.ndarray, w: np.ndarray) -> float
     return float((1.0 - wavg / 2.0) * 100.0)
 
 
+# [FN-159]
 def _fit_k(X, w, k, seed=42):
     k = int(min(k, len(X)))
     km = KMeans(n_clusters=k, n_init=5, random_state=seed).fit(X, sample_weight=w)
@@ -118,6 +122,7 @@ def _fit_k(X, w, k, seed=42):
     return km, recon
 
 
+# [FN-160]
 def compress_split(
     split: pd.DataFrame,
     group_keys=("rpgt", "currency"),
@@ -215,6 +220,7 @@ def compress_split(
     return compressed, elbow, stats
 
 
+# [FN-161]
 def count_config_rules(compressed: pd.DataFrame) -> int:
     """Number of JSON routing rules the compressed split will generate.
 
@@ -223,6 +229,7 @@ def count_config_rules(compressed: pd.DataFrame) -> int:
     return int(len(compressed))
 
 
+# [FN-162]
 def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_fn,
                             group_keys=("rpgt", "currency"),
                             max_gateway_cap: float = MAX_GATEWAY_CAP,
@@ -266,6 +273,7 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
     raw_pools = int(count_pools_fn(split))
     curve = [(raw_cells, raw_pools)]
 
+    # [FN-163]
     def _no_compression(_reason_feasible):
         _st = {"raw_cells": raw_cells, "raw_pools": raw_pools, "cells": raw_cells,
                "pools": raw_pools, "target_pools": int(target_pools),
@@ -286,6 +294,7 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
     _cache = {}          # budget -> (cl, st, pools, cells)
     _by_kcur = {}        # kcur signature -> (cl, st, pools, cells)
 
+    # [FN-164]
     def _eval(b):
         b = int(max(1, min(b, raw_cells)))
         if b not in _cache:
@@ -301,6 +310,7 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
                 curve.append((_cells, _pools))
         return _cache[b]
 
+    # [FN-165]
     def _parallel_counts(cls):
         """Run the (expensive) count_pools_fn on a list of clusterings, in parallel when
         `parallel` > 1. The counts are independent and deterministic, so the values are
@@ -325,6 +335,7 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
                 continue
         return [int(count_pools_fn(c)) for c in cls]
 
+    # [FN-166]
     def _eval_many(bs):
         """Evaluate several budgets at once: build each clustering (cheap), dedupe by
         clustering signature, then count the UNIQUE clusterings in parallel. Populates the
@@ -412,6 +423,7 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
     return _cl, stats
 
 
+# [FN-167]
 def _build_compress_context(split: pd.DataFrame, group_keys, max_gateway_cap, k_max, seed,
                             method: str = "kmeans", allocation: str = "greedy"):
     """Precompute everything that DOESN'T depend on the cluster budget: the volume-weighted
@@ -455,6 +467,7 @@ def _build_compress_context(split: pd.DataFrame, group_keys, max_gateway_cap, k_
     }
 
 
+# [FN-168]
 def _compress_with_context(ctx, n_configs):
     """Greedy volume-weighted cluster allocation for a given budget, using a prebuilt
     context (so KMeans fits are shared/cached across budgets). Returns
@@ -473,6 +486,7 @@ def _compress_with_context(ctx, n_configs):
     max_gateway_cap = ctx["max_gateway_cap"]; seed = ctx["seed"]; fits = ctx["fits"]
     n_budget = max(int(n_configs), G)        # need ≥1 cluster per group
 
+    # [FN-169]
     def _fit(g, k):
         k = int(min(max(k, 1), gKmax[g]))
         if k not in fits[g]:
@@ -489,6 +503,7 @@ def _compress_with_context(ctx, n_configs):
 
     heap = []                                # (-marginal_global_gain, g)
 
+    # [FN-170]
     def _push_next(g):
         if kcur[g] >= gKmax[g]:
             return
@@ -559,6 +574,7 @@ def _compress_with_context(ctx, n_configs):
     return compressed_long, stats, tuple(kcur)
 
 
+# [FN-171]
 def _compress_ext(ctx, n_configs):
     """OPT-IN compression: alternative cluster METHOD and/or budget ALLOCATION.
 
@@ -587,6 +603,7 @@ def _compress_ext(ctx, n_configs):
 
     _WARD_RAW_MAX = 500   # groups with <= this many cells: build the tree on the RAW cell vectors
 
+    # [FN-172]
     def _ward_model(g):
         if ward[g] is None:
             from scipy.cluster.hierarchy import linkage
@@ -610,6 +627,7 @@ def _compress_ext(ctx, n_configs):
             ward[g] = (fine_labels, fine_c, fv, Z)
         return ward[g]
 
+    # [FN-173]
     def _labels_centroids(g, k):
         k = int(min(max(k, 1), gKmax[g]))
         if method == "ward":
@@ -631,6 +649,7 @@ def _compress_ext(ctx, n_configs):
 
     _acc_cache = [dict() for _ in range(G)]
 
+    # [FN-174]
     def _acc(g, k):
         k = int(min(max(k, 1), gKmax[g]))
         if k not in _acc_cache[g]:
@@ -672,6 +691,7 @@ def _compress_ext(ctx, n_configs):
         import heapq
         kcur = [1] * G; heap = []
 
+        # [FN-175]
         def _push(g):
             if kcur[g] >= gKmax[g]:
                 return
@@ -725,6 +745,7 @@ def _compress_ext(ctx, n_configs):
     return compressed_long, stats, tuple(clusters_used)
 
 
+# [FN-176]
 def compress_to_budget(split: pd.DataFrame, n_configs: int,
                        group_keys=("rpgt", "currency"),
                        max_gateway_cap: float = MAX_GATEWAY_CAP,

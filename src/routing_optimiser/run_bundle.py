@@ -31,6 +31,7 @@ __build__ = "2026-07-24-run-bundle+graceful-stop+fitness-field"
 STOP_FILENAME = "_stop"
 
 
+# [FN-209]
 def _write_config(folder: str, config: dict) -> str:
     """Write config as YAML if available, else JSON. Returns the path written."""
     try:
@@ -46,6 +47,7 @@ def _write_config(folder: str, config: dict) -> str:
         return path
 
 
+# [FN-210]
 def prune_old_runs(runs_dir: str, keep: int = 20) -> list[str]:
     """Keep the `keep` most-recent run folders under `runs_dir`; delete the rest.
     Returns the list of removed folder paths. Never raises if a folder is already gone."""
@@ -64,6 +66,7 @@ def prune_old_runs(runs_dir: str, keep: int = 20) -> list[str]:
     return removed
 
 
+# [FN-211]
 def write_run_bundle(runs_dir: str, config: dict, *, log="", artifacts: dict | None = None,
                      name: str | None = None, keep: int = 20) -> str:
     """Create runs_dir/<timestamp[_name]>/ with config, log.txt, artifacts.npz, meta.json.
@@ -91,11 +94,13 @@ def write_run_bundle(runs_dir: str, config: dict, *, log="", artifacts: dict | N
 
 
 # --------------------------------------------------------------------------- graceful stop
+# [FN-212]
 def _stop_path(target: str) -> str:
     """A directory -> its _stop file; a file path -> itself."""
     return os.path.join(target, STOP_FILENAME) if os.path.isdir(target) else target
 
 
+# [FN-213]
 def request_stop(target: str) -> str:
     """Drop the stop flag (target may be a runs dir or an explicit file path)."""
     p = _stop_path(target)
@@ -105,6 +110,7 @@ def request_stop(target: str) -> str:
     return p
 
 
+# [FN-214]
 def clear_stop(target: str) -> None:
     p = _stop_path(target)
     try:
@@ -113,6 +119,7 @@ def clear_stop(target: str) -> None:
         pass
 
 
+# [FN-215]
 def stop_requested(target: str) -> bool:
     return os.path.exists(_stop_path(target))
 
@@ -125,13 +132,16 @@ class _StopCheck:
     process backend to fall back to the slower sequential path."""
     __slots__ = ("path",)
 
+    # [FN-216]
     def __init__(self, path: str):
         self.path = path
 
+    # [FN-217]
     def __call__(self) -> bool:
         return os.path.exists(self.path)
 
 
+# [FN-218]
 def make_stop_check(target: str):
     """Return a zero-arg predicate for a GA's `stop_check` param: True once the flag exists.
     Usage:  run_midtilt_ga(ctx, lam, stop_check=make_stop_check(runs_dir))."""
@@ -149,12 +159,14 @@ class _ProgressWriter:
     any write failure is swallowed so progress reporting can NEVER break a run."""
     __slots__ = ("path", "total", "best", "best_fit")
 
+    # [FN-219]
     def __init__(self, path: str):
         self.path = path
         self.total = 0
         self.best = None                  # best-so-far engine score for this seed (higher = better)
         self.best_fit = None              # FITNESS (revenue-ish objective) of that best-so-far split
 
+    # [FN-220]
     def __call__(self, inc: int, score=None, fitness=None) -> None:
         try:
             self.total += int(inc)

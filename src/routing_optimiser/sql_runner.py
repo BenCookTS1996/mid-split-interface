@@ -20,10 +20,12 @@ logger = logging.getLogger(__name__)
 __build__ = "2026-07-04-templated-params"
 
 
+# [FN-222]
 def list_sql_files(sql_dir: str) -> list[str]:
     return sorted(glob.glob(os.path.join(sql_dir, "*.sql")))
 
 
+# [FN-223]
 def cache_path_for(sql_path: str, cache_dir: str,
                    params: dict | None = None) -> str:
     """Cache filename includes a short hash of the SQL file's own text AND of
@@ -48,6 +50,7 @@ def cache_path_for(sql_path: str, cache_dir: str,
     return os.path.join(cache_dir, f"{stem}.parquet")
 
 
+# [FN-224]
 def _substitute_params(sql: str, params: dict | None) -> str:
     if not params:
         return sql
@@ -56,6 +59,7 @@ def _substitute_params(sql: str, params: dict | None) -> str:
     return sql
 
 
+# [FN-225]
 def run_sql_file(sql_path: str, cache_dir: str, use_cache: bool = True,
                  fallback_csv: str | None = None,
                  project: str | None = None,

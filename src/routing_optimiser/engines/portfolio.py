@@ -55,12 +55,14 @@ class PortfolioEngine(SoftmaxEngine):
                    "thinly-tested gateways. Risk aversion is auto-calibrated — "
                    "no dial to set.")
 
+    # [FN-423]
     def _ref_param_key(self, p: CellProblem):
         # The CVaR reference depends only on prior_count (plus per-cell risk_n / attempts,
         # which are immutable on `p`). Temperature / γ / explore caps don't affect it, so
         # they're dropped from the key — a temperature change won't invalidate this cache.
         return (round(float(self.params.get("prior_count", 30.0)), 9),)
 
+    # [FN-424]
     def _reference_split_impl(self, p: CellProblem) -> np.ndarray:
         """slider=100 reference: mean-CVaR optimal (conversion vs downside VAMP
         risk). Same contract as ``SoftmaxEngine._reference_split_impl``. Wrapped by
@@ -136,13 +138,16 @@ class PortfolioEngine(SoftmaxEngine):
         eps = 1e-12
         downside_sq = downside * downside
 
+        # [FN-425]
         def _f(x):
             return float(-(x @ returns) + gamma * np.sqrt(float((downside_sq * x * x).sum()) + eps))
 
+        # [FN-426]
         def _grad(x):
             norm = np.sqrt(float((downside_sq * x * x).sum()) + eps)
             return -returns + gamma * (downside_sq * x) / norm
 
+        # [FN-427]
         def _proj(v):
             return self._project_box_simplex(v, lower, upper)
 

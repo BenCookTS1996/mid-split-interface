@@ -25,6 +25,7 @@ from .kmeans_compress import _cap_and_respill, _weighted_accuracy
 __build__ = "2026-07-24-menu-picker"
 
 
+# [FN-177]
 def _cell_matrix(split: pd.DataFrame, idx_cols, gateway_cols):
     """(cells x gateways) share matrix (renormalised) + per-cell volume, aligned to
     `gateway_cols`."""
@@ -39,6 +40,7 @@ def _cell_matrix(split: pd.DataFrame, idx_cols, gateway_cols):
     return mat, vol
 
 
+# [FN-178]
 def _build_group_menu(X: np.ndarray, w: np.ndarray, menu_k: int, seed: int) -> np.ndarray:
     """Shortlist of candidate split vectors for one group: volume-weighted KMeans centroids
     at k = min(menu_k, n_cells). These are the 'ready-made splits' cells choose between."""
@@ -47,6 +49,7 @@ def _build_group_menu(X: np.ndarray, w: np.ndarray, menu_k: int, seed: int) -> n
     return km.cluster_centers_
 
 
+# [FN-179]
 def menu_compress(split: pd.DataFrame,
                   group_keys=("rpgt", "currency"),
                   menu_k: int = 12,
@@ -102,9 +105,11 @@ def menu_compress(split: pd.DataFrame,
             cells.append({"g": gi, "x": Xg[i], "vol": float(wg[i]),
                           "pref": pref[i].tolist(), "choice": int(pref[i][0])})
 
+    # [FN-180]
     def _item_id(c):
         return (c["g"], c["choice"])
 
+    # [FN-181]
     def _distinct_items():
         return {(_item_id(c)) for c in cells}
 
@@ -112,6 +117,7 @@ def menu_compress(split: pd.DataFrame,
     if max_items is not None and max_items > 0:
         dropped = set()                                   # (g, j) items no longer offered
 
+        # [FN-182]
         def _next_available(c):
             for j in c["pref"]:
                 if (c["g"], j) not in dropped:

@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 
+# [FN-148]
 def cell_baseline_vs_proposed(split: pd.DataFrame,
                               avg_ticket: dict | float = 25.0) -> pd.DataFrame:
     """
@@ -17,6 +18,7 @@ def cell_baseline_vs_proposed(split: pd.DataFrame,
     avg_ticket: average amount per transaction, either a flat float or a dict
     keyed by rpgt. Multiply successful attempts by this to get revenue.
     """
+    # [FN-149]
     def ticket(rpgt):
         if isinstance(avg_ticket, dict):
             return float(avg_ticket.get(rpgt, np.mean(list(avg_ticket.values()) or [25.0])))
@@ -41,6 +43,7 @@ def cell_baseline_vs_proposed(split: pd.DataFrame,
     return cell
 
 
+# [FN-150]
 def headline_impact(cell: pd.DataFrame) -> dict:
     vol = cell["cell_volume"].sum()
     base_rate = (cell["baseline_rate"] * cell["cell_volume"]).sum() / max(vol, 1)
@@ -54,6 +57,7 @@ def headline_impact(cell: pd.DataFrame) -> dict:
     }
 
 
+# [FN-151]
 def key_contributors(cell: pd.DataFrame, by: str = "bank", top: int = 10) -> pd.DataFrame:
     """Which banks / currencies / RPGTs drive most of the incremental revenue."""
     agg = (cell.groupby(by, as_index=False)
@@ -67,6 +71,7 @@ def key_contributors(cell: pd.DataFrame, by: str = "bank", top: int = 10) -> pd.
     return agg.head(top).reset_index(drop=True)
 
 
+# [FN-152]
 def gateway_volume_shift(split: pd.DataFrame) -> pd.DataFrame:
     """How much volume each gateway gains/loses vs baseline (the 'stolen'
     volume view from your VAMP guide)."""
@@ -81,6 +86,7 @@ def gateway_volume_shift(split: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values("delta_volume", ascending=False).reset_index(drop=True)
 
 
+# [FN-153]
 def _split_volume(df: pd.DataFrame) -> pd.Series:
     """Per-row cell volume from a split frame, tolerating either column name."""
     col = "volume" if "volume" in df.columns else ("cell_volume" if "cell_volume" in df.columns else None)
@@ -89,6 +95,7 @@ def _split_volume(df: pd.DataFrame) -> pd.Series:
     return pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
 
+# [FN-154]
 def gateway_move_vs_reference(ref_split: pd.DataFrame, sel_split: pd.DataFrame,
                               keys=("rpgt", "currency", "bank", "gateway")) -> pd.DataFrame:
     """Per-gateway volume BEFORE (`ref_split`) vs AFTER (`sel_split`), aligned on the
@@ -116,6 +123,7 @@ def gateway_move_vs_reference(ref_split: pd.DataFrame, sel_split: pd.DataFrame,
     return g.sort_values("delta_volume", ascending=False).reset_index(drop=True)
 
 
+# [FN-155]
 def traffic_moved_curve(variations, ref_weight=None) -> pd.DataFrame:
     """Fraction of total volume moved vs the revenue reference, for every dial position.
 

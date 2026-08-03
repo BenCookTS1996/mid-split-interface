@@ -52,11 +52,13 @@ RPGT_MAP = {
 }
 
 
+# [FN-032]
 def _currency_expr(currency: str) -> list[dict]:
     return [{"key": "charge.amount.currency", "operator": "Equal",
              "conversion": "", "values": [str(currency)]}]
 
 
+# [FN-033]
 def _scheme_expr(scheme: str) -> list[dict]:
     if scheme == "vi":
         return [{"key": "method.paymentScheme", "operator": "Equal", "conversion": "", "values": ["card_visa"]}]
@@ -73,6 +75,7 @@ WALLET_KEY = "paymentMethodProvider"
 NONWALLET_VALUE = "non_gp_ap"
 
 
+# [FN-034]
 def _pmp_expr(pmp) -> list[dict]:
     pmp = str(pmp).strip().lower()
     if pmp == "wallet":               # GOOGLEPAY or APPLEPAY -> everything that isn't non_gp_ap
@@ -82,6 +85,7 @@ def _pmp_expr(pmp) -> list[dict]:
     return []
 
 
+# [FN-035]
 def _make_pool(rule: pd.Series, gateway_cols: list[str], brand: str,
                scheme: str) -> dict | None:
     rpgt = rule["rpgt"]
@@ -116,6 +120,7 @@ def _make_pool(rule: pd.Series, gateway_cols: list[str], brand: str,
     }
 
 
+# [FN-036]
 def build_configs(compressed: pd.DataFrame, brand: str = "tdr",
                   scheme: str = "vi") -> dict[str, list[dict]]:
     """Return {rpgt: [pool, ...]} ready to serialise."""
@@ -130,6 +135,7 @@ def build_configs(compressed: pd.DataFrame, brand: str = "tdr",
     return configs
 
 
+# [FN-037]
 def write_configs(configs: dict[str, list[dict]], outdir: str,
                   brand: str = "tdr", date: str = "260629") -> list[str]:
     os.makedirs(outdir, exist_ok=True)

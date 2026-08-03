@@ -34,6 +34,7 @@ PRE_VAMPS = "Sim_VAMPs"
 PRE_RATE = "Sim_Rate"
 
 
+# [FN-070]
 def build_pipeline_config(ui: dict) -> dict:
     """Map the flat Forecast-tab settings onto the pipeline's settings.yaml schema."""
     company = ui.get("company", "TotalAV")
@@ -83,6 +84,7 @@ def build_pipeline_config(ui: dict) -> dict:
     }
 
 
+# [FN-071]
 def run_vamp_pipeline(config: dict, project_root: str,
                       gcp_project: str | None = "sapient-tangent-172609") -> str:
     """
@@ -134,6 +136,7 @@ def run_vamp_pipeline(config: dict, project_root: str,
             f"load_curves_from_cache={_rs.get('load_curves_from_cache')} · "
             f"cache_path={config.get('paths', {}).get('cache_path')}")
 
+        # [FN-072]
         def _shape(obj, name, warn_empty=True):
             """Log a dataframe's size + leading columns, PLUS the summed transaction count of any
             recognised txn-count column(s). Warns LOUDLY when a source is empty OR has rows but ZERO
@@ -278,6 +281,7 @@ def run_vamp_pipeline(config: dict, project_root: str,
         os.chdir(prev_cwd)
 
 
+# [FN-073]
 def _canonical_gateway(name) -> str:
     """
     Some pipeline exports contain deprecated instances of a gateway with a
@@ -295,6 +299,7 @@ def _canonical_gateway(name) -> str:
 _LAST_VAMP_SHRINK: dict = {"on": None, "levels": None}
 
 
+# [FN-074]
 def _mm_kappa(vg, ng, fallback: float = 50.0, kmax: float = 5000.0) -> float:
     """Method-of-moments Beta-Binomial concentration (kappa) for one back-off LEVEL,
     from that level's per-group pooled (vamps vg, count ng). Mirrors success_rates.
@@ -320,6 +325,7 @@ def _mm_kappa(vg, ng, fallback: float = 50.0, kmax: float = 5000.0) -> float:
     return float(min(max(mu * (1.0 - mu) / true_var - 1.0, 1.0), kmax))
 
 
+# [FN-075]
 def _hier_vamp_shrink(d: pd.DataFrame, fallback_kappa: float = 50.0, kmax: float = 5000.0):
     """FULLY-AUTOMATIC hierarchical empirical-Bayes shrinkage of the per-cell VAMP rate.
 
@@ -360,6 +366,7 @@ def _hier_vamp_shrink(d: pd.DataFrame, fallback_kappa: float = 50.0, kmax: float
     return est, levels_log
 
 
+# [FN-076]
 def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
     """
     Normalise a pipeline export into the optimiser's baseline contract:
@@ -434,6 +441,7 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # Back-compat alias (data_loader imports this name).
+# [FN-077]
 def normalise_pre_from_effective_rate(df: pd.DataFrame) -> pd.DataFrame:
     return _normalise_pre(df)
 
@@ -442,6 +450,7 @@ def normalise_pre_from_effective_rate(df: pd.DataFrame) -> pd.DataFrame:
 PRE_SOURCE_FILES = ["bin_rpgt_impact_export.csv", "effective_rate_impact.csv"]
 
 
+# [FN-078]
 def load_pre_forecast(path: str) -> pd.DataFrame:
     """
     Load the pipeline's baseline from its outputs. `path` may be a directory
@@ -466,6 +475,7 @@ def load_pre_forecast(path: str) -> pd.DataFrame:
     return out
 
 
+# [FN-079]
 def looks_like_effective_rate(df: pd.DataFrame) -> bool:
     cols = set(df.columns)
     return "vampMid" in cols and bool({"Sim_Sales", "Txn_Pre", "VI_Txn_Pre"} & cols)

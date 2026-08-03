@@ -20,12 +20,14 @@ ENGINES: dict[str, type[BaseEngine]] = {
 }
 
 
+# [FN-399]
 def get_engine(key: str, weight: float, hard, soft, **params) -> BaseEngine:
     if key not in ENGINES:
         raise KeyError(f"Unknown engine '{key}'. Options: {list(ENGINES)}")
     return ENGINES[key](weight=weight, hard=hard, soft=soft, **params)
 
 
+# [FN-400]
 def engine_choices() -> list[tuple[str, str]]:
     """(key, label) pairs for building a dropdown."""
     return [(k, e.label) for k, e in ENGINES.items()]

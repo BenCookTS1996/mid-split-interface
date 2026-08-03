@@ -48,6 +48,7 @@ class SoftmaxEngine(BaseEngine):
                    "the VAMP cap and other hard constraints allow, and "
                    "minimising portfolio risk at the very bottom.")
 
+    # [FN-418]
     def _solve(self, p: CellProblem) -> CellSolution:
         """Return the cell's split: the reference, trimmed toward the risk cap if needed.
 

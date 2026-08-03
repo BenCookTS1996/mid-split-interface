@@ -23,6 +23,7 @@ from impact_calcs import build_split_exports
 __build__ = "2026-07-29-cfg-json-viewer-bin-filter+single-variation-dial-guard"
 
 
+# [FN-386]
 def render(ss, PROJECT_ROOT):
     """Render the config-generation tab.
 
@@ -213,10 +214,12 @@ def render(ss, PROJECT_ROOT):
             #      download that one file. Live (not in a form) so the list updates as you type. ----
             st.markdown("**Find & download a config**")
 
+            # [FN-387]
             def _pool_bins(_pool):
                 """All BINs referenced by a pool's card.bin matching-rule expressions."""
                 _found = set()
 
+                # [FN-388]
                 def _walk(o):
                     if isinstance(o, dict):
                         if o.get("key") == "method.info.card.bin":

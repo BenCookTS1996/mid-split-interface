@@ -12,6 +12,12 @@ This tool decides how many payments go through each door.
 A **cell** is one `transaction-type × currency × bank` combination — the tool makes one
 routing decision per cell.
 
+**More docs in this repo:**
+- **`CLAUDE.md`** — project context + a concept glossary, including **Empirical Bayes** and the
+  four engines explained with analogies for non-technical readers.
+- **`FUNCTION_GLOSSARY.md`** — a plain-English reference to **every function** (398 of them), each
+  tagged in the source with a matching `[FN-id]` so you can hop between the glossary and the code.
+
 ---
 
 ## Words used here (plain English)

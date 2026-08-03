@@ -18,6 +18,7 @@ from .engines import CellProblem, get_engine
 __build__ = "2026-07-29-vamp-lp-singlegw-fixed-cell-revival"
 
 
+# [FN-191]
 def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: float = 1.0,
                  agg_cap: float = None, _reduce: bool = True):
     """Joint solve for the per-vampMid VAMP cap: the split CLOSEST to the reference
@@ -164,6 +165,7 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
     return out, retired, still_over
 
 
+# [FN-192]
 def vamp_frontier_lp(df: pd.DataFrame, cap: float, agg_cap: float,
                      floor: float = 0.0, max_share: float = 1.0):
     """Frontier point (public wrapper for `_vamp_cap_lp` with an aggregate budget):
@@ -176,6 +178,7 @@ def vamp_frontier_lp(df: pd.DataFrame, cap: float, agg_cap: float,
     return res[0] if res is not None else None
 
 
+# [FN-193]
 def _group_indices(labels: np.ndarray) -> dict:
     """{label -> ascending row positions}, identical to
     ``{v: np.where(labels == v)[0] for v in unique(labels)}`` but built in ONE
@@ -191,6 +194,7 @@ def _group_indices(labels: np.ndarray) -> dict:
             for lbl, idx in ser.groupby(ser, sort=False).indices.items()}
 
 
+# [FN-194]
 def _cell_recip_order(cell_rows: dict, rate: np.ndarray) -> dict:
     """Per-cell row positions sorted by rate ASCENDING, ties broken by ascending row index.
 
@@ -203,6 +207,7 @@ def _cell_recip_order(cell_rows: dict, rate: np.ndarray) -> dict:
     return {c: rows[np.argsort(rate[rows], kind="stable")] for c, rows in cell_rows.items()}
 
 
+# [FN-195]
 def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
                           max_share: float = 1.0, max_iter: int = 4000,
                           step: float = 0.05):
@@ -249,6 +254,7 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
     _corder = _cell_recip_order(cell_rows, rate)   # per-cell rows by ascending rate (bit-identical)
     retired: set = set()
 
+    # [FN-196]
     def _mid_rate(m):
         rows = mid_rows[m]
         vol = cell_vol[rows] * share[rows]
@@ -270,6 +276,7 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
         _den[m] = float(_v.sum())
         _num[m] = float((_v * rate[_rows]).sum())
 
+    # [FN-197]
     def _rt(m):
         return (_num[m] / _den[m]) if _den[m] > 1e-12 else 0.0
 
@@ -367,6 +374,7 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
     return d, retired, still_over
 
 
+# [FN-198]
 def enforce_mid_volume_caps(df: pd.DataFrame, a_max_by_mid: dict,
                             max_share: float = 1.0):
     """Scale each vampMid's allocated volume down to a_max x its BASELINE volume.
@@ -435,6 +443,7 @@ def enforce_mid_volume_caps(df: pd.DataFrame, a_max_by_mid: dict,
     return d, constrained
 
 
+# [FN-199]
 def optimise_split(problems: list[CellProblem],
                    settings: OptimiserSettings) -> pd.DataFrame:
     """Solve every cell with the selected engine and assemble the long split table.
@@ -490,6 +499,7 @@ def optimise_split(problems: list[CellProblem],
     })
 
 
+# [FN-200]
 def portfolio_summary(split: pd.DataFrame) -> dict:
     """Volume-weighted headline numbers for a whole split (the book-level scorecard).
 
@@ -513,6 +523,7 @@ def portfolio_summary(split: pd.DataFrame) -> dict:
     }
 
 
+# [FN-201]
 def sweep_slider(problems: list[CellProblem], settings: OptimiserSettings,
                  weights=None) -> pd.DataFrame:
     """Produce split *variations* across the conversion↔risk slider.

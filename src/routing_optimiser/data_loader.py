@@ -26,6 +26,7 @@ from .engines import CellProblem
 from .success_rates import gateway_success_rates, load_success_data
 
 
+# [FN-048]
 def synthesise_forecast_from_success(success_df: pd.DataFrame,
                                      default_risk: float = 0.006) -> pd.DataFrame:
     """Build a plausible baseline forecast from the attempts data.
@@ -46,6 +47,7 @@ def synthesise_forecast_from_success(success_df: pd.DataFrame,
     return g
 
 
+# [FN-049]
 def load_forecast(path: str | None, success_df: pd.DataFrame) -> pd.DataFrame:
     """Load the baseline 'pre' forecast — from a file, a pipeline output directory, or (when
     no path is given) a stand-in synthesised from the attempts data so the app still runs.
@@ -69,6 +71,7 @@ def load_forecast(path: str | None, success_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# [FN-050]
 def build_cell_problems(
     forecast: pd.DataFrame,
     success_rates: pd.DataFrame,
@@ -87,6 +90,7 @@ def build_cell_problems(
     # silently miss and dump every gateway onto the pooled prior. (If the two sides key on
     # fundamentally different values — e.g. BIN vs bank-name — normalisation can't help, but
     # the fallback-rate warning below makes that visible instead of silent.)
+    # [FN-051]
     def _nk(x):
         return str(x).strip().casefold()
 
@@ -209,6 +213,7 @@ def build_cell_problems(
     return problems
 
 
+# [FN-052]
 def prepare_inputs(success_source, forecast_path: str | None = None,
                    shrink_strength: float = 12.0):
     """Convenience: load everything and return (problems, success_rates, forecast).

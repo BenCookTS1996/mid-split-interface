@@ -18,6 +18,7 @@ import streamlit as st
 __build__ = "2026-07-28-count-only-pool-search"
 
 
+# [FN-247]
 def build_kill_eff(vamp2fids, fid_eff):
     """Build the hashable effective-date switch-off map for the projection.
 
@@ -40,6 +41,7 @@ def build_kill_eff(vamp2fids, fid_eff):
     return tuple(sorted(out))
 
 
+# [FN-248]
 def _mid_keep_fraction(vampmid_series, period_series, kill_eff, month_0):
     """Per-row RETAINED fraction (1 − kill) for effective-date-gated switch-offs.
 
@@ -80,6 +82,7 @@ def _mid_keep_fraction(vampmid_series, period_series, kill_eff, month_0):
     return keep
 
 
+# [FN-249]
 @st.cache_data(show_spinner=False)
 def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mids=frozenset(),
                              kill_eff=(), mtime: float = 0.0):
@@ -114,6 +117,7 @@ def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mid
         denom = prop.groupby(["Currency", "BIN"])["prop"].transform("sum").replace(0, np.nan)
         prop["prop"] = prop["prop"] / denom
 
+    # [FN-250]
     def _frac_after(m):
         if m < 0:
             return 0.0
@@ -181,6 +185,7 @@ def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mid
     return out.fillna(0.0).reset_index()
 
 
+# [FN-251]
 def compute_vamp_post_from_prorata(pp_path, prop_items, excluded_mids=frozenset(),
                                    kill_eff=(), month_0=None, scoped_rpgts=()):
     """Accurate proposed-split VAMP forecast using the pipeline pro-rata export.
@@ -200,6 +205,7 @@ def compute_vamp_post_from_prorata(pp_path, prop_items, excluded_mids=frozenset(
                            month_0, scoped_rpgts)
 
 
+# [FN-252]
 def _vamp_post_core(pp, prop_items, excluded_mids=frozenset(), kill_eff=(), month_0=None,
                     scoped_rpgts=()):
     """Core projection on a PRE-LOADED pro-rata dataframe, so the per-MID cap
@@ -320,6 +326,7 @@ def _vamp_post_core(pp, prop_items, excluded_mids=frozenset(), kill_eff=(), mont
     return out.fillna(0.0).reset_index()
 
 
+# [FN-253]
 def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
     """EXCESSIVE diagnostics for the tab-3 vs tab-5 back-fill gap. Writes two files next to the
     pro-rata export: _proj_diag_rows.csv (every t0 sub-cell with all intermediates) and
@@ -470,6 +477,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                     _sub = _sub[1:]
                 _R = _os.sep.join   # shorthand
 
+                # [FN-254]
                 def _p(*parts):
                     return _R([_root] + list(parts)) if _root else _R(list(parts))
                 _t5path = (_os.environ.get("ROUTING_PROJ_TAB5_EXPORT", "").strip()
@@ -481,9 +489,11 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                 _man_path = _p("data", "exported_rules", "_export_manifest.json")
                 _cmid = _os.environ.get("ROUTING_PROJ_CMP_MID", "braintree").strip().lower()
 
+                # [FN-255]
                 def _kv(_s):
                     return _s.astype(str).str.strip().str.lower()
 
+                # [FN-256]
                 def _cached_df(_cache, _srcs, _build):
                     # Return a cached DataFrame (pickle) if it's newer than every source; else
                     # rebuild + cache. Makes the slow xlsx/large-CSV reads a one-time cost.
@@ -578,6 +588,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                         try:
                             _rfiles = sorted(_glob.glob(_os.path.join(_rules_dir, "PoolTargeted_Rules_*.xlsx")))
 
+                            # [FN-257]
                             def _build_rules():
                                 _meta_cols = {"go live", "bin group", "brand", "rpgt", "currency", "bin",
                                               "paymentmethodprovider", "sticky", "country", "check", "dup check"}
@@ -750,6 +761,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                             _um = {"rpgt", "Currency", "BIN", "paymentMethodProvider", "Country",
                                    "renewal_number", "fcpNumber", "gatewayFid", "attemptNumber", "trx_count"}
 
+                            # [FN-258]
                             def _build_map():
                                 _m = pd.read_csv(_map_path, usecols=lambda c: c.strip() in _um, low_memory=False)
                                 _m.columns = [c.strip() for c in _m.columns]
@@ -938,6 +950,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
             pass
 
 
+# [FN-259]
 def _inject_backfill_rows(pp, prop):
     """#3 ZERO-BASELINE BACK-FILL: build_split_exports can route to gateways (e.g. <2-gateway
     back-fill fallbacks) that have NO baseline row in a cell. The LEFT merge drops them, so their
@@ -988,6 +1001,7 @@ def _inject_backfill_rows(pp, prop):
     return pd.concat([pp, new], ignore_index=True, sort=False)
 
 
+# [FN-260]
 def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset(),
                                   kill_eff=(), month_0=None, scoped_rpgts=(),
                                   wallet_incapable=frozenset(), usa_only=frozenset(),
@@ -1225,6 +1239,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
               [["VAMP_Pre", "VAMP_Post", "VI_Txn_Pre", "VI_Txn_Post"]].sum())
 
 
+# [FN-261]
 def mid_table_from_granular(gran):
     """Per-vampMid VAMP / VI-Txn M0–5 (pre & post) table, derived by AGGREGATING the
     granular pre/post frame from compute_vamp_prepost_granular. Because it reads the
@@ -1248,6 +1263,7 @@ def mid_table_from_granular(gran):
     return out.fillna(0.0).reset_index()
 
 
+# [FN-262]
 def process_wallet_incapable(mid_list_path):
     """Set of gatewayFids (lowercased) that CANNOT process wallet (GOOGLEPAY /
     APPLEPAY), read from a processWallet-style column in Master_MID_List.
@@ -1282,11 +1298,13 @@ def process_wallet_incapable(mid_list_path):
 # the pro-rata/thermometer files and re-run the VAMP projection every time. These
 # wrappers are keyed on file path + mtime + the (hashable) split signature, so results
 # are byte-identical — only recomputed when the inputs actually change.
+# [FN-263]
 def _cache_data(**kw):
     _dec = getattr(st, "cache_data", None) or getattr(st, "experimental_memo", None)
     return _dec(**kw) if _dec is not None else (lambda f: f)
 
 
+# [FN-264]
 def _mtime(path):
     try:
         return os.path.getmtime(path)
@@ -1294,6 +1312,7 @@ def _mtime(path):
         return 0.0
 
 
+# [FN-265]
 @_cache_data(show_spinner=False)
 def _c_read_parquet(path, m):
     # `m` is the file mtime — it MUST be a plain (non-underscore) name so st.cache_data
@@ -1302,6 +1321,7 @@ def _c_read_parquet(path, m):
     return pd.read_parquet(path)
 
 
+# [FN-266]
 @_cache_data(show_spinner=False)
 def _c_vamp_post_prorata(pp_path, m, prop_items, excluded_mids, kill_eff=(), month_0=None,
                          scoped_rpgts=()):
@@ -1312,6 +1332,7 @@ def _c_vamp_post_prorata(pp_path, m, prop_items, excluded_mids, kill_eff=(), mon
                                           month_0, scoped_rpgts)
 
 
+# [FN-267]
 @_cache_data(show_spinner=False)
 def _c_prepost_granular(pp_path, m, prop_items, excluded_mids, kill_eff=(), month_0=None,
                         scoped_rpgts=(), wallet_incapable=frozenset(), usa_only=frozenset(),
@@ -1324,6 +1345,7 @@ def _c_prepost_granular(pp_path, m, prop_items, excluded_mids, kill_eff=(), mont
                                          exploration_floor=exploration_floor)
 
 
+# [FN-268]
 def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid2vamp=None,
                         mid_list_path=None, usa_only=frozenset(), country_pres=None,
                         max_share=0.97):
@@ -1382,14 +1404,17 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     gateways = sorted(df["gateway"].unique().tolist())
     _pmps = ["GOOGLEPAY", "APPLEPAY", "non_gp_ap"]
 
+    # [FN-269]
     def _incap(gw):
         g = gw.strip().lower()
         return g in wallet_incapable or fid2vamp.get(g, "") in wallet_incapable
 
+    # [FN-270]
     def _is_usa_only(gw):
         g = gw.strip().lower()
         return g in usa_only or fid2vamp.get(g, "") in usa_only
 
+    # [FN-271]
     def _valid_candidates(cur_l, country, is_wallet):
         """Template-column gateways eligible to serve this (currency, country, pmp): currency-
         matched, active, USA-only excluded for Non-USA, and wallet-capable for wallet rows.
@@ -1408,6 +1433,7 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
             out.append(gw)
         return out
 
+    # [FN-272]
     def _cap_rows(V):
         """VECTORISED twin of the old per-Series `_cap_shares`, applied to a whole (rows×gw)
         array at once. Each row (already normalised to sum 1) is capped at `_cap`, water-filling
@@ -1430,6 +1456,7 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
             V[m] = W
         return V
 
+    # [FN-273]
     def _countries_for(cur, bin_):
         _u, _n = country_pres.get((str(cur).strip().lower(), str(bin_).strip()), (None, None))
         if _u is None and _n is None:      # no attempts country info → emit both (safe default)
@@ -1534,6 +1561,7 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     return out
 
 
+# [FN-274]
 def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid2vamp=None,
                         mid_list_path=None, usa_only=frozenset(), country_pres=None,
                         max_share=0.97):
@@ -1597,6 +1625,7 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
     return tuple(agg.itertuples(index=False, name=None))
 
 
+# [FN-275]
 def enforced_split_frame(split, brand, go_live, wallet_incapable=frozenset(), fid2vamp=None,
                          mid_list_path=None, usa_only=frozenset(), country_pres=None,
                          max_share=0.97):
@@ -1651,6 +1680,7 @@ def enforced_split_frame(split, brand, go_live, wallet_incapable=frozenset(), fi
     return out[cols]
 
 
+# [FN-276]
 def count_pools_for_split(split_long, brand_name, go_live, *, wallet_incapable=frozenset(),
                           fid2vamp=None, mid_list_path=None, usa_only=frozenset(),
                           country_pres=None, max_share=0.97, brand_key="tav",
@@ -1674,6 +1704,7 @@ def count_pools_for_split(split_long, brand_name, go_live, *, wallet_incapable=f
     return len(_pools)
 
 
+# [FN-277]
 def pool_targeted_core(split_ideal, *, target_pools, wallet_ctx, brand_name, brand_key,
                        go_live, mid_list_path, date_tag="000000", mode="sales", scheme="vi",
                        emit_generic=False, method="kmeans", allocation="greedy", parallel=1):
@@ -1709,6 +1740,7 @@ def pool_targeted_core(split_ideal, *, target_pools, wallet_ctx, brand_name, bra
                                    method=method, allocation=allocation, parallel=int(parallel))
 
 
+# [FN-278]
 def _pool_disk_key(split_ideal, *, target_pools, wallet_ctx, brand_name, brand_key,
                    go_live, mid_list_path, date_tag, mode, scheme, emit_generic,
                    method="kmeans", allocation="greedy"):
@@ -1745,6 +1777,7 @@ def _pool_disk_key(split_ideal, *, target_pools, wallet_ctx, brand_name, brand_k
     return _hl.sha256((_split_hash + _json.dumps(_params, sort_keys=True)).encode()).hexdigest()[:24]
 
 
+# [FN-279]
 def pool_targeted_compression(ss, split_ideal, *, target_pools, sig, wallet_ctx,
                               brand_name, brand_key, go_live, mid_list_path,
                               date_tag="000000", mode="sales", scheme="vi",
@@ -1824,6 +1857,7 @@ def pool_targeted_compression(ss, split_ideal, *, target_pools, sig, wallet_ctx,
     return _cl, _st
 
 
+# [FN-280]
 def rpgt_avg_ticket(cell_agg):
     """RPGT-level average ticket from the 30D actuals (the window ending just before
     Month 0): Σ succ_amount / Σ successes per RPGT. Returns {rpgt_lower: ticket}."""
@@ -1834,6 +1868,7 @@ def rpgt_avg_ticket(cell_agg):
             for rp, r in g.iterrows()}
 
 
+# [FN-281]
 def mid_revenue_month_table(granular, rpgt_ticket, months=range(6)):
     """Per-vampMid × month VI Txn + $Revenue (pre/post) from the pro-rata granular.
 

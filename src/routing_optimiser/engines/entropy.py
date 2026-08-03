@@ -21,17 +21,20 @@ class EntropyEngine(BaseEngine):
                    "diversified splits while still honouring the hard VAMP "
                    "cap and gateway caps. Recommended default.")
 
+    # [FN-428]
     def _solve(self, p: CellProblem) -> CellSolution:
         n = p.n()
         lam = float(self.params.get("entropy_lambda", 0.02))
         lo, hi = self._bounds(p)
         score = self._score(p)
 
+        # [FN-429]
         def neg_obj(x):
             x = np.clip(x, 1e-12, 1.0)
             ent = -np.sum(x * np.log(x))
             return -(x @ score + lam * ent)
 
+        # [FN-430]
         def neg_grad(x):
             x = np.clip(x, 1e-12, 1.0)
             return -(score + lam * (-(np.log(x) + 1.0)))

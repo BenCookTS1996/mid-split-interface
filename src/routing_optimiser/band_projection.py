@@ -63,7 +63,9 @@ try:                                   # numba is optional — pure-NumPy path u
 except Exception:                      # noqa: BLE001
     _HAVE_NUMBA = False
 
+    # [FN-008]
     def _njit(*_a, **_k):
+        # [FN-009]
         def _deco(f):
             return f
         return _deco
@@ -71,6 +73,7 @@ except Exception:                      # noqa: BLE001
 _GRPK = ["cur", "bin", "rpgt", "pmp", "ctry", "per"]
 
 
+# [FN-010]
 @_njit(cache=True)
 def _pop_band_kernel(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, ctot,
                      pc_org, pc_vc, pc_pool, pc_band, cap_row, cap_band, ncell, nband,
@@ -120,6 +123,7 @@ def _pop_band_kernel(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, ctot,
     return vamp, txn
 
 
+# [FN-011]
 def _prop_key(df: pd.DataFrame, by_rpgt: bool) -> np.ndarray:
     """Build each row's bucket address ('cur|bin|mid', or 'cur|bin|rpgt|mid' when by_rpgt).
 
@@ -137,6 +141,7 @@ def _prop_key(df: pd.DataFrame, by_rpgt: bool) -> np.ndarray:
             + df["mid"].astype(str).str.strip()).to_numpy()
 
 
+# [FN-012]
 def _prop_raw(T0: pd.DataFrame, prop: dict, by_rpgt: bool) -> np.ndarray:
     """Look up each t0 row's proposed share from the `prop` dict by its bucket key.
 
@@ -156,6 +161,7 @@ def _prop_raw(T0: pd.DataFrame, prop: dict, by_rpgt: bool) -> np.ndarray:
     return raw
 
 
+# [FN-013]
 def _static(T0: pd.DataFrame):
     """Precompute the per-row pieces that DON'T depend on the candidate (done once).
 
@@ -179,6 +185,7 @@ def _static(T0: pd.DataFrame):
     return gcode, ngc, base, ctot, mv_static
 
 
+# [FN-014]
 def _origin_map(T0: pd.DataFrame, Pc: pd.DataFrame) -> np.ndarray:
     """Each aged Pc row -> its ORIGIN t0 row index (om==per), excluding back-fill; -1 if none."""
     t0join = (T0["cur"] + "|" + T0["bin"] + "|" + T0["rpgt"] + "|" + T0["pmp"] + "|"
@@ -192,6 +199,7 @@ def _origin_map(T0: pd.DataFrame, Pc: pd.DataFrame) -> np.ndarray:
     return t0pos.reindex(pcjoin).fillna(-1).to_numpy().astype(np.int64)
 
 
+# [FN-015]
 def _shares(T0, prop, by_rpgt, gcode, ngc, base):
     """Return (pshare, vshare, psum) for the candidate. `psum` is the per-row (broadcast
     per-cell) proposed-share sum; `psum>0` is the active mask that gates `mv`."""
@@ -206,6 +214,7 @@ def _shares(T0, prop, by_rpgt, gcode, ngc, base):
     return pshare, vshare, psum
 
 
+# [FN-016]
 def project_reference(T0: pd.DataFrame, Pc: pd.DataFrame, pool: np.ndarray, prop: dict,
                       by_rpgt: bool = False) -> dict:
     """Faithful re-implementation of `_project_capped`'s array math (a readable oracle).
@@ -251,6 +260,7 @@ class BandProjector:
     (piecewise-)linear form. The only per-candidate inputs are the per-cell shares and the
     `psum>0` active mask that gates the movable fraction."""
 
+    # [FN-017]
     def __init__(self, T0: pd.DataFrame, Pc: pd.DataFrame, pool: np.ndarray, bands,
                  by_rpgt: bool = False):
         self.by_rpgt = by_rpgt
@@ -315,6 +325,7 @@ class BandProjector:
             self._t_off[key] = np.array(_t_off.get(key, []), dtype=float)
             self._t_coef[key] = np.array(_t_coef.get(key, []), dtype=float)
 
+    # [FN-018]
     def project(self, prop: dict) -> dict:
         pshare, vshare, psum = _shares(self._T0, prop, self.by_rpgt,
                                        self._gcode, self._ngc, self._base)
@@ -363,6 +374,7 @@ class PopulationBandProjector:
         {key: share} dicts.
     """
 
+    # [FN-019]
     def __init__(self, T0: pd.DataFrame, Pc: pd.DataFrame, pool: np.ndarray, bands,
                  by_rpgt: bool = False):
         self.by_rpgt = by_rpgt
@@ -438,6 +450,7 @@ class PopulationBandProjector:
                                               Rper[self._t_rows].tolist()))).map(_bpos).to_numpy(np.int64)
                            if len(self._t_rows) else np.zeros(0, np.int64))
 
+    # [FN-020]
     def project_pop_from_props(self, props):
         kpos = {k: j for j, k in enumerate(self.prop_keys)}
         pr = np.zeros((len(props), self._K), dtype=float)
@@ -451,6 +464,7 @@ class PopulationBandProjector:
                     pr[r, j] += float(v)
         return self.project_pop(pr)
 
+    # [FN-021]
     def _nb_arrays(self):
         """Cast static arrays to the numba kernel's dtypes once; pre-filter excl txn rows
         (their contribution is 0, so dropping them is exact)."""
@@ -467,6 +481,7 @@ class PopulationBandProjector:
                 self._t_rows[keep].astype(np.int64), self._t_bandcol[keep].astype(np.int64))
         return self._nbcache
 
+    # [FN-022]
     def _nb_buffers(self, P):
         """Pre-allocated working buffers for the numba kernel, cached & REUSED across calls
         (removes tens of MB of per-generation alloc/free). The big scratch (psum/vpsum/moved
@@ -487,6 +502,7 @@ class PopulationBandProjector:
             self._nbbuf_vt = vt
         return (vt[1], vt[2]) + fixed
 
+    # [FN-023]
     def project_pop_numba(self, prop_raw: np.ndarray):
         """Numba-accelerated project_pop — bit-identical, ~7× faster on the real scaffold.
         Falls back to the NumPy path if numba is unavailable or the scaffold is empty.
@@ -498,10 +514,12 @@ class PopulationBandProjector:
         buf = self._nb_buffers(prop_raw.shape[0])
         return _pop_band_kernel(prop_raw, *a, int(self._ngc), int(self._B), *buf)
 
+    # [FN-024]
     def _cellsum(self, x):
         """(P, nR) -> (P, ngc) segment sum over cell codes via sparse matmul (C-fast)."""
         return np.asarray((self._S @ x.T).T)
 
+    # [FN-025]
     def project_pop(self, prop_raw: np.ndarray):
         """prop_raw : (P, K) proposed share per `prop_keys`. Returns (vamp[P,B], txn[P,B])."""
         prop_raw = np.asarray(prop_raw, float)

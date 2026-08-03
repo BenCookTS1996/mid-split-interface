@@ -76,6 +76,7 @@ RPGT_MAP = {
 PROVIDER_TAG = {"non_gp_ap": "", "APPLEPAY": "-ap", "GOOGLEPAY": "-gp"}
 
 
+# [FN-038]
 def company_to_brand_key(company: str) -> str:
     """Map a company display name to a BRANDS key (defaults to 'tav')."""
     c = str(company or "").strip().lower().replace(" ", "")
@@ -86,6 +87,7 @@ def company_to_brand_key(company: str) -> str:
     return "tav"
 
 
+# [FN-039]
 def get_priority(term, is_apgp, has_bins, extra_priority_amount=200000):
     is_special = term in ("upgrade-ini", "addon-ren")
     base = 500000 if is_special else 100000
@@ -96,6 +98,7 @@ def get_priority(term, is_apgp, has_bins, extra_priority_amount=200000):
     return calculated_priority + extra_priority_amount
 
 
+# [FN-040]
 def get_combinable_provider_sets(providers):
     """Determines which providers can be safely combined into a single pool."""
     p_set = set(providers)
@@ -110,6 +113,7 @@ def get_combinable_provider_sets(providers):
         return [[p] for p in providers]
 
 
+# [FN-041]
 def rows_from_dataframe(df, brand_name):
     """Replaces the script's ``parse_sheet``: turn a Compressed_Rules template
     DataFrame into the same list-of-dict rows, using the identical column layout
@@ -167,6 +171,7 @@ def rows_from_dataframe(df, brand_name):
     return rows
 
 
+# [FN-042]
 def make_pool(cfg, name, priority, currencies, bins, providers, scheme_filter,
               type_selectors, connectors_weighted, country_label):
     expressions = []
@@ -227,6 +232,7 @@ def make_pool(cfg, name, priority, currencies, bins, providers, scheme_filter,
     }
 
 
+# [FN-043]
 def normalize_weights(connectors, expected_total):
     weighted = {k: round(v * 10) for k, v in connectors.items()}
     total = sum(weighted.values())
@@ -242,6 +248,7 @@ def normalize_weights(connectors, expected_total):
     return weighted
 
 
+# [FN-044]
 def process_compressed_rows(cfg, rows, scheme_filter, count_only=False):
     """BIN-specific pools (bin != 'Other'). Returns {name: pool}.
 
@@ -315,6 +322,7 @@ def process_compressed_rows(cfg, rows, scheme_filter, count_only=False):
     return out
 
 
+# [FN-045]
 def process_backup_rows(cfg, rows, scheme_filter, count_only=False):
     """Catch-all pools (bin == 'Other'). Returns {name: pool}.
 
@@ -383,6 +391,7 @@ def process_backup_rows(cfg, rows, scheme_filter, count_only=False):
     return out
 
 
+# [FN-046]
 def emit_pool_generic(cfg, pools):
     """pool-generic: every connector seen across `pools`, weight 100, priority 1."""
     skip = GENERIC_SKIP.get(cfg["brand"], set())
@@ -406,6 +415,7 @@ def emit_pool_generic(cfg, pools):
     }
 
 
+# [FN-047]
 def generate_configs(exports, brand_key, date, scheme="vi", mode="sales",
                      extra_priority_amount=200000, emit_generic=False, count_only=False):
     """Generate ConnectorPool configs from the export templates.

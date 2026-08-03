@@ -24,6 +24,7 @@ __build__ = "2026-07-22-validate-layout6-attempts-window"
 _RULE_GLOBS = ("*.xlsx", "*.xls", "*.csv")
 
 
+# [FN-389]
 def _covered_rpgts(merged_dir: str) -> set:
     """Lower-cased set of RPGTs that HAVE a rule (from the RPGT column of each rule
     file in the merged dir). Used to auto-force-actuals for the RPGTs with no rule."""
@@ -43,6 +44,7 @@ def _covered_rpgts(merged_dir: str) -> set:
     return covered
 
 
+# [FN-390]
 def _to_prepost(df: pd.DataFrame) -> pd.DataFrame:
     """Rename the pipeline's mid_level.csv columns onto the tab-3 table names."""
     ren = {}
@@ -65,6 +67,7 @@ def _to_prepost(df: pd.DataFrame) -> pd.DataFrame:
     return vp
 
 
+# [FN-391]
 def _render_prepost_table(vp: pd.DataFrame, fit_content: bool = False, bold: bool = True) -> None:
     """Same red-header / month-spacer / TOTAL-row table tab 3 uses.
 
@@ -138,6 +141,7 @@ def _render_prepost_table(vp: pd.DataFrame, fit_content: bool = False, bold: boo
     st.markdown("".join(html), unsafe_allow_html=True)
 
 
+# [FN-392]
 def _read_export_manifest(rules_dir: str) -> dict:
     """Read _export_manifest.json (the drift-guard stamp) from an exported rules folder.
     Returns {} if absent/unreadable. Looks in the folder and one level up (the zip root)."""
@@ -155,6 +159,7 @@ def _read_export_manifest(rules_dir: str) -> dict:
     return {}
 
 
+# [FN-393]
 def _drift_check(ss, rules_dir: str) -> None:
     """Warn if the rule files in `rules_dir` were exported for a DIFFERENT split than the latest
     export in this session — i.e. tab 5 would run rules that no longer match tab 3's projection."""
@@ -174,6 +179,7 @@ def _drift_check(ss, rules_dir: str) -> None:
                    "projection. Re-export + re-download and point this folder at the fresh files to sync.")
 
 
+# [FN-394]
 def _stage_rules(rules_dir: str, merged_dir: str) -> int:
     """Copy every rule file from the exported rules folder into a clean staging dir the
     pipeline reads. RPGTs with no rule file here are auto-routed on actuals (see render)."""
@@ -188,6 +194,7 @@ def _stage_rules(rules_dir: str, merged_dir: str) -> int:
     return _n
 
 
+# [FN-395]
 def render(ss, PROJECT_ROOT, GCP_PROJECT):
     # No hard gate: this sub-tab builds its OWN forecast via the pipeline. forecast_settings is
     # kept in sync every rerun by the Build Baseline sub-tab (from its widgets), so it's available
@@ -198,6 +205,7 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
     _company = str(fs.get("company", "TotalAV"))
     _month = str(fs.get("month_var", "") or "")
 
+    # [FN-396]
     def _d(key, fallback):
         try:
             return pd.to_datetime(fs.get(key)).date() if fs.get(key) else fallback
@@ -373,11 +381,13 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
             _area = st.empty()
             _lines: list[str] = []
 
+            # [FN-397]
             def _log(msg):
                 _lines.append(str(msg))
                 _area.code("\n".join(_lines[-500:]), language="log")
 
             class _H(logging.Handler):
+                # [FN-398]
                 def emit(self, rec):
                     try:
                         _log(self.format(rec))

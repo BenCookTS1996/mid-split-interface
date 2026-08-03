@@ -42,6 +42,7 @@ except Exception:  # noqa: BLE001
     _HAVE_SCIPY = False
 
 
+# [FN-026]
 def build_col_incidence(col_propkeys: Sequence[str], prop_keys: Sequence[str]):
     """Build the sparse (K × N) 0/1 lookup that rolls GA columns up to projector rows.
 
@@ -75,6 +76,7 @@ def build_col_incidence(col_propkeys: Sequence[str], prop_keys: Sequence[str]):
     return dense_matrix
 
 
+# [FN-027]
 def shares_to_prop_raw(shares: np.ndarray, incidence) -> np.ndarray:
     """(P, N) decoded shares → (P, K) prop_raw = (incidence @ shares.T).T (sparse-safe).
 
@@ -109,6 +111,7 @@ class ExactBandPenalty:
     the fine.
     """
 
+    # [FN-028]
     def __init__(self, projector, specs: Sequence[BandSpec], *,
                  breach_fixed: float = 0.0, breach_quad: float = 1.0,
                  breach_shape: str = "quadratic", use_numba: bool = True):
@@ -124,6 +127,7 @@ class ExactBandPenalty:
         # Map each (midl, period) band to its column in the projector's output.
         self._band_to_index = {band: i for i, band in enumerate(projector.band_order)}
 
+    # [FN-029]
     def _pen(self, overshoot):
         """The fine schedule for being `overshoot` fraction over a band (0 = at/under the limit).
 
@@ -136,12 +140,14 @@ class ExactBandPenalty:
             return self.breach_fixed * (overshoot > 0.0) + self.breach_quad * (np.exp(np.minimum(overshoot, 50.0)) - 1.0)
         return self.breach_fixed * (overshoot > 0.0) + self.breach_quad * overshoot * overshoot
 
+    # [FN-030]
     def project(self, prop_raw):
         """Project the population to exact per-band VAMP/Txn values (numba path by default)."""
         if self.use_numba:
             return self.projector.project_pop_numba(prop_raw)
         return self.projector.project_pop(prop_raw)
 
+    # [FN-031]
     def penalty(self, prop_raw) -> np.ndarray:
         """(P, K) prop_raw → (P,) total band violation to add to each candidate's `viol`."""
         prop_raw = np.ascontiguousarray(prop_raw, dtype=float)

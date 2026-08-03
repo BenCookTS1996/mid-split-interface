@@ -36,6 +36,7 @@ __build__ = "2026-07-31-ga-oliver-percell-nsga2"
 
 
 # ---------------------------------------------------------------------------- helpers
+# [FN-080]
 def _renorm_cells(X, cs, cc, elig, ref):
     """Zero non-eligible rows, then renormalise each cell to sum 1 over its eligible rows.
     Cells that would sum to ~0 fall back to the (eligibility-masked) reference split."""
@@ -52,6 +53,7 @@ def _renorm_cells(X, cs, cc, elig, ref):
     return out
 
 
+# [FN-081]
 def _mutate(X, cs, cc, elig, ref, rng, mutation_rate, strength):
     """Gaussian per-row mutation on a random subset of CELLS (mirrors Oliver's mutate_split, but
     cell-wise since a 'row' here is a whole cell's gateways). Renormalises the touched cells."""
@@ -68,6 +70,7 @@ def _mutate(X, cs, cc, elig, ref, rng, mutation_rate, strength):
     return _renorm_cells(Y, cs, cc, elig, ref)
 
 
+# [FN-082]
 def _crossover(A, B, cs, cc, rng, cx_rate):
     """Per-cell uniform crossover (mirrors make_children): each cell independently comes from one
     parent or the other. Returns two children as (P,N) arrays."""
@@ -80,6 +83,7 @@ def _crossover(A, B, cs, cc, rng, cx_rate):
     return c1, c2
 
 
+# [FN-083]
 def _score(X, ctx, cs, cc, elig, cap, floor):
     """Cap-at-evaluation (uncapped genome), then this app's _obj_viol → (obj, viol)."""
     capped = _cap_floor_shares(X, cs, cc, elig, float(cap), float(floor)) if (cap < 1.0 or floor > 0.0) else X
@@ -88,6 +92,7 @@ def _score(X, ctx, cs, cc, elig, cap, floor):
 
 
 # ---------------------------------------------------------------------- NSGA-II selection
+# [FN-084]
 def _fast_nondominated_fronts(M):
     """M: (P, k) MINIMISATION objectives. Returns list of fronts (each a list of indices)."""
     P = M.shape[0]
@@ -116,6 +121,7 @@ def _fast_nondominated_fronts(M):
     return fronts[:-1]
 
 
+# [FN-085]
 def _crowding(M_front):
     """Crowding distance for one front. M_front: (m, k)."""
     m, k = M_front.shape
@@ -134,6 +140,7 @@ def _crowding(M_front):
     return dist
 
 
+# [FN-086]
 def _select_nsga2(M, k):
     """Pick k indices from M (P,k_obj) minimisation objectives via NSGA-II (fronts + crowding)."""
     chosen = []
@@ -152,6 +159,7 @@ def _select_nsga2(M, k):
 
 
 # ------------------------------------------------------------------------------- engine
+# [FN-087]
 def run(ctx, lam=50.0, *, pop_size=64, generations=400, seed=42, warm_start=None,
         stop_check=None, progress_cb=None, mutation_rate=0.3, strength=0.3, cx_rate=0.5,
         **kwargs):
@@ -256,6 +264,7 @@ def run(ctx, lam=50.0, *, pop_size=64, generations=400, seed=42, warm_start=None
     return best_capped, info
 
 
+# [FN-088]
 def _best_index(obj, viol):
     """Feasibility-first: among feasible (viol<=tol) pick max obj; else min viol (tie max obj)."""
     obj = np.asarray(obj, float); viol = np.asarray(viol, float)
@@ -266,6 +275,7 @@ def _best_index(obj, viol):
     return int(np.lexsort((-obj, viol))[0])
 
 
+# [FN-089]
 def _feas_scalar(obj, viol):
     """Monotone 'higher = better' score: feasible splits always beat infeasible; feasible ranked
     by obj, infeasible by −violation."""

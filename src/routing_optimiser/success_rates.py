@@ -18,6 +18,7 @@ import pandas as pd
 from .schema import SCENARIO_TO_RPGT, SUCCESS_DATA_COLUMNS as C
 
 
+# [FN-226]
 def load_success_data(source) -> pd.DataFrame:
     """Load the attempts/success data from a DataFrame, or a CSV/parquet path.
 
@@ -77,6 +78,7 @@ def load_success_data(source) -> pd.DataFrame:
     return df
 
 
+# [FN-227]
 def _apply_time_decay(df: pd.DataFrame, half_life_days: float | None,
                       date_col: str = "date") -> pd.DataFrame:
     """
@@ -100,6 +102,7 @@ def _apply_time_decay(df: pd.DataFrame, half_life_days: float | None,
     return d
 
 
+# [FN-228]
 def _empirical_bayes_kappa(grp: pd.DataFrame, scope: list[str],
                            fallback: float, kmax: float = 5_000.0) -> pd.DataFrame:
     """Method-of-moments Beta-Binomial concentration (kappa) per prior_scope group.
@@ -170,6 +173,7 @@ def _empirical_bayes_kappa(grp: pd.DataFrame, scope: list[str],
     return pd.DataFrame(rows, columns=scope + ["kappa"])
 
 
+# [FN-229]
 def gateway_success_rates(
     df: pd.DataFrame,
     gateway_col: str = "gateway",
@@ -239,6 +243,7 @@ def gateway_success_rates(
     return out
 
 
+# [FN-230]
 def detect_blocked_gateways(adf, min_consecutive: float, date_col: str = "date"):
     """Flag (bank, gateway) pairs the acquiring bank appears to have BLOCKED us on.
 
@@ -288,6 +293,7 @@ def detect_blocked_gateways(adf, min_consecutive: float, date_col: str = "date")
     return out[cols].sort_values("consec_failed", ascending=False).reset_index(drop=True)
 
 
+# [FN-231]
 def rpgt_gateway_sensitivity(sr_df, avg_ticket: float = 1.0, min_attempts: float = 1.0):
     """How sensitive is each RPGT to WHERE its traffic is routed.
 
@@ -332,6 +338,7 @@ def rpgt_gateway_sensitivity(sr_df, avg_ticket: float = 1.0, min_attempts: float
             .reset_index(drop=True))
 
 
+# [FN-232]
 def risk_rates_from_forecast(forecast: pd.DataFrame | None,
                              gateways: list[str],
                              default: float = 0.006,
