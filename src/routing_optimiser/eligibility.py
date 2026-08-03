@@ -184,41 +184,43 @@ def _renorm(df: pd.DataFrame, group_keys: list[str], col: str) -> pd.Series:
     return np.where(s > 0, df[col] / s, df[col])
 
 
-def _capability_blend(df: pd.DataFrame, gk: list[str], incapable, frac_map: dict,
+def _capability_blend(df: pd.DataFrame, group_cols: list[str], incapable, frac_map: dict,
                       default: float) -> np.ndarray:
     """Volume-weighted capability blend, returning the new per-row share array.
 
-    An `incapable` gateway CANNOT serve the `frac` portion of a cell's traffic, so
-    it keeps only (1 - frac) of its baseline share and the `frac` portion is
-    redistributed to the capable gateways in the cell (transactions conserved).
-    Used identically for wallet capability (frac = the cell's wallet share) and for
-    country capability (frac = the cell's Non-USA share). `frac_map` is keyed by
-    (currency, bank); `default` is used when a cell isn't in the map."""
-    incap = (df["_gw"].isin(incapable) | df["_vm"].isin(incapable)).to_numpy()
-    new_share = df["share"].to_numpy(float).copy()
-    if not (gk and incap.any()):
-        return new_share
+    ANALOGY: an `incapable` gateway is like a vendor that can't take a certain payment type.
+    It keeps only the (1 − frac) share it CAN serve; the `frac` portion of each cell is handed
+    to the vendors that CAN (renormalised among themselves), so no transactions are lost. Used
+    identically for wallet capability (frac = the cell's wallet share) and country capability
+    (frac = the cell's Non-USA share). `frac_map` is keyed by (currency, bank); `default` is
+    used when a cell isn't in the map.
+    """
+    incapable_mask = (df["_gw"].isin(incapable) | df["_vm"].isin(incapable)).to_numpy()
+    result_share = df["share"].to_numpy(float).copy()
+    if not (group_cols and incapable_mask.any()):
+        return result_share
     has_cur_bank = ("currency" in df.columns and "bank" in df.columns)
-    for key, idx in df.groupby(gk, dropna=False).groups.items():
-        rows = df.loc[idx]
-        base = rows["share"].to_numpy(float)
+    for _grp_key, row_idx in df.groupby(group_cols, dropna=False).groups.items():
+        group_rows = df.loc[row_idx]
+        base = group_rows["share"].to_numpy(float)
         if base.sum() <= 0:
             continue
-        wf = default
+        reroute_frac = default
         if has_cur_bank:
-            ck = (str(rows["currency"].iloc[0]).strip().lower(),
-                  str(rows["bank"].iloc[0]).strip().lower())
-            wf = float(frac_map.get(ck, default))
-        wf = 0.0 if (wf != wf) else min(max(wf, 0.0), 1.0)
-        m = incap[[df.index.get_loc(i) for i in idx]]
-        cshare = base.copy()
-        cshare[m] = 0.0
-        s = cshare.sum()
-        cshare = cshare / s if s > 0 else base  # if only incapable exist, no reroute possible
-        blended = wf * cshare + (1.0 - wf) * base
-        for pos, i in enumerate(idx):
-            new_share[df.index.get_loc(i)] = blended[pos]
-    return new_share
+            cur_bank_key = (str(group_rows["currency"].iloc[0]).strip().lower(),
+                            str(group_rows["bank"].iloc[0]).strip().lower())
+            reroute_frac = float(frac_map.get(cur_bank_key, default))
+        reroute_frac = 0.0 if (reroute_frac != reroute_frac) else min(max(reroute_frac, 0.0), 1.0)
+        incap_in_cell = incapable_mask[[df.index.get_loc(i) for i in row_idx]]
+        capable_share = base.copy()
+        capable_share[incap_in_cell] = 0.0
+        capable_total = capable_share.sum()
+        # if only incapable gateways exist, no reroute is possible → keep the baseline
+        capable_share = capable_share / capable_total if capable_total > 0 else base
+        blended = reroute_frac * capable_share + (1.0 - reroute_frac) * base
+        for pos, i in enumerate(row_idx):
+            result_share[df.index.get_loc(i)] = blended[pos]
+    return result_share
 
 
 def apply_restrictions(split: pd.DataFrame, rules: list[dict], fid2vamp: dict,

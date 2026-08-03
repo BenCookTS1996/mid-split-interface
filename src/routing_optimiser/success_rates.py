@@ -104,6 +104,11 @@ def _empirical_bayes_kappa(grp: pd.DataFrame, scope: list[str],
                            fallback: float, kmax: float = 5_000.0) -> pd.DataFrame:
     """Method-of-moments Beta-Binomial concentration (kappa) per prior_scope group.
 
+    ANALOGY: kappa asks "do the gateways in this group behave alike?" If their success rates
+    cluster tightly (small true spread), trust the pooled average heavily → big kappa (shrink
+    hard). If they're all over the place, trust each gateway's own data → small kappa (shrink
+    little). It's LEARNED from the data rather than being a fixed dial.
+
     Model each group's gateway success rates as draws from Beta(mean=mu, conc=kappa),
     so var_beta = mu(1-mu)/(kappa+1). Estimate the TRUE between-gateway variance as
     (observed weighted variance of rates) - (mean binomial sampling variance), then
@@ -226,12 +231,20 @@ def gateway_success_rates(
     else:
         out["kappa"] = float(shrink_strength)
 
+    # Empirical-Bayes shrinkage — ANALOGY: grading a gateway on limited evidence. With only a
+    # few attempts you don't fully trust its raw rate, so you blend it toward the pooled prior;
+    # `kappa` behaves like "pseudo-attempts" of that prior. The more real attempts a gateway has,
+    # the less the prior matters and the closer the result sits to its own observed rate.
     out["success_rate"] = (out["success"] + out["kappa"] * out["prior_rate"]) / (out["attempts"] + out["kappa"])
     return out
 
 
 def detect_blocked_gateways(adf, min_consecutive: float, date_col: str = "date"):
     """Flag (bank, gateway) pairs the acquiring bank appears to have BLOCKED us on.
+
+    ANALOGY: like spotting a vendor whose card terminal has declined EVERY transaction for days
+    straight — most likely the bank cut them off, so we stop throwing traffic at a dead route
+    (the caller caps that gateway to the exploration floor) instead of bleeding conversions.
 
     Looks at the MOST-RECENT consecutive run of daily attempts that ALL failed (a day counts
     as failed only if it had zero successes); a day with any success breaks the run. If the

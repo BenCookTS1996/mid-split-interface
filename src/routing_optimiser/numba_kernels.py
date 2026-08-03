@@ -103,6 +103,12 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
     summing in the same index order as the NumPy versions so the two agree to float64 rounding.
     The eligibility stage is what lets the Numba engine STAY ON when ctx['elig_op'] is active
     (previously it was force-disabled because the kernel scored the un-restricted split).
+
+    ANALOGY for "fused": instead of building each intermediate array and handing it to the next
+    NumPy step (like shipping half-finished parts between factory stations), this does the whole
+    decode → eligibility → score on ONE workbench per candidate. The bulky in-between arrays never
+    exist — which is where the speed comes from — while the maths and the summation ORDER stay the
+    same, so the answer matches the NumPy path to float64 rounding.
     """
     P = G.shape[0]
     N = ref.shape[0]
@@ -138,6 +144,9 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
             for g in range(s0, s1):
                 X[g] = w[g] / seg
         # ---- HARD exploration-floor water-fill (lift-then-take, up to 50 sweeps) -----
+        # ANALOGY: like levelling water between connected tanks in a cell — top up any gateway
+        # below its floor, and skim that top-up proportionally off the gateways above the floor;
+        # repeat until nobody is under (or 50 sweeps).
         if has_floor:
             for _it in range(50):
                 any_under = False
@@ -162,6 +171,8 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                 if not any_under:
                     break
         # ---- HARD max-share cap water-fill (shed-then-fill, up to 50 sweeps) ---------
+        # ANALOGY: the mirror image of the floor step — shed volume from any gateway over its cap
+        # and pour it proportionally into the ones with headroom; repeat until nobody is over.
         if has_cap:
             for _it in range(50):
                 any_over = False

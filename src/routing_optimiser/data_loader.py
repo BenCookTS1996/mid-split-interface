@@ -47,6 +47,10 @@ def synthesise_forecast_from_success(success_df: pd.DataFrame,
 
 
 def load_forecast(path: str | None, success_df: pd.DataFrame) -> pd.DataFrame:
+    """Load the baseline 'pre' forecast — from a file, a pipeline output directory, or (when
+    no path is given) a stand-in synthesised from the attempts data so the app still runs.
+    Also normalises the pipeline's effective-rate export into the optimiser's forecast contract
+    when that's the shape it's handed."""
     if path is None:
         return synthesise_forecast_from_success(success_df)
     if os.path.isdir(path):  # a pipeline output directory
@@ -70,7 +74,14 @@ def build_cell_problems(
     success_rates: pd.DataFrame,
     default_risk: float = 0.006,
 ) -> list[CellProblem]:
-    """Join forecast volume + baseline split with success/risk rates per cell."""
+    """Join forecast volume + baseline split with success/risk rates per cell.
+
+    ANALOGY: assembling each cell's "briefing pack". For every RPGT×Currency×Bank cell we pull
+    the forecast's volume + current split together with each gateway's success rate, risk rate
+    and evidence, and hand the engine one CellProblem it can solve. Gateways with no per-cell
+    attempts fall back to the pooled prior (flagged so the UI can show which are educated guesses
+    rather than measured rates).
+    """
     # Normalise the join keys (strip + case-fold) on BOTH sides so a casing/whitespace
     # difference between the success data (bankName) and the forecast (pipeline) doesn't
     # silently miss and dump every gateway onto the pooled prior. (If the two sides key on

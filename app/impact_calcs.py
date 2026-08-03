@@ -1,7 +1,12 @@
 """Impact-tab calculations extracted from streamlit_app.py (behaviour unchanged):
 VAMP pre/post projection from the saved exports, wallet-capability lookup, the
 production split-template builder, and the small Streamlit cache wrappers that keep
-the Impact tab fast. Kept here to keep streamlit_app.py smaller and more organised."""
+the Impact tab fast. Kept here to keep streamlit_app.py smaller and more organised.
+
+ANALOGY: this module answers "if we deploy the proposed split, what actually changes?" It
+replays the proposed routing through the SAME rules production applies (caps, wallet / country
+capability, back-fill) and reports the BEFORE→AFTER on VAMP risk and revenue — the "impact".
+The cache wrappers just memoise the heavy replays so moving a slider stays snappy."""
 from __future__ import annotations
 
 import os
@@ -1247,6 +1252,10 @@ def process_wallet_incapable(mid_list_path):
     """Set of gatewayFids (lowercased) that CANNOT process wallet (GOOGLEPAY /
     APPLEPAY), read from a processWallet-style column in Master_MID_List.
 
+    ANALOGY: a guest list of which gateways can't accept Apple/Google Pay. We only strike a
+    gateway off when the sheet EXPLICITLY says no (FALSE/0/NO); a blank is treated as "can",
+    so we never wrongly ban a gateway on missing data.
+
     Robust to column-name variants (any column whose normalised name contains
     'wallet'). Only EXPLICIT false-like values (FALSE/F/0/NO/N) mark a gateway
     incapable; blanks/unknown default to capable (so we never over-restrict).
@@ -1530,9 +1539,15 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
                         max_share=0.97):
     """Proposed shares AFTER the pipeline's enforcement — cap, wallet-incapable zeroing,
     USA/Non-USA split, and <2-gateway BACK-FILL — taken straight from build_split_exports'
-    output, at (Currency, BIN, RPGT, pmp, Country, vampMid) grain. Feeding these into the
-    projection reproduces the pipeline's back-fill gateways (WoodForest/Authorize) that the
-    raw optimiser split never assigned. Returns a tuple of 7-tuples (hashable for caching)."""
+    output, at (Currency, BIN, RPGT, pmp, Country, vampMid) grain.
+
+    ANALOGY: what the split looks like once it's passed through production's "rulebook" — the
+    same caps, capability filters and safety back-fills the deployed config would apply — so the
+    impact projection scores what will REALLY be routed, not the raw optimiser output.
+
+    Feeding these into the projection reproduces the pipeline's back-fill gateways
+    (WoodForest/Authorize) that the raw optimiser split never assigned. Returns a tuple of
+    7-tuples (hashable for caching)."""
     fid2vamp = dict(fid2vamp or {})
     # Ensure a gatewayFid -> vampMid map (build from Master_MID_List if the caller didn't pass
     # one) — otherwise the gateway columns stay as raw FIDs and never match the export's vampMid,

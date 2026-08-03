@@ -1,12 +1,56 @@
 """
-Transaction Routing Optimiser - Streamlit UI (tabbed).
+Transaction Routing Optimiser — Streamlit UI (single-file app, ~10k lines).
 
-One tab per stage of the flow:
-  1. Forecast   - pick settings, calculate & cache the baseline forecast
-  2. Engine     - choose engine + risk/conversion slider + constraints -> split
-  3. Impact     - the proposed split, its outputs, and impact dashboards
-  4. Compress   - volume-weighted k-means -> config count
-  5. Configs    - generate JSON configs and download everything
+WHAT IT DOES
+------------
+Given a baseline traffic forecast plus recent attempts/success data, it proposes how to SPLIT
+each cell's volume across payment gateways to trade conversion off against risk (VAMP), then
+turns the chosen split into deployable ConnectorPool JSON configs. It's a four-station assembly
+line — one Streamlit tab per station (labels exactly as shown in the UI):
+
+  1 · Baseline & Validate      build & cache the baseline "pre" forecast (and validate a split).
+  2 · Routing engine           choose the engine + risk constraints; SEARCH for the split.
+  3 · Split, outputs & impact  inspect the split, its VAMP/revenue before→after, dashboards.
+  4 · Generate configs         compress to a pool budget and generate/download the JSON configs.
+
+DATA FLOW (state is carried between stations in st.session_state, aliased `ss`)
+------------------------------------------------------------------------------
+  attempts + baseline forecast
+        └─> ss["problems"]      one CellProblem per RPGT×Currency×Bank
+              └─ (tab 2 runs the engine: genetic / softmax / thompson / portfolio)
+              └─> ss["variations"]   the produced split(s) — now a SINGLE dial-0 entry
+                    └─> ss["split"] + ss["settings"]   the delivered "long" split table
+                          └─> (tab 4 → tab_configs.render) ConnectorPool JSON configs
+
+KEY session_state KEYS
+----------------------
+  ss["forecast"], ss["sr"]      baseline forecast + per-gateway success rates
+  ss["problems"]                list[CellProblem] the engines solve
+  ss["variations"]              produced split variation(s); tabs 3 & 4 read this
+  ss["split"], ss["settings"]   the delivered split + the settings that produced it
+  ss["wallet_ctx"]              eligibility context (bans / wallet / USA) for enforcement + export
+
+SECTION MAP (jump to the `# === TAB … ===` banners; line numbers are approximate)
+---------------------------------------------------------------------------------
+  ~L1071   st.tabs(...)          the 4 UI tabs are created here
+  ~L1111   TAB 1  Baseline & Validate
+  ~L1701   TAB 2  Routing engine  (the big one: engine form, live search-budget panel,
+                                   GA search, single-variation build)
+  ~L6316   TAB 3  Split / outputs / impact  (split tables, VAMP pre/post, financial impact)
+  ~L10268  TAB 4  Generate configs → delegates to tab_configs.render(...)
+
+WHERE THE HEAVY LIFTING LIVES (this file is mostly ORCHESTRATION + UI glue)
+--------------------------------------------------------------------------
+  src/routing_optimiser/…    engines (softmax/thompson/portfolio/genetic), optimiser, band
+                             scoring/projection, numba kernels, success rates, eligibility.
+  app/impact_calcs.py        VAMP pre/post projection + production split-template builder.
+  app/tab_configs.py         the Configs-tab body (builds ss["configs"]).
+
+CURRENT-BEHAVIOUR NOTE (post-simplification)
+--------------------------------------------
+The engine delivers a SINGLE dial-0 variation: the multi-dial slider / Pareto frontier and the
+post-hoc VAMP/band ENFORCEMENT layer have been removed. The delivered split is the raw engine
+output with ELIGIBILITY only (bans / wallet-incapable / USA-only) applied.
 
 Run:  streamlit run app/streamlit_app.py
 """
@@ -68,7 +112,7 @@ from routing_optimiser import (  # noqa: E402
     gateway_volume_shift, headline_impact, key_contributors, list_sql_files,
     detect_blocked_gateways, gateway_move_vs_reference, load_forecast,
     load_success_data, optimise_split, portfolio_summary, prepare_inputs,
-    rpgt_gateway_sensitivity, run_sql_file, run_vamp_pipeline, sweep_slider,
+    rpgt_gateway_sensitivity, run_sql_file, run_vamp_pipeline,
     traffic_moved_curve)
 from routing_optimiser.engines import ENGINES, get_engine  # noqa: E402
 
@@ -1109,7 +1153,7 @@ if not _HAS_RUN:
     </style>""", unsafe_allow_html=True)
 
 # ============================================================================
-# TAB 1 - Forecast
+# TAB 1 — Baseline & Validate  (build/cache the baseline forecast; validate a split)
 # ============================================================================
 with tab_fc:
     _bb, _vs = st.tabs(["Build Baseline", "Validate Split"])
@@ -1699,7 +1743,7 @@ with tab_fc:
         tab_validate.render(ss, PROJECT_ROOT, GCP_PROJECT)
 
 # ============================================================================
-# TAB 3 - Routing engine (choose engine + slider + constraints -> propose split)
+# TAB 2 — Routing engine  (choose engine + constraints -> search for & propose the split)
 # ============================================================================
 with tab_eng:
     out_dir = ss.get("pipeline_out_dir")
@@ -1826,87 +1870,92 @@ with tab_eng:
             _pre_engine = _pre_default
         if _pre_engine in ("genetic", "genetic_numba"):
             _cpu_seeds_default = max(1, min(_physical_cpu_count(), 16))
-            with st.container(border=True):
-                st.markdown("##### Genetic search budget")
-                _bc1, _bc2 = st.columns(2)
-                _bc1.number_input(
-                    "GA generations", min_value=20, max_value=400, value=150, step=10,
-                    key="ga_generations",
-                    help="How many evolution rounds the search runs. More = potentially better plans, "
-                         "but slower. 150 = default.")
-                _bc2.number_input(
-                    "No Candidate Splits", min_value=0, max_value=300, value=64, step=10,
-                    key="ga_pop_override",
-                    help="Candidate plans per generation (λ). 64 = default. 0 = auto-size from the "
-                         "problem. Larger = more thorough, slower.")
-                _bc3, _bc4 = st.columns(2)
-                _bc3.number_input(
-                    "Number of seeds", min_value=1, max_value=16, value=_cpu_seeds_default, step=1,
-                    key="ga_n_seeds",
-                    help="Independent CMA-ES searches from different random starts; the fittest is kept. "
-                         "Defaults to your PHYSICAL core count so seeds run one-per-real-core in a "
-                         "single parallel wave (avoids hyperthread oversubscription that thrashes "
-                         "memory bandwidth). Applies to both Genetic and GA - Numba.")
-                _bc4.number_input(
-                    "Restarts per seed", min_value=1, max_value=10, value=2, step=1,
-                    key="ga_restarts",
-                    help="Each seed re-launches from a fresh spread this many times, keeping the best. "
-                         "More = better odds of the best split, longer. 2 = default.")
-                st.checkbox(
-                    "Run all generations (no early-stopping)", value=False, key="ga_no_early_stop",
-                    help="OFF (default): each seed stops early once it converges (no improvement for a "
-                         "while, or the search collapses to a point) — saves time and rarely changes the "
-                         "result. ON: every seed runs the FULL generation cap regardless, so the candidate "
-                         "count becomes exact (= seeds × restarts × generations × λ) and the run is longer, "
-                         "usually with no better split. Use for a deterministic, maximum-budget search.")
-                # Candidate-split RANGE + ETA — same maths as before, just recomputed live here.
-                # Restart strategy stays in the form, so its last-submitted value (Lean default) is
-                # read from session_state; Lean keeps λ constant → floor == ceiling (single value).
-                _lean_ui = str(ss.get("ga_restart_mode", "Lean")).startswith("Lean")
-                _bud_seeds = max(1, int(ss.get("ga_n_seeds", _cpu_seeds_default) or _cpu_seeds_default))
-                _bud_rst = max(1, int(ss.get("ga_restarts", 4) or 4))
-                _bud_gen = int(ss.get("ga_generations", 80) or 80)
-                _bud_pop = int(ss.get("ga_pop_override", 0) or 0)
-                _bud_lam = _bud_pop if _bud_pop > 0 else 64
-                #   floor   = seeds × restarts × generations × λ  (fixed λ)
-                #   ceiling = seeds × generations × Σ min(λ·2^e, 4λ)  — IPOP doubles λ per restart (cap 4λ)
-                _bud_floor = _bud_seeds * _bud_rst * _bud_gen * _bud_lam
-                _ceil_mult = (int(_bud_rst) if _lean_ui
-                              else sum(min(2 ** _e, 4) for _e in range(max(int(_bud_rst), 1))))
-                _bud_ceil = _bud_seeds * _bud_gen * _bud_lam * _ceil_mult
-                # Once calibrated, narrow to last run's realization ratio scaled to this floor, ±15%.
-                _ratio = float(ss.get("last_ga_ratio", 0.0) or 0.0)
-                if _ratio > 0:
-                    _exp = _bud_floor * _ratio
-                    _lo_c, _hi_c = _exp * 0.85, _exp * 1.15
-                else:
-                    _lo_c, _hi_c = float(_bud_floor), float(_bud_ceil)
-                # End-to-end ETA, calibrated from the last run (fixed overhead + candidates ÷ rate).
-                _lc = int(ss.get("last_ga_cands", 0) or 0)
-                _lsecs = float(ss.get("last_ga_secs", 0.0) or 0.0)
-                _ltot = float(ss.get("last_total_secs", 0.0) or 0.0)
-                _rate = (_lc / _lsecs) if (_lc > 0 and _lsecs > 0) else 0.0
-                _fixed = max(0.0, _ltot - _lsecs) if _ltot > 0 else 0.0
+            def _budget_panel():
+                with st.container(border=True):
+                    st.markdown("##### Genetic search budget")
+                    _bc1, _bc2 = st.columns(2)
+                    _bc1.number_input(
+                        "GA generations", min_value=20, max_value=400, value=150, step=10,
+                        key="ga_generations",
+                        help="How many evolution rounds the search runs. More = potentially better plans, "
+                             "but slower. 150 = default.")
+                    _bc2.number_input(
+                        "No Candidate Splits", min_value=0, max_value=300, value=64, step=10,
+                        key="ga_pop_override",
+                        help="Candidate plans per generation (λ). 64 = default. 0 = auto-size from the "
+                             "problem. Larger = more thorough, slower.")
+                    _bc3, _bc4 = st.columns(2)
+                    _bc3.number_input(
+                        "Number of seeds", min_value=1, max_value=16, value=_cpu_seeds_default, step=1,
+                        key="ga_n_seeds",
+                        help="Independent CMA-ES searches from different random starts; the fittest is kept. "
+                             "Defaults to your PHYSICAL core count so seeds run one-per-real-core in a "
+                             "single parallel wave (avoids hyperthread oversubscription that thrashes "
+                             "memory bandwidth). Applies to both Genetic and GA - Numba.")
+                    _bc4.number_input(
+                        "Restarts per seed", min_value=1, max_value=10, value=2, step=1,
+                        key="ga_restarts",
+                        help="Each seed re-launches from a fresh spread this many times, keeping the best. "
+                             "More = better odds of the best split, longer. 2 = default.")
+                    st.checkbox(
+                        "Run all generations (no early-stopping)", value=False, key="ga_no_early_stop",
+                        help="OFF (default): each seed stops early once it converges (no improvement for a "
+                             "while, or the search collapses to a point) — saves time and rarely changes the "
+                             "result. ON: every seed runs the FULL generation cap regardless, so the candidate "
+                             "count becomes exact (= seeds × restarts × generations × λ) and the run is longer, "
+                             "usually with no better split. Use for a deterministic, maximum-budget search.")
+                    # Candidate-split RANGE + ETA — same maths as before, just recomputed live here.
+                    # Restart strategy stays in the form, so its last-submitted value (Lean default) is
+                    # read from session_state; Lean keeps λ constant → floor == ceiling (single value).
+                    _lean_ui = str(ss.get("ga_restart_mode", "Lean")).startswith("Lean")
+                    _bud_seeds = max(1, int(ss.get("ga_n_seeds", _cpu_seeds_default) or _cpu_seeds_default))
+                    _bud_rst = max(1, int(ss.get("ga_restarts", 4) or 4))
+                    _bud_gen = int(ss.get("ga_generations", 80) or 80)
+                    _bud_pop = int(ss.get("ga_pop_override", 0) or 0)
+                    _bud_lam = _bud_pop if _bud_pop > 0 else 64
+                    #   floor   = seeds × restarts × generations × λ  (fixed λ)
+                    #   ceiling = seeds × generations × Σ min(λ·2^e, 4λ)  — IPOP doubles λ per restart (cap 4λ)
+                    _bud_floor = _bud_seeds * _bud_rst * _bud_gen * _bud_lam
+                    _ceil_mult = (int(_bud_rst) if _lean_ui
+                                  else sum(min(2 ** _e, 4) for _e in range(max(int(_bud_rst), 1))))
+                    _bud_ceil = _bud_seeds * _bud_gen * _bud_lam * _ceil_mult
+                    # Once calibrated, narrow to last run's realization ratio scaled to this floor, ±15%.
+                    _ratio = float(ss.get("last_ga_ratio", 0.0) or 0.0)
+                    if _ratio > 0:
+                        _exp = _bud_floor * _ratio
+                        _lo_c, _hi_c = _exp * 0.85, _exp * 1.15
+                    else:
+                        _lo_c, _hi_c = float(_bud_floor), float(_bud_ceil)
+                    # End-to-end ETA, calibrated from the last run (fixed overhead + candidates ÷ rate).
+                    _lc = int(ss.get("last_ga_cands", 0) or 0)
+                    _lsecs = float(ss.get("last_ga_secs", 0.0) or 0.0)
+                    _ltot = float(ss.get("last_total_secs", 0.0) or 0.0)
+                    _rate = (_lc / _lsecs) if (_lc > 0 and _lsecs > 0) else 0.0
+                    _fixed = max(0.0, _ltot - _lsecs) if _ltot > 0 else 0.0
 
-                def _fmt_eta(_secs):
-                    _m = _secs / 60.0
-                    return f"{_m:.0f} min" if _m >= 1.5 else f"{max(1, int(_secs))}s"
-                if _rate > 0:
-                    _hi = _fixed + _hi_c / _rate
-                    _eta_sub = (f"est. end-to-end up to ~{_fmt_eta(_hi)}"
-                                + (f" (last run {_fmt_eta(_ltot)} total)" if _ltot > 0 else ""))
-                else:
-                    _eta_sub = "est. time: run once to calibrate the throughput"
-                # Show a single UPPER BOUND ("up to X") rather than a floor–ceiling band: early-stop
-                # only ever lands the run BELOW this, so it's the honest one-number cap. _hi_c is the
-                # calibrated high end once a run exists, else the theoretical ceiling.
-                _rng_lbl = ("Candidate splits (est. max)" if _ratio > 0 else "Candidate splits (max)")
-                st.markdown(
-                    "<div style='font-size:0.78rem; color:var(--tav-muted); line-height:1.2;'>"
-                    f"{_rng_lbl}<br>"
-                    f"<span style='font-size:1.1rem; font-weight:800; color:var(--tav-ink);'>"
-                    f"up to {int(_hi_c):,}</span>"
-                    f"<div style='font-size:0.72rem;'>{_eta_sub}</div></div>", unsafe_allow_html=True)
+                    def _fmt_eta(_secs):
+                        _m = _secs / 60.0
+                        return f"{_m:.0f} min" if _m >= 1.5 else f"{max(1, int(_secs))}s"
+                    if _rate > 0:
+                        _hi = _fixed + _hi_c / _rate
+                        _eta_sub = (f"est. end-to-end up to ~{_fmt_eta(_hi)}"
+                                    + (f" (last run {_fmt_eta(_ltot)} total)" if _ltot > 0 else ""))
+                    else:
+                        _eta_sub = "est. time: run once to calibrate the throughput"
+                    # Show a single UPPER BOUND ("up to X") rather than a floor–ceiling band: early-stop
+                    # only ever lands the run BELOW this, so it's the honest one-number cap. _hi_c is the
+                    # calibrated high end once a run exists, else the theoretical ceiling.
+                    _rng_lbl = ("Candidate splits (est. max)" if _ratio > 0 else "Candidate splits (max)")
+                    st.markdown(
+                        "<div style='font-size:0.78rem; color:var(--tav-muted); line-height:1.2;'>"
+                        f"{_rng_lbl}<br>"
+                        f"<span style='font-size:1.1rem; font-weight:800; color:var(--tav-ink);'>"
+                        f"up to {int(_hi_c):,}</span>"
+                        f"<div style='font-size:0.72rem;'>{_eta_sub}</div></div>", unsafe_allow_html=True)
+            # Fragment: editing gen-cap/λ/seeds/restarts re-runs ONLY this panel (live count + ETA),
+            # not the whole app. The panel is now RENDERED BELOW the engine form (the call sits just
+            # after the form) so it sits beneath '1. Engine Type & Settings' while staying live —
+            # kept outside the form, so its readouts refresh immediately rather than only on submit.
 
         _engine_form = st.form("engine_master_form", border=False)
         with _engine_form:
@@ -1928,15 +1977,8 @@ with tab_eng:
                 # ('genetic' is retained here only so any legacy session/state value still resolves.)
                 _is_genetic = engine_key in ("genetic", "genetic_numba")
                 _use_numba = (engine_key == "genetic_numba")
-                if _is_genetic:
-                    st.checkbox(
-                        "Bypass enforcement (diagnostic — NON-COMPLIANT)", value=False,
-                        key="ga_bypass_enforcement",
-                        help="Deliver the RAW GA search split with NO compliance layer — no VAMP-cap, "
-                             "per-MID band, or eligibility projection. Lets you see what the search wanted "
-                             "BEFORE compliance. ⚠️ The result may breach the VAMP cap and per-MID bands and "
-                             "route to wallet-incapable / USA-only / banned gateways, so it is NOT safe to "
-                             "export as a production config. Leave OFF for real runs.")
+                # (Bypass-enforcement checkbox removed — the enforcement layer no longer gates the
+                # delivered split; the GA search output is delivered directly. See the delivery site.)
 
                 st.divider()
                 # ---- Split scope & grain (RPGTs, grain, hold-others, auto-explore) ----
@@ -2018,12 +2060,8 @@ with tab_eng:
                                  "each gateway's VAMP spiking; risk aversion auto-calibrated. Softmax "
                                  "temperature does not apply.")
                 elif _is_genetic:
-                    st.selectbox(
-                        "Optimisation objective",
-                        ["Revenue", "Volume-weighted success rate"], index=1, key="ga_objective",
-                        help="Revenue = maximise volume × success rate × avg ticket. Volume-weighted "
-                             "success rate = maximise successful transactions regardless of ticket "
-                             "value. Both still meet every risk constraint.")
+                    # (Optimisation objective dropdown removed — the GA ALWAYS maximises the
+                    # VOLUME-WEIGHTED SUCCESS RATE, i.e. maximise Σ share·volume·SR.)
                     # Compliance target is FIXED to the GA / CMA-ES risk-minimised endpoint — the dropdown
                     # was removed because its only other option (Max approvals / greedy+LP) didn't use the
                     # GA. It maximises approvals subject to compliance (no extra risk-minimisation).
@@ -2031,16 +2069,9 @@ with tab_eng:
                     # endpoint (equivalent to ga_risk_aversion = 0: no EXTRA risk-minimisation beyond
                     # meeting the caps, closest to Max approvals). The value is forced to 0.0 at the GA
                     # call site, so removing the widget doesn't fall back to a non-zero default.
-                    _ga1, _ga2 = st.columns(2)
-                    _ga1.number_input(
-                        "Cap-breach penalty", min_value=0, max_value=2000, value=250, step=50,
-                        key="ga_breach_fixed",
-                        help="How hard a split that goes over a VAMP/volume cap is punished (× MID revenue). "
-                             "Higher = the cap acts more like a wall. 250 = current.")
-                    _ga2.slider(
-                        "Band penalty strength", 0.1, 3.0, 1.0, 0.1, key="ga_band_mult",
-                        help="Multiplier on how hard the month per-MID VAMP/txn bands are enforced at the "
-                             "compliant end. 1.0 = current; higher sits further inside every band.")
+                    # (Cap-breach penalty input removed — FIXED at 0: the GA no longer penalises a
+                    # split going over a VAMP/volume cap, consistent with enforcement being removed.
+                    # Band penalty strength input removed — FIXED at 1.0.)
                     st.selectbox(
                         "Restart strategy",
                         ["Lean (constant-λ, spread-out)", "IPOP (thorough)"],
@@ -2056,18 +2087,9 @@ with tab_eng:
                     # Re-projection budget input + the post-GA correction removed entirely — band scoring
                     # is EXACT in-search, so the search satisfies the true bands directly. The delivered
                     # split still gets a READ-ONLY true-band readout (+ incidence self-check) in the log.
-                    st.selectbox(
-                        "GA parallelism", ["loky", "threading", "sequential"], index=0,
-                        key="ga_parallel_backend",
-                        format_func=lambda _v: {
-                            "loky": "Parallel — loky processes (default, fastest)",
-                            "threading": "Parallel — threads (fallback)",
-                            "sequential": "Sequential (slowest, most robust)"}.get(_v, _v),
-                        help="How the multi-seed GA runs its 8 seeds. 'loky' spawns worker PROCESSES "
-                             "(true multi-core, fastest). If the run log shows the seeds LAUNCH and then "
-                             "hang with no progress (a macOS loky/Numba worker wedge), switch to "
-                             "'Sequential' — it runs the seeds one at a time in this process (no worker "
-                             "pool), slower but immune to that hang. 'threading' is an in-between fallback.")
+                    # (GA parallelism dropdown removed — the multi-seed GA ALWAYS runs on loky
+                    # worker processes. If loky can't run, the run fails loudly; there is no
+                    # threading / sequential fallback.)
                     # EXACT band scoring is now the PERMANENT default (no toggle) — the search scores the
                     # true pro-rata projection per generation, pre-clustering off, with an incidence
                     # self-check on the delivered split and automatic fall-back to the proxy on any setup
@@ -2076,13 +2098,10 @@ with tab_eng:
                     # candidate-split range / ETA readout now live ABOVE this form (the "Genetic search
                     # budget" panel) so editing them refreshes the count LIVE — form members don't rerun
                     # until submit, which is why the old in-form readout stayed frozen until you ran.
-                    st.checkbox(
-                        "Diverse-seed search (experimental)", value=True, key="ga_diverse_seeds",
-                        help="Spread the parallel seeds across the revenue↔risk axis with varied "
-                             "explore/exploit settings, instead of near-identical searches. SAME time "
-                             "(same seeds, generations, restarts, population — one parallel wave); it "
-                             "just covers more ground. Can find a better split but changes the result, "
-                             "so A/B it. Off = current behaviour (byte-identical).")
+                    # (Diverse-seed search checkbox removed — it is now ALWAYS on: the parallel
+                    # seeds are always spread across the revenue↔risk axis with varied
+                    # explore/exploit settings. Same seeds/generations/restarts/population, so the
+                    # one-wave wall time is unchanged.)
                 else:
                     _ink_caption(f"No settings for the {labels.get(engine_key, engine_key)} engine.")
                 # The risk↔conversion tradeoff is expressed by the dial variations, so the reference
@@ -2345,6 +2364,12 @@ with tab_eng:
                 button[kind="primaryFormSubmit"] div { color: #FFFFFF !important; }
             </style>""", unsafe_allow_html=True)
             submit_engine = st.form_submit_button("Compute split variations", type="primary")
+
+        # Genetic search budget — rendered BELOW the engine form (moved down from the top of the tab),
+        # so it sits beneath '1. Engine Type & Settings'. Kept OUTSIDE the form as a live fragment so
+        # editing generations/λ/seeds/restarts refreshes the candidate-count + ETA immediately.
+        if _pre_engine in ("genetic", "genetic_numba"):
+            (st.fragment(_budget_panel) if hasattr(st, "fragment") else _budget_panel)()
 
         if submit_engine:
             ss["exploration_floor"] = float(floor)   # tab 3 uses this to replicate the engine's floor
@@ -3449,8 +3474,7 @@ with tab_eng:
                     # Reference = conversion-optimal split (no per-cell cap). The risk
                     # constraint is applied CROSS-CELL, per vampMid, afterwards.
                     from routing_optimiser import optimiser as _optmod
-                    from routing_optimiser.optimiser import (enforce_mid_vamp_caps, enforce_mid_volume_caps,
-                                                             vamp_frontier_lp)
+                    from routing_optimiser.optimiser import (enforce_mid_vamp_caps, enforce_mid_volume_caps)
                     from routing_optimiser.genetic_global import run_midtilt_ga as _run_midtilt_ga
                     # The Genetic engine runs on a rule-safe PRE-CLUSTERED problem by default
                     # (ss['ga_precluster'], set above; ROUTING_GA_PRECLUSTER=0 disables it). The wrapper
@@ -4170,62 +4194,6 @@ with tab_eng:
                             _mcg_cache["static"] = g.copy()
                         return g
 
-                    def _apply_rpgt_caps(gran):
-                        # RPGT-scoped per-MID caps: scale each (vampMid, RPGT) group on the
-                        # exploded split down to its allowed volume ratio, WITHIN that RPGT.
-                        # Reuses the MID volume scaler with a composite (mid||rpgt) identity
-                        # and cell = rpgt|currency|bin, so redistribution stays inside the
-                        # RPGT and other RPGTs of the MID are untouched.
-                        if not a_max_by_key or gran is None or getattr(gran, "empty", True):
-                            return gran
-                        gg = gran.copy()
-                        _gw = gg["gateway"].astype(str).str.strip().str.lower()
-                        _vm = _gw.map(_fid2vamp_l).fillna(_gw)
-                        _rp = gg["rpgt"].astype(str).str.strip().str.lower()
-                        gg["_ck"] = _vm + "||" + _rp
-                        gg["_cell"] = (_rp + "|" + gg["currency"].astype(str).str.lower()
-                                       + "|" + gg["bank"].astype(str).str.lower())
-                        gg["_cvol"] = pd.to_numeric(gg.get("cell_volume", 0.0), errors="coerce").fillna(0.0)
-                        gg["_rrate"] = pd.to_numeric(gg.get("gateway_risk_rate", 0.006), errors="coerce").fillna(0.006)
-                        _amax_ck = {f"{m}||{r}": a for (m, r), a in a_max_by_key.items()}
-                        _in = gg[["_cell", "gateway", "_ck", "_cvol", "baseline_share", "share", "_rrate"]].rename(
-                            columns={"_cell": "cell", "_ck": "vampMid", "_cvol": "cell_vol", "_rrate": "rate"})
-                        _capd, _cst = enforce_mid_volume_caps(_in, _amax_ck, max_share=float(max_share))
-                        _rpgt_constrained.update(_cst)
-                        gg["share"] = _capd["share"].to_numpy()
-                        return gg.drop(columns=["_ck", "_cell", "_cvol", "_rrate"])
-
-                    # STAGE 4 — feed the backup catch-all into the GA FITNESS so the engine optimises
-                    # against the shares the pipeline will ACTUALLY route (tab 5), not the raw split.
-                    # The catch-all is pooled (unweighted mean over pmp/Country) to the optimiser's
-                    # coarser currency×bank×rpgt grain and mapped fid→vampMid ONCE here; the exact
-                    # per-pmp/Country blend is applied in the tab-3 projection (Stage 3). Empty ⇒
-                    # no blend. ROUTING_BACKUP_BLEND=0 disables. NOTE: this steers the GA's band/
-                    # badness objective; the hard VAMP-cap enforcement still runs on the raw split.
-                    _bpool_rpgt, _bpool_all, _bcs4 = {}, {}, None
-                    _bcatch_ga = ss.get("backup_catchall") or {}
-                    if _bcatch_ga and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
-                        try:
-                            from routing_optimiser.backup_blend import blend_cell_shares as _bcs4
-                            from collections import defaultdict as _dd4
-                            _ar, _cr = _dd4(lambda: _dd4(float)), _dd4(int)
-                            _aa, _ca4 = _dd4(lambda: _dd4(float)), _dd4(int)
-                            for (_cur4, _rp4, _pmp4, _ct4), _gw4 in _bcatch_ga.items():
-                                _cr[(_cur4, _rp4)] += 1; _ca4[_cur4] += 1
-                                for _fid4, _pct4 in _gw4.items():
-                                    _vm4 = fid2vamp.get(str(_fid4).strip().lower())
-                                    if _vm4 is None:
-                                        continue
-                                    _ar[(_cur4, _rp4)][_vm4] += float(_pct4)
-                                    _aa[_cur4][_vm4] += float(_pct4)
-                            _bpool_rpgt = {k: {vm: v / _cr[k] for vm, v in d.items()} for k, d in _ar.items()}
-                            _bpool_all = {k: {vm: v / _ca4[k] for vm, v in d.items()} for k, d in _aa.items()}
-                            log(f"   backup catch-all blended into the GA fitness: "
-                                f"{len(_bpool_rpgt)} (currency×rpgt) pool(s).")
-                        except Exception as _b4e:  # noqa: BLE001
-                            _bpool_rpgt, _bpool_all, _bcs4 = {}, {}, None
-                            log(f"   [backup GA blend disabled: {type(_b4e).__name__}: {_b4e}]")
-
                     def _blend_ga(prop):
                         # Inject the pooled catch-all vampMids per cell (renormalising), reusing the
                         # tested blend_cell_shares. No-op when no backup is configured.
@@ -4663,685 +4631,6 @@ with tab_eng:
                     _cost_order = {"on": False}
                     _smig_cache = {}   # cached static row-structure keyed on the gran layout (speedup 3)
 
-                    def _scale_mids_in_gran(gran, scales):
-                        # Scale each listed vampMid's aggregate share in every cell by its
-                        # factor (>1 up, <1 down), moving the delta to/from the OTHER gateways
-                        # in the cell (cell sum preserved). When REDUCING a MID (#4, cost-aware),
-                        # the freed volume is redistributed to the OTHER gateways weighted by their
-                        # incremental-revenue rate (so it flows to the best converters × ticket)
-                        # instead of by current share; falls back to proportional if no rate data.
-                        # WHERE the cut is taken across the MID's cells: uniform by default; when
-                        # _cost_order["on"], cost-ordered — cut the cheapest cells first (#4b).
-                        # Speedup 3: the per-row STRUCTURE (vampMid, cell code, incremental-revenue
-                        # rate, cell_volume) depends only on the gran row layout — not the shares that
-                        # change each call — so cache it on a layout signature. Repeated LP/greedy calls
-                        # then skip the string ops + the 78k-row _ir loop, and the per-MID cell sums use
-                        # np.bincount instead of groupby+map. Numerically identical to the old version.
-                        _sig_c = ["gateway", "currency", "bank", "rpgt"] + (
-                            ["cell_volume"] if "cell_volume" in gran.columns else [])
-                        _sig = hash(pd.util.hash_pandas_object(gran[_sig_c], index=False).to_numpy().tobytes())
-                        _st = _smig_cache.get(_sig)
-                        if _st is None:
-                            _vm_arr = (gran["gateway"].astype(str).str.strip().str.lower().map(_fid2vamp_l)
-                                       .fillna(gran["gateway"].astype(str).str.strip().str.lower())).to_numpy()
-                            _cells_arr = (gran["rpgt"].astype(str).str.lower() + "|"
-                                          + gran["currency"].astype(str).str.lower() + "|"
-                                          + gran["bank"].astype(str).str.lower()).to_numpy()
-                            _cell_codes, _cuniq = pd.factorize(_cells_arr)
-                            _n_cells = len(_cuniq)
-                            _have_cv = "cell_volume" in gran.columns
-                            _cvr = (pd.to_numeric(gran["cell_volume"], errors="coerce").fillna(0.0).to_numpy()
-                                    if _have_cv else None)
-                            _ir = None
-                            if _inc_rev_joined:
-                                _irk = (gran["currency"].astype(str).str.strip().str.lower() + "|"
-                                        + gran["bank"].astype(str).str.strip().str.lower() + "|"
-                                        + gran["gateway"].astype(str).str.strip().str.lower())
-                                _ir = _irk.map(_inc_rev_joined).fillna(0.0).to_numpy(float)
-                            _st = (_vm_arr, _cells_arr, _cell_codes, _n_cells, _have_cv, _cvr, _ir)
-                            if len(_smig_cache) >= 32:
-                                _smig_cache.pop(next(iter(_smig_cache)))
-                            _smig_cache[_sig] = _st
-                        _vm_arr, _cells_arr, _cell_codes, _n_cells, _have_cv, _cvr, _ir = _st
-
-                        _sh = gran["share"].to_numpy(float).copy()
-                        for _mid, _f in scales.items():
-                            if abs(float(_f) - 1.0) < 1e-12:
-                                continue
-                            _ism = (_vm_arr == _mid)
-                            if not _ism.any():
-                                continue
-                            _mt = np.bincount(_cell_codes, weights=_sh * _ism, minlength=_n_cells)[_cell_codes]
-                            _ct = np.bincount(_cell_codes, weights=_sh, minlength=_n_cells)[_cell_codes]
-                            _ot = _ct - _mt
-                            _target = np.where(_ot > 1e-12, np.minimum(float(_f) * _mt, np.maximum(_ct - 1e-12, 0.0)), _mt)
-                            # ---- #4b: COST-ORDERED cross-cell cut (only on the DOWN path) ----------
-                            # Same TOTAL reduction as uniform, but taken from the cells where cutting
-                            # costs the least revenue first: cost = MID-rate − best-alternative-rate in
-                            # the cell (cut low/negative-cost cells first; keep the expensive ones). A
-                            # cell with no alternative gateway is un-cuttable (kept). Deterministic in
-                            # _f, so the joint-LP / greedy finite-difference through it unchanged.
-                            if (_cost_order["on"] and _have_cv and _ir is not None
-                                    and float(_f) < 1.0 - 1e-12):
-                                _mmc = np.bincount(_cell_codes, weights=_sh * _ism, minlength=_n_cells)
-                                _omc = np.bincount(_cell_codes, weights=_sh * (~_ism), minlength=_n_cells)
-                                _shirc = np.bincount(_cell_codes, weights=_sh * _ism * _ir, minlength=_n_cells)
-                                # first-occurrence cell_volume per cell (matches the old agg "first";
-                                # reverse-assign so the first row's value wins). cell_volume is constant
-                                # within a cell in real data, so this only guards a degenerate input.
-                                _cvc = np.zeros(_n_cells); _cvc[_cell_codes[::-1]] = _cvr[::-1]
-                                _altc = np.full(_n_cells, -np.inf)
-                                np.maximum.at(_altc, _cell_codes, np.where(~_ism, _ir, -np.inf))
-                                _hasmid = _mmc > 1e-12
-                                _cap = _cvc * _mmc
-                                _cut_ok = (_omc > 1e-12) & _hasmid
-                                _mrate = np.where(_mmc > 0, _shirc / np.where(_mmc > 0, _mmc, 1.0), 0.0)
-                                _altf = np.where(np.isfinite(_altc), _altc, 0.0)
-                                _cost = _mrate - _altf              # revenue lost per unit cut
-                                _Vkeep = float(_f) * float(_cap[_hasmid].sum())
-                                _lock = float(_cap[_hasmid & ~_cut_ok].sum())
-                                _rem = max(_Vkeep - _lock, 0.0)    # volume the cuttable cells keep
-                                _kappa_arr = np.ones(_n_cells)     # default keep (locked / non-MID cells)
-                                for _c in [j for j in np.argsort(-_cost) if _cut_ok[j]]:
-                                    _take = min(_cap[_c], _rem)
-                                    _kappa_arr[_c] = (_take / _cap[_c]) if _cap[_c] > 0 else 1.0
-                                    _rem -= _take
-                                _kap = _kappa_arr[_cell_codes]
-                                _target = np.where(_mt > 1e-12, _kap * _mt, _target)
-                            with np.errstate(divide="ignore", invalid="ignore"):
-                                _fm = np.where(_mt > 1e-12, _target / _mt, 1.0)
-                                _fo = np.where(_ot > 1e-12, (_ct - _target) / _ot, 1.0)
-                            # DEFAULT: proportional-to-current-share redistribution.
-                            _sh_next = np.where(_ism, _sh * _fm, _sh * _fo)
-                            # COST-AWARE (#4): when REDUCING the MID, give the freed volume to the OTHER
-                            # gateways weighted by incremental revenue (best converters × ticket first),
-                            # per cell — only where the cell's others carry positive revenue weight.
-                            if _ir is not None and float(_f) < 1.0:
-                                _wr = np.where(~_ism, np.maximum(_ir, 0.0), 0.0)
-                                _wsum = np.bincount(_cell_codes, weights=_wr, minlength=_n_cells)[_cell_codes]
-                                _freed = _mt - _target                       # per-cell amount to reallocate
-                                _ok = (~_ism) & (_wsum > 1e-12) & (_ot > 1e-12) & (_freed > 1e-15)
-                                _gain = np.where(_ok, _freed * (_wr / np.where(_wsum > 0, _wsum, 1.0)), 0.0)
-                                # Apply revenue-weighted gain only in cells whose others have weight;
-                                # elsewhere keep the proportional result. MID rows unchanged (= target).
-                                _cell_ok = np.bincount(_cell_codes, weights=_ok.astype(float),
-                                                       minlength=_n_cells)[_cell_codes] > 0
-                                _sh_next = np.where(_ism, _sh * _fm,
-                                                    np.where(_cell_ok, _sh + _gain, _sh * _fo))
-                            _sh = _sh_next
-                        _out = gran.copy()
-                        _out["share"] = _sh
-                        return _out
-
-                    _midband_warned = set()   # MID-sets already warned about (collapse repeats)
-
-                    def _midband_need(_proj):
-                        # From a projection {(mid,period):[vamp,txn]}, return (scale-needs, badness).
-                        # scale-needs {mid: factor} brings each violating band to its edge; badness is
-                        # the scalar total violation (Σ shortfall) — the SAME metric the greedy uses,
-                        # so LP and greedy results are directly comparable.
-                        _need = {}
-                        for (_mk, _mo, _mtr, _tg, _tl, _dir) in _mid_month_rules:
-                            _months = [int(_mo)] if _mo is not None else list(range(4))
-                            _tol = float(_tl) if _tl is not None else 0.0
-                            # constraint TYPE gates which edge binds: ceiling → upper only,
-                            # floor → lower only, range → both.
-                            _hi = _tg * (1.0 + _tol) if _dir in ("range", "ceiling") else np.inf
-                            _lo = _tg * (1.0 - _tol) if _dir in ("range", "floor") else 0.0
-                            if _mtr in ("txn", "vamp"):
-                                _ixm = 1 if _mtr == "txn" else 0
-                                _cur = float(sum(_proj.get((_mk, m), (0.0, 0.0))[_ixm] for m in _months))
-                                if _cur <= 0:
-                                    continue
-                                _e = _need.setdefault(_mk, [np.inf, 0.0])
-                                if np.isfinite(_hi) and _cur > _hi + 1e-9:
-                                    _e[0] = min(_e[0], _hi / _cur)
-                                if _lo > 0 and _cur < _lo - 1e-9:
-                                    _e[1] = max(_e[1], _lo / _cur)
-                            else:  # vamp_pct — intrinsic rate; retire if over (ceiling only)
-                                _tx = float(sum(_proj.get((_mk, m), (0.0, 0.0))[1] for m in _months))
-                                _vv = float(sum(_proj.get((_mk, m), (0.0, 0.0))[0] for m in _months))
-                                if _tx > 0 and (_vv / _tx) > (_tg / 100.0) + 1e-9:
-                                    _need.setdefault(_mk, [np.inf, 0.0])[0] = 0.0
-                        _sc, _bad = {}, 0.0
-                        for _mk, (_fhi, _flo) in _need.items():
-                            # PRIORITY weight: a violation on a low-priority (high-number) MID counts
-                            # less toward "badness", so the greedy keeps the split that best satisfies
-                            # the HIGH-priority MIDs when they can't all be met.
-                            _pw = _prio_mult(_prio_by_mid.get(_mk, 1))
-                            if _fhi < 1.0 - 1e-6:
-                                _sc[_mk] = _fhi; _bad += _pw * (1.0 - _fhi)
-                            elif _flo > 1.0 + 1e-6:
-                                _sc[_mk] = _flo; _bad += _pw * (_flo - 1.0)
-                        return _sc, _bad
-
-                    def _mid_caps_greedy(gran):
-                        # SAFETY FALLBACK (original heuristic): greedily scale each out-of-band MID
-                        # and re-project, one at a time, tracking the least-violating split and
-                        # stopping on a plateau/oscillation. Returns (best_gran, best_bad, last_sc).
-                        _best_gran, _best_bad, _nostep, _sc = gran, np.inf, 0, {}
-                        for _ in range(8):
-                            _sc, _bad = _midband_need(_project_capped(_prop_items_from_gran(gran)))
-                            if _bad < _best_bad - 1e-4:
-                                _best_bad, _best_gran, _nostep = _bad, gran, 0
-                            else:
-                                _nostep += 1
-                            if not _sc:
-                                return gran, 0.0, {}
-                            if _nostep >= 2:
-                                break
-                            gran = _scale_mids_in_gran(gran, _sc)
-                            _mid_gran_constrained.update(_sc.keys())
-                        return _best_gran, _best_bad, _sc
-
-                    def _mid_caps_lp(gran0, s0=None):
-                        # PRIMARY: joint solve. Pick ONE scale factor per constrained MID that
-                        # satisfies ALL bands at once (closest to the reference), instead of greedily
-                        # one-at-a-time. Each round: linearise the projected VAMP/Txn around the
-                        # current scales (finite differences → a Jacobian), solve a small LP
-                        # (minimise total movement s.t. the linearised bands + [0,3] bounds), then
-                        # re-linearise (trust-region-capped step, ≤3 rounds). Returns (best_gran,
-                        # best_bad, still_sc, moved). Returns badness=inf (→ greedy fallback) if
-                        # SciPy/linprog is missing/errors.
-                        #   s0 (#28/#2): optional {mid: scale} seed — e.g. the greedy result — so the
-                        #   FIRST linearisation is taken around a near-feasible point rather than the
-                        #   reference (all-ones), which the finite-difference Jacobian approximates far
-                        #   better when the bands are tight.
-                        try:
-                            from scipy.optimize import linprog
-                        except Exception:  # noqa: BLE001
-                            return gran0, np.inf, {}, set()
-                        _mids = sorted({r[0] for r in _mid_month_rules})
-                        if not _mids:
-                            return gran0, 0.0, {}, set()
-                        n = len(_mids); _ixm = {m: i for i, m in enumerate(_mids)}
-                        s = (np.ones(n) if not s0
-                             else np.clip(np.array([float(s0.get(m, 1.0)) for m in _mids], dtype=float), 0.0, 3.0))
-                        _eps = 1e-3
-                        _best_gran, _best_bad, _best_sc = gran0, np.inf, {}
-
-                        def _proj_of(_svec):
-                            _g = _scale_mids_in_gran(gran0, {m: float(_svec[_ixm[m]]) for m in _mids})
-                            return _g, _project_capped(_prop_items_from_gran(_g))
-
-                        def _rule_val(_proj, _mk, _months, _mtr, _tg):
-                            _v = sum(_proj.get((_mk, m), (0.0, 0.0))[0] for m in _months)
-                            _t = sum(_proj.get((_mk, m), (0.0, 0.0))[1] for m in _months)
-                            if _mtr == "txn":
-                                return _t
-                            if _mtr == "vamp":
-                                return _v
-                            return _v - (_tg / 100.0) * _t   # vamp_pct constraint: value <= 0
-
-                        try:
-                            for _outer in range(3):
-                                _g0, _p0 = _proj_of(s)
-                                _sc0, _bad0 = _midband_need(_p0)
-                                if _bad0 < _best_bad - 1e-9:
-                                    _best_bad, _best_gran, _best_sc = _bad0, _g0, _sc0
-                                if not _sc0:
-                                    return _g0, 0.0, {}, {m for m in _mids if abs(s[_ixm[m]] - 1.0) > 1e-6}
-                                # Jacobian perturbations (speedup 4): the n one-MID-perturbed
-                                # projections are independent. The base _proj_of(s) above has already
-                                # populated the structural + projection caches for this gran layout
-                                # (read-only hits hereafter), so we run the perturbations across a
-                                # small THREAD pool with a cache-free projection — no shared-dict
-                                # races, results gathered in k-order → bit-identical to the serial
-                                # loop. Falls back to serial on any error.
-                                def _pert_proj(_k):
-                                    _sp = s.copy(); _sp[_k] += _eps
-                                    _g = _scale_mids_in_gran(gran0, {m: float(_sp[_ixm[m]]) for m in _mids})
-                                    return _project_capped(_prop_items_from_gran(_g), _use_cache=False)
-                                try:
-                                    from concurrent.futures import ThreadPoolExecutor as _TPE
-                                    if n > 1:
-                                        with _TPE(max_workers=min(4, n)) as _ex:
-                                            _pert = list(_ex.map(_pert_proj, range(n)))
-                                    else:
-                                        _pert = [_pert_proj(0)]
-                                except Exception:  # noqa: BLE001  (serial fallback — identical result)
-                                    _pert = [_pert_proj(k) for k in range(n)]
-                                _A, _bb = [], []
-                                for (_mk, _mo, _mtr, _tg, _tl, _dir) in _mid_month_rules:
-                                    _months = [int(_mo)] if _mo is not None else list(range(4))
-                                    _tol = float(_tl) if _tl is not None else 0.0
-                                    _g0v = _rule_val(_p0, _mk, _months, _mtr, _tg)
-                                    _J = np.array([(_rule_val(_pert[k], _mk, _months, _mtr, _tg) - _g0v) / _eps
-                                                   for k in range(n)])
-                                    if _mtr == "vamp_pct":
-                                        _A.append(_J); _bb.append(0.0 - _g0v + _J.dot(s))
-                                    else:
-                                        # ceiling row only for range/ceiling; floor row only for range/floor.
-                                        _hi = _tg * (1.0 + _tol) if _dir in ("range", "ceiling") else None
-                                        _lo = _tg * (1.0 - _tol) if _dir in ("range", "floor") else 0.0
-                                        if _hi is not None:
-                                            _A.append(_J); _bb.append(_hi - _g0v + _J.dot(s))
-                                        if _lo > 0:
-                                            _A.append(-_J); _bb.append(-_lo + _g0v - _J.dot(s))
-                                _c = np.concatenate([np.zeros(n), np.ones(n)])   # min Σ u ≈ Σ|s-1|
-                                _Au, _bu = [], []
-                                for _row, _rb in zip(_A, _bb):
-                                    _Au.append(np.concatenate([_row, np.zeros(n)])); _bu.append(_rb)
-                                for k in range(n):
-                                    _r1 = np.zeros(2 * n); _r1[k] = 1.0; _r1[n + k] = -1.0; _Au.append(_r1); _bu.append(1.0)
-                                    _r2 = np.zeros(2 * n); _r2[k] = -1.0; _r2[n + k] = -1.0; _Au.append(_r2); _bu.append(-1.0)
-                                _bounds = [(0.0, 3.0)] * n + [(0.0, None)] * n
-                                _res = linprog(_c, A_ub=np.array(_Au), b_ub=np.array(_bu), bounds=_bounds, method="highs")
-                                if not getattr(_res, "success", False):
-                                    break
-                                _snew = np.clip(np.asarray(_res.x[:n], dtype=float), 0.0, 3.0)
-                                # Trust region: cap each round's step so a poor linearisation can't
-                                # overshoot into a worse point (the loop keeps the best regardless).
-                                _snew = s + np.clip(_snew - s, -1.0, 1.0)
-                                _step = float(np.max(np.abs(_snew - s)))
-                                s = _snew
-                                if _step < 1e-4:
-                                    break
-                        except Exception as _e:  # noqa: BLE001
-                            log(f"   [Warning] joint-LP per-MID solve errored ({_e}); using greedy fallback.")
-                            return gran0, np.inf, {}, set()
-                        _gf, _pf = _proj_of(s)
-                        _scf, _badf = _midband_need(_pf)
-                        if _badf < _best_bad - 1e-9:
-                            _best_bad, _best_gran, _best_sc = _badf, _gf, _scf
-                        _moved = {m for m in _mids if abs(s[_ixm[m]] - 1.0) > 1e-6}
-                        return _best_gran, _best_bad, _best_sc, _moved
-
-                    def _apply_mid_caps(gran):
-                        # Per-MID month/aggregate caps on the PROJECTED VAMP/Txn (what tab 4 shows).
-                        # Primary: a JOINT LP solve that picks every per-MID scale together. If it
-                        # satisfies the bands, use it. Otherwise run the greedy heuristic too and
-                        # KEEP WHICHEVER is least-violating — so the joint solve can only help.
-                        if gran is None or getattr(gran, "empty", True):
-                            return gran
-                        # GATE-1: on the FIRST delivered split, log collapsed-vs-true band gap (toggle).
-                        _band_collapse_diag(_prop_items_from_gran(gran), "delivered split, pre-enforcement")
-                        if _T0 is not None and _mid_month_rules:
-                            _lg, _lb, _lsc, _lmoved = _mid_caps_lp(gran)
-                            if _lb <= 1e-6:                        # LP satisfied every band
-                                _mid_gran_constrained.update(_lmoved)
-                                if "lp_ok" not in _midband_warned:
-                                    _midband_warned.add("lp_ok")
-                                    log(f"   per-MID joint LP: SATISFIED all bands (moved {len(_lmoved)} MID(s)); "
-                                        "greedy not needed.")
-                                return _lg
-                            _gg, _gb, _gsc = _mid_caps_greedy(gran)   # infeasible -> compare with greedy
-                            # #28/#2: re-run the joint LP SEEDED from greedy's (near-feasible) per-MID
-                            # scales, so its first linearisation starts close to the answer rather than
-                            # at the reference. Then keep the LEAST-VIOLATING of {LP, greedy, greedy-
-                            # seeded LP}. Badness is priority-weighted (lexicographic via _prio_mult), so
-                            # "least-violating" already means "best on the prio-1 bands first". Taking the
-                            # min can only match or beat the previous LP-vs-greedy pick.
-                            _s0 = None
-                            try:
-                                _vm0 = (gran["gateway"].astype(str).str.strip().str.lower().map(_fid2vamp_l)
-                                        .fillna(gran["gateway"].astype(str).str.strip().str.lower())).to_numpy()
-                                _vmg = (_gg["gateway"].astype(str).str.strip().str.lower().map(_fid2vamp_l)
-                                        .fillna(_gg["gateway"].astype(str).str.strip().str.lower())).to_numpy()
-                                _sh0 = gran["share"].to_numpy(float); _shg = _gg["share"].to_numpy(float)
-                                _s0 = {}
-                                for _m in sorted({r[0] for r in _mid_month_rules}):
-                                    _t0 = float(_sh0[_vm0 == _m].sum())
-                                    _s0[_m] = (float(_shg[_vmg == _m].sum()) / _t0) if _t0 > 1e-12 else 1.0
-                            except Exception:  # noqa: BLE001
-                                _s0 = None
-                            _l2g, _l2b, _l2sc, _l2moved = (_mid_caps_lp(gran, s0=_s0) if _s0
-                                                           else (gran, np.inf, {}, set()))
-                            _cands = [(_lb, _lg, _lsc, _lmoved, "joint LP"),
-                                      (_gb, _gg, _gsc, set(), "greedy"),
-                                      (_l2b, _l2g, _l2sc, _l2moved, "joint LP (greedy-seeded)")]
-                            _cb, _final, _fsc, _fmoved, _method = min(_cands, key=lambda c: c[0])
-                            if _fmoved:
-                                _mid_gran_constrained.update(_fmoved)
-                            if "lp_cmp" not in _midband_warned:
-                                _midband_warned.add("lp_cmp")
-                                log(f"   per-MID solve residuals: LP {_lb:.1f} · greedy {_gb:.1f} · "
-                                    f"greedy-seeded LP {_l2b:.1f} → using {_method} ({_cb:.1f}). If none "
-                                    "reaches 0 the band set is jointly INFEASIBLE with the VAMP cap on this "
-                                    "data (not a solver miss).")
-                            if _fsc:
-                                _wkey = frozenset(str(k) for k in _fsc)
-                                if _wkey not in _midband_warned:
-                                    _midband_warned.add(_wkey)
-                                    log(f"   [Warning] per-MID band did not fully converge ({_method}); "
-                                        f"{len(_fsc)} MID(s) cannot satisfy their target band together with the "
-                                        "VAMP cap. Per-MID detail (projected vs target; minimal band-widening to clear "
-                                        "this MID in isolation):")
-                                    try:
-                                        _pf = _project_capped(_prop_items_from_gran(_final))
-                                        _seen_r = set()
-                                        for (_mk, _mo, _mtr, _tg, _tl, _dir) in _mid_month_rules:
-                                            if _mk not in _fsc:
-                                                continue
-                                            _months = [int(_mo)] if _mo is not None else list(range(4))
-                                            _tol = float(_tl) if _tl is not None else 0.0
-                                            _mostr = f"M{int(_mo)}" if _mo is not None else "M0-3"
-                                            _prio = _prio_by_mid.get(_mk, 1)
-                                            _rk = (_mk, _mostr, _mtr, _dir)
-                                            if _rk in _seen_r:
-                                                continue
-                                            _seen_r.add(_rk)
-                                            if _mtr in ("txn", "vamp"):
-                                                _ix = 1 if _mtr == "txn" else 0
-                                                _cur = float(sum(_pf.get((_mk, m), (0.0, 0.0))[_ix] for m in _months))
-                                                _hi = _tg * (1.0 + _tol); _lo = _tg * (1.0 - _tol)
-                                                if _dir in ("range", "ceiling") and _cur > _hi + 1e-9:
-                                                    log(f"        • {_mk} · {_mtr} {_mostr} · prio {_prio} · projected "
-                                                        f"{_cur:,.0f} > ceiling {_hi:,.0f} → widen target to ≥ {_cur:,.0f} "
-                                                        f"(+{_cur - _hi:,.0f}) to clear")
-                                                elif _dir in ("range", "floor") and _cur < _lo - 1e-9:
-                                                    log(f"        • {_mk} · {_mtr} {_mostr} · prio {_prio} · projected "
-                                                        f"{_cur:,.0f} < floor {_lo:,.0f} → lower target to ≤ {_cur:,.0f} "
-                                                        f"(−{_lo - _cur:,.0f}) to clear")
-                                            else:   # vamp_pct — intrinsic VAMP rate ceiling
-                                                _v = float(sum(_pf.get((_mk, m), (0.0, 0.0))[0] for m in _months))
-                                                _t = float(sum(_pf.get((_mk, m), (0.0, 0.0))[1] for m in _months))
-                                                _rate = (_v / _t) if _t > 0 else 0.0
-                                                if _rate > (_tg / 100.0) + 1e-9:
-                                                    log(f"        • {_mk} · vamp% {_mostr} · prio {_prio} · projected "
-                                                        f"{_rate*100:.2f}% > ceiling {_tg:.2f}% → raise ceiling to ≥ "
-                                                        f"{_rate*100:.2f}% to clear")
-                                    except Exception as _de:  # noqa: BLE001
-                                        log(f"        (per-MID diagnostic unavailable: {type(_de).__name__}: {_de})")
-                            return _final
-                        # Fallback: routing-space MID-total scale (no pro-rata; ceilings only).
-                        if a_max_by_mid:
-                            gg = gran.copy()
-                            _vm = gg["gateway"].astype(str).str.strip().str.lower().map(_fid2vamp_l).fillna(
-                                gg["gateway"].astype(str).str.strip().str.lower())
-                            _in = pd.DataFrame({
-                                "cell": (gg["rpgt"].astype(str).str.lower() + "|" + gg["currency"].astype(str).str.lower()
-                                         + "|" + gg["bank"].astype(str).str.lower()),
-                                "gateway": gg["gateway"].astype(str), "vampMid": _vm,
-                                "cell_vol": pd.to_numeric(gg.get("cell_volume", 0.0), errors="coerce").fillna(0.0),
-                                "baseline_share": gg["baseline_share"].to_numpy(float), "share": gg["share"].to_numpy(float),
-                                "rate": pd.to_numeric(gg.get("gateway_risk_rate", 0.006), errors="coerce").fillna(0.006)})
-                            _capd, _cst = enforce_mid_volume_caps(_in, a_max_by_mid, max_share=float(max_share))
-                            _mid_gran_constrained.update(_cst)
-                            gg["share"] = _capd["share"].to_numpy()
-                            return gg
-                        return gran
-
-                    _phase_logged = {"done": False, "n": 0}
-
-                    # ---- shared enforcement scorers (used by the #6 iterate-selection inside
-                    # _enforce_once AND the #8 reference-feedback loop in _restrict_and_recap) ----
-                    _VAMP_W = 1.0e9   # VAMP-cap compliance ranks far above every per-MID band residual
-
-                    def _combined_bad(_g):
-                        # ONE priority-weighted badness: VAMP-cap-over count (weighted huge) + per-MID
-                        # band badness (itself prio-1 ≫ prio-2 via _prio_mult). Lower is better.
-                        _vo = 0
-                        _bb = 0.0
-                        try:
-                            if _mid_month_rules or (_bpool_rpgt or _bpool_all):
-                                _proj = _project_capped(_prop_items_from_gran(_g))
-                                if _mid_month_rules:
-                                    _bb = float(_midband_need(_proj)[1])
-                                if vamp_cap is not None and (_bpool_rpgt or _bpool_all):
-                                    from collections import defaultdict as _ddc
-                                    _vv, _tt = _ddc(float), _ddc(float)
-                                    for (_mk, _per), _val in _proj.items():
-                                        _vv[_mk] += float(_val[0]); _tt[_mk] += float(_val[1])
-                                    _vo = sum(1 for _mk in _tt
-                                              if _tt[_mk] > 0 and _vv[_mk] / _tt[_mk] > float(vamp_cap) + 1e-9)
-                            if vamp_cap is not None and not (_bpool_rpgt or _bpool_all):
-                                _vo = int(_mids_over_granular(_g))
-                        except Exception:  # noqa: BLE001
-                            return float("inf")   # unscoreable → never preferred
-                        return _VAMP_W * float(_vo) + _bb
-
-                    def _band_bad(_g):
-                        # Just the per-MID band residual (0 = every band satisfied by the projection).
-                        if not _mid_month_rules:
-                            return 0.0
-                        try:
-                            return float(_midband_need(_project_capped(_prop_items_from_gran(_g)))[1])
-                        except Exception:  # noqa: BLE001
-                            return 0.0
-
-                    def _rev_proxy(_g):
-                        # Expected incremental revenue Σ cell_volume·share·(success_rate·ticket), using the
-                        # #4a per-(currency,bank,gateway) incremental-revenue rates. Guards the #8 feedback
-                        # against a compliance gain that quietly costs revenue. Falls back to volume·share
-                        # (a monotone proxy) when no rate data — still forbids gross revenue loss.
-                        if _g is None or getattr(_g, "empty", True):
-                            return 0.0
-                        _cv = pd.to_numeric(_g.get("cell_volume", 0.0), errors="coerce").fillna(0.0).to_numpy()
-                        _sh = pd.to_numeric(_g["share"], errors="coerce").fillna(0.0).to_numpy()
-                        if not _inc_rev_rate:
-                            return float((_cv * _sh).sum())
-                        _rr = np.array([float(_inc_rev_rate.get(
-                            (str(c).strip().lower(), str(b).strip().lower(), str(gw).strip().lower()), 0.0))
-                            for c, b, gw in zip(_g["currency"], _g["bank"], _g["gateway"])], float)
-                        return float((_cv * _sh * _rr).sum())
-
-                    def _cost_order_worth(_g):
-                        # Cheap gate for the #4b A/B: only worth an extra enforcement solve if some
-                        # CONSTRAINED MID spans ≥2 cells with DIFFERENT incremental-revenue rates —
-                        # otherwise cost-ordered cutting == uniform and there's nothing to gain.
-                        try:
-                            if not _mid_gran_constrained or not _inc_rev_rate:
-                                return False
-                            _gg = _g.copy()
-                            _vm = (_gg["gateway"].astype(str).str.strip().str.lower().map(_fid2vamp_l)
-                                   .fillna(_gg["gateway"].astype(str).str.strip().str.lower()))
-                            _cell = (_gg["rpgt"].astype(str).str.lower() + "|" + _gg["currency"].astype(str).str.lower()
-                                     + "|" + _gg["bank"].astype(str).str.lower())
-                            _irv = np.array([float(_inc_rev_rate.get(
-                                (str(c).strip().lower(), str(b).strip().lower(), str(gw).strip().lower()), 0.0))
-                                for c, b, gw in zip(_gg["currency"], _gg["bank"], _gg["gateway"])], float)
-                            _t = pd.DataFrame({"vm": _vm.to_numpy(), "cell": _cell.to_numpy(), "ir": _irv})
-                            for _m in _mid_gran_constrained:
-                                _sub = _t[_t["vm"] == _m]
-                                if _sub["cell"].nunique() < 2:
-                                    continue
-                                _per = _sub.groupby("cell")["ir"].mean()
-                                if float(_per.max() - _per.min()) > 1e-9 * max(abs(float(_per.max())), 1.0):
-                                    return True
-                            return False
-                        except Exception:  # noqa: BLE001
-                            return False
-
-                    def _enforce_once(gran):
-                        import time as _time
-                        _phase_logged["n"] += 1
-                        _tlog = True   # log the phase breakdown for EVERY enforcement pass
-                        _t = _time.time()
-                        gran = _restrict(gran)
-                        if gran is None or getattr(gran, "empty", True):
-                            return gran
-                        _t_elig = _time.time() - _t; _t = _time.time()
-                        if vamp_cap is not None:
-                            for _ in range(2):
-                                g = _mid_cap_granular(gran)
-                                _in = g[["cell", "gateway", "_vm", "cell_vol", "rate", "share"]].rename(columns={"_vm": "vampMid"})
-                                _capd, _rr, _ss2 = enforce_mid_vamp_caps(
-                                    _in, cap=float(vamp_cap), floor=float(floor), max_share=float(max_share))
-                                _g2 = gran.copy()
-                                _g2["share"] = _capd["share"].to_numpy()
-                                _g2 = _restrict(_g2)
-                                if np.allclose(_g2["share"].to_numpy(), gran["share"].to_numpy(), atol=1e-6):
-                                    gran = _g2
-                                    break
-                                gran = _g2
-                        _t_vamp = _time.time() - _t
-                        # Per-MID caps, RPGT caps and the VAMP cap can each re-breach the others
-                        # (per-MID redistribution can push a MID back over VAMP; a VAMP shave can
-                        # push a MID out of its band). Iterate the trio to a FIXED POINT — bounded
-                        # (max 3), deterministic, compliance-improving — stopping as soon as the
-                        # split stops moving, instead of a single pass. (G3 / one-pass fix)
-                        _t_mid = _t_rpgt = _t_reenf = 0.0
-                        _vamp_reenf = 0
-                        # #6 (single priority-weighted objective): score each iterate with the hoisted
-                        # _combined_bad (VAMP-cap compliance ≫ prio-1 bands ≫ prio-2 bands). The VAMP-cap
-                        # and per-MID passes can oscillate, so KEEP THE LEAST-VIOLATING ITERATE, not the
-                        # last one — can't regress (only picks among computed iterates).
-                        _best_g, _best_cb = None, None
-                        for _oi in range(3):
-                            _prev = gran["share"].to_numpy().copy()
-                            _t = _time.time()
-                            gran = _apply_mid_caps(gran)
-                            _t_mid += _time.time() - _t; _t = _time.time()
-                            gran = _apply_rpgt_caps(gran)
-                            _t_rpgt += _time.time() - _t; _t = _time.time()
-                            if vamp_cap is not None and _mids_over_granular(gran) > 0:
-                                g = _mid_cap_granular(gran)
-                                _in = g[["cell", "gateway", "_vm", "cell_vol", "rate", "share"]].rename(columns={"_vm": "vampMid"})
-                                _capd, _, _ = enforce_mid_vamp_caps(
-                                    _in, cap=float(vamp_cap), floor=float(floor), max_share=float(max_share))
-                                _g2 = gran.copy(); _g2["share"] = _capd["share"].to_numpy()
-                                gran = _restrict(_g2)
-                            _t_reenf += _time.time() - _t
-                            _cb_it = _combined_bad(gran)
-                            if _best_cb is None or _cb_it < _best_cb - 1e-12:
-                                _best_cb, _best_g = _cb_it, gran.copy()
-                            if np.allclose(gran["share"].to_numpy(), _prev, atol=1e-6):
-                                break
-                        if _best_g is not None:
-                            if not np.allclose(_best_g["share"].to_numpy(), gran["share"].to_numpy(), atol=1e-9):
-                                log("   per-MID/VAMP joint selection (#6): kept the least-violating iterate "
-                                    "(VAMP-cap compliance first, then prio-1 ≫ prio-2 bands) — the passes "
-                                    "oscillated, so the final pass was not the best.")
-                            gran = _best_g
-                        # BACKUP-BLEND enforcement: the passes above shaved the RAW split to the cap,
-                        # but the pipeline re-adds the backup catch-all, which can push a MID back
-                        # over. Iterate with a progressively TIGHTER raw cap until the ACTUAL routed
-                        # (blended) VAMP is compliant, so the EXPORTED split stays under cap AFTER the
-                        # re-adds. Conservative (only ever reduces further), reuses the tested
-                        # enforce + projection. No-op without a backup folder / when disabled.
-                        if (vamp_cap is not None and (_bpool_rpgt or _bpool_all)
-                                and _mids_over_blended(gran) > 0):
-                            _t = _time.time()
-                            _cap_t = float(vamp_cap)
-                            for _bt in range(6):
-                                _cap_t *= 0.90
-                                _gb = _mid_cap_granular(gran)
-                                _inb = _gb[["cell", "gateway", "_vm", "cell_vol", "rate", "share"]].rename(columns={"_vm": "vampMid"})
-                                _capdb, _, _ = enforce_mid_vamp_caps(
-                                    _inb, cap=_cap_t, floor=float(floor), max_share=float(max_share))
-                                _g2b = gran.copy(); _g2b["share"] = _capdb["share"].to_numpy()
-                                gran = _restrict(_g2b)
-                                if _mids_over_blended(gran) == 0:
-                                    break
-                            _t_reenf += _time.time() - _t
-                            log(f"   backup-blend VAMP tightening: raw cap {float(vamp_cap):.4f} → "
-                                f"{_cap_t:.4f} so the routed (blended) VAMP meets the "
-                                f"{float(vamp_cap):.4f} cap ({_mids_over_blended(gran)} MID(s) still over).")
-                        _vamp_reenf = (int(_mids_over_blended(gran))
-                                       if (vamp_cap is not None and (_bpool_rpgt or _bpool_all))
-                                       else (int(_mids_over_granular(gran)) if vamp_cap is not None else 0))
-                        if _tlog:
-                            _tot = _t_elig + _t_vamp + _t_mid + _t_rpgt + _t_reenf
-                            log(f"   [timing · enforce pass #{_phase_logged['n']}] total {_tot:.1f}s = "
-                                f"eligibility {_t_elig:.1f}s · VAMP-cap {_t_vamp:.1f}s · "
-                                f"per-MID caps {_t_mid:.1f}s · RPGT caps {_t_rpgt:.1f}s · "
-                                f"VAMP re-check {_t_reenf:.1f}s "
-                                f"(rows={len(gran):,})")
-                            if _vamp_reenf > 0:
-                                log(f"   [Warning] {_vamp_reenf} MID(s) still over the VAMP cap after re-enforcement "
-                                    "— per-MID targets and VAMP cap conflict; VAMP took priority.")
-                            _phase_logged["done"] = True
-                        return gran
-
-                    def _restrict_and_recap(gran):
-                        # #8 — ENGINE↔ENFORCEMENT γ FEEDBACK (safe, bounded, non-regressing).
-                        # The per-cell engine reference is built with NO knowledge of the cross-cell
-                        # per-MID bands, so enforcement alone has to drag chronically-over MIDs into
-                        # their bands after the fact — fighting the reference and shedding revenue.
-                        # Here we CLOSE THE LOOP: enforce once, read the residual per-MID band shadow
-                        # price γ (the scale each still-violating MID needs), feed it back by tilting the
-                        # REFERENCE SEED away from those MIDs' high-risk gateways (revenue-weighted
-                        # redistribution, via _scale_mids_in_gran), then re-enforce from that better seed.
-                        # A tilted seed starts closer to feasible, so enforcement distorts less.
-                        # STRICTLY GUARDED: adopt a feedback round ONLY on a Pareto improvement — combined
-                        # badness strictly lower AND revenue not meaningfully worse — so it can never
-                        # regress on either compliance or revenue. Bounded to 2 rounds; a no-op (zero
-                        # extra cost) whenever the first enforcement already satisfies the bands.
-                        _base = _enforce_once(gran)
-                        if (_base is None or getattr(_base, "empty", True) or not _mid_month_rules):
-                            return _base
-                        _bb0 = _combined_bad(_base)
-                        _rev0 = _rev_proxy(_base)
-                        _seed = gran                       # the reference seed we keep tilting
-                        for _fb in range(2):
-                            if _band_bad(_base) <= 1e-9:    # bands already met → nothing to feed back
-                                break
-                            try:
-                                _needs = _midband_need(_project_capped(_prop_items_from_gran(_base)))[0]
-                            except Exception:  # noqa: BLE001
-                                break
-                            _needs = {_m: float(_f) for _m, _f in (_needs or {}).items()
-                                      if np.isfinite(_f) and abs(float(_f) - 1.0) > 1e-6}
-                            if not _needs:
-                                break
-                            _seed_t = _scale_mids_in_gran(_seed, _needs)   # tilt reference by the γ needs
-                            # CHEAP PRE-CHECK (#8 speed): a full _enforce_once on the tilted seed is
-                            # expensive (minutes). Enforcement is ~monotonic in seed quality, so if
-                            # tilting doesn't even lower the seed's PROJECTED badness (cheap, no LP
-                            # enforcement) vs the current seed, enforcing it won't Pareto-beat the
-                            # current result — skip the pass instead of computing-then-rejecting it.
-                            # The real Pareto guard below still protects anything we DO enforce.
-                            try:
-                                _pc_cur, _pc_tilt = _combined_bad(_seed), _combined_bad(_seed_t)
-                            except Exception:  # noqa: BLE001
-                                _pc_cur = _pc_tilt = None
-                            if (_pc_cur is not None and _pc_tilt is not None
-                                    and not (_pc_tilt < _pc_cur - 1e-12)):
-                                log(f"   engine↔enforcement feedback (#8) round {_fb + 1}: tilt did not "
-                                    f"lower the projected badness ({_pc_cur:.6g}→{_pc_tilt:.6g}) — skipping "
-                                    "the enforcement pass (no Pareto gain possible, saves a full solve).")
-                                break
-                            _cand = _enforce_once(_seed_t)
-                            if _cand is None or getattr(_cand, "empty", True):
-                                break
-                            _bb1 = _combined_bad(_cand)
-                            _rev1 = _rev_proxy(_cand)
-                            # Pareto guard: strictly better compliance, no meaningful revenue loss.
-                            if _bb1 < _bb0 - 1e-12 and _rev1 >= _rev0 - 1e-6 * max(abs(_rev0), 1.0):
-                                log(f"   engine↔enforcement feedback (#8) round {_fb + 1}: reference tilted "
-                                    f"off {len(_needs)} over-band MID(s) → badness {_bb0:.6g}→{_bb1:.6g}, "
-                                    f"revenue ${_rev0:,.0f}→${_rev1:,.0f} (adopted).")
-                                _base, _bb0, _rev0, _seed = _cand, _bb1, _rev1, _seed_t
-                            else:
-                                log(f"   engine↔enforcement feedback (#8) round {_fb + 1}: tilted seed did "
-                                    f"not Pareto-improve (badness {_bb0:.6g}→{_bb1:.6g}, revenue "
-                                    f"${_rev0:,.0f}→${_rev1:,.0f}) — kept the un-tilted result.")
-                                break
-                        # #4b — COST-ORDERED cross-cell cut (Pareto-guarded A/B). Uniform scaling
-                        # cuts a MID by the SAME fraction in every cell; #4b takes the SAME total cut
-                        # but from the cells where it costs the least revenue first (MID-rate − best-
-                        # alternative-rate), keeping the expensive cells. Re-enforce with cost-ordering
-                        # ON and adopt ONLY on a Pareto improvement — revenue up with no compliance
-                        # loss, or better compliance with no revenue loss — so it can never regress.
-                        # Gated to when a MID was actually cut AND its cells differ in cost (else the
-                        # cost-ordered result equals uniform and the extra solve is skipped).
-                        if _inc_rev_rate and _cost_order_worth(_base):
-                            _cost_order["on"] = True
-                            try:
-                                _c4 = _enforce_once(gran)
-                            except Exception as _e4:  # noqa: BLE001
-                                _c4 = None
-                                log(f"   cost-ordered cutting (#4b) errored ({_e4}); kept uniform.")
-                            finally:
-                                _cost_order["on"] = False
-                            if _c4 is not None and not getattr(_c4, "empty", True):
-                                _bb4 = _combined_bad(_c4)
-                                _rev4 = _rev_proxy(_c4)
-                                _eps_r = 1e-6 * max(abs(_rev0), 1.0)
-                                _pareto = ((_rev4 > _rev0 + _eps_r and _bb4 <= _bb0 + 1e-9)
-                                           or (_bb4 < _bb0 - 1e-12 and _rev4 >= _rev0 - _eps_r))
-                                if _pareto:
-                                    log(f"   cost-ordered cutting (#4b): adopted — cut cheapest cells first "
-                                        f"(same total cut); revenue ${_rev0:,.0f}→${_rev4:,.0f}, badness "
-                                        f"{_bb0:.6g}→{_bb4:.6g}.")
-                                    _base, _bb0, _rev0 = _c4, _bb4, _rev4
-                                else:
-                                    log(f"   cost-ordered cutting (#4b): no Pareto gain (revenue "
-                                        f"${_rev0:,.0f}→${_rev4:,.0f}, badness {_bb0:.6g}→{_bb4:.6g}) — "
-                                        "kept uniform.")
-                        return _base
-
                     def _mids_over_granular(gran):
                         if vamp_cap is None or gran is None or getattr(gran, "empty", True):
                             return 0
@@ -5372,59 +4661,6 @@ with tab_eng:
                             _vv[_mk] += float(_val[0]); _tt2[_mk] += float(_val[1])
                         return sum(1 for _mk in _tt2
                                    if _tt2[_mk] > 0 and _vv[_mk] / _tt2[_mk] > float(vamp_cap) + 1e-9)
-
-                    def _make_frontier_share(tmpl, rev_sh, comp_sh):
-                        # TRUE FRONTIER (replaces the linear share blend for the intermediate dials).
-                        # For each dial w, solve for the min-movement-from-the-REVENUE-reference split
-                        # whose whole-book aggregate VAMP rate ≤ budget(w), where budget sweeps from
-                        # the compliant endpoint's rate (w=0) up to the revenue endpoint's rate (w=1).
-                        # Each point is Pareto-optimal (max revenue retention at that risk budget) and
-                        # monotonic. Falls back to the linear blend if SciPy/HiGHS is missing, the LP
-                        # is infeasible, or the frontier point isn't lower-risk than the blend — so it
-                        # can only improve the middle dials, never regress them.
-                        rev_sh = np.asarray(rev_sh, float); comp_sh = np.asarray(comp_sh, float)
-                        _mc = None
-                        try:
-                            _m = _mid_cap_granular(tmpl)
-                            _cv = pd.to_numeric(_m["cell_vol"], errors="coerce").fillna(0.0).to_numpy()
-                            _rt = pd.to_numeric(_m["rate"], errors="coerce").fillna(0.0).to_numpy()
-                            _inp0 = _m[["cell", "gateway", "_vm", "cell_vol", "rate"]].rename(columns={"_vm": "vampMid"})
-                            _mc = True
-                        except Exception:  # noqa: BLE001
-                            _mc = None
-
-                        def _aggr(sh):
-                            v = _cv * np.asarray(sh, float); tot = float(v.sum())
-                            return float((v * _rt).sum() / tot) if tot > 1e-12 else 0.0
-                        _r_rev = _aggr(rev_sh) if _mc else 0.0
-                        _r_comp = _aggr(comp_sh) if _mc else 0.0
-
-                        def _fshare(w):
-                            w = float(w)
-                            if w >= 1.0 - 1e-9:
-                                return rev_sh
-                            if w <= 1e-9:
-                                return comp_sh
-                            _blend = w * rev_sh + (1.0 - w) * comp_sh
-                            if not _mc or vamp_cap is None:
-                                return _blend
-                            _budget = _r_comp + w * (_r_rev - _r_comp)
-                            _inp = _inp0.copy(); _inp["share"] = rev_sh
-                            try:
-                                _adj = vamp_frontier_lp(_inp, cap=float(vamp_cap), agg_cap=float(_budget),
-                                                        floor=float(floor), max_share=float(max_share))
-                            except Exception:  # noqa: BLE001
-                                _adj = None
-                            if _adj is None:
-                                return _blend
-                            _x = pd.to_numeric(_adj["share"], errors="coerce").fillna(0.0).to_numpy()
-                            if _x.shape != rev_sh.shape or not np.isfinite(_x).all():
-                                return _blend
-                            # Keep the frontier point only if it's at least as low-risk as the blend
-                            # (it targets ≤ budget AND min-moves from revenue, so it dominates/ties);
-                            # otherwise fall back to the blend. Guarantees no regression.
-                            return _x if _aggr(_x) <= _aggr(_blend) + 1e-9 else _blend
-                        return _fshare
 
                     if engine_key in ("genetic", "genetic_numba"):
                         # ---- Global GA: revenue − λ·risk, WARM-STARTED from softmax + HARD-
@@ -5517,14 +4753,13 @@ with tab_eng:
                         # volume × SR — maximising Σ share·vol·SR ≡ maximising the volume-weighted success
                         # rate. Everything downstream (GA fitness, penalty scaling, greedy-vs-GA adoption)
                         # then optimises the chosen objective while the SAME risk constraints still hold.
-                        if str(ss.get("ga_objective", "Revenue")).startswith("Volume"):
-                            _succ_coef = _rev_vol * _rev_sr
-                            if float(_succ_coef.sum()) <= 0:
-                                _succ_coef = _cvol * _srr
-                            _rev_coef = _succ_coef
-                            log("   GA objective: maximise VOLUME-WEIGHTED SUCCESS RATE (avg-ticket factor dropped).")
-                        else:
-                            log("   GA objective: maximise REVENUE (volume × SR × avg ticket).")
+                        # Objective FIXED to volume-weighted success rate (dropdown removed): drop the
+                        # avg-ticket factor so the coefficient is volume × SR, maximising Σ share·vol·SR.
+                        _succ_coef = _rev_vol * _rev_sr
+                        if float(_succ_coef.sum()) <= 0:
+                            _succ_coef = _cvol * _srr
+                        _rev_coef = _succ_coef
+                        log("   GA objective: maximise VOLUME-WEIGHTED SUCCESS RATE (avg-ticket factor dropped; fixed).")
                         # per-MID stats (reference MID volume feeds the band proxy; ticket/SR for
                         # revenue). The standalone per-MID VOLUME cap was DROPPED — per-MID rules are
                         # enforced via the month bands (projection space), so no routing-volume ceiling.
@@ -5721,7 +4956,7 @@ with tab_eng:
                             "mid_base_vol": _mid_bvol,         # reference MID volume (for the ratio proxy)
                             "mid_ticket": _mid_tick, "mid_sr": _mid_srm,
                             "shape_mult": 10.0, "max_share": float(max_share), "floor": float(floor),
-                            "breach_fixed": float(ss.get("ga_breach_fixed", 250) or 250),   # UI cap-breach penalty (× MID revenue), + quadratic
+                            "breach_fixed": 0.0,   # cap-breach penalty removed — fixed at 0 (no cap penalty)
                             # CMA-ES engine: lean the θ=0 reference gently toward lower risk (γ,
                             # dimensionless) so freed volume redistributes to LOW-risk recipients and
                             # the base is already slightly compliant. 0 = no lean (unbiased reference).
@@ -5997,15 +5232,10 @@ with tab_eng:
                             # also byte-identical. ctx is read-only inside the GA, so pickling a copy
                             # to each worker is safe.
                             _seed_results = None
-                            # UI-selectable parallelism (Tab 3). "sequential" skips the worker pool
-                            # entirely — the most robust path when loky workers wedge (e.g. a macOS
-                            # fork/Numba interaction), at the cost of running the seeds one-by-one.
-                            _ga_backend_sel = str(ss.get("ga_parallel_backend",
-                                                  os.environ.get("ROUTING_GA_PARALLEL_BACKEND", "loky"))).strip().lower()
-                            if _ga_backend_sel == "sequential":
-                                log("   GA parallelism: SEQUENTIAL (worker pool disabled via Tab 3) — "
-                                    "seeds run one at a time; slower but immune to loky worker hangs.")
-                            if int(_N_SEED) > 1 and _ga_backend_sel != "sequential":
+                            # The multi-seed GA ALWAYS runs on loky worker processes (true multi-core).
+                            # There is no backend selector and no threading/sequential fallback: if the
+                            # loky pool can't run, the run fails loudly (see the `except` below).
+                            if int(_N_SEED) > 1:
                                 import time as _st_t
                                 from joblib import Parallel, delayed
                                 import inspect as _insp_jl
@@ -6015,18 +5245,15 @@ with tab_eng:
                                 except Exception:  # noqa: BLE001
                                     _JL_INNER_OK = False
                                 # Backend: loky (processes) gives TRUE multi-core parallelism because
-                                # the CMA-ES holds the GIL a lot between numpy calls, so `threading`
-                                # only partially overlaps. Each seed is INDEPENDENT and fully
-                                # DETERMINISTIC (seed=_seed+_s), and results are consumed in seed order,
-                                # so the outcome is BYTE-IDENTICAL whatever the backend. loky needs
-                                # picklable args (ctx + the now-picklable stop_check); large ctx arrays
-                                # are auto-memmapped by joblib, and inner_max_num_threads=1 stops the
-                                # 4 workers × BLAS-threads oversubscription. If the chosen backend
-                                # errors we cascade loky→threading→sequential, so we can never end up
-                                # slower than the old shared-memory threading path. Override with
-                                # ROUTING_GA_PARALLEL_BACKEND=threading.
-                                _ga_backend = _ga_backend_sel if _ga_backend_sel in ("loky", "threading", "multiprocessing") else "loky"
-                                _try_backends = [_ga_backend] + (["threading"] if _ga_backend != "threading" else [])
+                                # the CMA-ES holds the GIL a lot between numpy calls. Each seed is
+                                # INDEPENDENT and fully DETERMINISTIC (seed=_seed+_s), and results are
+                                # consumed in seed order. loky needs picklable args (ctx + the
+                                # now-picklable stop_check); large ctx arrays are auto-memmapped by
+                                # joblib, and inner_max_num_threads=1 stops the workers × BLAS-threads
+                                # oversubscription. loky is the ONLY supported backend — if it can't
+                                # run, the run fails loudly (no threading / sequential fallback).
+                                _ga_backend = "loky"
+                                _try_backends = ["loky"]
                                 _njobs = min(int(_N_SEED), os.cpu_count() or 1)
                                 # Can we stream results as each seed returns? (joblib >=1.3 has
                                 # return_as). If so we log a per-seed convergence summary the moment
@@ -6233,7 +5460,7 @@ with tab_eng:
                                         # gain_max). warm_shares stays length-1 per worker so the restart
                                         # count is UNCHANGED (n_r = max(n_restarts, #seeds)); same seeds,
                                         # generations, pop → same one-wave wall time. Off → byte-identical.
-                                        _diverse = bool(ss.get("ga_diverse_seeds", True)) and int(_N_SEED) > 1
+                                        _diverse = int(_N_SEED) > 1   # diverse-seed search ALWAYS on (checkbox removed)
                                         _seed_ctx = [ctx] * int(_N_SEED)
                                         _seed_gm = [_GA_GAIN_MAX] * int(_N_SEED)
                                         if _diverse:
@@ -6319,37 +5546,30 @@ with tab_eng:
                                             f"{_njobs} workers) in {_st_t.time() - _t_par0:.1f}s.")
                                         break
                                     except Exception as _pe:  # noqa: BLE001
-                                        _seed_results = None
-                                        _nxt = ("; retrying with threading." if _bk != _try_backends[-1]
-                                                else "; running seeds sequentially.")
-                                        log(f"   parallel multi-seed GA via {_bk} unavailable "
-                                            f"({type(_pe).__name__}: {_pe}){_nxt}")
+                                        # loky is the ONLY supported backend — no threading/sequential
+                                        # fallback. Fail loudly so a wedged/broken worker pool is never
+                                        # silently downgraded to a slower path.
+                                        log(f"   ✗ parallel multi-seed GA via {_bk} FAILED "
+                                            f"({type(_pe).__name__}: {_pe}). No fallback — clear "
+                                            "__pycache__ and fully restart Streamlit, then retry.")
+                                        raise
                             _sh, _info = None, None
                             if _seed_results is not None:
                                 for _shc, _infoc in _seed_results:            # seed order preserved
                                     if _info is None or _infoc["best_fit"] > _info["best_fit"]:
                                         _sh, _info = _shc, _infoc
                             else:
-                                import time as _st_t
-                                _t_seq0 = _st_t.time()
-                                _bh_seq = [None]
-                                if int(_N_SEED) > 1:
-                                    log(f"   multi-seed GA (risk-min endpoint): running "
-                                        f"{int(_N_SEED)} seed(s) SEQUENTIALLY (parallel unavailable) "
-                                        f"— gens≤{int(_ga_gen)}, pop={int(_ga_pop)} each…")
+                                # Single-seed run (N_SEED == 1): no worker pool needed — run the one
+                                # seed in-process. This is NOT a parallel fallback; multi-seed ALWAYS
+                                # runs on loky and raises on failure (no sequential downgrade).
                                 for _s in range(int(_N_SEED)):
                                     _shc, _infoc = _run_midtilt_ga(
                                         ctx, lam=50.0, pop_size=_ga_pop, generations=_ga_gen,
                                         seed=_seed + _s, auto=True, patience=_ga_pat,
                                         warm_start=_warm, gain_max=_GA_GAIN_MAX, stop_check=_ga_stop,
                                         **_extra_kw)
-                                    if int(_N_SEED) > 1:
-                                        _log_seed(_s + 1, _infoc, _t_seq0, _bh_seq)
                                     if _info is None or _infoc["best_fit"] > _info["best_fit"]:
                                         _sh, _info = _shc, _infoc
-                                if int(_N_SEED) > 1:
-                                    log(f"   multi-seed GA: {int(_N_SEED)} seeds SEQUENTIAL in "
-                                        f"{_st_t.time() - _t_seq0:.1f}s (parallel unavailable).")
                             # ---- GA - Numba: extensive cross-validation diagnostics --------------
                             # Printed whenever the Numba engine was requested, so a reviewer can
                             # confirm the compiled kernel produced the SAME (objective, violation) as
@@ -6501,7 +5721,7 @@ with tab_eng:
                         # dial 0 sits inside every band harder. Intermediate dials inherit this via the
                         # frontier blend between the dial-0 and dial-99 endpoints.
                         _warm_dial0 = None
-                        _band_mult = float(ss.get("ga_band_mult", 1.0) or 1.0)   # UI band penalty strength
+                        _band_mult = 1.0   # band penalty strength fixed at 1.0 (input removed)
                         # #1 DIVERSE SEEDS: hand the risk-min search BOTH the revenue-greedy compliant
                         # split AND a risk-greedy split (each cell's share leaning to its lowest-risk
                         # gateways), so it starts inside the risk-min basin, not just the revenue corner.
@@ -6667,206 +5887,60 @@ with tab_eng:
                                 log(f"   [Warning] pre-enforcement auto-block detect skipped "
                                     f"({type(_bpe).__name__}: {_bpe}); post-hoc cap still applies.")
 
-                        def _enforce_endpoint(_shares):
-                            _g = _explode(_endpoint_agg(_shares))
-                            if _blk_pairs_pre:                      # cap blocked → floor BEFORE enforcing
-                                _g, _ = _apply_blocked_caps(_g, _blk_pairs_pre, float(floor))
-                            return _restrict_and_recap(_g)
-                        # dial 100 removed → the revenue endpoint is only needed when a ceiling dial
-                        # (w≥1) or a multi-dial frontier is produced. For a lone dial-0 run its full
-                        # enforcement (a whole extra solve) is dead weight, so skip it and frame the
-                        # variation off the COMPLIANT endpoint instead — byte-identical dial-0 output.
-                        _need_rev = any(w >= 1.0 - 1e-9 for w in weights) or len(weights) > 1
-                        _progress(_f_enf1, "Enforcing caps (1/2)…")
-                        _rev_gran = _enforce_endpoint(_comp_endpoint_G) if _need_rev else None  # dial 99↓ (skipped for lone dial 0)
-                        _progress(_f_enf2, "Enforcing caps (2/2)…")
-                        # The delivered dial-0 split is ALWAYS the GA / CMA-ES risk-minimised endpoint
-                        # (_safe_endpoint_G) — the compliance-target dropdown was removed. That endpoint
-                        # already falls back to the greedy+LP split only if the GA result fails the
-                        # aggregate-MID feasibility check. Enforced through the same full pass (VAMP cap +
-                        # per-MID bands + eligibility + auto-block + max-share/floor).
+                        # ENFORCEMENT REMOVED — a single dial-0 variation only. The delivered split is
+                        # the GA / CMA-ES risk-min endpoint (_safe_endpoint_G) with ONLY the eligibility
+                        # projection kept (hard bans + wallet-incapable + USA-only via _restrict), so a
+                        # production config never routes to an ineligible gateway. Dead (bank-blocked)
+                        # gateways are still floored (data-driven). NO VAMP-cap / per-MID band projection,
+                        # no revenue endpoint, no frontier blend.
                         _deliver_G = _safe_endpoint_G
-                        # Raw GA endpoint as a granular split (the INPUT to enforcement) — reused for
-                        # the diagnostic bypass path and the GA→enforced movement metric.
                         _ga_gran = _explode(_endpoint_agg(_deliver_G))
-                        if bool(ss.get("ga_bypass_enforcement")):
-                            # DIAGNOSTIC: deliver the raw GA split with NO compliance layer. Still floor
-                            # dead (bank-blocked) gateways — that's data-driven, not a projection.
-                            if _blk_pairs_pre:
-                                _ga_gran, _ = _apply_blocked_caps(_ga_gran, _blk_pairs_pre, float(floor))
-                            _comp_gran = _ga_gran
-                            log("   ⚠️ ENFORCEMENT BYPASSED (diagnostic): the delivered split is the RAW GA "
-                                "search output — it MAY breach the VAMP cap and per-MID bands and route to "
-                                "wallet-incapable / USA-only / banned gateways. NOT compliant — do NOT export "
-                                "this as a production config.")
-                        else:
-                            _comp_gran = _enforce_endpoint(_deliver_G)
-                            # GA → enforced movement: how much compliance had to reroute the GA split.
-                            try:
-                                _mk = ["rpgt", "currency", "bank", "gateway"]
-                                _p0 = _ga_gran[_mk + ["share"]].rename(columns={"share": "_s0"})
-                                _p1 = _comp_gran[_mk + ["share"]].rename(columns={"share": "_s1"})
-                                _mvj = _p0.merge(_p1, on=_mk, how="outer")
-                                if "cell_volume" in _ga_gran.columns:
-                                    _cvc = (_ga_gran.groupby(_mk[:3])["cell_volume"].first()
-                                            .rename("_cv").reset_index())
-                                    _mvj = _mvj.merge(_cvc, on=_mk[:3], how="left")
-                                    _cvv = pd.to_numeric(_mvj["_cv"], errors="coerce").fillna(0.0).to_numpy()
-                                    _totv = float(_cvc["_cv"].sum())
-                                else:
-                                    _cvv = np.ones(len(_mvj)); _totv = float(len(_mvj))
-                                _s0 = pd.to_numeric(_mvj["_s0"], errors="coerce").fillna(0.0).to_numpy()
-                                _s1 = pd.to_numeric(_mvj["_s1"], errors="coerce").fillna(0.0).to_numpy()
-                                _moved = float((np.abs(_s1 - _s0) * _cvv).sum()) / 2.0
-                                _nrows = int((np.abs(_s1 - _s0) > 1e-6).sum())
-                                log(f"   GA → enforced movement: compliance rerouted ~{_moved:,.0f} of "
-                                    f"~{_totv:,.0f} forecast volume (~{100.0 * _moved / max(_totv, 1e-9):.1f}%) "
-                                    f"across {_nrows:,} gateway-row(s) — 0% ⇒ the GA split was already compliant.")
-                            except Exception as _me:  # noqa: BLE001 — a diagnostic must never break a run
-                                log(f"   [Warning] GA→enforced movement metric skipped "
-                                    f"({type(_me).__name__}: {_me}).")
-                        _progress(_f_var, "Building variations…")
-                        # DIAL 100 (per spec): RAW softmax revenue reference — eligibility only, NO
-                        # VAMP / MID / max-share caps — the unconstrained revenue ceiling. May breach.
-                        _raw100 = _restrict(_explode(_endpoint_agg(_ref_share_G))) if _need_rev else None
-                        _keyc = ["rpgt", "currency", "bank", "gateway"]
+                        if _blk_pairs_pre:                       # floor dead (bank-blocked) gateways
+                            _ga_gran, _ = _apply_blocked_caps(_ga_gran, _blk_pairs_pre, float(floor))
+                        _comp_gran = _restrict(_ga_gran)         # eligibility only (bans / wallet / USA)
+                        log("   Enforcement OFF: delivered split = GA search output + eligibility "
+                            "(bans / wallet-incapable / USA-only); no VAMP-cap / per-MID band projection.")
+                        _progress(_f_var, "Building variation…")
+                        # SINGLE dial-0 variation = the eligibility-projected GA split (_comp_gran).
+                        # No frontier / blend / revenue endpoint — the dial and its multi-position
+                        # machinery are removed. "MIDs over cap" is logged for information only; no cap
+                        # is enforced on the delivered split.
                         variations = []
-                        _frame_src = (_rev_gran if (_rev_gran is not None and not getattr(_rev_gran, "empty", True))
-                                      else _comp_gran)
-                        if (_frame_src is not None and not getattr(_frame_src, "empty", True)
-                                and _comp_gran is not None and not getattr(_comp_gran, "empty", True)):
-                            _tmpl = _frame_src.reset_index(drop=True).copy()
-                            _cm = (_comp_gran[_keyc + ["share"]].drop_duplicates(_keyc)
-                                   .rename(columns={"share": "_comp_share_g"}))
-                            _tmpl = _tmpl.merge(_cm, on=_keyc, how="left")
-                            _rev_sh = pd.to_numeric(_tmpl["share"], errors="coerce").fillna(0.0).to_numpy()
-                            _comp_sh = pd.to_numeric(_tmpl["_comp_share_g"], errors="coerce").fillna(
-                                _tmpl["share"]).to_numpy()
-                            _cvol_g = pd.to_numeric(_tmpl.get("cell_volume", 0.0), errors="coerce").fillna(0.0).to_numpy()
-                            _tmpl = _tmpl.drop(columns=["_comp_share_g"])
-                            _fshare = _make_frontier_share(_tmpl, _rev_sh, _comp_sh)   # true frontier (falls back to blend)
-                            for i, w in enumerate(weights, 1):
-                                if w >= 1.0 - 1e-9 and _raw100 is not None and not getattr(_raw100, "empty", True):
-                                    _rg = _raw100
-                                    summ = portfolio_summary(_rg)
-                                    _mo = int(_mids_over_granular(_rg))
-                                    log(f"   ── GA variation {i}/{len(weights)} · slider 100 "
-                                        f"(Risk↔Conversion): RAW reference — uncapped revenue ceiling, may breach; "
-                                        f"MIDs over cap={_mo}, succ={summ['expected_success_rate']:.4f}, "
-                                        f"risk={summ['expected_risk_rate']:.4f}")
-                                else:
-                                    _bl = _fshare(float(w))   # true-frontier point at this dial (blend fallback inside)
-                                    _rg = _tmpl.copy()
-                                    _rg["share"] = _bl
-                                    _rg["volume"] = _cvol_g * _bl
-                                    summ = portfolio_summary(_rg)
-                                    _mo = int(_mids_over_granular(_rg))
-                                    log(f"   ── GA variation {i}/{len(weights)} · slider {int(round(w * 100))} "
-                                        f"(Risk↔Conversion): blend {int(round(w * 100))}% revenue / "
-                                        f"{int(round((1 - w) * 100))}% compliant; MIDs over cap={_mo}, "
-                                        f"succ={summ['expected_success_rate']:.4f}, risk={summ['expected_risk_rate']:.4f}")
-                                variations.append({
-                                    "weight": float(w), "split": _rg, "settings": ref_settings,
-                                    "mids_over_cap": _mo,
-                                    **{k: v for k, v in summ.items() if k != "volume"},
-                                    "volume": summ["volume"],
-                                })
-                        log(f"   GA total wall time (cross-cell per-MID tilt + blend): {_fmt_secs(_ga_wall_tot)} "
-                            f"(1 GA run [risk-min only; revenue-max = greedy+LP] × {_n_mid} vampMid tilts + "
-                            f"{2 if _need_rev else 1} enforcement(s) [revenue endpoint {'kept' if _need_rev else 'skipped — lone dial 0'}]).")
-                    elif not changed:
-                        log("✅ Reference (conversion-optimal) split already meets every per-vampMid "
-                            "VAMP cap — dial 99↓ identical (compliant); dial 100 = RAW reference (uncapped).")
-                        ref_gran = _restrict_and_recap(_explode(ref_agg))
-                        _raw100 = _restrict(_explode(ref_agg))   # dial 100: eligibility only, no caps
-                        _, ref_summ = _summ_from_shares(ref_share)
-                        _mo = int(_mids_over_granular(ref_gran))
-                        _raw_summ = portfolio_summary(_raw100) if (_raw100 is not None and not getattr(_raw100, "empty", True)) else ref_summ
-                        _raw_mo = int(_mids_over_granular(_raw100)) if (_raw100 is not None and not getattr(_raw100, "empty", True)) else _mo
-                        variations = []
-                        for w in weights:
-                            if w >= 1.0 - 1e-9 and _raw100 is not None and not getattr(_raw100, "empty", True):
-                                variations.append({
-                                    "weight": float(w), "split": _raw100, "settings": ref_settings,
-                                    "mids_over_cap": _raw_mo,
-                                    **{k: v for k, v in _raw_summ.items() if k != "volume"},
-                                    "volume": _raw_summ["volume"],
-                                })
-                            else:
-                                variations.append({
-                                    "weight": float(w), "split": ref_gran, "settings": ref_settings,
-                                    "mids_over_cap": _mo,
-                                    **{k: v for k, v in ref_summ.items() if k != "volume"},
-                                    "volume": ref_summ["volume"],
-                                })
+                        if _comp_gran is not None and not getattr(_comp_gran, "empty", True):
+                            _rg = _comp_gran.reset_index(drop=True).copy()
+                            summ = portfolio_summary(_rg)
+                            _mo = int(_mids_over_granular(_rg))
+                            log(f"   ── GA single variation (dial 0): MIDs over cap={_mo} "
+                                f"(informational — no cap enforced), succ={summ['expected_success_rate']:.4f}, "
+                                f"risk={summ['expected_risk_rate']:.4f}")
+                            variations.append({
+                                "weight": 0.0, "split": _rg, "settings": ref_settings,
+                                "mids_over_cap": _mo,
+                                **{k: v for k, v in summ.items() if k != "volume"},
+                                "volume": summ["volume"],
+                            })
+                        log(f"   GA total wall time: {_fmt_secs(_ga_wall_tot)} "
+                            f"(1 GA run [risk-min] × {_n_mid} vampMid tilts; enforcement removed).")
                     else:
-                        log(f"   adjusted split to meet per-vampMid VAMP caps "
-                            f"(retired {len(retired)} MID(s){'; ' + str(len(still_over)) + ' still over after retiring' if still_over else ''}); "
-                            "dial 100 = RAW reference (uncapped ceiling); 99↓ endpoint-blend to compliant (2 VAMP solves).")
-                        # ENDPOINT-BLEND for the COMPLIANT positions (dial 99↓0): enforce ONLY the two
-                        # compliant endpoints (VAMP-enforced revenue reference + best compliant), then
-                        # linearly blend the enforced granular shares between them. A blend of two
-                        # VAMP-compliant splits stays compliant (the per-MID rate is a Möbius function
-                        # of the mix), so the middles need no re-enforcement — 2 solves instead of 5.
-                        # DIAL 100 IS DIFFERENT: per spec it's the RAW engine reference — eligibility
-                        # only (bans / wallet), NO VAMP / MID / max-share caps — so it can BREACH. It
-                        # is the unconstrained revenue ceiling (a diagnostic, not deployable if it
-                        # breaches). Its "MIDs over cap" count surfaces exactly how much it breaches.
-                        # dial 100 removed → skip the revenue-endpoint enforcement for a lone dial-0
-                        # run (dead weight; frame off the compliant endpoint — identical dial-0 output).
-                        _need_rev = any(w >= 1.0 - 1e-9 for w in weights) or len(weights) > 1
-                        _rev_gran = (_restrict_and_recap(_explode(_summ_from_shares(ref_share)[0]))
-                                     if _need_rev else None)
-                        _comp_gran = _restrict_and_recap(_explode(_summ_from_shares(comp_share)[0]))
-                        _raw100 = (_restrict(_explode(_summ_from_shares(ref_share)[0])) if _need_rev else None)  # dial 100: eligibility only
-                        _keyc = ["rpgt", "currency", "bank", "gateway"]
+                        # NON-GENETIC engines (softmax / thompson / portfolio): a SINGLE dial-0
+                        # variation = the engine reference split with ONLY the eligibility projection
+                        # (bans / wallet-incapable / USA-only). Enforcement, dials and the frontier
+                        # blend are removed, so `changed` / `comp_share` no longer matter here.
+                        ref_gran = _restrict(_explode(ref_agg))
                         variations = []
-                        _frame_src = (_rev_gran if (_rev_gran is not None and not getattr(_rev_gran, "empty", True))
-                                      else _comp_gran)
-                        if (_frame_src is not None and not getattr(_frame_src, "empty", True)
-                                and _comp_gran is not None and not getattr(_comp_gran, "empty", True)):
-                            _tmpl = _frame_src.reset_index(drop=True).copy()
-                            _cm = (_comp_gran[_keyc + ["share"]].drop_duplicates(_keyc)
-                                   .rename(columns={"share": "_comp_share_g"}))
-                            _tmpl = _tmpl.merge(_cm, on=_keyc, how="left")
-                            _rev_sh = pd.to_numeric(_tmpl["share"], errors="coerce").fillna(0.0).to_numpy()
-                            _comp_sh = pd.to_numeric(_tmpl["_comp_share_g"], errors="coerce").fillna(
-                                _tmpl["share"]).to_numpy()
-                            _cvol_g = pd.to_numeric(_tmpl.get("cell_volume", 0.0), errors="coerce").fillna(0.0).to_numpy()
-                            _tmpl = _tmpl.drop(columns=["_comp_share_g"])
-                            _fshare = _make_frontier_share(_tmpl, _rev_sh, _comp_sh)   # true frontier (falls back to blend)
-                            for i, w in enumerate(weights, 1):
-                                if w >= 1.0 - 1e-9 and _raw100 is not None and not getattr(_raw100, "empty", True):
-                                    # DIAL 100: raw reference, uncapped — may breach (revenue ceiling).
-                                    _rg = _raw100
-                                    summ = portfolio_summary(_rg)
-                                    _mo = int(_mids_over_granular(_rg))
-                                    _tag = "RAW reference — uncapped, may breach"
-                                else:
-                                    _bl = _fshare(float(w))   # true-frontier point at this dial (blend fallback inside)
-                                    _rg = _tmpl.copy()
-                                    _rg["share"] = _bl
-                                    _rg["volume"] = _cvol_g * _bl
-                                    summ = portfolio_summary(_rg)
-                                    _mo = int(_mids_over_granular(_rg))
-                                    _tag = "endpoint-blend"
-                                variations.append({
-                                    "weight": float(w), "split": _rg, "settings": ref_settings,
-                                    "mids_over_cap": _mo,
-                                    **{k: v for k, v in summ.items() if k != "volume"},
-                                    "volume": summ["volume"],
-                                })
-                                log(f"   variation {i}/{len(weights)}: w={w:.2f} succ={summ['expected_success_rate']:.4f} "
-                                    f"risk={summ['expected_risk_rate']:.4f} MIDs-over={_mo} ({_tag})")
-                                try:
-                                    _sh = _rg["share"].to_numpy(float)
-                                    _bs = (_rg["baseline_share"].to_numpy(float) if "baseline_share" in _rg.columns else _sh)
-                                    _active = int((_sh > 1e-6).sum())
-                                    _l1 = float(np.abs(_sh - _bs).sum())
-                                    _diag(f"      ↳ gateways receiving volume={_active}/{len(_sh)} · Σ|Δshare vs baseline|={_l1:.1f} · "
-                                          f"total volume={summ.get('volume', 0):,.0f} · aggregate VAMP rate={summ['expected_risk_rate']:.4%}")
-                                except Exception as _e:  # noqa: BLE001
-                                    _diag(f"      ↳ [variation diag failed: {_e}]")
+                        if ref_gran is not None and not getattr(ref_gran, "empty", True):
+                            ref_gran = ref_gran.reset_index(drop=True)
+                            summ = portfolio_summary(ref_gran)
+                            _mo = int(_mids_over_granular(ref_gran))
+                            log(f"   ── {engine_key} single variation (dial 0): MIDs over cap={_mo} "
+                                f"(informational — no cap enforced), succ={summ['expected_success_rate']:.4f}, "
+                                f"risk={summ['expected_risk_rate']:.4f}")
+                            variations.append({
+                                "weight": 0.0, "split": ref_gran, "settings": ref_settings,
+                                "mids_over_cap": _mo,
+                                **{k: v for k, v in summ.items() if k != "volume"},
+                                "volume": summ["volume"],
+                            })
 
                     # --- GRANULAR PROFILE SAMPLES: dump a handful of representative engine
                     #     cells (currency × bank × rpgt) end-to-end — each gateway's baseline vs
@@ -7159,8 +6233,8 @@ with tab_eng:
                             "compress_allocation": str(ss.get("compress_allocation", "knapsack")),
                             "ga_search": "breach_targeted+smart_init+adaptive_lambda+diversity_archive (always on)",
                             "ga_risk_aversion": 0.0,   # dial removed — fixed at the revenue-shaped endpoint
-                            "ga_breach_fixed": float(ss.get("ga_breach_fixed", 250) or 250),
-                            "ga_band_mult": float(ss.get("ga_band_mult", 1.0) or 1.0),
+                            "ga_breach_fixed": 0.0,   # input removed — fixed at 0
+                            "ga_band_mult": 1.0,      # input removed — fixed at 1.0
                             "ga_generations": int(ss.get("ga_generations", 80) or 80),
                             "ga_pop_override": int(ss.get("ga_pop_override", 0) or 0),
                             "ga_perf": ss.get("ga_perf"),
@@ -7284,7 +6358,7 @@ def _split_df_to_xlsx_bytes(rdf):
 
 
 # ============================================================================
-# TAB 4 - Split, outputs & impact (UI Tab 3)
+# TAB 3 — Split, outputs & impact  (split tables, VAMP pre/post, financial impact, dashboards)
 # ============================================================================
 with tab_imp:
 
@@ -7898,6 +6972,12 @@ with tab_imp:
             # Revenue-by-vampMid × month table renders into this slot, positioned
             # ABOVE the Bank x Currency Impact section (its code lives further down).
             _rev_slot = st.container(border=True)
+
+            # Bridge charts (vampMid / RPGT revenue + success) are reserved HERE so they render
+            # ABOVE the bank-blocked table and the before→after volume-share chart. The bridge
+            # column-slots are created into this container further down (inside the `if date_col`
+            # block) and filled from the pre/post section, keeping the fill logic unchanged.
+            _finbridge_slot = st.container()
 
             # -------- Bank-blocked gateways + before/after share chart (same row) --------
             # Bank-blocked table narrowed 35% (0.5 → 0.325 of the row); share chart takes the rest.
@@ -8884,12 +7964,15 @@ with tab_imp:
                     # Row 1 = vampMid bridges (revenue | success); Row 2 = RPGT bridges (revenue |
                     # success). A trailing spacer keeps each pair's combined width within the pre/post
                     # impact table's footprint rather than spanning the whole tab.
-                    _vmc1, _vmc2, _vmc3 = st.columns([1, 1, 0.9])
-                    _vmbr_slot = _vmc1.container()     # revenue by vampMid
-                    _vmsr_slot = _vmc2.container()     # success by vampMid
-                    _rpc1, _rpc2, _rpc3 = st.columns([1, 1, 0.9])
-                    _rpgtbr_slot = _rpc1.container()   # revenue by RPGT
-                    _rpgtsr_slot = _rpc2.container()   # success by RPGT
+                    # Create the bridge column-slots INTO the reserved container above the
+                    # bank-blocked / share-chart row, so the bridges render at the top of the tab.
+                    with _finbridge_slot:
+                        _vmc1, _vmc2, _vmc3 = st.columns([1, 1, 0.9])
+                        _vmbr_slot = _vmc1.container()     # revenue by vampMid
+                        _vmsr_slot = _vmc2.container()     # success by vampMid
+                        _rpc1, _rpc2, _rpc3 = st.columns([1, 1, 0.9])
+                        _rpgtbr_slot = _rpc1.container()   # revenue by RPGT
+                        _rpgtsr_slot = _rpc2.container()   # success by RPGT
 
                     # SR + gateway-share charts (now vampMid-level, no headers) render on the
                     # Mid Detail tab, side by side.

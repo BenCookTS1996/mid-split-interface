@@ -73,15 +73,19 @@ _GRPK = ["cur", "bin", "rpgt", "pmp", "ctry", "per"]
 
 @_njit(cache=True)
 def _pop_band_kernel(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, ctot,
-                     pc_org, pc_vc, pc_pool, pc_band, cap_row, cap_band, ncell, nband):
+                     pc_org, pc_vc, pc_pool, pc_band, cap_row, cap_band, ncell, nband,
+                     vamp, txn, psum, vpsum, moved, pr, pshare, vshare, mvrow):
     """Bit-identical numba equivalent of PopulationBandProjector.project_pop: flat passes over
     the reduced scaffold with per-cell scratch (ncell), no dense (P × nR) arrays. ~7× faster on
-    the real scaffold. cap_row is pre-filtered to non-excl rows (excl txn contributions are 0)."""
+    the real scaffold. cap_row is pre-filtered to non-excl rows (excl txn contributions are 0).
+
+    All working arrays (vamp,txn,psum,vpsum,moved,pr,pshare,vshare,mvrow) are passed IN and
+    REUSED across calls (no per-generation allocation). Only the accumulators need resetting:
+    vamp/txn are zeroed here; psum/vpsum/moved are zeroed per candidate; pr/pshare/vshare/mvrow
+    are fully overwritten each candidate. Result is byte-identical to allocating fresh."""
     P = prop_raw.shape[0]; nR = propidx.shape[0]
     nA = pc_org.shape[0]; nC = cap_row.shape[0]
-    vamp = np.zeros((P, nband)); txn = np.zeros((P, nband))
-    psum = np.zeros(ncell); vpsum = np.zeros(ncell); moved = np.zeros(ncell)
-    pr = np.zeros(nR); pshare = np.zeros(nR); vshare = np.zeros(nR); mvrow = np.zeros(nR)
+    vamp[:, :] = 0.0; txn[:, :] = 0.0
     for p in range(P):
         psum[:] = 0.0; vpsum[:] = 0.0; moved[:] = 0.0
         for r in range(nR):
@@ -117,6 +121,12 @@ def _pop_band_kernel(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, ctot,
 
 
 def _prop_key(df: pd.DataFrame, by_rpgt: bool) -> np.ndarray:
+    """Build each row's bucket address ('cur|bin|mid', or 'cur|bin|rpgt|mid' when by_rpgt).
+
+    This is the key a proposed share is looked up by — the SAME string format the projector's
+    `prop_keys` use, so a candidate's shares line up with the right rows (like a postcode that
+    routes each share to the correct bucket).
+    """
     if by_rpgt:
         return (df["cur"].astype(str).str.strip().str.lower() + "|"
                 + df["bin"].astype(str).str.strip() + "|"
@@ -128,6 +138,11 @@ def _prop_key(df: pd.DataFrame, by_rpgt: bool) -> np.ndarray:
 
 
 def _prop_raw(T0: pd.DataFrame, prop: dict, by_rpgt: bool) -> np.ndarray:
+    """Look up each t0 row's proposed share from the `prop` dict by its bucket key.
+
+    Rows that are switched off (`excl`) or wallet/USA-masked (`emask`) are forced to 0 —
+    they can't receive routed volume, so they never enter the moved cohort.
+    """
     keys = _prop_key(T0, by_rpgt)
     m = {}
     for k, v in prop.items():
@@ -142,6 +157,17 @@ def _prop_raw(T0: pd.DataFrame, prop: dict, by_rpgt: bool) -> np.ndarray:
 
 
 def _static(T0: pd.DataFrame):
+    """Precompute the per-row pieces that DON'T depend on the candidate (done once).
+
+    Returns (gcode, ngc, base, ctot, mv_static):
+      * gcode / ngc — an integer code per cell (grpk) + the number of cells, so cell-wise
+        sums become fast bincounts (grouping rows into their cell "bins");
+      * base        — each row's baseline share of its cell (non-excluded VI ÷ cell VI);
+      * ctot        — the cell's total VI at t0, broadcast onto each of its rows;
+      * mv_static   — the UNGATED movable fraction pr·fcp. The psum>0 gate ("did the
+        candidate put any volume in this cell?") is applied per-candidate at eval time,
+        matching `_project_capped` line 3951.
+    """
     gcode = pd.factorize(T0[_GRPK].astype(str).agg("|".join, axis=1))[0]
     ngc = int(gcode.max()) + 1 if len(gcode) else 0
     av_sum = np.bincount(gcode, weights=T0["_av"].to_numpy(float), minlength=ngc)[gcode]
@@ -183,7 +209,15 @@ def _shares(T0, prop, by_rpgt, gcode, ngc, base):
 def project_reference(T0: pd.DataFrame, Pc: pd.DataFrame, pool: np.ndarray, prop: dict,
                       by_rpgt: bool = False) -> dict:
     """Faithful re-implementation of `_project_capped`'s array math (a readable oracle).
-    Returns {(midl, per): [vamp_post, txn_post]} for the capped MIDs."""
+
+    ANALOGY — the two-cohort model that ALL three projectors here share: split each MID's
+    volume into a HELD cohort (stays put) and a MOVED cohort (the movable fraction mv=pr·fcp,
+    re-routed across gateways by the candidate's proposed shares). In a cell the candidate
+    leaves empty (psum==0) nothing can move, so the held cohort keeps 100%. The final band
+    value = held volume + the candidate's slice of the redistributed moved pool.
+
+    Returns {(midl, per): [vamp_post, txn_post]} for the capped MIDs.
+    """
     T0 = T0.reset_index(drop=True)
     Pc = Pc.reset_index(drop=True)
     gcode, ngc, base, ctot, mv_static = _static(T0)
@@ -433,14 +467,36 @@ class PopulationBandProjector:
                 self._t_rows[keep].astype(np.int64), self._t_bandcol[keep].astype(np.int64))
         return self._nbcache
 
+    def _nb_buffers(self, P):
+        """Pre-allocated working buffers for the numba kernel, cached & REUSED across calls
+        (removes tens of MB of per-generation alloc/free). The big scratch (psum/vpsum/moved
+        sized ncell; pr/pshare/vshare/mvrow sized nR) is P-INDEPENDENT so it's allocated ONCE;
+        only vamp/txn (P×B, tiny) reallocate when P changes (λ eval_ov vs P=1 score_of). The
+        returned vamp/txn ARE these buffers — the caller must consume them before the next call
+        (the search's _bands_pen reads them straight into the penalty, so that holds)."""
+        fixed = getattr(self, "_nbbuf_fixed", None)
+        if fixed is None:
+            nR = len(self._gcode); ncell = int(self._ngc)
+            fixed = (np.zeros(ncell), np.zeros(ncell), np.zeros(ncell),     # psum, vpsum, moved
+                     np.zeros(nR), np.zeros(nR), np.zeros(nR), np.zeros(nR))  # pr, pshare, vshare, mvrow
+            self._nbbuf_fixed = fixed
+        vt = getattr(self, "_nbbuf_vt", None)
+        if vt is None or vt[0] != int(P):
+            B = int(self._B)
+            vt = (int(P), np.zeros((int(P), B)), np.zeros((int(P), B)))     # vamp, txn (outputs)
+            self._nbbuf_vt = vt
+        return (vt[1], vt[2]) + fixed
+
     def project_pop_numba(self, prop_raw: np.ndarray):
         """Numba-accelerated project_pop — bit-identical, ~7× faster on the real scaffold.
-        Falls back to the NumPy path if numba is unavailable or the scaffold is empty."""
+        Falls back to the NumPy path if numba is unavailable or the scaffold is empty.
+        Working arrays are pooled (see _nb_buffers); consume the result before the next call."""
         prop_raw = np.ascontiguousarray(prop_raw, dtype=np.float64)
         if not _HAVE_NUMBA or not len(self._gcode):
             return self.project_pop(prop_raw)
         a = self._nb_arrays()
-        return _pop_band_kernel(prop_raw, *a, int(self._ngc), int(self._B))
+        buf = self._nb_buffers(prop_raw.shape[0])
+        return _pop_band_kernel(prop_raw, *a, int(self._ngc), int(self._B), *buf)
 
     def _cellsum(self, x):
         """(P, nR) -> (P, ngc) segment sum over cell codes via sparse matmul (C-fast)."""

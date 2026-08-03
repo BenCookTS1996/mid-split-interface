@@ -12,14 +12,14 @@ ga_band_mult: 1.0
 ga_generations: 400
 ga_pop_override: 64
 ga_perf:
-  secs: 1996.3966221809387
+  secs: 7254.256659984589
   budget: 25600
   gen: 400
   pop: 64
   seeds: 8
   restarts: 2
   nvar: 1
-  n: 59155
-  compress_secs: 235.00035786628723
+  n: 110438
+  compress_secs: 281.10580110549927
   pool_target: 500
-total_secs: 2388.6
+total_secs: 7821.3

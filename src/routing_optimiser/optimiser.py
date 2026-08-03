@@ -208,6 +208,12 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
                           step: float = 0.05):
     """Cross-cell adjustment so each vampMid's AGGREGATE VAMP rate <= cap.
 
+    ANALOGY: a MID's monitored rate is the volume-weighted average across every cell it runs
+    in — like a student's overall grade averaged across subjects, weighted by credit hours. To
+    pull that average under the limit with the least disruption, we move volume off the MID's
+    WORST cells onto the cheapest alternative in each; a MID that's over the limit in EVERY
+    cell can't be fixed by re-weighting, so it's retired (dropped) and its volume handed off.
+
     A vampMid spans many routing cells; its Visa-monitored rate is the volume-
     weighted mean of its per-cell rates. Starting from the reference split, we
     iteratively shave share off the MID's HIGHEST-rate cells (handing it to the
@@ -365,6 +371,11 @@ def enforce_mid_volume_caps(df: pd.DataFrame, a_max_by_mid: dict,
                             max_share: float = 1.0):
     """Scale each vampMid's allocated volume down to a_max x its BASELINE volume.
 
+    ANALOGY: a spend cap per MID. If a MID is routed more volume than a_max × what it
+    historically carried, we shrink every one of its cells by the same factor (like trimming
+    an over-budget line item proportionally) and hand the freed volume to the cheapest other
+    gateway in each cell.
+
     `a_max_by_mid[mid]` is the maximum allowed (proposed / baseline) volume ratio
     for that vampMid, derived upstream from its per-MID monthly VAMP-count / Txn
     caps (and 0 if a rate cap it can't meet by re-weighting forces retirement).
@@ -426,68 +437,101 @@ def enforce_mid_volume_caps(df: pd.DataFrame, a_max_by_mid: dict,
 
 def optimise_split(problems: list[CellProblem],
                    settings: OptimiserSettings) -> pd.DataFrame:
-    """Solve every cell with the selected engine at the slider's current weight."""
+    """Solve every cell with the selected engine and assemble the long split table.
+
+    Runs the chosen engine over every CellProblem at the slider's current weight and stacks
+    the results into one tidy "long" DataFrame (one row per cell × gateway that receives
+    volume). Gateways with a negligible share (<1e-9) are dropped.
+    """
     engine = get_engine(settings.engine, settings.risk_conversion_weight,
                         settings.hard, settings.soft, **settings.engine_params)
-    rows = []
+    # Per-column accumulators + a single DataFrame at the end. Byte-identical to the old
+    # list-of-dicts build (same rows in the same order, same per-column values/dtypes,
+    # same column order), but pandas builds a frame from dict-of-lists far faster than by
+    # inferring schema across one dict per row.
+    _c_rpgt, _c_cur, _c_bank, _c_gw = [], [], [], []
+    _c_share, _c_vol, _c_cvol = [], [], []
+    _c_gsr, _c_grr, _c_ces, _c_cer, _c_bshare = [], [], [], [], []
+    _c_feas, _c_note = [], []
     for p in problems:
         sol = engine.solve(p)
+        _has = len(sol.shares)
         for i, gw in enumerate(p.gateways):
-            share = float(sol.shares[i]) if len(sol.shares) else 0.0
+            share = float(sol.shares[i]) if _has else 0.0
             if share < 1e-9:
                 continue
-            rows.append({
-                "rpgt": p.rpgt, "currency": p.currency, "bank": p.bank,
-                "gateway": gw,
-                "share": share,
-                "volume": p.volume * share,
-                "cell_volume": p.volume,
-                "gateway_success_rate": float(p.success_rates[i]),
-                "gateway_risk_rate": float(p.risk_rates[i]),
-                "cell_expected_success": sol.expected_success_rate,
-                "cell_expected_risk": sol.expected_risk_rate,
-                "baseline_share": float(p.baseline_shares[i]),
-                "feasible": sol.feasible,
-                "note": sol.note,
-            })
-    return pd.DataFrame(rows)
+            _c_rpgt.append(p.rpgt); _c_cur.append(p.currency); _c_bank.append(p.bank)
+            _c_gw.append(gw)
+            _c_share.append(share)
+            _c_vol.append(p.volume * share)
+            _c_cvol.append(p.volume)
+            _c_gsr.append(float(p.success_rates[i]))
+            _c_grr.append(float(p.risk_rates[i]))
+            _c_ces.append(sol.expected_success_rate)
+            _c_cer.append(sol.expected_risk_rate)
+            _c_bshare.append(float(p.baseline_shares[i]))
+            _c_feas.append(sol.feasible)
+            _c_note.append(sol.note)
+    if not _c_share:
+        return pd.DataFrame([])   # preserve the old empty-frame (0×0) shape when nothing routes
+    return pd.DataFrame({
+        "rpgt": _c_rpgt, "currency": _c_cur, "bank": _c_bank,
+        "gateway": _c_gw,
+        "share": _c_share,
+        "volume": _c_vol,
+        "cell_volume": _c_cvol,
+        "gateway_success_rate": _c_gsr,
+        "gateway_risk_rate": _c_grr,
+        "cell_expected_success": _c_ces,
+        "cell_expected_risk": _c_cer,
+        "baseline_share": _c_bshare,
+        "feasible": _c_feas,
+        "note": _c_note,
+    })
 
 
 def portfolio_summary(split: pd.DataFrame) -> dict:
-    """Volume-weighted headline numbers for a whole split."""
+    """Volume-weighted headline numbers for a whole split (the book-level scorecard).
+
+    Blends every gateway-row's success and risk rate by its volume — i.e. what the WHOLE
+    proposed book is expected to convert at and risk at — plus a count of cells that failed
+    a hard constraint. Like averaging a fleet's fuel economy weighted by miles driven.
+    """
     if split.empty:
         return {"volume": 0.0, "expected_success_rate": 0.0,
                 "expected_risk_rate": 0.0, "infeasible_cells": 0}
-    v = split["volume"].to_numpy()
-    succ = (v * split["gateway_success_rate"]).sum() / max(v.sum(), 1)
-    risk = (v * split["gateway_risk_rate"]).sum() / max(v.sum(), 1)
-    infeasible = split.loc[~split["feasible"], ["rpgt", "currency", "bank"]].drop_duplicates()
+    volumes = split["volume"].to_numpy()
+    total_volume = max(volumes.sum(), 1)
+    expected_success = (volumes * split["gateway_success_rate"]).sum() / total_volume
+    expected_risk = (volumes * split["gateway_risk_rate"]).sum() / total_volume
+    infeasible_cells = split.loc[~split["feasible"], ["rpgt", "currency", "bank"]].drop_duplicates()
     return {
-        "volume": float(v.sum()),
-        "expected_success_rate": float(succ),
-        "expected_risk_rate": float(risk),
-        "infeasible_cells": int(len(infeasible)),
+        "volume": float(volumes.sum()),
+        "expected_success_rate": float(expected_success),
+        "expected_risk_rate": float(expected_risk),
+        "infeasible_cells": int(len(infeasible_cells)),
     }
 
 
 def sweep_slider(problems: list[CellProblem], settings: OptimiserSettings,
                  weights=None) -> pd.DataFrame:
-    """
-    Produce split *variations* across the conversion<->risk slider.
-    Returns one row per weight with headline success/risk, tracing the
-    Pareto frontier the UI can plot and let the user pick from.
+    """Produce split *variations* across the conversion↔risk slider.
+
+    Re-solves the whole book at each slider position and records its headline success/risk,
+    tracing the Pareto frontier the UI can plot and let the user pick from. (Used by
+    scripts/run_pipeline.py; the app itself now delivers a single split.)
     """
     if weights is None:
         weights = np.round(np.linspace(0.0, 1.0, 11), 2)
-    out = []
-    for w in weights:
-        s = OptimiserSettings(
-            risk_conversion_weight=float(w), engine=settings.engine,
+    rows = []
+    for weight in weights:
+        slider_settings = OptimiserSettings(
+            risk_conversion_weight=float(weight), engine=settings.engine,
             engine_params=dict(settings.engine_params),
             hard=settings.hard, soft=settings.soft,
         )
-        split = optimise_split(problems, s)
-        summ = portfolio_summary(split)
-        summ["weight"] = float(w)
-        out.append(summ)
-    return pd.DataFrame(out)
+        split = optimise_split(problems, slider_settings)
+        summary = portfolio_summary(split)
+        summary["weight"] = float(weight)
+        rows.append(summary)
+    return pd.DataFrame(rows)

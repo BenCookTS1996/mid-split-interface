@@ -451,6 +451,11 @@ def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, cell_starts, cell_counts, e
     gateways — extra reach the coarse per-MID tilt can't provide. `n_fine`=0 (default) is the
     exact 3M-genome behaviour.
 
+    ANALOGY: θr / θq / g are ~three knobs per MID. Turning θr up leans that MID's volume toward
+    its LOW-risk cells, θq toward its HIGH-revenue cells, and g raises/lowers its overall presence.
+    This function turns those ~20 knob settings into a full per-gateway split (then applies the
+    hard floor/cap). That tiny genome is why the search is so fast.
+
     Speed (identical results): with `eidx` (eligible column indices) the exp is computed only on
     eligible columns; `prep` reuses precomputed cap/floor constants."""
     if M == 0:
@@ -797,7 +802,13 @@ def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=N
     STRICTLY feasible. `repair(X)->X'` is an optional Lamarckian repair applied to samples
     before scoring (repaired points drive the update). Active negative recombination weights
     (Hansen 2016) shrink the worst directions. Returns (best_x, best_key, best_ov, gen_trace).
-    Self-contained numpy; deterministic given `seed`."""
+    Self-contained numpy; deterministic given `seed`.
+
+    ANALOGY: CMA-ES searches like a smart swarm. Each generation it samples candidate tilt-vectors
+    from a bell-shaped "cloud", scores them, keeps the best few, then MOVES and RESHAPES the cloud
+    toward them — automatically learning which directions matter and how big a step to take.
+    "Active" means it also nudges the cloud AWAY from the worst directions, and "feasibility-first"
+    means a compliant candidate always beats a non-compliant one when picking the winner."""
     rng = np.random.default_rng(int(seed))
     x0 = np.asarray(x0, float)
     D = x0.shape[0]
@@ -878,7 +889,6 @@ def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=N
                           float(best_ov[0]) if np.isfinite(best_ov[0]) else float("nan")))
         # ^ + best violation, ε tolerance, and incumbent FITNESS (best_ov[0]; revenue−riskmin of the
         #   current best-so-far split) — feeds the fitness series in the UI convergence chart.
-        _fin_obj, _fin_viol = obj, viol                       # last generation's population
         _fin_obj, _fin_viol = obj, viol                       # last generation's population
         Xsorted = Xc[idx]
         xold = xmean.copy()

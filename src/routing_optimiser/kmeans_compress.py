@@ -79,9 +79,15 @@ def wallet_segment_split(split: pd.DataFrame, wallet_incapable, wallet_frac=None
 
 
 def _cap_and_respill(vec: np.ndarray, cap: float) -> np.ndarray:
+    """Cap every share at `cap` and re-spill the overflow onto the others (keeps the sum at 1).
+
+    ANALOGY: pour the excess from any over-full glass into the ones with room, in proportion to
+    how much they already hold, and repeat until none overflow — so a cluster's representative
+    split never puts more than `cap` on a single gateway (it always keeps a backup).
+    """
     vec = np.clip(vec, 0, None)
-    s = vec.sum()
-    vec = vec / s if s > 0 else vec
+    total = vec.sum()
+    vec = vec / total if total > 0 else vec
     for _ in range(50):
         over = vec > cap
         if not over.any():

@@ -1,7 +1,15 @@
 """Tab: Generate ConnectorPool JSON configs from the proposed split.
 
+This is the LAST-MILE tab: it turns the chosen split variation into the actual
+ConnectorPool JSON files production deploys — optionally COMPRESSED to a target
+number of pools first (fewer, shared rules instead of one bespoke rule per cell),
+then zipped for download, with a search box to inspect a single config.
+
+ANALOGY: the split is the "recipe"; this tab prints the "shopping list" the kitchen
+(production) actually follows. Call render(ss, PROJECT_ROOT) from inside `with tab_cfg:`.
+
 Extracted from streamlit_app.py (behaviour unchanged) as the first step of the
-per-tab split. Call render(ss, PROJECT_ROOT) from inside `with tab_cfg:`."""
+per-tab split."""
 from __future__ import annotations
 
 import os
@@ -16,6 +24,13 @@ __build__ = "2026-07-29-cfg-json-viewer-bin-filter+single-variation-dial-guard"
 
 
 def render(ss, PROJECT_ROOT):
+    """Render the config-generation tab.
+
+    Flow: if no split has been computed yet, show a placeholder. Otherwise pick the split
+    variation (brand + go-live come from earlier tabs), optionally compress it to the pool
+    target, build the per-Brand×RPGT templates, run the ConnectorPool generator, and offer the
+    results as a zip plus a per-config search/download. `ss` is Streamlit's session_state.
+    """
     _variations = ss.get("variations")
     if not _variations:
         st.markdown(
