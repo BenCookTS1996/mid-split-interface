@@ -489,14 +489,20 @@ class PopulationBandProjector:
         only vamp/txn (P×B, tiny) reallocate when P changes (λ eval_ov vs P=1 score_of). The
         returned vamp/txn ARE these buffers — the caller must consume them before the next call
         (the search's _bands_pen reads them straight into the penalty, so that holds)."""
+        # Reallocate when missing OR read-only. When this projector is shipped to a loky
+        # worker, joblib memmaps its cached ndarrays as READ-ONLY, but the numba kernel
+        # writes into these scratch buffers (psum[:]=0.0 …) → 'Cannot modify readonly array'
+        # TypingError. A writeable re-alloc in the worker (re-cached on the worker's own copy,
+        # reused for its lifetime) fixes it; the main process keeps its original buffers.
+        # Numerically identical — same np.zeros scratch, fully overwritten each call.
         fixed = getattr(self, "_nbbuf_fixed", None)
-        if fixed is None:
+        if fixed is None or not fixed[0].flags.writeable:
             nR = len(self._gcode); ncell = int(self._ngc)
             fixed = (np.zeros(ncell), np.zeros(ncell), np.zeros(ncell),     # psum, vpsum, moved
                      np.zeros(nR), np.zeros(nR), np.zeros(nR), np.zeros(nR))  # pr, pshare, vshare, mvrow
             self._nbbuf_fixed = fixed
         vt = getattr(self, "_nbbuf_vt", None)
-        if vt is None or vt[0] != int(P):
+        if vt is None or vt[0] != int(P) or not vt[1].flags.writeable:
             B = int(self._B)
             vt = (int(P), np.zeros((int(P), B)), np.zeros((int(P), B)))     # vamp, txn (outputs)
             self._nbbuf_vt = vt

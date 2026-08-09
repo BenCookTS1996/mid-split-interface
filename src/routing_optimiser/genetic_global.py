@@ -791,6 +791,11 @@ def _violation_breakdown(shares, ctx, top_k=20):
 
 _FEAS_TOL = 1e-9
 
+# ε-constrained selection: fraction of the OPENING batch to admit as "ε-feasible" (Takahama–Sakai).
+# ε₀ is set to this quantile of the first generation's violations, so it self-scales to the problem
+# — the only knob is "what share of the opening batch to let through", not a hard scale/clamp.
+_EPS_Q = 0.20
+
 
 # [FN-121]
 def _feas_keys(obj, viol, tol=_FEAS_TOL):
@@ -875,6 +880,12 @@ def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=N
         obj, viol = eval_ov(Xc)
         obj = np.asarray(obj, float); viol = np.asarray(viol, float)
         counteval += lam
+        if it == 0:
+            # Data-derived ε₀ (#5): admit the best _EPS_Q fraction of THIS opening batch as
+            # ε-feasible — ε₀ = the _EPS_Q-quantile of the generation's violations. Self-scaling,
+            # no fixed fraction/clamp; if ≥ _EPS_Q of the batch is already feasible the quantile is
+            # 0 → strict from the start. Overrides any passed-in eps0.
+            eps0 = float(np.percentile(viol, 100.0 * _EPS_Q)) if viol.size else 0.0
         eps_it = float(eps0) * max(0.0, 1.0 - it / max(1.0, 0.8 * max_iter))   # relax early, strict late
         rkeys = _feas_keys(obj, viol, tol=max(eps_it, _FEAS_TOL))              # SELECTION (relaxed)
         skeys = _feas_keys(obj, viol, tol=_FEAS_TOL)                          # BEST-TRACK (strict)
@@ -1110,8 +1121,9 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     # ---- OPT-IN Numba fast path ("GA - Numba" engine only) --------------------------------
     # numba=False (the default, i.e. the production Genetic engine) leaves EVERYTHING above
     # untouched. When numba=True we build a fused float64 kernel and swap it in for the hot
-    # per-generation eval. Any failure -> keep NumPy. The verify result is returned in
-    # info['numba'] so the caller can log it for cross-validation.
+    # per-generation eval. FAIL-LOUD: any failure (missing numba, build error, eval exception, or
+    # a NumPy⇄kernel mismatch) RAISES with full diagnostics — it never silently reverts to NumPy.
+    # The verify result is also recorded in info['numba'] for cross-validation on success.
     #   numba_trust=False: VERIFY the kernel here (NumPy-vs-Numba on a genome sample) before use.
     #   numba_trust=True : the main-process pre-compile ALREADY verified this exact kernel/signature,
     #                      so skip the per-worker re-check (it was 16× redundant — one NumPy eval and
@@ -1121,65 +1133,104 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     # (bans->0+renorm, wallet/USA blend) on the decoded shares before scoring — see
     # numba_kernels._fused_eval — so the Numba fitness == the NumPy _obj_viol fitness even when
     # eligibility scoring is active. No longer force-disabled; verify() below (or the main-process
-    # pre-compile) still cross-checks NumPy-vs-kernel and falls back to NumPy on ANY mismatch, so a
-    # divergent build can never silently optimise the wrong fitness.
+    # pre-compile) still cross-checks NumPy-vs-kernel and RAISES on ANY mismatch, so a divergent
+    # build can never silently optimise the wrong fitness.
     if numba:
+        # FAIL-LOUD policy: when the Numba engine is requested we NEVER silently fall back to the
+        # NumPy path. Any problem — numba missing, kernel build error, an eval exception, or a
+        # NumPy⇄kernel MISMATCH — raises a RuntimeError with extensive diagnostics (verify report +
+        # build markers + traceback) so it surfaces in the run log and is easy to debug. (A divergent
+        # kernel silently optimising the wrong fitness is exactly what this prevents.)
+        import traceback as _nb_tb
         ga_numba_info["reason"] = ""
+        from . import numba_kernels as _nbk
+        _nb_build = getattr(_nbk, "__build__", "")
+        _nb_ctx = (f"genetic_global build={__build__}; numba_kernels build={_nb_build}; "
+                   f"D={D}, M={M}, N={N}, K={_K}, seed={seed}, numba_trust={bool(numba_trust)}, "
+                   f"bfix={float(ctx.get('breach_fixed', 0.0) or 0.0)}")
+        if not _nbk.NUMBA_OK:
+            raise RuntimeError(
+                "Numba engine requested (numba=True) but numba is not importable in this "
+                "environment. Refusing to silently fall back to the NumPy path — install numba "
+                f"or select a non-numba engine.\n  [{_nb_ctx}]")
         try:
-            from . import numba_kernels as _nbk
-            if not _nbk.NUMBA_OK:
-                ga_numba_info["reason"] = "numba not importable in this environment"
-            else:
-                _nb_eval_actual = _nbk.make_numba_eval(M, ref, zr, zq, mid_id, cs, cc, elig,
-                                                       _cap, _floor, _fine_idx, _zr_cell, _K,
-                                                       cv, risk, rc, ctx)
-                ga_numba_info["build"] = getattr(_nbk, "__build__", "")
-                if numba_trust:
-                    _accept = True                       # already verified by the main pre-compile
-                    ga_numba_info["trusted"] = True
-                    ga_numba_info["reason"] = "trusted (verified by main-process pre-compile)"
-                    # Time ONE eval so the caller can tell whether this worker LOADED the cached
-                    # kernel (fast, ~<1s) or had to RE-COMPILE it (slow, tens of seconds = cache
-                    # miss in the worker) — the key clue for a slow multi-seed search.
-                    try:
-                        import time as _nt
-                        _t0 = _nt.time()
-                        _nb_eval_actual(_to_actual(np.zeros((1, D))))
-                        ga_numba_info["first_eval_s"] = float(_nt.time() - _t0)
-                    except Exception:  # noqa: BLE001
-                        pass
-                else:
-                    _np_eval_actual = lambda G: _obj_viol(_decode(G), ctx)   # noqa: E731
-                    # Deterministic verification sample: zero (θ=0 base), warm-start if any, + random.
-                    _vrng = np.random.default_rng(int(seed) ^ 0x5A17)
-                    _vs = [np.zeros(D)]
-                    if warm_start is not None:
-                        try:
-                            _vs.append(_to_unit(np.asarray(warm_start, float)))
-                        except Exception:  # noqa: BLE001
-                            pass
-                    _vs += list(_vrng.random((6, D)))
-                    _sampleG = _to_actual(np.clip(np.asarray(_vs, float), 0.0, 1.0))
-                    # Pass the fixed-breach magnitude so verify tolerates knife-edge step flips
-                    # (whole-bfix jumps) while still catching genuine smooth-term divergence.
-                    _vr = _nbk.verify(_np_eval_actual, _nb_eval_actual, _sampleG,
-                                      bfix=float(ctx.get("breach_fixed", 0.0) or 0.0))
-                    ga_numba_info.update(_vr)
-                    _accept = bool(_vr.get("ok"))
-                if _accept:
-                    # [FN-135]
-                    def eval_ov(V):                          # noqa: F811 - numba override
-                        _o, _v, _X = _nb_eval_actual(_to_actual(V))   # kernel returns pre-elig shares
-                        return _o, _v + _bands_pen(_X)
+            _nb_eval_actual = _nbk.make_numba_eval(M, ref, zr, zq, mid_id, cs, cc, elig,
+                                                   _cap, _floor, _fine_idx, _zr_cell, _K,
+                                                   cv, risk, rc, ctx)
+        except Exception as _e:
+            raise RuntimeError(
+                "Numba kernel BUILD failed (numba=True) — failing loudly instead of falling back "
+                f"to NumPy.\n  error   : {type(_e).__name__}: {_e}\n  [{_nb_ctx}]\n"
+                f"  traceback:\n{_nb_tb.format_exc()}") from _e
+        ga_numba_info["build"] = _nb_build
+        if numba_trust:
+            ga_numba_info["trusted"] = True
+            ga_numba_info["reason"] = "trusted (verified by main-process pre-compile)"
+            # Time ONE eval so the caller can tell whether this worker LOADED the cached kernel
+            # (fast, ~<1s) or had to RE-COMPILE it (slow = cache miss). A failure here is a real
+            # kernel error, so it now RAISES rather than being swallowed.
+            try:
+                import time as _nt
+                _t0 = _nt.time()
+                _nb_eval_actual(_to_actual(np.zeros((1, D))))
+                ga_numba_info["first_eval_s"] = float(_nt.time() - _t0)
+            except Exception as _e:
+                raise RuntimeError(
+                    "Numba kernel EVAL failed on a trusted worker (numba=True, numba_trust=True) — "
+                    f"failing loudly instead of falling back to NumPy.\n  error   : "
+                    f"{type(_e).__name__}: {_e}\n  [{_nb_ctx}]\n  traceback:\n{_nb_tb.format_exc()}") from _e
+        else:
+            _np_eval_actual = lambda G: _obj_viol(_decode(G), ctx)   # noqa: E731
+            # Deterministic verification sample: zero (θ=0 base), warm-start if any, + random.
+            _vrng = np.random.default_rng(int(seed) ^ 0x5A17)
+            _vs = [np.zeros(D)]
+            if warm_start is not None:
+                try:
+                    _vs.append(_to_unit(np.asarray(warm_start, float)))
+                except Exception:  # noqa: BLE001
+                    pass
+            _vs += list(_vrng.random((6, D)))
+            _sampleG = _to_actual(np.clip(np.asarray(_vs, float), 0.0, 1.0))
+            # Pass the fixed-breach magnitude so verify tolerates knife-edge step flips
+            # (whole-bfix jumps) while still catching genuine smooth-term divergence.
+            try:
+                _vr = _nbk.verify(_np_eval_actual, _nb_eval_actual, _sampleG,
+                                  bfix=float(ctx.get("breach_fixed", 0.0) or 0.0))
+            except Exception as _e:
+                raise RuntimeError(
+                    "Numba⇄NumPy verification itself raised (numba=True) — failing loudly.\n"
+                    f"  error   : {type(_e).__name__}: {_e}\n  [{_nb_ctx}]\n"
+                    f"  traceback:\n{_nb_tb.format_exc()}") from _e
+            ga_numba_info.update(_vr)
+            if not bool(_vr.get("ok")):
+                raise RuntimeError(
+                    "Numba kernel does NOT match the NumPy fitness (numba=True) — failing loudly "
+                    "instead of silently using NumPy. The fused kernel and the reference "
+                    "`_obj_viol` disagree beyond tolerance on the verification sample:\n"
+                    f"  reason           : {_vr.get('reason')}\n"
+                    f"  n_sample         : {_vr.get('n_sample')}\n"
+                    f"  max_rel_obj      : {_vr.get('max_rel_obj')}   (objective gate rtol=1e-7)\n"
+                    f"  max_abs_obj      : {_vr.get('max_abs_obj')}\n"
+                    f"  max_abs_viol     : {_vr.get('max_abs_viol')}\n"
+                    f"  max_rel_viol     : {_vr.get('max_rel_viol')}\n"
+                    f"  max_smooth_viol  : {_vr.get('max_smooth_viol')}\n"
+                    f"  n_step_flips     : {_vr.get('n_step_flips')}   (whole-bfix threshold flips)\n"
+                    f"  t_np / t_nb (s)  : {_vr.get('t_np')} / {_vr.get('t_nb')}   speedup={_vr.get('speedup')}\n"
+                    f"  compile_s        : {_vr.get('compile_s')}\n"
+                    f"  [{_nb_ctx}]\n"
+                    "Investigate the kernel⇄_obj_viol lockstep (decode / eligibility apply / penalty shape).")
+        # Accepted: swap the fused kernel in for the hot-loop eval.
+        # [FN-135]
+        def eval_ov(V):                          # noqa: F811 - numba override
+            _o, _v, _X = _nb_eval_actual(_to_actual(V))   # kernel returns pre-elig shares
+            return _o, _v + _bands_pen(_X)
 
-                    # [FN-136]
-                    def score_of(gu):                        # noqa: F811 - numba override
-                        _o, _v, _X = _nb_eval_actual(_to_actual(np.asarray(gu)[None, :]))
-                        return float(_o[0]), float(_v[0] + _bands_pen(_X)[0])
+        # [FN-136]
+        def score_of(gu):                        # noqa: F811 - numba override
+            _o, _v, _X = _nb_eval_actual(_to_actual(np.asarray(gu)[None, :]))
+            return float(_o[0]), float(_v[0] + _bands_pen(_X)[0])
 
-                    ga_numba_info["used"] = True
-        except Exception as _e:  # noqa: BLE001 - any failure -> NumPy path, never crash a run
-            ga_numba_info["reason"] = f"{type(_e).__name__}: {_e}"
+        ga_numba_info["used"] = True
 
     # (EXACT band penalty is folded directly into eval_ov / score_of above via _bands_pen, using
     # the kernel's returned PRE-eligibility shares — so there is no separate wrapper and no NumPy
@@ -1318,9 +1369,9 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     _LAM_CAP = int(4 * lam_cma)                              # bound IPOP growth
     best_u = x0_u.copy(); best_sv = score_of(best_u)
     init_sv = best_sv
-    # #5 adaptive ε: scale the early feasibility relaxation to the ACTUAL starting infeasibility
-    # (feasible start → tiny; very infeasible → looser), instead of a fixed 0.15.
-    _EPS0 = float(min(0.40, max(0.05, 0.6 * best_sv[1])))
+    # #5 adaptive ε: ε₀ is now DERIVED inside _cmaes from each restart's opening batch (the
+    # _EPS_Q-quantile of its violations), so it self-scales with no magic fraction/clamp. The old
+    # single-seed heuristic (0.6·violation clamped to [0.05, 0.40]) is retired.
 
     # [FN-143]
     def _polish_genome(u0):
@@ -1417,7 +1468,6 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
         bx, bk, bov, tr, fpop = _cmaes(eval_ov, start, s0 * _s0m, np.zeros(D), np.ones(D),
                                        popsize=_lam_r, max_iter=int(generations),
                                        seed=int(seed) + r, stop_check=stop_check,
-                                       eps0=_EPS0,
                                        repair=(_repair if bool(ctx.get("repair_enabled", True)) else None),
                                        progress_cb=progress_cb,
                                        no_early_stop=bool(ctx.get("no_early_stop", False)),

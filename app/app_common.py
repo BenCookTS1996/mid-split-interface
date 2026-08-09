@@ -198,11 +198,13 @@ def _physical_cpu_count(default=4):
 
 
 # [FN-242]
-def _apply_blocked_caps(split, blocked_pairs, floor):
+def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None):
     """Cap the share of any BANK-BLOCKED (bank, gateway) to the exploration floor and redistribute
     the freed share to the OTHER (non-blocked) gateways in the same cell, proportionally. Cells with
     no non-blocked recipient are left unchanged (nowhere to move the volume). Matches on
-    lower/stripped (bank, gateway). Returns (new_split, n_rows_capped). Deterministic; no-op when
+    lower/stripped (bank, gateway) — and, when `bin_to_bank` is given, ALSO on the parent-bank grain,
+    so a BIN-vs-parent grain mismatch can't silently cap nothing here while the pre-GA auto-block
+    excludes the same rows. Returns (new_split, n_rows_capped). Deterministic; no-op when
     `blocked_pairs` is empty or nothing matches."""
     if not blocked_pairs or split is None or getattr(split, "empty", True) \
             or not {"bank", "gateway", "share"}.issubset(split.columns):
@@ -210,7 +212,17 @@ def _apply_blocked_caps(split, blocked_pairs, floor):
     d = split.copy()
     _bk = d["bank"].astype(str).str.strip().str.lower()
     _gw = d["gateway"].astype(str).str.strip().str.lower()
-    _isb = np.array([(_b, _g) in blocked_pairs for _b, _g in zip(_bk, _gw)])
+    # Grain-robust match. The split's `bank` is BIN-level, but `blocked_pairs` may be keyed at
+    # PARENT-bank grain (detect_blocked_gateways runs on bin_to_bank-mapped attempts). Treat a row
+    # as blocked if EITHER its BIN bank OR its parent bank pairs with the blocked gateway. With no
+    # map supplied this is byte-identical to the old BIN-only match (no behaviour change).
+    if bin_to_bank:
+        _bb = {str(k).strip().lower(): str(v).strip().lower() for k, v in bin_to_bank.items()}
+        _pk = _bk.map(lambda b: _bb.get(b, b))
+        _isb = np.array([((_b, _g) in blocked_pairs) or ((_p, _g) in blocked_pairs)
+                         for _b, _p, _g in zip(_bk, _pk, _gw)])
+    else:
+        _isb = np.array([(_b, _g) in blocked_pairs for _b, _g in zip(_bk, _gw)])
     if not _isb.any():
         return d, 0
     _key = [c for c in ("rpgt", "currency", "bank", "pmp") if c in d.columns] or ["bank"]

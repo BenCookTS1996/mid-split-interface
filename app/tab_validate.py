@@ -200,6 +200,8 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
     # kept in sync every rerun by the Build Baseline sub-tab (from its widgets), so it's available
     # here even on a fresh reopen without running/loading a baseline first. Fall back to {} (all
     # fields below have sensible defaults) if it's somehow absent.
+    from app_common import SQL_DIR, CACHE_DIR, RPGT_LIST  # shared constants (fn-level import avoids any load-order cycle)
+    from routing_optimiser import run_sql_file
     fs = ss.get("forecast_settings") or {}
 
     _company = str(fs.get("company", "TotalAV"))
@@ -224,6 +226,96 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
             background:#22C36B !important; border-color:#22C36B !important; border-radius:0 !important; }
         div[data-testid="stForm"] button[kind="primaryFormSubmit"] * { color:#fff !important; }
     </style>""", unsafe_allow_html=True)
+
+    # --- M0 Transaction Weightings (mirrors Build Baseline · independent, pre-filled) ----------
+    # OUTSIDE the form on purpose: the fetch button uses an on_click callback, and st.form forbids
+    # a plain st.button. These inputs pre-fill ONCE from the Build Baseline forecast_settings, then
+    # are edited independently here (validate a split against its own assumed M0 without touching
+    # the baseline). The form's submit handler reads them back from session_state.
+    _scheme = str(fs.get("card_scheme", "visa") or "visa")
+
+    def _v_fetch_m0(_co, _sch):
+        try:
+            _m0sql = os.path.join(SQL_DIR, "m0_weightings.sql")
+            _m0path, _m0src = run_sql_file(_m0sql, CACHE_DIR, use_cache=True,
+                                           project=GCP_PROJECT, params={"company": _co})
+            _m0df = (pd.read_parquet(_m0path) if str(_m0path).endswith(".parquet")
+                     else pd.read_csv(_m0path))
+            _rc = "riskdata2025_risk_defined_subscription_product_type"
+            _vc = "riskdata2025_visa_trx_count"
+            if _rc not in _m0df.columns or _vc not in _m0df.columns:
+                _c0 = list(_m0df.columns)          # positional fallback
+                _m0df = _m0df.rename(columns={_c0[0]: _rc, _c0[1]: _vc})
+            _fetched = {}
+            for _, _row in _m0df.iterrows():
+                _v = _row[_vc]
+                _fetched[str(_row[_rc]).strip()] = int(round(float(_v))) if pd.notna(_v) else 0
+            # TotalAV + visa only: same agreed renewal reductions as Build Baseline so the fetched
+            # numbers match across the two tabs.
+            if str(_co) == "TotalAV" and str(_sch).strip().lower() == "visa":
+                for _rp, _sub in (("Monthly Renewal", 8000),
+                                  ("Annual Sub Renewal", 1500),
+                                  ("Addon Renewal", 500)):
+                    if _rp in _fetched:
+                        _fetched[_rp] = _fetched[_rp] - _sub
+            for _rp in RPGT_LIST:
+                ss[f"validate_assumed_{_rp}"] = max(0, int(_fetched.get(_rp, 0)))
+            ss["validate_m0_total_key"] = int(sum(max(0, int(_fetched.get(_rp, 0))) for _rp in RPGT_LIST))
+            ss.pop("_v_m0_fetch_err", None)
+            ss["_v_m0_fetch_msg"] = (f"Filled from BigQuery ({_m0src}) for {_co} — "
+                                     f"projected {ss['validate_m0_total_key']:,} Visa txns across "
+                                     f"{sum(1 for _rp in RPGT_LIST if _fetched.get(_rp))} RPGT(s).")
+        except Exception as _me:  # noqa: BLE001
+            ss.pop("_v_m0_fetch_msg", None)
+            ss["_v_m0_fetch_err"] = f"{type(_me).__name__}: {_me}"
+
+    with st.container(border=True):
+        st.markdown("<h5 style='margin-top:0; margin-bottom:0.25rem;'>M0 Transaction Weightings</h5>",
+                    unsafe_allow_html=True)
+        # Green button, white text (scoped to this button's key).
+        st.markdown(
+            "<style>.st-key-validate_fetch_m0_btn button{background-color:#22C36B !important;"
+            "border-color:#22C36B !important;} .st-key-validate_fetch_m0_btn button,"
+            ".st-key-validate_fetch_m0_btn button *{color:#ffffff !important;} "
+            ".st-key-validate_fetch_m0_btn button:hover{background-color:#1EA95D !important;"
+            "border-color:#1EA95D !important;}</style>",
+            unsafe_allow_html=True)
+        _vfb1, _vfb2 = st.columns([1, 1.5], vertical_alignment="center")
+        _vfb1.button("Fetch projected M0 from BigQuery", key="validate_fetch_m0_btn",
+                     on_click=_v_fetch_m0, args=(_company, _scheme),
+                     help=f"Query last month's projected Visa transactions per RPGT for "
+                          f"{_company} and fill the weightings below.")
+        if ss.get("_v_m0_fetch_err"):
+            _vfb2.markdown("<span style='color:#e63748; font-size:0.8rem;'>✗ M0 fetch failed: "
+                           f"{ss.get('_v_m0_fetch_err')}</span>", unsafe_allow_html=True)
+        else:
+            _vmsg = ss.get("_v_m0_fetch_msg", "")
+            _vfb2.markdown("<span style='color:var(--tav-muted); font-size:0.8rem;'>"
+                           f"{('✓ ' + _vmsg) if _vmsg else ''}</span>", unsafe_allow_html=True)
+        # Pre-fill ONCE from Build Baseline's current M0 values, then edit independently here.
+        _w0 = fs.get("m0_transaction_weightings") or {}
+        ss.setdefault("validate_m0_total_key", int(fs.get("m0_total_transactions", 0) or 0))
+        for _rp in RPGT_LIST:
+            ss.setdefault(f"validate_assumed_{_rp}", int(_w0.get(_rp, 0) or 0))
+        _v_alloc = sum(int(ss.get(f"validate_assumed_{_rp}", 0) or 0) for _rp in RPGT_LIST)
+        _v_total = int(ss.get("validate_m0_total_key", 0) or 0)
+        _vmt1, _vmt2 = st.columns([3, 2], vertical_alignment="center")
+        _vmt1.number_input(f"M0 {_company} - {_scheme} - Total", 0, 50_000_000,
+                           step=1000, key="validate_m0_total_key",
+                           help="Total starting transactions for month 0.")
+        if _v_total == _v_alloc:
+            _vmt2.markdown("<div style='color:#1D9E75; font-size:0.8rem; font-weight:700;'>"
+                           "✓ matches RPGT sum</div>", unsafe_allow_html=True)
+        else:
+            _vd = _v_alloc - _v_total
+            _vmt2.markdown("<div style='color:#e63748; font-size:0.8rem; font-weight:700;'>"
+                           f"⚠ RPGT sum {_v_alloc:,} ≠ Total "
+                           f"({'+' if _vd > 0 else ''}{_vd:,})</div>", unsafe_allow_html=True)
+        _vw_cols = st.columns(2)
+        for _i, _rpgt in enumerate(RPGT_LIST):
+            _vw_cols[_i % 2].number_input(
+                _rpgt, 0, 50_000_000, step=500, key=f"validate_assumed_{_rpgt}",
+                help="Assumed month-0 volume for this type.")
 
     with st.form("validate_form", border=False):
         # Left: '1. Rules Import' then '2. Live actuals' below it.
@@ -294,20 +386,12 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
                     "Thermometer sample (months)", min_value=1, max_value=12,
                     value=int(ss.get("validate_thermo", int(fs.get("thermometer_sample_months", 2) or 2))),
                     key="validate_thermo", help="Actuarial thermometer_sample_months.")
-            # Target volumes: the FIRST row is the company M0 total (company_target_volume);
-            # the remaining rows are per-RPGT (company_rpgt_target_volumes).
+            # M0 target volumes / weightings now live in the 'M0 Transaction Weightings' card ABOVE
+            # the form (so the fetch button can use an on_click callback, which st.form forbids).
+            # The submit handler reads company_target_volume + per-RPGT from session_state.
             st.markdown("**Target volumes**")
-            _TOTAL_LABEL = "Company Total (M0)"
-            _w = fs.get("m0_transaction_weightings") or {}
-            _ctv0 = int(ss.get("validate_target", int(fs.get("m0_total_transactions", 0) or 0)))
-            _rows = [{"RPGT": _TOTAL_LABEL, "Target volume": _ctv0}]
-            _rows += [{"RPGT": str(k), "Target volume": int(v)} for k, v in _w.items()]
-            _wdf = pd.DataFrame(_rows, columns=["RPGT", "Target volume"])
-            v_weights = st.data_editor(
-                _wdf, hide_index=True, num_rows="dynamic", use_container_width=True,
-                key="validate_weights",
-                column_config={"Target volume": st.column_config.NumberColumn(
-                    "Target volume", min_value=0, format="%d")})
+            st.caption("Set in the **M0 Transaction Weightings** card above "
+                       "(pre-filled from Build Baseline, editable here, with a BigQuery fetch).")
 
         run = st.form_submit_button("Run VAMP pipeline with these rules", type="primary")
 
@@ -362,11 +446,9 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
         cfg["run_settings"]["blend_future_sheet_rules"] = bool(v_anchor)
         cfg.setdefault("targets", {})
         try:
-            _allt = {str(_r).strip(): int(_v) for _r, _v in
-                     zip(v_weights["RPGT"], v_weights["Target volume"])
-                     if str(_r).strip() and pd.notna(_v)}
-            # First (special) row = company M0 total; the rest are per-RPGT weightings.
-            _ctv = _allt.pop(_TOTAL_LABEL, int(fs.get("m0_total_transactions", 0) or 0))
+            # Company M0 total + per-RPGT weightings from the M0 card's session_state keys.
+            _allt = {str(_rp).strip(): int(ss.get(f"validate_assumed_{_rp}", 0) or 0) for _rp in RPGT_LIST}
+            _ctv = int(ss.get("validate_m0_total_key", int(fs.get("m0_total_transactions", 0) or 0)) or 0)
             cfg["targets"]["company_target_volume"] = int(_ctv)
             if _allt:
                 cfg["targets"]["company_rpgt_target_volumes"] = _allt

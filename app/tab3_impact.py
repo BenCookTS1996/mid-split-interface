@@ -55,14 +55,18 @@ def render():
                                           project=GCP_PROJECT, params=_sqlp)
                 st.write(f"Attempts/success source: {_asrc}")
                 _adf_v = load_success_data(_ap)
-                _typo_v = {"MONTHLY INTIIAL": "Monthly Initial", "MONTHLY INITIAL": "Monthly Initial",
-                           "ANNUAL SUB SALE": "Annual Sub Sale", "ADDON SALE": "Addon Sale",
-                           "UPGRADE": "Upgrades", "UPGRADES": "Upgrades", "MONTHLY RENEWAL": "Monthly Renewal",
-                           "ANNUAL SUB RENEWAL": "Annual Sub Renewal", "P6M RENEWALS": "P6M Renewals",
-                           "ADDON RENEWAL": "Addon Renewal"}
-                if "rpgt" in _adf_v.columns:
-                    _adf_v["rpgt"] = (_adf_v["rpgt"].astype(str).str.strip().str.upper()
-                                      .map(_typo_v).fillna(_adf_v["rpgt"]))
+                # RPGT canonicalisation (incl. 'Upgrade'→'Upgrades' and the legacy 'Monthly Intiial'
+                # typo) is handled upstream in load_success_data (schema.SCENARIO_TO_RPGT); the fixed
+                # attempts_success.sql now emits canonical names and the impact join is case-
+                # insensitive, so no per-tab RPGT remap is needed here.
+                # BIN-grain bank alignment: the validated split (parsed from the rule templates)
+                # keys its bank column by BIN, but load_success_data sets bank=bankName. Align the
+                # attempts side onto the BIN so the impact join matches ("BIN on both sides") — else
+                # every cell misses and the 30D cards collapse to 0. This makes Validate self-
+                # sufficient: it no longer depends on the engine's bin_to_bank map being present in
+                # session (which a Streamlit restart clears), which was the cause of the 0 cards.
+                if "bin" in _adf_v.columns:
+                    _adf_v["bank"] = _adf_v["bin"].astype(str).str.strip()
                 ss["adf"] = _adf_v
                 ss.setdefault("bin_to_bank", {})   # v1: raw-bank alignment (BIN on both sides)
                 ss["opt_by_rpgt"] = True

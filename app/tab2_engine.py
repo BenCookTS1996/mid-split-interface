@@ -188,6 +188,33 @@ def render():
                              "result. ON: every seed runs the FULL generation cap regardless, so the candidate "
                              "count becomes exact (= seeds × restarts × generations × λ) and the run is longer, "
                              "usually with no better split. Use for a deterministic, maximum-budget search.")
+                    with st.expander("Advanced — step size (CMA-ES σ)", expanded=False):
+                        st.caption("CMA-ES already auto-adapts the step size every generation; these only "
+                                   "nudge its starting point and limits. σ₀×1.5 and damping×1.5 are the "
+                                   "tuned defaults for this problem (σ floor stays a no-op at 0) — leave them "
+                                   "unless you're deliberately experimenting, and compare runs on the "
+                                   "EFFICIENCY (score/min) figure the log prints.")
+                        _sc1, _sc2, _sc3 = st.columns(3)
+                        _sc1.number_input(
+                            "σ₀ multiplier", min_value=0.25, max_value=4.0, value=1.5, step=0.25,
+                            key="ga_sigma0_mult",
+                            help="Scales the INITIAL step size. >1 = wider first strides (more early "
+                                 "exploration, can help escape a plateau but wastes some early gens); "
+                                 "<1 = tighter start (faster local convergence, risks settling early). "
+                                 "1.0 = default (no change).")
+                        _sc2.number_input(
+                            "Min step-size (σ floor)", min_value=0.0, max_value=0.5, value=0.0, step=0.01,
+                            format="%.2f", key="ga_sigma_floor",
+                            help="Stops the step size collapsing below this value. >0 keeps the search "
+                                 "moving (more exploration, avoids premature fine-convergence) but prevents "
+                                 "the final polishing. Typical σ_final on this problem is ~0.05, so try "
+                                 "0.02–0.05 to probe the plateau. 0 = default (let σ collapse naturally).")
+                        _sc3.number_input(
+                            "σ damping ×", min_value=0.5, max_value=3.0, value=1.5, step=0.25,
+                            key="ga_damps_mult",
+                            help="How SLOWLY the step size is allowed to change. >1 = steadier, more "
+                                 "cautious σ moves (smoother, slower to react); <1 = faster, more "
+                                 "aggressive adaptation. 1.0 = default (no change).")
                     # Candidate-split RANGE + ETA — same maths as before, just recomputed live here.
                     # Restart strategy stays in the form, so its last-submitted value (Lean default) is
                     # read from session_state; Lean keeps λ constant → floor == ceiling (single value).
@@ -891,6 +918,18 @@ def render():
                         _diag(f"      engine_params={_pk}")
                         _diag(f"      auto_explore={_gv('_auto_explore')} · RPGT_scope={('ALL' if not _gv('_sel_rpgts', None) else _gv('_sel_rpgts'))} · "
                               f"hold_unselected_at_baseline={ss.get('eng_rpgt_hold_others')}")
+                        _diag(f"      gateway auto-block={'ON' if ss.get('block_gw_cb', False) else 'off'}"
+                              + (f" · >={int(ss.get('block_min_inp', 100) or 100)} consecutive failed attempts"
+                                 if ss.get('block_gw_cb', False) else ""))
+                        # Step-size (CMA-ES σ) overrides — echoed ONLY when dialled off their no-op defaults,
+                        # so a tuning A/B is self-documenting in the saved run bundle (absent line ⇒ defaults).
+                        if _gv('engine_key') in ("genetic", "genetic_numba"):
+                            _s0m = float(ss.get("ga_sigma0_mult", 1.5) or 1.5)
+                            _sfl = float(ss.get("ga_sigma_floor", 0.0) or 0.0)
+                            _dmp = float(ss.get("ga_damps_mult", 1.5) or 1.5)
+                            if abs(_s0m - 1.0) > 1e-9 or _sfl > 0.0 or abs(_dmp - 1.0) > 1e-9:
+                                _diag(f"      step-size (CMA-ES σ) TUNED: σ₀×{_s0m:g} · σ_floor={_sfl:g} · damping×{_dmp:g} "
+                                      "(defaults: σ₀×1 · σ_floor=0 · damping×1)")
                         _mcn = params.get("mid_constraints", []) if isinstance(params, dict) else []
                         _diag(f"      per-MID constraints configured: {len(_mcn or [])}")
                         for _r in (_mcn or [])[:40]:
@@ -970,15 +1009,10 @@ def render():
                         ss["_adf_cache_k"] = _adf_k
                         ss["_adf_cache"] = adf.copy()
                     
-                    typo_map = {
-                        "MONTHLY INTIIAL": "Monthly Initial", "MONTHLY INITIAL": "Monthly Initial",
-                        "ANNUAL SUB SALE": "Annual Sub Sale", "ADDON SALE": "Addon Sale",
-                        "UPGRADE": "Upgrades", "UPGRADES": "Upgrades",
-                        "MONTHLY RENEWAL": "Monthly Renewal", "ANNUAL SUB RENEWAL": "Annual Sub Renewal",
-                        "P6M RENEWALS": "P6M Renewals", "ADDON RENEWAL": "Addon Renewal"
-                    }
-                    if "rpgt" in adf.columns:
-                        adf["rpgt"] = adf["rpgt"].astype(str).str.strip().str.upper().map(typo_map).fillna(adf["rpgt"])
+                    # RPGT canonicalisation for the attempts data is handled upstream in
+                    # load_success_data (schema.SCENARIO_TO_RPGT) + the fixed attempts_success.sql,
+                    # and the engine joins are case-insensitive — so no per-tab remap is needed here.
+                    # (The forecast below is a SEPARATE source with no such chokepoint — see there.)
                         
                     # Cache the parsed baseline forecast too (keyed on out_dir + baseline mtime +
                     # attempts identity — the only things it depends on). Re-running the FORECAST
@@ -1030,8 +1064,19 @@ def render():
                     for c in ["currency", "bank", "gateway"]:
                         if c in adf.columns: adf[c] = adf[c].astype(str).str.strip().str.lower()
                         if c in forecast_temp.columns: forecast_temp[c] = forecast_temp[c].astype(str).str.strip().str.lower()
+                    # Forecast RPGT comes from the VAMP pipeline output (bin_rpgt_impact_export.csv),
+                    # NOT from attempts_success.sql and NOT through load_success_data — it has no
+                    # canonicalisation chokepoint, so it keeps its own local RPGT fix.
+                    _fc_rpgt_fix = {
+                        "MONTHLY INTIIAL": "Monthly Initial", "MONTHLY INITIAL": "Monthly Initial",
+                        "ANNUAL SUB SALE": "Annual Sub Sale", "ADDON SALE": "Addon Sale",
+                        "UPGRADE": "Upgrades", "UPGRADES": "Upgrades",
+                        "MONTHLY RENEWAL": "Monthly Renewal", "ANNUAL SUB RENEWAL": "Annual Sub Renewal",
+                        "P6M RENEWALS": "P6M Renewals", "ADDON RENEWAL": "Addon Renewal",
+                    }
                     if "rpgt" in forecast_temp.columns:
-                        forecast_temp["rpgt"] = forecast_temp["rpgt"].astype(str).str.strip().str.upper().map(typo_map).fillna(forecast_temp["rpgt"])
+                        forecast_temp["rpgt"] = (forecast_temp["rpgt"].astype(str).str.strip().str.upper()
+                                                 .map(_fc_rpgt_fix).fillna(forecast_temp["rpgt"]))
 
                     # RPGT scope (tab 2 multiselect): restrict the WHOLE optimisation to the
                     # selected RPGTs — their attempts, volume, VAMP and risk. Only applied when
@@ -2500,6 +2545,40 @@ def render():
                             _mcg_cache["static"] = g.copy()
                         return g
 
+                    # STAGE 4 — feed the backup catch-all into the GA FITNESS so the engine optimises
+                    # against the shares the pipeline will ACTUALLY route (tab 5), not the raw split.
+                    # The catch-all is pooled (unweighted mean over pmp/Country) to the optimiser's
+                    # coarser currency×bank×rpgt grain and mapped fid→vampMid ONCE here; the exact
+                    # per-pmp/Country blend is applied in the tab-3 projection (Stage 3). Empty ⇒
+                    # no blend. ROUTING_BACKUP_BLEND=0 disables. NOTE: this steers the GA's band/
+                    # badness objective; the hard VAMP-cap enforcement still runs on the raw split.
+                    # (Restored 2026-08-04: this setup block was dropped during the tab split, which
+                    # left _bcs4/_bpool_rpgt/_bpool_all undefined → every per-MID band path raised a
+                    # NameError and silently fell back to "post-enforcement only" / "no cap enforced".)
+                    _bpool_rpgt, _bpool_all, _bcs4 = {}, {}, None
+                    _bcatch_ga = ss.get("backup_catchall") or {}
+                    if _bcatch_ga and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
+                        try:
+                            from routing_optimiser.backup_blend import blend_cell_shares as _bcs4
+                            from collections import defaultdict as _dd4
+                            _ar, _cr = _dd4(lambda: _dd4(float)), _dd4(int)
+                            _aa, _ca4 = _dd4(lambda: _dd4(float)), _dd4(int)
+                            for (_cur4, _rp4, _pmp4, _ct4), _gw4 in _bcatch_ga.items():
+                                _cr[(_cur4, _rp4)] += 1; _ca4[_cur4] += 1
+                                for _fid4, _pct4 in _gw4.items():
+                                    _vm4 = fid2vamp.get(str(_fid4).strip().lower())
+                                    if _vm4 is None:
+                                        continue
+                                    _ar[(_cur4, _rp4)][_vm4] += float(_pct4)
+                                    _aa[_cur4][_vm4] += float(_pct4)
+                            _bpool_rpgt = {k: {vm: v / _cr[k] for vm, v in d.items()} for k, d in _ar.items()}
+                            _bpool_all = {k: {vm: v / _ca4[k] for vm, v in d.items()} for k, d in _aa.items()}
+                            log(f"   backup catch-all blended into the GA fitness: "
+                                f"{len(_bpool_rpgt)} (currency×rpgt) pool(s).")
+                        except Exception as _b4e:  # noqa: BLE001
+                            _bpool_rpgt, _bpool_all, _bcs4 = {}, {}, None
+                            log(f"   [backup GA blend disabled: {type(_b4e).__name__}: {_b4e}]")
+
                     # [FN-322]
                     def _blend_ga(prop):
                         # Inject the pooled catch-all vampMids per cell (renormalising), reusing the
@@ -3192,12 +3271,16 @@ def render():
                         # Applied ONLY in the scoring path (_obj_viol/_mid_over) — the returned best stays
                         # the RAW decode so enforcement blends exactly once (wallet/USA blend isn't
                         # idempotent). No-op when no eligibility is configured or the build fails.
-                        # DEFAULT OFF (opt-in). The genetic_numba kernel does NOT implement eligibility,
-                        # so activating this forces the slower NumPy fitness (see genetic_global — numba is
-                        # disabled when elig_op is set, to keep NumPy and the kernel consistent). Enable
-                        # with ROUTING_GA_ELIG=1 only if you accept that trade-off on the numba engine.
+                        # DEFAULT ON (set ROUTING_GA_ELIG=0 to disable). The GA scores the ACTUALLY-
+                        # routable shares every generation, so it optimises what actually gets deployed.
+                        # The genetic_numba kernel implements the eligibility stage (numba_kernels.
+                        # _fused_eval), so this KEEPS the fast Numba kernel — verify() still cross-checks
+                        # kernel-vs-NumPy including eligibility (and, under the fail-loud policy, a
+                        # kernel⇄NumPy eligibility mismatch now RAISES rather than silently reverting).
+                        # The returned best stays the RAW decode, so end-of-run enforcement still blends
+                        # eligibility exactly once.
                         _elig_op = None
-                        if (os.environ.get("ROUTING_GA_ELIG", "0") == "1"
+                        if (os.environ.get("ROUTING_GA_ELIG", "1") != "0"
                                 and (_elig_rules or _wallet_incapable or _usa_only)):
                             try:
                                 from routing_optimiser.eligibility import build_elig_operator as _build_elig_op
@@ -3237,7 +3320,11 @@ def render():
                         if bool(ss.get("block_gw_cb", False)):
                             try:
                                 _bapre_ga = orig_adf.copy()
-                                _b2b_ga = ss.get("bin_to_bank") or {}
+                                # THIS run's BIN->parent map. ss["bin_to_bank"] is only written
+                                # post-GA (below), so reading ss here would use LAST run's map (or
+                                # empty on a session's first run) — the staleness that flipped the
+                                # blocked set 32<->13 between runs. Use the current-run local.
+                                _b2b_ga = bin_to_bank or {}
                                 if _b2b_ga and "bank" in _bapre_ga.columns:
                                     _bapre_ga["bank"] = _bapre_ga["bank"].map(
                                         lambda _b: _b2b_ga.get(_b, _b2b_ga.get(str(_b), _b)))
@@ -3255,19 +3342,48 @@ def render():
                                     _blk_per_cell = np.add.reduceat(_row_blk.astype(float), _cell_starts)
                                     _cell_mixed = (_blk_per_cell > 0) & (_blk_per_cell < _counts.astype(float))
                                     _excl = _row_blk & np.repeat(_cell_mixed, _counts)
-                                    _ga_elig[_excl] = 0.0
                                     _n_excl = int(_excl.sum())
+                                    # Do NOT hard-exclude these routes from the search. With EXACT in-search
+                                    # band scoring, removing a blocked route can starve a cross-cell per-MID
+                                    # band and force a hard infeasibility (observed 2026-08-04: 56 rows
+                                    # excluded → all 8 seeds infeasible, violation 0.001913). Blocked
+                                    # gateways are still capped to the exploration floor in the DELIVERED
+                                    # split by the post-GA _apply_blocked_caps pass (feasibility-safe: caps
+                                    # only where a non-blocked recipient exists), so the OUTPUT is ~unchanged
+                                    # — a dead gateway lands at <=floor either way. (_ga_elig left all-eligible.)
                                     if _n_excl:
                                         log(f"   auto-block (pre-GA): {len(_blk_ga)} bank×gateway pair(s) → "
-                                            f"{_n_excl} row(s) marked INELIGIBLE for the search (GA optimises "
-                                            "the routable set; fully-blocked cells left to enforcement).")
+                                            f"{_n_excl} blocked row(s) KEPT eligible for the search, capped "
+                                            "post-GA instead (hard-exclusion removed so exact MID bands can't "
+                                            "be starved into infeasibility).")
                             except Exception as _bge:  # noqa: BLE001 — never break the run over this
                                 log(f"   [Warning] pre-GA auto-block skipped ({type(_bge).__name__}: {_bge}); "
                                     "enforcement-time cap still applies.")
+                        # HARD PRE-SEARCH BAN MASK: bake config bans (routing_restrictions) into the GA
+                        # eligibility so the decode NEVER assigns a banned gateway any share — not merely
+                        # scored-around and stripped at the end. Wallet/USA stay as the in-search fractional
+                        # reroute (they are per-traffic-type capability rules, not whole-gateway exclusions,
+                        # so a hard 0 would wrongly drop the capable traffic they ARE allowed to serve).
+                        # Sourced from the eligibility operator's per-row ban mask; no-op if eligibility is
+                        # disabled (ROUTING_GA_ELIG=0 — bans then still enforced at delivery via _restrict)
+                        # or nothing is banned.
+                        if _elig_op is not None and _elig_op.get("ban") is not None:
+                            _ban_mask = np.asarray(_elig_op["ban"], float) > 0.5
+                            if bool(_ban_mask.any()):
+                                _ga_elig = np.asarray(_ga_elig, float) * (~_ban_mask).astype(float)
+                                try:
+                                    _seg_e = np.add.reduceat(_ga_elig, np.asarray(_cell_starts, np.intp))
+                                    _dead = int((_seg_e <= 0.0).sum())
+                                except Exception:  # noqa: BLE001
+                                    _dead = 0
+                                log(f"   hard pre-search ban mask: {int(_ban_mask.sum())} banned row(s) "
+                                    "set elig=0 (the search never routes to them)" +
+                                    (f"; ⚠ {_dead} cell(s) now have NO eligible gateway and will route "
+                                     "nothing — check the ban config." if _dead else "."))
                         ctx = {
                             "n_row": len(G), "n_mid": len(_mids_u),
                             "cell_starts": _cell_starts, "cell_counts": _counts,
-                            "elig": _ga_elig,   # per-cell HARD floor/cap + bank-blocked rows excluded pre-GA (bans/wallet/USA still in elig_op + enforcement)
+                            "elig": _ga_elig,   # config BANS hard-masked pre-search (share 0 throughout); bank-blocked rows kept eligible + capped post-GA; wallet/USA are the in-search fractional reroute (elig_op) + final enforcement
                             "elig_op": _elig_op,       # optional: GA scores eligibility-adjusted (routable) shares
                             "base": _base, "cell_vol": _cvol, "sr": _srr, "risk": _rkr, "ticket": _tick,
                             "rev_coef": _rev_coef,
@@ -3299,6 +3415,11 @@ def render():
                         # "Run all generations" toggle: disables the CMA-ES convergence early-stop so
                         # every restart runs the full generation cap (exact candidate count, longer).
                         ctx["no_early_stop"] = bool(ss.get("ga_no_early_stop", False))
+                        # UI step-size controls (default to no-ops so behaviour is unchanged unless dialled):
+                        # σ₀ multiplier (starting stride), σ floor (don't let σ collapse), damping × (adapt σ slower).
+                        ctx["sigma0_mult"] = float(ss.get("ga_sigma0_mult", 1.5) or 1.5)
+                        ctx["sigma_floor"] = float(ss.get("ga_sigma_floor", 0.0) or 0.0)
+                        ctx["damps_mult"] = float(ss.get("ga_damps_mult", 1.5) or 1.5)
 
                         # ---- EXACT per-generation band scoring (gate 2) ------------------------------
                         # Replace the volume-ratio band PROXY with the exact pro-rata projection, scored
@@ -3531,9 +3652,10 @@ def render():
                             if _n_restarts is not None:
                                 _extra_kw["n_restarts"] = int(_n_restarts)
                             if engine_key == "genetic_numba":
-                                # opt-in Numba fused eval; the GA self-verifies vs NumPy and
-                                # falls back if it can't (every run_midtilt_ga call below forwards
-                                # this via **_extra_kw).
+                                # opt-in Numba fused eval; the GA self-verifies vs NumPy and FAILS
+                                # LOUDLY (raises with full diagnostics) on any mismatch/exception —
+                                # it no longer falls back to NumPy. Forwarded to every run_midtilt_ga
+                                # call below via **_extra_kw.
                                 _extra_kw["numba"] = True
                             # Restart strategy (both engines): lean constant-λ + coordinated-coverage
                             # is the DEFAULT; IPOP (λ-doubling) only when explicitly chosen. Forwarded
@@ -3707,7 +3829,8 @@ def render():
                                 # here first writes the persistent .numba_cache, so the workers then
                                 # LOAD it in a fraction of a second. One tiny run (pop 4, 1 gen) is
                                 # enough to trigger + verify the exact signature they'll use. Any
-                                # failure is non-fatal — workers would simply compile themselves.
+                                # failure here is now FATAL: it fails loudly with full diagnostics
+                                # (no silent NumPy fallback) rather than letting workers limp on.
                                 if engine_key == "genetic_numba":
                                     try:
                                         import time as _wt
@@ -3759,16 +3882,26 @@ def render():
                                                 f"max abs-viol {_wn.get('max_abs_viol', float('nan')):.1e}) "
                                                 "— workers will load it from cache and skip re-verifying.")
                                         else:
-                                            # Not usable → don't make each worker pay a compile + verify
-                                            # + fallback; tell them to run NumPy directly.
-                                            _extra_kw["numba"] = False
-                                            log(f"   GA-Numba: pre-compile did NOT enable the fast "
-                                                f"path ({_wn.get('reason', '?')}); workers will run "
-                                                f"the NumPy engine directly. ({_wsecs:.1f}s)")
+                                            # FAIL-LOUD: the fast path was requested but the pre-compile
+                                            # did not enable it. We do NOT silently drop to NumPy — surface
+                                            # the full numba diagnostics and abort the run.
+                                            log("   GA-Numba: pre-compile did NOT enable the fast path — "
+                                                f"FAILING LOUDLY (no silent NumPy fallback). detail: {_wn}")
+                                            raise RuntimeError(
+                                                "GA-Numba pre-compile did not enable the fused kernel "
+                                                f"({_wsecs:.1f}s). numba info = {_wn}. Refusing to fall "
+                                                "back to NumPy silently — fix the kernel or run a "
+                                                "non-numba engine.")
                                     except Exception as _we:  # noqa: BLE001
-                                        log(f"   [Warning] GA-Numba pre-compile skipped "
-                                            f"({type(_we).__name__}: {_we}); workers will compile "
-                                            "individually.")
+                                        # FAIL-LOUD: log the full traceback + build markers and re-raise so
+                                        # the run stops with an easy-to-debug error (no silent NumPy fallback).
+                                        import traceback as _wtb
+                                        _wbuild = getattr(_gg, "__build__", "?")
+                                        log("   GA-Numba pre-compile FAILED — failing loudly (no silent "
+                                            f"NumPy fallback).\n      error: {type(_we).__name__}: {_we}\n"
+                                            f"      genetic_global build: {_wbuild}\n"
+                                            f"      traceback:\n{_wtb.format_exc()}")
+                                        raise
 
                                 for _bk in _try_backends:
                                     try:
@@ -4043,6 +4176,14 @@ def render():
                         _rev_ref = max(_rev_of(_ref_share_G), 1.0)
                         _vamp_ref = max(float((_cvol * _ref_share_G * _rkr).sum()), 1.0)
                         _risk_aversion = 0.0   # FIXED: dial removed — always revenue-shaped (no extra risk-min beyond the caps)
+                        # Reference lean OFF (#8): the θ=0 base is used as-is (no low-risk lean). A
+                        # compliant starting point comes instead from the diverse warm-start seeds below
+                        # (the greedy+LP compliant split and the risk-greedy split), which feasibility-first
+                        # ranking keeps from generation 0. This is equivalent to ref_gamma = 0, so
+                        # _leaned_ref is a no-op; set a positive value to re-enable the lean.
+                        _ref_gamma_auto = 0.0
+                        log("   reference lean: OFF (γ=0) — compliant start comes from the "
+                            "compliant + risk-greedy warm-start seeds.")
                         _safe_wall0 = _gatime.time()
                         # risk-min endpoint (dial 0): same GA (EXACT in-search band scoring; read-only
                         # true-band readout, no correction), with the
@@ -4089,10 +4230,17 @@ def render():
                             _h.update(repr((float(vamp_cap) if vamp_cap is not None else None,
                                             float(ctx.get("max_share", 1.0) or 1.0),
                                             float(ctx.get("floor", 0.0) or 0.0), repr(_mid_month_rules),
-                                            round(float(_rm_w), 6), round(float(_band_mult), 4), 0.4,
+                                            round(float(_rm_w), 6), round(float(_band_mult), 4),
+                                            round(float(_ref_gamma_auto), 6),
                                             int(_n_fine_rm), int(_ga_pop), int(_ga_gen), int(_N_SEED),
                                             float(_GA_GAIN_MAX),
-                                            int(max(1, int(ss.get("ga_restarts", 4) or 4))), 42)).encode())
+                                            int(max(1, int(ss.get("ga_restarts", 4) or 4))),
+                                            # σ step-size knobs + early-stop toggle MUST be in the key, else a
+                                            # tuning change silently reloads a stale cached run (added 2026-08-04).
+                                            round(float(ctx.get("sigma0_mult", 1.0) or 1.0), 6),
+                                            round(float(ctx.get("sigma_floor", 0.0) or 0.0), 6),
+                                            round(float(ctx.get("damps_mult", 1.0) or 1.0), 6),
+                                            bool(ctx.get("no_early_stop", False)), 42)).encode())
                             return _h.hexdigest()
 
                         _rm_path = None; _safe_G = _inf2 = None
@@ -4108,11 +4256,12 @@ def render():
                         except Exception:  # noqa: BLE001
                             _safe_G = _inf2 = None; _rm_path = None
                         if _safe_G is None:
-                            # dial-0: bands scaled by UI strength; γ=0.4 leans the reference compliant (#8);
-                            # richer per-cell genome (#4) + extra restarts (#3) at this harder end.
+                            # dial-0: bands scaled by UI strength; reference lean OFF (γ=0, #8) — the
+                            # compliant start comes from the warm-start seeds; richer per-cell genome (#4)
+                            # + extra restarts (#3) at this harder end.
                             _safe_G, _inf2 = _ga_solve_with_correction(
                                 _rm_w, _band_w=3375.0 * _band_mult, _band_fix=8100.0 * _band_mult,
-                                _warm=_warm_dial0, _ref_gamma=0.4, _n_fine=_n_fine_rm,
+                                _warm=_warm_dial0, _ref_gamma=_ref_gamma_auto, _n_fine=_n_fine_rm,
                                 _n_restarts=max(1, int(ss.get("ga_restarts", 4) or 4)))
                             if _rm_path:
                                 try:
@@ -4200,7 +4349,7 @@ def render():
                         if bool(ss.get("block_gw_cb", False)):
                             try:
                                 _bapre = orig_adf.copy()
-                                _b2bp = ss.get("bin_to_bank") or {}
+                                _b2bp = bin_to_bank or {}   # current-run map (not stale ss — see pre-GA note)
                                 if _b2bp and "bank" in _bapre.columns:
                                     _bapre["bank"] = _bapre["bank"].map(
                                         lambda _b: _b2bp.get(_b, _b2bp.get(str(_b), _b)))
@@ -4227,7 +4376,8 @@ def render():
                         _deliver_G = _safe_endpoint_G
                         _ga_gran = _explode(_endpoint_agg(_deliver_G))
                         if _blk_pairs_pre:                       # floor dead (bank-blocked) gateways
-                            _ga_gran, _ = _apply_blocked_caps(_ga_gran, _blk_pairs_pre, float(floor))
+                            _ga_gran, _ = _apply_blocked_caps(_ga_gran, _blk_pairs_pre, float(floor),
+                                                              bin_to_bank=bin_to_bank)
                         _comp_gran = _restrict(_ga_gran)         # eligibility only (bans / wallet / USA)
                         log("   Enforcement OFF: delivered split = GA search output + eligibility "
                             "(bans / wallet-incapable / USA-only); no VAMP-cap / per-MID band projection.")
@@ -4333,7 +4483,7 @@ def render():
                     if bool(ss.get("block_gw_cb", False)):
                         try:
                             _badf = orig_adf.copy()
-                            _b2b = ss.get("bin_to_bank") or {}
+                            _b2b = bin_to_bank or {}   # current-run map (not stale ss — see pre-GA note)
                             if _b2b and "bank" in _badf.columns:   # match the split's (BIN→bank-mapped) bank
                                 _badf["bank"] = _badf["bank"].map(
                                     lambda _b: _b2b.get(_b, _b2b.get(str(_b), _b)))
@@ -4347,7 +4497,8 @@ def render():
                             if _bpairs:
                                 _tot_cap = 0
                                 for v in variations:
-                                    v["split"], _nc = _apply_blocked_caps(v["split"], _bpairs, float(floor))
+                                    v["split"], _nc = _apply_blocked_caps(v["split"], _bpairs, float(floor),
+                                                                          bin_to_bank=bin_to_bank)
                                     _tot_cap += _nc
                                 ss["blocked_capped"] = int(_tot_cap)
                                 log(f"   auto-block: {len(_bpairs)} bank×gateway flagged as BANK-BLOCKED "
