@@ -1,7 +1,7 @@
 """Tab 1 — Baseline & Validate.
 
-Extracted verbatim from streamlit_app.py (behaviour unchanged) into its own file so the
-main script stays small. streamlit_app.py calls `render()` from inside `with tab_fc:`.
+Originally split out of streamlit_app.py into its own file (since evolved) so the main
+script stays small. streamlit_app.py calls `render()` from inside `with tab_fc:`.
 """
 from __future__ import annotations
 
@@ -13,11 +13,14 @@ from datetime import date
 
 import pandas as pd
 import streamlit as st
+
+from app_common import fetch_m0_weightings, green_button_css, read_json
 import yaml
 
-from routing_optimiser import build_pipeline_config, run_sql_file, run_vamp_pipeline
+from routing_optimiser import build_pipeline_config, run_vamp_pipeline
+from routing_optimiser import build_mc_pipeline_config, run_mastercard_pipeline
 
-from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, INPUTS_DIR, GCP_PROJECT,
+from app_common import (ss, PROJECT_ROOT, INPUTS_DIR, GCP_PROJECT,
                         RPGT_LIST, COMPANIES, StreamlitLogHandler, _switched_off_gateways)
 
 
@@ -43,11 +46,7 @@ def render():
         # ---- defaults (used when settings are hidden while loading a forecast) --
         # [FN-294]
         def _load_default_json(name):
-            try:
-                with open(os.path.join(INPUTS_DIR, name)) as f:
-                    return json.load(f)
-            except Exception:
-                return None
+            return read_json(os.path.join(INPUTS_DIR, name))
 
         company = COMPANIES[0]
         scheme = "visa"
@@ -62,7 +61,6 @@ def render():
         force_actuals_for_rpgts = []
         t0_lookback_months, decay_factor, thermometer_sample_months = 1, 0.5, 1
         shrink = 12.0
-        attempts_export = ""
         run_live, use_yaml_asis, reuse_cached_curves = True, False, True
         use_cached_inputs, load_baseline, cached_inputs_path = False, False, ""
         test_gateways = _load_default_json("test_gateways.json") or {}
@@ -237,63 +235,25 @@ def render():
                     # that st.rerun() from inside nested containers triggered. Result is cached by sql_runner.
                     # [FN-295]
                     def _fetch_m0(_co, _sch):
-                        try:
-                            _m0sql = os.path.join(SQL_DIR, "m0_weightings.sql")
-                            _m0path, _m0src = run_sql_file(_m0sql, CACHE_DIR, use_cache=True,
-                                                           project=GCP_PROJECT, params={"company": _co})
-                            _m0df = (pd.read_parquet(_m0path) if str(_m0path).endswith(".parquet")
-                                     else pd.read_csv(_m0path))
-                            _rc = "riskdata2025_risk_defined_subscription_product_type"
-                            _vc = "riskdata2025_visa_trx_count"
-                            if _rc not in _m0df.columns or _vc not in _m0df.columns:
-                                _c0 = list(_m0df.columns)          # positional fallback
-                                _m0df = _m0df.rename(columns={_c0[0]: _rc, _c0[1]: _vc})
-                            _fetched = {}
-                            for _, _row in _m0df.iterrows():
-                                _v = _row[_vc]
-                                _fetched[str(_row[_rc]).strip()] = int(round(float(_v))) if pd.notna(_v) else 0
-                            # TotalAV + visa only: agreed manual reductions to the renewal RPGTs
-                            # (the projection over-counts these) before filling the inputs.
-                            if str(_co) == "TotalAV" and str(_sch).strip().lower() == "visa":
-                                for _rp, _sub in (("Monthly Renewal", 8000),
-                                                  ("Annual Sub Renewal", 1500),
-                                                  ("Addon Renewal", 500)):
-                                    if _rp in _fetched:
-                                        _fetched[_rp] = _fetched[_rp] - _sub
-                            for _rp in RPGT_LIST:
-                                ss[f"assumed_{_rp}"] = max(0, int(_fetched.get(_rp, 0)))
-                            ss["m0_total_key"] = int(sum(max(0, int(_fetched.get(_rp, 0))) for _rp in RPGT_LIST))
-                            ss.pop("_m0_fetch_err", None)
-                            ss["_m0_fetch_msg"] = (f"Filled from BigQuery ({_m0src}) for {_co} — "
-                                                   f"projected {ss['m0_total_key']:,} Visa txns across "
-                                                   f"{sum(1 for _rp in RPGT_LIST if _fetched.get(_rp))} RPGT(s).")
-                        except Exception as _me:  # noqa: BLE001
-                            ss.pop("_m0_fetch_msg", None)
-                            ss["_m0_fetch_err"] = f"{type(_me).__name__}: {_me}"
+                        fetch_m0_weightings(_co, _sch, assumed_prefix="assumed_",
+                                            total_key="m0_total_key", msg_key="_m0_fetch_msg",
+                                            err_key="_m0_fetch_err")
 
                     # Green button, white text (scoped to this button's key).
-                    st.markdown(
-                        "<style>.st-key-fetch_m0_btn button{background-color:#22C36B !important;"
-                        "border-color:#22C36B !important;} .st-key-fetch_m0_btn button,"
-                        ".st-key-fetch_m0_btn button *{color:#ffffff !important;} "
-                        ".st-key-fetch_m0_btn button:hover{background-color:#1EA95D !important;"
-                        "border-color:#1EA95D !important;}</style>",
-                        unsafe_allow_html=True)
+                    green_button_css("fetch_m0_btn")
                     # Button + last-fetch status side by side. Status is GREY and persists next to the
                     # button until the next fetch (an error shows red). Always renders exactly one
                     # element in the status column so the layout tree stays stable across reruns.
                     _fb1, _fb2 = st.columns([1, 1.5], vertical_alignment="center")
                     _fb1.button("Fetch projected M0 from BigQuery", key="fetch_m0_btn",
                                 on_click=_fetch_m0, args=(company, scheme),
-                                help=f"Query last month's projected Visa transactions per RPGT for "
-                                     f"{company} and fill the weightings below.")
+                                help=f"Query last month's projected {str(scheme).title()} transactions "
+                                     f"per RPGT for {company} and fill the weightings below.")
                     if ss.get("_m0_fetch_err"):
                         _fb2.markdown("<span style='color:#e63748; font-size:0.8rem;'>✗ M0 fetch failed: "
                                       f"{ss.get('_m0_fetch_err')}</span>", unsafe_allow_html=True)
                     else:
-                        _msg = ss.get("_m0_fetch_msg", "")
-                        _fb2.markdown("<span style='color:var(--tav-muted); font-size:0.8rem;'>"
-                                      f"{('✓ ' + _msg) if _msg else ''}</span>", unsafe_allow_html=True)
+                        _fb2.markdown("<span></span>", unsafe_allow_html=True)  # fetch success message suppressed
                     # Inputs read their default from session_state (so the fetch can set them); no
                     # `value=` arg avoids the "default + session_state" warning. The validator renders
                     # INLINE from the committed session_state sum (no deferred st.empty() across sibling
@@ -322,7 +282,6 @@ def render():
                         rpgt_assumed[rpgt] = w_cols[i % 2].number_input(
                             rpgt, 0, 50_000_000, step=500, key=_ak,
                             help="Assumed month-0 volume for this type.")
-                    allocated = sum(rpgt_assumed.values())
 
             st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
 
@@ -350,16 +309,11 @@ def render():
                     def _read_json(upload, default_path, label):
                         if upload is not None:
                             try:
-                                data = json.load(upload)
-                                return data
+                                return json.load(upload)
                             except Exception as exc:  # noqa: BLE001
                                 st.error(f"Could not parse {label}: {exc}")
                                 return None
-                        if os.path.exists(default_path):
-                            with open(default_path) as f:
-                                data = json.load(f)
-                            return data
-                        return None
+                        return read_json(default_path)
 
                     # Shrink the file-uploader "Browse files" button text to match the input text size
                     # (the default is larger than the surrounding inputs).
@@ -420,7 +374,9 @@ def render():
             "use_cached_inputs": bool(use_cached_inputs),
             "cached_inputs_path": cached_inputs_path or None,
             "reuse_cached_curves": bool(reuse_cached_curves),
-            "mid_list_file": "data/mappings/Master_MID_List.csv",
+            "mid_list_file": ("data/mappings/Master_MID_List_Mastercard.csv"
+                              if scheme == "mastercard"
+                              else "data/mappings/Master_MID_List.csv"),
             "m0_total_transactions": int(m0_total),
             "m0_transaction_weightings": {k: int(v) for k, v in rpgt_assumed.items()},
             "use_live_actuals": bool(use_live_actuals),
@@ -460,7 +416,6 @@ def render():
         if st.button("Load forecast" if settings_hidden else "Calculate & cache forecast",
                      type="primary", key="calc_cache_btn",
                      disabled=not actuals_valid):
-            key = json.dumps(forecast_settings, sort_keys=True)
             # Render the run log into the ROW-2 right-column slot when it exists (normal mode);
             # fall back to full-width in previous-forecast mode where that column is hidden.
             _log_ctx = _fc_log_slot if _fc_log_slot is not None else st
@@ -480,8 +435,6 @@ def render():
                 root_logger.setLevel(logging.INFO)
                 pipeline_out_dir = None
                 try:
-                    synth_mode = not run_live and not load_baseline
-
                     # Echo the EXACT inputs this run used, so the log is self-documenting.
                     _fs = forecast_settings
                     _mode = ("live BigQuery pipeline" if run_live
@@ -512,20 +465,30 @@ def render():
                     log(f"   MID list: {_fs['mid_list_file']}")
 
                     log("── Forecast (risk / VAMP baseline) ──")
-                    forecast_path, fc_src = None, "synthesised from attempts"
+                    _, fc_src = None, "synthesised from attempts"
                     if run_live:
-                        log("• Running VAMP pipeline (BigQuery); pipeline logs:")
+                        _is_mc = (scheme == "mastercard")
+                        _scheme_lbl = "MASTERCARD" if _is_mc else "VAMP"
+                        log(f"• Running {_scheme_lbl} pipeline (BigQuery); pipeline logs:")
                         try:
                             if use_yaml_asis:
+                                _yaml_name = ("settings_mastercard.yaml" if _is_mc
+                                              else "settings.yaml")
                                 with open(os.path.join(PROJECT_ROOT, "config",
-                                                       "settings.yaml")) as _f:
+                                                       _yaml_name)) as _f:
                                     pipeline_config = yaml.safe_load(_f)
-                                log("  using config/settings.yaml as-is (repo parity)")
+                                log(f"  using config/{_yaml_name} as-is (repo parity)")
+                            elif _is_mc:
+                                pipeline_config = build_mc_pipeline_config(forecast_settings)
                             else:
                                 pipeline_config = build_pipeline_config(forecast_settings)
-                            pipeline_out_dir = run_vamp_pipeline(
-                                pipeline_config, PROJECT_ROOT, gcp_project=GCP_PROJECT)
-                            forecast_path, fc_src = pipeline_out_dir, "VAMP pipeline (live)"
+                            if _is_mc:
+                                pipeline_out_dir = run_mastercard_pipeline(
+                                    pipeline_config, PROJECT_ROOT, gcp_project=GCP_PROJECT)
+                            else:
+                                pipeline_out_dir = run_vamp_pipeline(
+                                    pipeline_config, PROJECT_ROOT, gcp_project=GCP_PROJECT)
+                            _, fc_src = pipeline_out_dir, f"{_scheme_lbl} pipeline (live)"
                             log(f"  pipeline outputs: {pipeline_out_dir}")
                         except Exception as exc:  # noqa: BLE001
                             import traceback as _tb
@@ -544,7 +507,7 @@ def render():
                             root_logger.setLevel(prev_level)
                             st.stop()
                     elif load_baseline and cached_inputs_path:
-                        forecast_path, fc_src = cached_inputs_path, "VAMP pipeline pre (cached)"
+                        _, fc_src = cached_inputs_path, "VAMP pipeline pre (cached)"
                         pipeline_out_dir = (cached_inputs_path
                                             if os.path.isdir(cached_inputs_path)
                                             else os.path.dirname(cached_inputs_path))

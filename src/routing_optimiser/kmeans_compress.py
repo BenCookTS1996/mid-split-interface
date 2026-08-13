@@ -172,7 +172,7 @@ def compress_split(
         target = tgt.get(str(rpgt).lower(), default_acc)
         n_rows = len(X)
 
-        # Smallest k that reaches the target accuracy (binary-ish search).
+        # Smallest k that reaches the target accuracy (linear scan k = 2, 3, 4, … below).
         # Fit k=1 once; the previous throwaway _fit_k here was immediately
         # overwritten below before ever being used.
         chosen_k = 1

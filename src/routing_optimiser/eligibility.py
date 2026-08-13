@@ -210,6 +210,7 @@ def _capability_blend(df: pd.DataFrame, group_cols: list[str], incapable, frac_m
     if not (group_cols and incapable_mask.any()):
         return result_share
     has_cur_bank = ("currency" in df.columns and "bank" in df.columns)
+    _pos_of = {lbl: p for p, lbl in enumerate(df.index)}   # label -> positional (unique index)
     for _grp_key, row_idx in df.groupby(group_cols, dropna=False).groups.items():
         group_rows = df.loc[row_idx]
         base = group_rows["share"].to_numpy(float)
@@ -221,7 +222,7 @@ def _capability_blend(df: pd.DataFrame, group_cols: list[str], incapable, frac_m
                             str(group_rows["bank"].iloc[0]).strip().lower())
             reroute_frac = float(frac_map.get(cur_bank_key, default))
         reroute_frac = 0.0 if (reroute_frac != reroute_frac) else min(max(reroute_frac, 0.0), 1.0)
-        incap_in_cell = incapable_mask[[df.index.get_loc(i) for i in row_idx]]
+        incap_in_cell = incapable_mask[[_pos_of[i] for i in row_idx]]
         capable_share = base.copy()
         capable_share[incap_in_cell] = 0.0
         capable_total = capable_share.sum()
@@ -229,7 +230,7 @@ def _capability_blend(df: pd.DataFrame, group_cols: list[str], incapable, frac_m
         capable_share = capable_share / capable_total if capable_total > 0 else base
         blended = reroute_frac * capable_share + (1.0 - reroute_frac) * base
         for pos, i in enumerate(row_idx):
-            result_share[df.index.get_loc(i)] = blended[pos]
+            result_share[_pos_of[i]] = blended[pos]
     return result_share
 
 
@@ -249,6 +250,9 @@ def apply_restrictions(split: pd.DataFrame, rules: list[dict], fid2vamp: dict,
     wallet_frac: {(currency, bank): fraction of the cell that is wallet traffic}.
     usa_only: set of gatewayFids/vampMids (lower) that can ONLY process USA traffic.
     nonusa_frac: {(currency, bank): fraction of the cell that is Non-USA traffic}.
+    wallet_default / nonusa_default: reroute fraction for a cell absent from wallet_frac /
+        nonusa_frac (default 0.0 — no reroute).
+    group_keys: cell grouping for the capability blend (default (rpgt, currency, bank)).
     """
     if split is None or getattr(split, "empty", True):
         return split

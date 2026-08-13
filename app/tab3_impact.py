@@ -1,6 +1,6 @@
 """Tab 3 — Split, outputs & impact.
 
-Extracted verbatim from streamlit_app.py (behaviour unchanged) into its own file so the main
+Originally split out of streamlit_app.py into its own file (since evolved) so the main
 script stays small. streamlit_app.py calls `render()` from inside `with tab_imp:`.
 """
 from __future__ import annotations
@@ -17,8 +17,10 @@ from routing_optimiser import load_success_data, run_sql_file
 from impact_calcs import (_c_prepost_granular, _c_read_parquet, _mtime, build_kill_eff,
                           build_split_exports, compute_vamp_post_by_mid, enforced_prop_items,
                           enforced_split_frame, mid_revenue_month_table, mid_table_from_granular,
-                          pool_targeted_compression, rpgt_avg_ticket)
+                          pool_targeted_compression, rpgt_avg_ticket, rpgt_currency_avg_ticket)
 
+from app_common import (load_mid_list, _norm_cols, _map_to_bank, _renorm_share,
+                        _fid2vamp_from)  # memoised MID reader + shared helpers
 from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, DEFAULT_GATEWAY_FIDS,
                         HAS_PLOTLY, _ensure_base_30d_metrics, _impact_eval_frame, _ink_caption,
                         _switched_off_gateways, _locked_panel, _split_df_to_xlsx_bytes)
@@ -29,6 +31,41 @@ def render():
     # `out_dir` used to be a module global set by the (now-extracted) engine tab; re-derive it
     # locally from session_state so this tab is self-contained — identical value (ss.get).
     out_dir = ss.get("pipeline_out_dir")
+
+    # VALIDATE-MODE single source of truth: the pipeline's granular bin_rpgt_impact_export.csv,
+    # normalised to the granular frame shape mid_table_from_granular / mid_revenue_month_table expect
+    # (vampMid, RPGT, [Currency], period, VAMP_Pre/Post, VI_Txn_Pre/Post). Scheme-agnostic (Visa
+    # VAMP_/Txn_, Mastercard CB_/MC_Txn→Txn_). Used ONLY in validate mode so the Risk Impact +
+    # Financial Impact tables tie exactly to the Validate Split table; the Tab 2 engine flow (a
+    # PROPOSED split with no pipeline run) never calls this. Returns None if the file/cols are absent.
+    def _validate_granular_from_bin_rpgt(_od):
+        try:
+            _bp = os.path.join(_od or "", "bin_rpgt_impact_export.csv")
+            if not os.path.exists(_bp):
+                return None
+            _bd = pd.read_csv(_bp)
+            _idc = ("vampMid" if "vampMid" in _bd.columns
+                    else ("mastercardMid" if "mastercardMid" in _bd.columns else None))
+            _vpre = "VAMP_Pre" if "VAMP_Pre" in _bd.columns else "CB_Pre"
+            _vpost = "VAMP_Post" if "VAMP_Post" in _bd.columns else "CB_Post"
+            _rpc = "RPGT" if "RPGT" in _bd.columns else ("rpgt" if "rpgt" in _bd.columns else None)
+            if _idc is None or _rpc is None or not all(
+                    c in _bd.columns for c in (_vpre, _vpost, "Txn_Pre", "Txn_Post", "period")):
+                return None
+            _ren = {_idc: "vampMid", _rpc: "RPGT", _vpre: "VAMP_Pre", _vpost: "VAMP_Post",
+                    "Txn_Pre": "VI_Txn_Pre", "Txn_Post": "VI_Txn_Post"}
+            _g = _bd.rename(columns=_ren)
+            if "Currency" not in _g.columns and "currency" in _g.columns:
+                _g = _g.rename(columns={"currency": "Currency"})
+            _keep = ["vampMid", "RPGT", "period", "VAMP_Pre", "VAMP_Post", "VI_Txn_Pre", "VI_Txn_Post"]
+            if "Currency" in _g.columns:
+                _keep.append("Currency")
+            _g = _g[_keep].copy()
+            _g["vampMid"] = _g["vampMid"].astype(str)
+            _g["period"] = pd.to_numeric(_g["period"], errors="coerce").fillna(-1).astype(int)
+            return _g
+        except Exception:  # noqa: BLE001 - fall back to the projection on any error
+            return None
 
     # --- Populate impact from a 'Validate Split' run: build a single "variation" from the
     #     VALIDATED split (parsed from the exported rule files) + the attempts/success window,
@@ -42,7 +79,6 @@ def render():
                 _split_v = _prs(_vpr.get("rules_dir", ""))
                 if getattr(_split_v, "empty", True):
                     raise ValueError(f"No routing rules parsed from {_vpr.get('rules_dir')!r}.")
-                st.write(f"Parsed validated split: {len(_split_v)} cell×gateway rows.")
                 _scheme_v = str(_vpr.get("scheme", "visa") or "visa")
                 _sqlp = {"START_DATE": _vpr.get("attempts_start"), "END_DATE": _vpr.get("attempts_end"),
                          "COMPANY": _vpr.get("company"), "CARD_SCHEME": _scheme_v,
@@ -51,22 +87,37 @@ def render():
                 _sqlf = os.path.join(SQL_DIR, "attempts_success.sql")
                 if not os.path.exists(_sqlf):
                     raise FileNotFoundError("attempts_success.sql not found.")
-                _ap, _asrc = run_sql_file(_sqlf, CACHE_DIR, use_cache=True, fallback_csv=None,
-                                          project=GCP_PROJECT, params=_sqlp)
-                st.write(f"Attempts/success source: {_asrc}")
+                _ap, _ = run_sql_file(_sqlf, CACHE_DIR, use_cache=True, fallback_csv=None,
+                                      project=GCP_PROJECT, params=_sqlp)
                 _adf_v = load_success_data(_ap)
                 # RPGT canonicalisation (incl. 'Upgrade'→'Upgrades' and the legacy 'Monthly Intiial'
                 # typo) is handled upstream in load_success_data (schema.SCENARIO_TO_RPGT); the fixed
                 # attempts_success.sql now emits canonical names and the impact join is case-
                 # insensitive, so no per-tab RPGT remap is needed here.
-                # BIN-grain bank alignment: the validated split (parsed from the rule templates)
-                # keys its bank column by BIN, but load_success_data sets bank=bankName. Align the
-                # attempts side onto the BIN so the impact join matches ("BIN on both sides") — else
-                # every cell misses and the 30D cards collapse to 0. This makes Validate self-
-                # sufficient: it no longer depends on the engine's bin_to_bank map being present in
-                # session (which a Streamlit restart clears), which was the cause of the 0 cards.
-                if "bin" in _adf_v.columns:
-                    _adf_v["bank"] = _adf_v["bin"].astype(str).str.strip()
+                # Grain reconciliation. Exported rules mix two grains: some cells name explicit
+                # BINs (the annual sheet), the rest use a catch-all row (BIN == "Other"). Set each
+                # attempt's bank to the explicit BIN when the split names it for that
+                # (rpgt, currency); OTHERWISE keep the attempt's real issuing-bank name (from
+                # load_success_data). Keeping the real bank name for fallback traffic — rather than
+                # collapsing it to "Other" — means the Mid Detail / bank breakdowns show the actual
+                # banks, while the numeric-vs-name split still cleanly separates BIN-specific
+                # overrides (numeric) from fallback cells (bank names) everywhere downstream.
+                if "bin" in _adf_v.columns and "bank" in _split_v.columns:
+                    _sv_r = _split_v["rpgt"].astype(str).str.strip().str.lower()
+                    _sv_c = _split_v["currency"].astype(str).str.strip().str.lower()
+                    _sv_b = _split_v["bank"].astype(str).str.strip()
+                    _explicit_bins: dict = {}   # (rpgt,currency) -> {explicit numeric BINs}
+                    for _r, _c, _b in zip(_sv_r, _sv_c, _sv_b):
+                        if _b.replace(".", "", 1).isdigit():
+                            _explicit_bins.setdefault((_r, _c), set()).add(_b)
+                    _a_r = _adf_v["rpgt"].astype(str).str.strip().str.lower()
+                    _a_c = _adf_v["currency"].astype(str).str.strip().str.lower()
+                    _a_b = _adf_v["bin"].astype(str).str.strip()
+                    _orig_bank = _adf_v["bank"].astype(str).to_numpy()   # real issuing-bank name
+                    _mapped = []
+                    for _k, _b, _ob in zip(zip(_a_r, _a_c), _a_b, _orig_bank):
+                        _mapped.append(_b if _b in _explicit_bins.get(_k, ()) else _ob)
+                    _adf_v["bank"] = _mapped
                 ss["adf"] = _adf_v
                 ss.setdefault("bin_to_bank", {})   # v1: raw-bank alignment (BIN on both sides)
                 ss["opt_by_rpgt"] = True
@@ -74,6 +125,69 @@ def render():
                 _cache_v = _ensure_base_30d_metrics()
                 if _cache_v is None:
                     raise ValueError("Base 30-day metrics could not be built from the attempts data.")
+                # Volume basis + actual observed baseline routing. The parsed rules carry neither
+                # cell_volume nor baseline_share. Build the split the impact/bridge is scored on
+                # from two kinds of cell:
+                #   • BIN-specific (explicit numeric BIN — here only Annual Sub Renewal) → the
+                #     exported OVERRIDE routing (proposed share) measured against the OBSERVED
+                #     per-BIN baseline. These are the only cells that move the bridge.
+                #   • catch-all ("Other") → NOT a routing change: for the ~96% of traffic with no
+                #     BIN-specific rule the routing is dictated by the LIVE ACTUALS. Rebuild these
+                #     cells straight from the observed 30D attempts (ALL gateways, incl. any not in
+                #     the sheet), with baseline == proposed → exactly 0 impact and a distribution
+                #     that matches actuals.
+                # (cell_att / gw_att / attempts arrive as pandas *nullable* Int64; convert to numpy
+                # float64 throughout, else a downstream .to_numpy() is object and the share renorm
+                # does Python division → ZeroDivisionError on zero-attempt cells.)
+                def _lc(s):
+                    return s.astype(str).str.strip().str.lower()
+
+                def _is_num(s):
+                    return _lc(s).str.replace(".", "", 1, regex=False).str.isdigit()
+                _keep = ["rpgt", "currency", "bank", "gateway", "share", "baseline_share", "cell_volume"]
+
+                # BIN-specific override rows: proposed share vs observed per-BIN baseline.
+                _spec = _split_v[_is_num(_split_v["bank"]).to_numpy()].copy()
+                if not _spec.empty:
+                    _cagg = _cache_v["cell_agg"]
+                    _gagg = _cache_v["gw_agg"]
+                    _spec["rpgt_join"] = _lc(_spec["rpgt"])
+                    _spec["currency_join"] = _lc(_spec["currency"])
+                    _spec["bank_join"] = _lc(_spec["bank"])
+                    _spec["gateway_join"] = _lc(_spec["gateway"])
+                    _spec = _spec.merge(_cagg[["rpgt_join", "currency_join", "bank_join", "cell_att"]],
+                                        on=["rpgt_join", "currency_join", "bank_join"], how="left")
+                    _spec = _spec.merge(_gagg[["rpgt_join", "currency_join", "bank_join", "gateway_join", "gw_att"]],
+                                        on=["rpgt_join", "currency_join", "bank_join", "gateway_join"], how="left")
+                    _cv = pd.to_numeric(_spec["cell_att"], errors="coerce").to_numpy(dtype="float64", na_value=np.nan)
+                    _gv = pd.to_numeric(_spec["gw_att"], errors="coerce").to_numpy(dtype="float64", na_value=np.nan)
+                    _cv = np.where(np.isnan(_cv), 0.0, _cv)
+                    _gv = np.where(np.isnan(_gv), 0.0, _gv)
+                    _spec["cell_volume"] = _cv
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        _spec["baseline_share"] = np.where(_cv > 0, _gv / _cv, 0.0)
+                    _spec["share"] = pd.to_numeric(_spec["share"], errors="coerce").fillna(0.0).astype("float64")
+                    _spec = _spec[_keep]
+                else:
+                    _spec = pd.DataFrame(columns=_keep)
+
+                # Catch-all cells rebuilt from the observed live actuals (all gateways).
+                _adf_o = _adf_v[~_is_num(_adf_v["bank"]).to_numpy()].copy()
+                _adf_o["_a"] = pd.to_numeric(_adf_o.get("attempts", 0), errors="coerce").fillna(0.0).astype("float64")
+                _obs = _adf_o.groupby(["rpgt", "currency", "bank", "gateway"], as_index=False)["_a"].sum()
+                if not _obs.empty:
+                    _ct = _obs.groupby(["rpgt", "currency", "bank"])["_a"].transform("sum").to_numpy(dtype="float64")
+                    _av = _obs["_a"].to_numpy(dtype="float64")
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        _osh = np.where(_ct > 0, _av / _ct, 0.0)
+                    _obs["share"] = _osh
+                    _obs["baseline_share"] = _osh
+                    _obs["cell_volume"] = _ct
+                    _obs = _obs[_keep]
+                else:
+                    _obs = pd.DataFrame(columns=_keep)
+
+                _split_v = pd.concat([_spec, _obs], ignore_index=True)
                 _eval_v = _impact_eval_frame(_split_v, _cache_v, by_rpgt=True)
                 ss["variations"] = [{"weight": 0.0, "split": _split_v, "settings": {}, "eval_df": _eval_v}]
                 ss["split"] = _split_v
@@ -83,9 +197,42 @@ def render():
                 ss.setdefault("sr", pd.DataFrame())
                 ss.setdefault("problems", {})
                 ss.setdefault("mid_constraints", [])
-                _vst.update(label=f"Impact populated from the validated split "
-                                  f"({len(_split_v)} split rows, {_eval_v.shape[0]} eval rows).",
-                            state="complete", expanded=False)
+                # Count the ConnectorPools the folder's BIN-specific rules generate (sales mode,
+                # read straight from the sheets — matches tab 4 · Generate configs) so the Pools
+                # card reports the real deployed count, not the observed-routing compression.
+                # count_only skips the payload build.
+                ss["validate_folder_pool_count"] = None
+                try:
+                    from routing_optimiser.connector_pool_configs import (
+                        generate_configs as _gcfg, company_to_brand_key as _c2b, BRANDS as _BRANDS,
+                        scheme_code as _scheme_code)
+                    import glob as _glob_v
+                    _rdir = _vpr.get("rules_dir", "")
+                    _files = sorted(_glob_v.glob(os.path.join(_rdir, "*.xlsx"))
+                                    + _glob_v.glob(os.path.join(_rdir, "*.xls"))
+                                    + _glob_v.glob(os.path.join(_rdir, "*.csv")))
+                    _frs = []
+                    for _fp in _files:
+                        try:
+                            _frs.append(pd.read_excel(_fp) if _fp.lower().endswith((".xlsx", ".xls"))
+                                        else pd.read_csv(_fp))
+                        except Exception:  # noqa: BLE001
+                            continue
+                    if _frs:
+                        _allr = pd.concat(_frs, ignore_index=True)
+                        _bk = _c2b(_vpr.get("company", "TotalAV"))
+                        _bnm = _BRANDS.get(_bk, {}).get("name", "TotalAV")
+                        _exp = {}
+                        if "RPGT" in _allr.columns:
+                            for _rp, _sub in _allr.groupby("RPGT"):
+                                _exp[(_bnm, str(_rp))] = _sub.reset_index(drop=True)
+                        _, _fc = _gcfg(_exp, _bk, "000000",
+                                       scheme=_scheme_code(_vpr.get("scheme", "visa")),
+                                       mode="sales", count_only=True)
+                        ss["validate_folder_pool_count"] = int(_fc.get("total", 0))
+                except Exception:  # noqa: BLE001
+                    ss["validate_folder_pool_count"] = None
+                _vst.update(state="complete", expanded=False)
             except Exception as _ve:  # noqa: BLE001
                 import traceback as _vtb
                 _vst.update(label="Populate-impact FAILED (validated split)", state="error", expanded=True)
@@ -99,8 +246,9 @@ def render():
     </style>""", unsafe_allow_html=True)
 
     if "variations" not in ss or "adf" not in ss:
-        _locked_panel("Head to <b>2 · Routing engine</b> and click "
-                      "<b>Compute split variations</b> — your split, outputs and impact "
+        _locked_panel("Nothing to show yet. Either head to <b>2 · Routing engine</b> and click "
+                      "<b>Compute split variations</b>, or run <b>Validate Split</b> "
+                      "(under <b>1 · Baseline &amp; Validate</b>) — your split, outputs and impact "
                       "analysis will appear here.")
     else:
         variations = ss["variations"]
@@ -201,8 +349,16 @@ def render():
             # [FN-349]
             def _run_pool_compression():
                 """Compute + cache the pool-targeted compression for the CURRENT settings."""
+                _si = split_ideal
+                if ss.get("variations_engine") == "validate":
+                    # Validate: only the BIN-specific overrides are a real deployed change — every
+                    # other cell is the live-actuals fallback. Count pools from the BIN-specific
+                    # rows only, so the Pools card reflects the splits actually being validated.
+                    _num = (_si["bank"].astype(str).str.strip()
+                            .str.replace(".", "", 1, regex=False).str.isdigit())
+                    _si = _si[_num.to_numpy()].copy()
                 return pool_targeted_compression(
-                    ss, split_ideal, target_pools=_maxN, sig=_pool_sig, wallet_ctx=_wc_e,
+                    ss, _si, target_pools=_maxN, sig=_pool_sig, wallet_ctx=_wc_e,
                     brand_name=_brand_name_e, brand_key=_brand_key_e, go_live=str(_gl_e0),
                     mid_list_path=_mid_list_e, mode="sales")
 
@@ -229,6 +385,11 @@ def render():
                 if "baseline_share" in split_ideal.columns:
                     _bl = split_ideal[["rpgt", "currency", "bank", "gateway", "baseline_share"]].drop_duplicates(
                         ["rpgt", "currency", "bank", "gateway"])
+                    # The compressed frame may ALREADY carry a baseline_share; dropping it first stops the
+                    # merge from producing suffixed baseline_share_x/_y (which broke the plain-name access
+                    # below with a KeyError). split_ideal is the authoritative pre-split baseline.
+                    if "baseline_share" in _cl.columns:
+                        _cl = _cl.drop(columns=["baseline_share"])
                     _cl = _cl.merge(_bl, on=["rpgt", "currency", "bank", "gateway"], how="left")
                     _cl["baseline_share"] = _cl["baseline_share"].fillna(0.0)
                 _cl["volume"] = _cl["cell_volume"] * _cl["share"]
@@ -260,11 +421,9 @@ def render():
                     return _spl
                 _b2b = ss.get("bin_to_bank", {})
                 _enf = _enf.copy()
-                _enf["bank"] = _enf["bank"].map(
-                    lambda b: _b2b.get(b, _b2b.get(str(b).strip().lower(), b))).astype(str)
+                _enf["bank"] = _map_to_bank(_enf["bank"], _b2b).astype(str)
                 _enf = _enf.groupby(["rpgt", "currency", "bank", "gateway"], as_index=False)["share"].mean()
-                _t = _enf.groupby(["rpgt", "currency", "bank"])["share"].transform("sum")
-                _enf["share"] = (_enf["share"] / _t).where(_t > 0, 0.0)
+                _renorm_share(_enf, ["rpgt", "currency", "bank"])
                 # Backup catch-all re-adds (e.g. Braintree) at gateway grain, per (rpgt,currency,bank).
                 _bc = ss.get("backup_catchall") or {}
                 if _bc and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
@@ -322,8 +481,7 @@ def render():
                         _gc = _enf["gateway"].map(_cge).astype(str).str.strip().str.lower()
                         _enf = _enf[~_gc.isin(_off_e)].copy()
                         if "share" in _enf.columns:
-                            _tt = _enf.groupby(["rpgt", "currency", "bank"])["share"].transform("sum")
-                            _enf["share"] = (_enf["share"] / _tt).where(_tt > 0, 0.0)
+                            _renorm_share(_enf, ["rpgt", "currency", "bank"])
                             if "cell_volume" in _enf.columns:
                                 _enf["volume"] = _enf["cell_volume"] * _enf["share"]
                 except Exception as _e:  # noqa: BLE001
@@ -353,6 +511,17 @@ def render():
             # Alias these so downstream charts still work perfectly
             eval_df["exp_succ"] = eval_df["post_succ"]
             eval_df["exp_rev"] = eval_df["post_rev"]
+
+            # Validate mode isolates the BIN-specific overrides: catch-all ("Other") cells were set
+            # to pre == post (status quo) in the eval frame, so the baseline the cards compare
+            # against is the eval frame's own PRE (Σ pre_succ / Σ pre_rev), NOT the raw 30D actual.
+            # This makes the SR / Revenue cards agree with the bridge — only BIN-specific rules move.
+            if ss.get("variations_engine") == "validate":
+                if "pre_succ" in eval_df.columns:
+                    _pre_succ_t = float(pd.to_numeric(eval_df["pre_succ"], errors="coerce").fillna(0.0).sum())
+                    base_sr = _pre_succ_t / base_att if base_att > 0 else 0.0
+                if "pre_rev" in eval_df.columns:
+                    base_rev_adj = float(pd.to_numeric(eval_df["pre_rev"], errors="coerce").fillna(0.0).sum())
 
             new_succ, new_rev = eval_df["post_succ"].sum(), eval_df["post_rev"].sum()
             exp_sr = new_succ / base_att if base_att > 0 else 0
@@ -387,6 +556,11 @@ def render():
             # sums the very same columns). The baseline uses the MODELLED pre_rev (not actual
             # successes) so the card reconciles EXACTLY with the bridge and the delta is pure routing.
             _rev_pre = float(eval_df["pre_rev"].sum()) if "pre_rev" in eval_df.columns else float(base_rev_adj)
+            # Validate flow has no separate baseline split (parse_rules_to_split carries no
+            # baseline_share → pre_rev sums to 0). Fall back to the actual 30D baseline revenue so
+            # this card matches the SR card, which likewise compares against the actual base_sr.
+            if ss.get("variations_engine") == "validate" and _rev_pre <= 0.0:
+                _rev_pre = float(base_rev_adj)
             _rev_post = float(eval_df["post_rev"].sum()) if "post_rev" in eval_df.columns else float(new_rev)
             _rev_chg = _rev_post - _rev_pre
             _rcard(_m2c, "Expected Revenue (30D)",
@@ -396,7 +570,18 @@ def render():
                    tip="Expected successes × avg ticket (AOV) — same basis as the SR card and the "
                        "by-vampMid revenue bridge; pre uses the modelled baseline so they reconcile.")
             # --- Pools card: change vs ideal (fewer pools is good → green) ---
-            if _comp_stats is not None:
+            if ss.get("variations_engine") == "validate":
+                # Validate mode: show the ConnectorPools the folder's BIN-specific rules actually
+                # generate — read straight from the exported sheets (sales mode), the SAME figure
+                # tab 4 · Generate configs reports (computed in the populate step above).
+                _p_folder = ss.get("validate_folder_pool_count")
+                _p_txt = f"{int(_p_folder):,}" if _p_folder is not None else "—"
+                _rcard(_cc_col, "Pools", _p_txt, _INK, "from BIN specific splits in this folder",
+                       tip="ConnectorPool configs the BIN-specific rules in this folder generate "
+                           "(sales mode; matches tab 4 · Generate configs).")
+                _rcard(_cf_col, "Fidelity (30D)", "100.0%", _INK, "rules used as-is",
+                       tip="No compression applied in Validate — the exported rules are generated as-is.")
+            elif _comp_stats is not None:
                 _p_before = int(_comp_stats.get("raw_pools", 0))
                 _p_after = int(_comp_stats.get("pools", 0))
                 _pdlt = _p_after - _p_before
@@ -670,8 +855,7 @@ def render():
                     _bf = _blk_df[_blk_df["blocked"]].copy()
                     # The 'bank' column holds the BIN; add the parent Bank Name beside it.
                     _b2b_blk = ss.get("bin_to_bank", {})
-                    _bf["bank_name"] = _bf["bank"].map(
-                        lambda b: _b2b_blk.get(b, _b2b_blk.get(str(b).strip().lower(), ""))).astype(str)
+                    _bf["bank_name"] = _map_to_bank(_bf["bank"], _b2b_blk, default="").astype(str)
                     _cols_bf = [c for c in ["bank", "bank_name", "gateway", "consec_failed", "last_success_date"]
                                 if c in _bf.columns]
                     if "consec_failed" in _bf.columns:
@@ -996,11 +1180,10 @@ def render():
                     _mm_r = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                     _f2v_r = {}
                     if os.path.exists(_mm_r):
-                        _mmd_r = pd.read_csv(_mm_r)
-                        _cc_r = {str(c).lower().replace(" ", "").replace("_", ""): c for c in _mmd_r.columns}
+                        _mmd_r = load_mid_list(_mm_r)
+                        _cc_r = _norm_cols(_mmd_r)
                         if _cc_r.get("gatewayfid") and _cc_r.get("vampmid"):
-                            _f2v_r = dict(zip(_mmd_r[_cc_r["gatewayfid"]].astype(str).str.strip().str.lower(),
-                                              _mmd_r[_cc_r["vampmid"]].astype(str).str.strip()))
+                            _f2v_r = _fid2vamp_from(_mmd_r, _cc_r["gatewayfid"], _cc_r["vampmid"])
                     _spr = split.copy()
                     _spr["_vm"] = _spr["gateway"].astype(str).str.strip().str.lower().map(_f2v_r)
                     _spr = _spr.dropna(subset=["_vm"])
@@ -1070,8 +1253,19 @@ def render():
                         frozenset(str(x).strip().lower() for x in (_wc_r.get("incapable") or set())),
                         frozenset(str(x).strip().lower() for x in (_wc_r.get("usa_only") or set())),
                         exploration_floor=_floor_r)
-                    _tick_r = rpgt_avg_ticket(cache.get("cell_agg"))
-                    _rev_tbl = mid_revenue_month_table(_gran_r, _tick_r, months=range(6))
+                    _tick_r = rpgt_avg_ticket(cache.get("cell_agg"))                 # RPGT fallback
+                    _rc_tick_r = rpgt_currency_avg_ticket(cache.get("cell_agg"))     # RPGT × Currency
+                    # VALIDATE MODE ONLY: source transactions from the pipeline's granular
+                    # bin_rpgt_impact_export.csv so they tie EXACTLY to the Validate Split table, while
+                    # KEEPING the RPGT×Currency avg-ticket → revenue = pipeline transactions ×
+                    # ATV(RPGT×Currency). Only swapped when the granular carries Currency (the join key);
+                    # otherwise the projection stands. Engine (tab 2) flow is untouched.
+                    if ss.get("variations_engine") == "validate":
+                        _gp_fin = _validate_granular_from_bin_rpgt(out_dir)
+                        if _gp_fin is not None and not _gp_fin.empty and "Currency" in _gp_fin.columns:
+                            _gran_r = _gp_fin
+                    _rev_tbl = mid_revenue_month_table(_gran_r, _tick_r, months=range(6),
+                                                       rc_ticket=_rc_tick_r)
                     _rev_tbl = _rev_tbl.sort_values("$Revenue M0", ascending=False)
                     _numc = [c for c in _rev_tbl.columns if c != "vampMid"]
                     _tot_r = {"vampMid": "TOTAL", **{c: float(_rev_tbl[c].sum()) for c in _numc}}
@@ -1154,13 +1348,11 @@ def render():
                 elif not HAS_PLOTLY:
                     st.caption("Plotly is required to render these charts.")
                 else:
-                    import plotly.express as px
-                    a = _adf_raw.copy()
+                    a = _adf_raw.copy()   # px is re-imported later where it's first used
                     # Collapse BINs into their parent Bank (Bank x Currency grain).
                     _b2b_d = ss.get("bin_to_bank", {})
                     if _b2b_d and "bank" in a.columns:
-                        a["bank"] = a["bank"].map(
-                            lambda b: _b2b_d.get(b, _b2b_d.get(str(b).strip().lower(), b))).astype(str)
+                        a["bank"] = _map_to_bank(a["bank"], _b2b_d).astype(str)
                     _dc2 = "date" if "date" in a.columns else ("Date" if "Date" in a.columns else None)
                     a["bank_currency"] = a["bank"].astype(str).str.strip() + " - " + a["currency"].astype(str).str.strip().str.upper()
                     bc_opts = sorted(a["bank_currency"].dropna().unique().tolist())
@@ -1316,11 +1508,10 @@ def render():
                     _mm_sr = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                     _f2v_sr = {}
                     if os.path.exists(_mm_sr):
-                        _mmd_sr = pd.read_csv(_mm_sr)
-                        _cc_sr = {str(c).lower().replace(" ", "").replace("_", ""): c for c in _mmd_sr.columns}
+                        _mmd_sr = load_mid_list(_mm_sr)
+                        _cc_sr = _norm_cols(_mmd_sr)
                         if _cc_sr.get("gatewayfid") and _cc_sr.get("vampmid"):
-                            _f2v_sr = dict(zip(_mmd_sr[_cc_sr["gatewayfid"]].astype(str).str.strip().str.lower(),
-                                               _mmd_sr[_cc_sr["vampmid"]].astype(str).str.strip()))
+                            _f2v_sr = _fid2vamp_from(_mmd_sr, _cc_sr["gatewayfid"], _cc_sr["vampmid"])
                     daily_gw = plot_adf_sel.groupby(["date_clean", "gateway"]).agg(att=("attempts", "sum"), succ=("success", "sum")).reset_index()
                     if _f2v_sr:
                         daily_gw["gateway"] = (daily_gw["gateway"].astype(str).str.strip().str.lower()
@@ -1818,8 +2009,11 @@ def render():
                         pre_succ=("pre_succ", "sum"), pre_att=("pre_att", "sum"),
                         post_succ=("post_succ", "sum"), post_att=("post_att", "sum"))
                     _srg["_k"] = _srg["rpgt"].astype(str).str.strip().str.lower()
-                    _sr_pre = {r["_k"]: (r["pre_succ"] / r["pre_att"] if r["pre_att"] > 0 else 0.0) for _, r in _srg.iterrows()}
-                    _sr_post = {r["_k"]: (r["post_succ"] / r["post_att"] if r["post_att"] > 0 else 0.0) for _, r in _srg.iterrows()}
+                    _sr_pre, _sr_post = {}, {}
+                    for _, r in _srg.iterrows():   # one pass instead of two
+                        _k = r["_k"]
+                        _sr_pre[_k] = r["pre_succ"] / r["pre_att"] if r["pre_att"] > 0 else 0.0
+                        _sr_post[_k] = r["post_succ"] / r["post_att"] if r["post_att"] > 0 else 0.0
                     _srt_pre = (float(_srg["pre_succ"].sum()) / float(_srg["pre_att"].sum())) if float(_srg["pre_att"].sum()) > 0 else 0.0
                     _srt_post = (float(_srg["post_succ"].sum()) / float(_srg["post_att"].sum())) if float(_srg["post_att"].sum()) > 0 else 0.0
                     if not _rp.empty:
@@ -1831,12 +2025,11 @@ def render():
                 _mm_bi = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                 _f2v_bi = {}
                 if os.path.exists(_mm_bi):
-                    _mmdf_bi = pd.read_csv(_mm_bi)
-                    _cc_bi = {str(c).lower().replace(" ", "").replace("_", ""): c for c in _mmdf_bi.columns}
+                    _mmdf_bi = load_mid_list(_mm_bi)
+                    _cc_bi = _norm_cols(_mmdf_bi)
                     _gc_bi, _vc_bi = _cc_bi.get("gatewayfid"), _cc_bi.get("vampmid")
                     if _gc_bi and _vc_bi:
-                        _f2v_bi = dict(zip(_mmdf_bi[_gc_bi].astype(str).str.strip().str.lower(),
-                                           _mmdf_bi[_vc_bi].astype(str).str.strip()))
+                        _f2v_bi = _fid2vamp_from(_mmdf_bi, _gc_bi, _vc_bi)
                 _evv = _ev.copy()
                 _evv["_vmid"] = (_evv["gateway"].astype(str).str.strip().str.lower().map(_f2v_bi)
                                  .fillna(_evv["gateway"].astype(str)))
@@ -1893,6 +2086,13 @@ def render():
                         _sum_pre = float(pd.to_numeric(_sev.get("pre_succ"), errors="coerce")
                                          .fillna(0.0).sum()) or 1.0
                         _cur_scale = float(base_succ) / _sum_pre         # modelled baseline → card base_succ
+                        # Validate isolates the BIN-specific overrides: the eval-frame PRE is already
+                        # the authoritative baseline (catch-all cells = live actuals, pre == post).
+                        # Rescaling to the raw actual base_succ re-introduces a scale factor that
+                        # would drift those 0-movement cells, so keep PRE unscaled here — this also
+                        # matches the SR card baseline, which is overridden to Σ pre_succ / base_att.
+                        if ss.get("variations_engine") == "validate":
+                            _cur_scale = 1.0
 
                         # [FN-366]
                         def _sr_bridge(_grp_col, _other):
@@ -1941,8 +2141,7 @@ def render():
                                 _b2b_tm = ss.get("bin_to_bank", {})
                                 _tm = _agg_tm.copy()
                                 _tm["_vm"] = _tm["gateway"].astype(str).str.strip().str.lower().map(_f2v_bi).astype(str)
-                                _tm["parent"] = _tm["bank"].map(
-                                    lambda b: _b2b_tm.get(b, _b2b_tm.get(str(b).strip().lower(), b))).astype(str).str.upper()
+                                _tm["parent"] = _map_to_bank(_tm["bank"], _b2b_tm).astype(str).str.upper()
                                 _tm["attempts"] = pd.to_numeric(_tm["attempts"], errors="coerce").fillna(0.0)
                                 _tm["success_rate"] = pd.to_numeric(_tm["success_rate"], errors="coerce").fillna(0.0)
                                 _tm["_wsr"] = _tm["success_rate"] * _tm["attempts"]
@@ -2147,8 +2346,7 @@ def render():
                         _d["_vm"] = (_gwl.map(_f2v).fillna(_d["gateway"].astype(str)) if _f2v
                                      else _d["gateway"].astype(str))
                         # 'bank' holds the BIN; map it to its parent bank for the distinct-banks view.
-                        _d["_pb"] = _d["bank"].map(
-                            lambda b: _b2b.get(b, _b2b.get(str(b).strip().lower(), b))).astype(str)
+                        _d["_pb"] = _map_to_bank(_d["bank"], _b2b).astype(str)
 
                         # [FN-370]
                         def _spread_fig(_col, _unit):
@@ -2410,7 +2608,6 @@ def render():
                                                   tickfont=dict(color="#0B1F3A", size=9)))
                     st.plotly_chart(_fdc, use_container_width=True)
 
-            # --- Experimental: full-matrix GA & NSGA-II frontier (self-contained; NOT the production dial) ---
             _t_engwork.markdown("##### ⚙️ Algorithm Scoring Workings (Pre-Softmax) & Granular BIN Impact")
             with _t_engwork.container():
                 st.markdown("<div style='font-size: 0.85rem; color: #0B1F3A; margin-bottom: 1rem;'>This table exposes the granular BIN/Currency level details. You can sort and filter any column by clicking the column headers.</div>", unsafe_allow_html=True)
@@ -2422,10 +2619,13 @@ def render():
                 # the Bank x Currency grain (matching the selection & engine).
                 _b2b_s = ss.get("bin_to_bank", {})
                 if _b2b_s and "bank" in sr_df.columns:
-                    sr_df["bank"] = sr_df["bank"].map(
-                        lambda b: _b2b_s.get(b, _b2b_s.get(str(b).strip().lower(), b))).astype(str)
+                    sr_df["bank"] = _map_to_bank(sr_df["bank"], _b2b_s).astype(str)
 
-                if selected_bank != "(All Portfolio)":
+                if sr_df.empty or "bank" not in sr_df.columns:
+                    st.info("This diagnostic is only available for an engine-computed split "
+                            "(**2 · Routing engine**); a validated split doesn't build the "
+                            "granular per-BIN success-rate cache it needs.")
+                elif selected_bank != "(All Portfolio)":
                     b_val = selected_bank.split(" - ")[0]
                     c_val = selected_bank.split(" - ")[1].lower()
                 
@@ -3208,7 +3408,6 @@ def render():
                     # Bar chart: actual months (thermometer) leading into the
                     # forecast, with forecast VAMP Pre vs Post (day-scaled).
                     if HAS_PLOTLY:
-                        import plotly.express as _pxp
                         _fs2 = ss.get("forecast_settings", {}) or {}
                         _bd = pd.to_datetime(_fs2.get("month_0", date.today().replace(day=1)))
                         _mv2, _cmp2 = _fs2.get("month_var"), _fs2.get("company")
@@ -3253,11 +3452,10 @@ def render():
                                 _mmp_c = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                                 if os.path.exists(_mmp_c):
                                     try:
-                                        _mmd_c = pd.read_csv(_mmp_c)
-                                        _cc2 = {str(c).lower().replace(" ", "").replace("_", ""): c for c in _mmd_c.columns}
+                                        _mmd_c = load_mid_list(_mmp_c)
+                                        _cc2 = _norm_cols(_mmd_c)
                                         if _cc2.get("gatewayfid") and _cc2.get("vampmid"):
-                                            _f2v = dict(zip(_mmd_c[_cc2["gatewayfid"]].astype(str).str.strip().str.lower(),
-                                                            _mmd_c[_cc2["vampmid"]].astype(str).str.strip()))
+                                            _f2v = _fid2vamp_from(_mmd_c, _cc2["gatewayfid"], _cc2["vampmid"])
                                     except Exception:  # noqa: BLE001
                                         _f2v = {}
                                 _gwl = _av["gatewayFid"].astype(str).str.strip().str.lower()
@@ -3317,11 +3515,10 @@ def render():
                                 _mmp_g = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                                 if os.path.exists(_mmp_g):
                                     try:
-                                        _mmd_g = pd.read_csv(_mmp_g)
-                                        _cc3 = {str(c).lower().replace(" ", "").replace("_", ""): c for c in _mmd_g.columns}
+                                        _mmd_g = load_mid_list(_mmp_g)
+                                        _cc3 = _norm_cols(_mmd_g)
                                         if _cc3.get("gatewayfid") and _cc3.get("vampmid"):
-                                            _f2vg = dict(zip(_mmd_g[_cc3["gatewayfid"]].astype(str).str.strip().str.lower(),
-                                                             _mmd_g[_cc3["vampmid"]].astype(str).str.strip()))
+                                            _f2vg = _fid2vamp_from(_mmd_g, _cc3["gatewayfid"], _cc3["vampmid"])
                                     except Exception:  # noqa: BLE001
                                         _f2vg = {}
                                 _gwlg = _gmd["gatewayFid"].astype(str).str.strip().str.lower()
@@ -3708,12 +3905,11 @@ def render():
                     mm_path = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                     fid2vamp = {}
                     if os.path.exists(mm_path):
-                        _mm = pd.read_csv(mm_path)
-                        _cc = {str(c).lower().replace(" ", "").replace("_", ""): c for c in _mm.columns}
+                        _mm = load_mid_list(mm_path)
+                        _cc = _norm_cols(_mm)
                         _gcol, _vcol = _cc.get("gatewayfid"), _cc.get("vampmid")
                         if _gcol and _vcol:
-                            fid2vamp = dict(zip(_mm[_gcol].astype(str).str.strip().str.lower(),
-                                                _mm[_vcol].astype(str).str.strip()))
+                            fid2vamp = _fid2vamp_from(_mm, _gcol, _vcol)
                     sp = split_now.copy()
                     sp["_vm"] = sp["gateway"].astype(str).str.strip().str.lower().map(fid2vamp)
                     sp = sp.dropna(subset=["_vm"])
@@ -3819,7 +4015,7 @@ def render():
                         try:
                             from routing_optimiser.backup_blend import blend_prop_items as _bpi
                             _proj_prop = _bpi(_proj_prop, _bcatch, fid2vamp)
-                        except Exception as _bbe:  # noqa: BLE001
+                        except Exception:  # noqa: BLE001
                             pass   # any failure → keep the un-blended enforced split
                     # Exploration floor for the projection (replicates the engine's per-cell floor so
                     # 0%-rule incumbents keep >= floor). Kill-switch: ROUTING_PROJ_FLOOR=0 disables it
@@ -3834,6 +4030,15 @@ def render():
                     else:
                         vp = compute_vamp_post_by_mid(tp_path, prop_items_flat, str(_m0.date()), str(_gl),
                                                       excluded_mids, _kill_eff, _mtime(tp_path))
+
+                    # VALIDATE MODE ONLY: build the per-MID table from the pipeline's granular
+                    # bin_rpgt_impact_export.csv (the SAME source the Financial Impact table uses
+                    # below), so both tables — and the Validate Split table — tie exactly. The
+                    # reconciliation guard confirms it aggregates to mid_level. Engine flow untouched.
+                    if ss.get("variations_engine") == "validate":
+                        _gp_risk = _validate_granular_from_bin_rpgt(out_dir)
+                        if _gp_risk is not None and not _gp_risk.empty:
+                            vp = mid_table_from_granular(_gp_risk)
                     vp = vp.sort_values("VAMP M0", ascending=False)
 
                     col_groups, cols = [], ["vampMid"]

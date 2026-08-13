@@ -162,7 +162,9 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
     if still_over:                           # renorm re-broke the cap (rare) -> fall back
         return None
     out = d.copy(); out["share"] = x
-    return out, retired, still_over
+    # Reached only when still_over is empty (otherwise we fell back above) — the LP path is
+    # cap-compliant by construction, so the third element is always the empty set.
+    return out, retired, set()
 
 
 # [FN-192]
@@ -511,12 +513,13 @@ def portfolio_summary(split: pd.DataFrame) -> dict:
         return {"volume": 0.0, "expected_success_rate": 0.0,
                 "expected_risk_rate": 0.0, "infeasible_cells": 0}
     volumes = split["volume"].to_numpy()
-    total_volume = max(volumes.sum(), 1)
+    _tot_vol = volumes.sum()
+    total_volume = max(_tot_vol, 1)
     expected_success = (volumes * split["gateway_success_rate"]).sum() / total_volume
     expected_risk = (volumes * split["gateway_risk_rate"]).sum() / total_volume
     infeasible_cells = split.loc[~split["feasible"], ["rpgt", "currency", "bank"]].drop_duplicates()
     return {
-        "volume": float(volumes.sum()),
+        "volume": float(_tot_vol),
         "expected_success_rate": float(expected_success),
         "expected_risk_rate": float(expected_risk),
         "infeasible_cells": int(len(infeasible_cells)),

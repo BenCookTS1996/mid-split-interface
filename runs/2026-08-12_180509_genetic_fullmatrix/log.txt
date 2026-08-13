@@ -1,0 +1,164 @@
+[18:01:47 +   0.1s] ═════════════════════════ RUN DIAGNOSTICS ═════════════════════════
+[18:01:47 +   0.1s]    started 2026-08-12 18:01:47 · python 3.8.10 · pandas 2.0.3 · numpy 1.24.4
+[18:01:47 +   0.1s]    APP_BUILD: 2026-07-24l
+[18:01:47 +   0.1s]    backend build markers (if any ≠ expected → stale bytecode; clear __pycache__):
+[18:01:47 +   0.1s]       optimiser        2026-07-29-vamp-lp-singlegw-fixed-cell-revival
+[18:01:47 +   0.1s]       eligibility      2026-07-29-eligibility-ban-mask-cache+population-operator
+[18:01:47 +   0.1s]       success_rates    (no __build__)
+[18:01:47 +   0.1s]       forecast_pipeline (no __build__)
+[18:01:47 +   0.1s]       data_loader      (no __build__)
+[18:01:47 +   0.1s]       sql_runner       2026-07-04-templated-params
+[18:01:47 +   0.1s]       constraints      (no __build__)
+[18:01:47 +   0.1s]       base             2026-07-22-bounds-cache+qp-projection+feasible-guard
+[18:01:47 +   0.1s]       softmax          2026-07-22-softmax-analytic-projection
+[18:01:47 +   0.1s]       thompson         2026-08-03-thompson-leggauss-hoist+batched-quadrature
+[18:01:47 +   0.1s]       genetic_global   2026-08-11-band-aware-constrained-projection-seed+riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel+vol-weighted-viol+penalty-shape+repair-input+sigma-controls+fitness-trace+active-priority+viol-breakdown+capcell-detail+breach-tol+band-workings+no-maxiter-bandgreedy+stable-softmax
+[18:01:47 +   0.1s]       portfolio        2026-07-22-portfolio-fista+infeasible-flag
+[18:01:47 +   0.1s]       impact_calcs     2026-07-28-count-only-pool-search
+[18:01:47 +   0.1s]    RUN CONFIG:
+[18:01:47 +   0.1s]       company=TotalAV · scheme=visa · attempts_window=2026-07-28 → 2026-08-11
+[18:01:47 +   0.1s]       engine=genetic_fullmatrix · score_grain=Bank × Currency × RPGT · opt_grain=Bank × Currency × RPGT
+[18:01:47 +   0.1s]       vamp_cap=0.06 · exploration_floor=0.01 · max_gateway_share=0.97
+[18:01:47 +   0.1s]       bayes_method=Empirical Bayes · shrink κ=300 · time_decay=on 15d · xborder_penalty=0.6
+[18:01:47 +   0.1s]       max_pools_target=500
+[18:01:47 +   0.1s]       band scoring=EXACT in-search (per-generation pro-rata projection; no proxy, no post-hoc correction)
+[18:01:47 +   0.1s]       engine_params={}
+[18:01:47 +   0.1s]       auto_explore=True · RPGT_scope=ALL · hold_unselected_at_baseline=True
+[18:01:47 +   0.1s]       gateway auto-block=ON · >=100 consecutive failed attempts
+[18:01:47 +   0.1s]       per-MID constraints configured: 12
+[18:01:47 +   0.1s]          • WorldPay - Total AV | ALL-RPGT | M5 | vamp [ceiling] target=1600.0 tol=n/a prio=1
+[18:01:47 +   0.1s]          • Adyen_TotalAV | ALL-RPGT | M5 | vamp [ceiling] target=2600.0 tol=n/a prio=2
+[18:01:47 +   0.1s]          • Braintree USA - Total AV | ALL-RPGT | M5 | vamp [ceiling] target=1200.0 tol=n/a prio=1
+[18:01:47 +   0.1s]          • WoodForest - Total AV | ALL-RPGT | M5 | txn [ceiling] target=25000.0 tol=n/a prio=2
+[18:01:47 +   0.1s]          • Adyen - TotalAV - NA | ALL-RPGT | M5 | txn [floor] target=25000.0 tol=n/a prio=2
+[18:01:47 +   0.1s]          • Adyen_TotalAVPro | ALL-RPGT | M5 | txn [range] target=50000.0 tol=20% prio=2
+[18:01:47 +   0.1s]          • Adyen_TotalAVUltimate | ALL-RPGT | M5 | txn [range] target=50000.0 tol=20% prio=2
+[18:01:47 +   0.1s]          • Adyen_TotalAVPremium | ALL-RPGT | M5 | txn [range] target=50000.0 tol=20% prio=2
+[18:01:47 +   0.1s]          • PaySafe - Total AV | ALL-RPGT | M5 | txn [ceiling] target=20000.0 tol=n/a prio=2
+[18:01:47 +   0.1s]          • Authorize - Total AV | ALL-RPGT | M5 | txn [ceiling] target=10000.0 tol=n/a prio=2
+[18:01:47 +   0.1s]          • Adyen_TotalAVSecure | ALL-RPGT | M5 | txn [range] target=40000.0 tol=20% prio=2
+[18:01:47 +   0.1s]          • Adyen_TotalSecurity | ALL-RPGT | M5 | txn [range] target=40000.0 tol=20% prio=2
+[18:01:47 +   0.1s]    INPUT FILES:
+[18:01:47 +   0.1s]       outputs dir: data/outputs/AUG/TotalAV/  [0.00 MB, mtime 2026-08-02 00:24:40]
+[18:01:47 +   0.1s]       MID list: /Users/ben.cook/Downloads/routing_optimiser/data/mappings/Master_MID_List.csv  [0.09 MB, mtime 2026-07-23 10:12:46]
+[18:01:47 +   0.1s] ════════════════════════════════════════════════════════════════════
+[18:01:47 +   0.1s] ▶ ① Fetch attempts/success data — started
+[18:01:47 +   0.1s] 18:01:47     > SQL attempts_success.sql: loading cached result from /Users/ben.cook/Downloads/routing_optimiser/app/../.cache/attempts_success_3b1f3a564d_5d49b718df.parquet
+[18:01:47 +   0.1s]    attempts source: cache
+[18:01:47 +   0.1s] 18:01:47     > SQL processor_benchmark.sql: loading cached result from /Users/ben.cook/Downloads/routing_optimiser/app/../.cache/processor_benchmark_e2f0c1a6b2_5d49b718df.parquet
+[18:01:47 +   0.1s]    cross-brand processor benchmark: 30 (processor, currency) rates (cache) → untested-MID layer-2 prior.
+[18:01:47 +   0.1s]    ✓ ① Fetch attempts/success data — finished in 0.0s
+[18:01:47 +   0.1s] ▶ ② Pre-processing (Bayesian smoothing) — started
+[18:01:47 +   0.2s]    (reused parsed attempts from in-memory cache)
+[18:01:47 +   0.2s]    (reused parsed baseline forecast from in-memory cache)
+[18:01:51 +   3.8s]    currency filter: dropped 0 attempt rows where currency disagreed with Master MID currency
+[18:01:52 +   4.5s]    volume-override filter: dropped 0 rows for 15 switched-off gateways (target=0, trx/both)
+[18:01:52 +   5.1s]    RPGT scope: volume/eligibility/VAMP restricted to 4 RPGT(s) (149,635/341,840 attempts, 25,315/51,434 forecast rows); score per selected RPGT.
+[18:01:52 +   5.4s]    eligibility window: 149,635 attempt rows in 30D ending 2026-08-11
+[18:01:52 +   5.4s] ②·diag DATA SHAPES after pre-processing/filters:
+[18:01:52 +   5.4s]       attempts (post-filter, eligibility window): rows=149,635 · currencies=5 · gateways=35 · rpgts=4 · Σattempts=149,635 · Σamount=1,887,429
+[18:01:52 +   5.5s]       forecast baseline (routing volume): rows=25,315 · currencies=5 · gateways=15 · rpgts=4 · Σvolume=182,850
+[18:01:52 +   5.5s]       RPGTs available=['addon renewal', 'addon sale', 'annual sub renewal', 'annual sub sale', 'monthly initial', 'monthly renewal', 'p6m renewals', 'upgrades'] · scoped=['addon sale', 'annual sub sale', 'monthly initial', 'upgrades']
+[18:01:56 +   8.7s]    Optimisation grain: Bank×Currency×RPGT (per-RPGT cells); Engine Score grain: per-RPGT.
+[18:01:57 +   9.5s]    risk seeding: 21,262 gateway-cell(s) with NO VAMP data seeded from the opt-grain weighted-avg VAMP rate (currency/global fallback 0.0299) — so 0-VAMP gateways aren't treated as risk-free.
+[18:01:57 +   9.5s]    auto-explore capable set: 29 gateway(s) after Master-MID guards (from 482; dropped 401 inactive, 0 PayPal, 52 other-brand vs 'TotalAV').
+[18:01:58 +  11.1s]    exploration: injected 20388 fallback candidate row(s) into single-gateway cells (29 gateway(s), auto: currency-capable); seeded at the bank×currency average (weak prior) + explore cap.
+[18:02:02 +  14.7s]    23,012 dense aggregated cell × gateway success rates (full-window rate, 30D eligibility)
+[18:02:02 +  14.7s]    cross-border penalty 60% applied to 3150 gateway cells (64 cross-border FIDs)
+[18:02:02 +  15.4s]    exploration seeding: 20388 untested gateway cell(s) seeded (attempts=0 → weak/uncertain prior, scored cautiously): 20388 from a same-processor+brand+currency sibling, 0 from a CROSS-BRAND processor benchmark, 0 from the bank×currency average.
+[18:02:03 +  15.5s]    ✓ ② Pre-processing (Bayesian smoothing) — finished in 15.4s
+[18:02:03 +  15.5s] ▶ ③ Assemble routing cells from 30D attempts (forecast supplies volume only) — started
+[18:02:21 +  33.5s] ④·diag ROUTING CELLS assembled:
+[18:02:21 +  33.5s]       cells=7,386 · total gateway-rows=43,400 · total forecast volume=186,841
+[18:02:21 +  33.5s]       gateways/cell: min=2 p50=4 mean=5.9 p95=12 max=14
+[18:02:21 +  33.5s]       cells with 1 gateway (cap unsatisfiable): 0 · cells >50 gateways: 0
+[18:02:21 +  33.5s]       gateway-rows on POOLED prior (no per-cell attempts): 0 · auto-explore injected rows: 20,388
+[18:02:21 +  33.5s]       currencies=['aud', 'cad', 'eur', 'gbp', 'usd'] · distinct banks(×cur)=3,687 · rpgt grain values=['Addon Sale', 'Annual Sub Sale', 'Monthly Initial', 'Upgrades']
+[18:02:21 +  33.5s]    ✓ ③ Assemble routing cells from 30D attempts (forecast supplies volume only) — finished in 18.0s
+[18:02:21 +  33.5s] ▶ ④ Run genetic_fullmatrix engine across the Risk↔Conversion axis — started
+[18:02:21 +  33.5s]    1 dials: 0
+[18:02:21 +  33.6s]    optimiser build: 2026-07-29-vamp-lp-singlegw-fixed-cell-revival (expect 2026-07-16-vamp-frontier-lp — if not, clear __pycache__).
+[18:02:30 +  43.3s]    MID VAMP rates from pro-rata export (18,390 MID×cell rates).
+[18:02:38 +  50.5s]    priority→band weight (GAP=8): prio1=1 · prio2=0.125  (higher weight ⇒ the GA works harder to satisfy that tier)
+[18:02:56 +  68.7s]    back-fill sub-cell rows injected into cap scaffold: 226,194
+[18:02:58 +  71.0s]    per-MID cap projection scaffold: 586,464 t0 rows, 1,161,217 capped-MID rows (19,844 cells).
+[18:03:08 +  81.0s]    per-MID target±tolerance caps: 11 active; 5 MID(s) scaled/retired.
+[18:03:09 +  81.7s]    eligibility: 1 ban rule(s), 186 wallet-incapable id(s), global wallet share 31.1%; 6 USA-only id(s), global Non-USA share 39.0%.
+[18:03:09 +  82.0s]    backup catch-all blended into the GA fitness: 20 (currency×rpgt) pool(s).
+[18:03:23 +  96.0s]    ── genetic_fullmatrix single variation (dial 0): MIDs over cap=0 (informational — no cap enforced), succ=0.6412, risk=0.0303
+[18:03:23 +  96.1s]    ── GRANULAR PROFILE SAMPLES · dial 0 · 6 of 10,245 cells (currency × bank × rpgt) ──
+[18:03:23 +  96.1s]       each row: gateway · baseline% → proposed% (Δpp) · fc volume · VAMP risk · vampMid
+[18:03:23 +  96.1s]       • usd / 409915 / Monthly Initial  ·  cell_vol=11,660  ·  12 active gateway(s)
+[18:03:23 +  96.1s]           adyen-usd-tsc-x-tav             10.9% →  90.7% (+79.8pp) · vol   10,571 · risk   2.65%
+[18:03:23 +  96.1s]           adyen-usd-tav                   10.4% →   0.9% ( -9.5pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.1s]           adyen-usd-tav-avonline           6.1% →   0.9% ( -5.1pp) · vol      109 · risk   2.58%
+[18:03:23 +  96.1s]           adyen-usd-tav-na                13.8% →   0.9% (-12.9pp) · vol      109 · risk   2.67%
+[18:03:23 +  96.1s]           adyen-usd-tav-prem               6.0% →   0.9% ( -5.1pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.1s]           adyen-usd-tav-pro                9.8% →   0.9% ( -8.9pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.1s]           adyen-usd-tav-secure             9.2% →   0.9% ( -8.3pp) · vol      109 · risk   2.61%
+[18:03:23 +  96.1s]           adyen-usd-tav-ultimate           7.8% →   0.9% ( -6.9pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.1s]           braintree-usd-tav                6.1% →   0.9% ( -5.1pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.1s]           checkout-usd-tav-new             2.7% →   0.9% ( -1.7pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.1s]           worldpay-usd-tav-nt             10.5% →   0.9% ( -9.6pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.1s]           authorize-usd-tav                1.2% →   0.0% ( -1.2pp) · vol        0 · risk   2.64%
+[18:03:23 +  96.1s]       • usd / 435787 / Monthly Initial  ·  cell_vol=11,452  ·  12 active gateway(s)
+[18:03:23 +  96.1s]           adyen-usd-tsc-x-tav             10.9% →  86.6% (+75.7pp) · vol   10,099 · risk   2.65%
+[18:03:23 +  96.1s]           woodforest-usd-tav               2.7% →   2.7% ( -0.0pp) · vol      312 · risk   2.64%
+[18:03:23 +  96.1s]           adyen-usd-tav                   10.4% →   0.9% ( -9.5pp) · vol      104 · risk   2.64%
+[18:03:23 +  96.1s]           adyen-usd-tav-avonline           6.1% →   0.9% ( -5.2pp) · vol      104 · risk   2.58%
+[18:03:23 +  96.1s]           adyen-usd-tav-na                13.8% →   0.9% (-12.9pp) · vol      104 · risk   2.67%
+[18:03:23 +  96.1s]           adyen-usd-tav-prem               6.0% →   0.9% ( -5.1pp) · vol      104 · risk   2.64%
+[18:03:23 +  96.1s]           adyen-usd-tav-pro                9.8% →   0.9% ( -8.9pp) · vol      104 · risk   2.64%
+[18:03:23 +  96.1s]           adyen-usd-tav-secure             9.2% →   0.9% ( -8.3pp) · vol      104 · risk   2.61%
+[18:03:23 +  96.1s]           adyen-usd-tav-ultimate           7.8% →   0.9% ( -7.0pp) · vol      104 · risk   2.64%
+[18:03:23 +  96.1s]           authorize-usd-tav                1.2% →   0.9% ( -0.3pp) · vol      104 · risk   2.64%
+[18:03:23 +  96.1s]           braintree-usd-tav                6.1% →   0.9% ( -5.2pp) · vol      104 · risk   2.64%
+[18:03:23 +  96.1s]           checkout-usd-tav-new             2.7% →   0.9% ( -1.8pp) · vol      104 · risk   2.64%
+[18:03:23 +  96.1s]       • usd / 405370 / Monthly Initial  ·  cell_vol=11,660  ·  12 active gateway(s)
+[18:03:23 +  96.1s]           adyen-usd-tsc-x-tav             10.9% →  90.7% (+79.8pp) · vol   10,571 · risk   2.65%
+[18:03:23 +  96.1s]           adyen-usd-tav                   10.4% →   0.9% ( -9.5pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.1s]           adyen-usd-tav-avonline           6.1% →   0.9% ( -5.1pp) · vol      109 · risk   2.58%
+[18:03:23 +  96.1s]           adyen-usd-tav-na                13.8% →   0.9% (-12.9pp) · vol      109 · risk   2.67%
+[18:03:23 +  96.1s]           adyen-usd-tav-prem               6.0% →   0.9% ( -5.1pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.1s]           adyen-usd-tav-pro                9.8% →   0.9% ( -8.9pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.2s]           adyen-usd-tav-secure             9.2% →   0.9% ( -8.3pp) · vol      109 · risk   2.61%
+[18:03:23 +  96.2s]           adyen-usd-tav-ultimate           7.8% →   0.9% ( -6.9pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.2s]           braintree-usd-tav                6.1% →   0.9% ( -5.1pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.2s]           checkout-usd-tav-new             2.7% →   0.9% ( -1.7pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.2s]           worldpay-usd-tav-nt             10.5% →   0.9% ( -9.6pp) · vol      109 · risk   2.64%
+[18:03:23 +  96.2s]           authorize-usd-tav                1.2% →   0.0% ( -1.2pp) · vol        0 · risk   2.64%
+[18:03:23 +  96.2s]       • usd / 466200 / Monthly Initial  ·  cell_vol=4  ·  10 active gateway(s)
+[18:03:23 +  96.2s]           adyen-usd-tav                    0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           adyen-usd-tav-avonline           0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           adyen-usd-tav-prem               0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           adyen-usd-tav-pro                0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           adyen-usd-tav-secure             0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           adyen-usd-tav-ultimate           0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           adyen-usd-tsc-x-tav              0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           braintree-usd-tav                0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           worldpay-usd-tav-nt              0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           paysafe-usd-tav                100.0% →   0.0% (-100.0pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]       • usd / 467961 / Upgrades  ·  cell_vol=2  ·  10 active gateway(s)
+[18:03:23 +  96.2s]           adyen-usd-tav                    0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           adyen-usd-tav-avonline           0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           adyen-usd-tav-prem               0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           adyen-usd-tav-pro                0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           adyen-usd-tav-secure             0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           adyen-usd-tav-ultimate           0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           adyen-usd-tsc-x-tav              0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           braintree-usd-tav                0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           worldpay-usd-tav-nt              0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           paysafe-usd-tav                100.0% →   0.0% (-100.0pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]       • cad / 435494 / Monthly Initial  ·  cell_vol=2  ·  4 active gateway(s)
+[18:03:23 +  96.2s]           worldpay-cad-tav-nt              0.0% →  60.0% (+60.0pp) · vol        1 · risk   2.99%
+[18:03:23 +  96.2s]           adyen-cad-tav                    0.0% →  20.0% (+20.0pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           braintree-cad-tav                0.0% →  20.0% (+20.0pp) · vol        0 · risk   2.99%
+[18:03:23 +  96.2s]           paysafe-cad-tav                100.0% →   0.0% (-100.0pp) · vol        0 · risk   2.99%
+[18:03:32 + 105.3s]    ✓ ④ Run genetic_fullmatrix engine across the Risk↔Conversion axis — finished in 71.8s
+[18:03:32 + 105.3s] ▶ ⑤ Pre-calculate impact frames for all variations — started
+[18:03:34 + 106.6s]    ✓ ⑤ Pre-calculate impact frames for all variations — finished in 1.3s
+[18:03:34 + 106.6s] ▶ ⑥ Pre-compute pool-targeted compression for all 1 dial(s) (target <= 500) — started
+[18:05:09 + 201.7s]       dial 0: 499 pools (fidelity 98.3%)
+[18:05:09 + 201.7s]    compression (sequential, 1 dial(s), method=ward/knapsack) finished in 95.2s
+[18:05:09 + 201.7s]    ✓ ⑥ Pre-compute pool-targeted compression for all 1 dial(s) (target <= 500) — finished in 95.2s
+[18:05:09 + 201.8s] ✅ Total run time 201.8s

@@ -9,6 +9,7 @@ As more tabs are moved into their own files, the helpers they share move here to
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 
@@ -34,6 +35,139 @@ RPGT_LIST = [
     "Monthly Renewal", "Annual Sub Renewal", "P6M Renewals", "Addon Renewal",
 ]
 COMPANIES = ["TotalAV", "Total Drive", "Total Adblock", "Total Cleaner", "Total VPN"]
+
+
+# --- Master_MID_List.csv loader (memoised) ---------------------------------------------
+# The MID list is read many times per Streamlit rerun (gatewayFid→vampMid / brand /
+# processWallet lookups). Re-parsing the same file each time is pure waste, so cache the
+# parse keyed on (path, mtime) and return a fresh COPY each call — bit-identical to
+# pd.read_csv(path), just without the repeated disk read + parse. An edited file (new
+# mtime) busts the cache automatically.
+_MID_LIST_CACHE: dict = {}
+
+
+def load_mid_list(path):
+    """Read Master_MID_List.csv once per (path, mtime), reused across reruns.
+
+    Returns a fresh COPY so callers may mutate the frame freely without corrupting the
+    cache. Identical in content/dtypes to ``pd.read_csv(path)``.
+    """
+    try:
+        _k = (str(path), os.path.getmtime(path))
+    except OSError:
+        return pd.read_csv(path)          # missing/odd path → behave exactly like read_csv
+    _df = _MID_LIST_CACHE.get(_k)
+    if _df is None:
+        _df = pd.read_csv(path)
+        _MID_LIST_CACHE.clear()           # keep only the latest (path, mtime)
+        _MID_LIST_CACHE[_k] = _df
+    return _df.copy()
+
+
+def _norm_cols(df):
+    """Case/space/underscore-insensitive column lookup for a DataFrame:
+    returns ``{normalised_name: original_name}`` (e.g. 'gatewayfid' -> 'gatewayFid')."""
+    return {str(c).lower().replace(" ", "").replace("_", ""): c for c in df.columns}
+
+
+_KEEP = object()  # sentinel: unmapped values keep their original value
+
+
+def _map_to_bank(series, b2b, default=_KEEP):
+    """Map a bank/BIN series through a bin_to_bank dict, trying the raw value then a
+    stripped-lower key. Unmapped values fall back to `default`, or — when `default` is the
+    `_KEEP` sentinel — to the original value. (Caller applies any `.astype(str)` / `.str.upper()`.)"""
+    if default is _KEEP:
+        return series.map(lambda b: b2b.get(b, b2b.get(str(b).strip().lower(), b)))
+    return series.map(lambda b: b2b.get(b, b2b.get(str(b).strip().lower(), default)))
+
+
+def _renorm_share(df, keys, col="share"):
+    """Renormalise ``df[col]`` IN PLACE so it sums to 1 within each ``keys`` group; rows whose
+    group sum is <= 0 become 0. Same operations/order as the inlined idiom (bit-identical).
+    Returns df for chaining."""
+    _t = df.groupby(keys)[col].transform("sum")
+    df[col] = (df[col] / _t).where(_t > 0, 0.0)
+    return df
+
+
+def _fid2vamp_from(mid_df, gwcol, vmcol):
+    """Build ``{gatewayFid_lower_stripped: vampMid_stripped}`` from a Master-MID DataFrame given
+    the resolved gatewayFid and vampMid column names. Bit-identical to the inlined dict(zip(...))."""
+    return dict(zip(mid_df[gwcol].astype(str).str.strip().str.lower(),
+                    mid_df[vmcol].astype(str).str.strip()))
+
+
+def read_json(path, default=None):
+    """Load a JSON file, returning ``default`` if it's missing, unreadable, or malformed."""
+    try:
+        with open(path) as _f:
+            return json.load(_f)
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def green_button_css(key):
+    """Inject the scoped green-primary button styling for a widget created with ``key=<key>``
+    (green fill, white text, darker-green hover). Used by the 'Fetch projected M0' buttons."""
+    st.markdown(
+        f"<style>.st-key-{key} button{{background-color:#22C36B !important;"
+        f"border-color:#22C36B !important;}} .st-key-{key} button,"
+        f".st-key-{key} button *{{color:#ffffff !important;}} "
+        f".st-key-{key} button:hover{{background-color:#1EA95D !important;"
+        f"border-color:#1EA95D !important;}}</style>",
+        unsafe_allow_html=True)
+
+
+def fetch_m0_weightings(company, scheme, *, assumed_prefix, total_key, msg_key, err_key):
+    """Fetch last month's projected txns per RPGT for `company` + `scheme` from BigQuery
+    (queries/m0_weightings.sql) and fill the given session_state keys.
+
+    `scheme` ('visa'/'mastercard') is passed to the query as CARD_SCHEME, so the projection is
+    for the SELECTED scheme (not just Visa) and the cache separates per scheme. Shared by the
+    Build-Baseline and Validate M0 panels — they differ only in the session-key names. Writes
+    ``ss[assumed_prefix + rpgt]`` for each RPGT, ``ss[total_key]``, and either ``ss[msg_key]``
+    (success) or ``ss[err_key]`` (failure). Intended as an on_click callback (sets state before
+    the automatic rerun).
+    """
+    from routing_optimiser import run_sql_file  # lazy: keeps app_common import-light
+    try:
+        _scheme = str(scheme or "visa").strip().lower()
+        _m0sql = os.path.join(SQL_DIR, "m0_weightings.sql")
+        _m0path, _m0src = run_sql_file(_m0sql, CACHE_DIR, use_cache=True, project=GCP_PROJECT,
+                                       params={"company": company, "CARD_SCHEME": _scheme})
+        _m0df = (pd.read_parquet(_m0path) if str(_m0path).endswith(".parquet")
+                 else pd.read_csv(_m0path))
+        _rc = "riskdata2025_risk_defined_subscription_product_type"
+        _vc = "riskdata2025_scheme_trx_count"
+        # accept the new scheme-generic column, the legacy visa name, or fall back positionally
+        if _vc not in _m0df.columns and "riskdata2025_visa_trx_count" in _m0df.columns:
+            _m0df = _m0df.rename(columns={"riskdata2025_visa_trx_count": _vc})
+        if _rc not in _m0df.columns or _vc not in _m0df.columns:
+            _c0 = list(_m0df.columns)          # positional fallback
+            _m0df = _m0df.rename(columns={_c0[0]: _rc, _c0[1]: _vc})
+        _fetched = {}
+        for _, _row in _m0df.iterrows():
+            _v = _row[_vc]
+            _fetched[str(_row[_rc]).strip()] = int(round(float(_v))) if pd.notna(_v) else 0
+        # TotalAV + visa only: agreed manual reductions to the renewal RPGTs (the projection
+        # over-counts these) before filling the inputs. (Mastercard uses the raw projection.)
+        if str(company) == "TotalAV" and _scheme == "visa":
+            for _rp, _sub in (("Monthly Renewal", 8000),
+                              ("Annual Sub Renewal", 1500),
+                              ("Addon Renewal", 500)):
+                if _rp in _fetched:
+                    _fetched[_rp] = _fetched[_rp] - _sub
+        for _rp in RPGT_LIST:
+            ss[f"{assumed_prefix}{_rp}"] = max(0, int(_fetched.get(_rp, 0)))
+        ss[total_key] = int(sum(max(0, int(_fetched.get(_rp, 0))) for _rp in RPGT_LIST))
+        ss.pop(err_key, None)
+        ss[msg_key] = (f"Filled from BigQuery ({_m0src}) for {company} — "
+                       f"projected {ss[total_key]:,} {_scheme.title()} txns across "
+                       f"{sum(1 for _rp in RPGT_LIST if _fetched.get(_rp))} RPGT(s).")
+    except Exception as _me:  # noqa: BLE001
+        ss.pop(msg_key, None)
+        ss[err_key] = f"{type(_me).__name__}: {_me}"
 
 
 class StreamlitLogHandler(logging.Handler):
@@ -209,6 +343,7 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None):
     if not blocked_pairs or split is None or getattr(split, "empty", True) \
             or not {"bank", "gateway", "share"}.issubset(split.columns):
         return split, 0
+    blocked_pairs = set(blocked_pairs)   # O(1) membership in the per-row checks below
     d = split.copy()
     _bk = d["bank"].astype(str).str.strip().str.lower()
     _gw = d["gateway"].astype(str).str.strip().str.lower()
@@ -298,7 +433,7 @@ def _ensure_base_30d_metrics():
         return ss["cached_base_30d_metrics"]
     if "adf" not in ss:
         return None
-    adf_raw = ss["adf"].copy()
+    adf_raw = ss["adf"]   # read-only here; the mutated frame is adf_30d (its own .copy() below)
     date_col = "date" if "date" in adf_raw.columns else ("Date" if "Date" in adf_raw.columns else None)
     adf_30d = adf_raw.copy()
     if date_col:

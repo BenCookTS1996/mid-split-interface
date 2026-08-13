@@ -4,7 +4,11 @@ The forecast (BigQuery extract + ActuarialEngine) is split-INDEPENDENT, so run_v
 caches its output (_actuarial_attempts.parquet + _mid_df.parquet + _mr_weights.pkl +
 _pipeline_config.json). This module loads those and runs ONLY phases 3-4 (AllocationEngine +
 ExportManager) on a split — no BigQuery, no re-forecast — producing the EXACT same mid_level
-pre/post that tab 5 (the full pipeline) would for that split.
+pre/post that the full VAMP pipeline would for that split.
+
+NOTE: not currently dispatched by any tab — the full-pipeline "Validate Split" tab
+(app/tab_validate.py) superseded this. Kept on the shelf as a revivable fast, offline
+"validate a split from the cached forecast" path; delete only if that idea is abandoned.
 """
 from __future__ import annotations
 

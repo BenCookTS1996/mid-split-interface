@@ -1,7 +1,8 @@
 """Tab 2 — Routing engine.
 
-Extracted verbatim from streamlit_app.py (behaviour unchanged) into its own file so the main
-script stays small. streamlit_app.py calls `render()` from inside `with tab_eng:`.
+Originally split out of streamlit_app.py into its own file so the entry point stays small; it
+has since diverged with substantive engine changes (a single genetic/CMA-ES engine, pre-
+clustering, tuned step-size defaults). streamlit_app.py calls `render()` from `with tab_eng:`.
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from routing_optimiser import (HardConstraints, OptimiserSettings, SoftConstrain
                                optimise_split, portfolio_summary, run_sql_file)
 from impact_calcs import _mtime, pool_targeted_compression, process_wallet_incapable
 
+from app_common import load_mid_list, _norm_cols  # memoised MID reader + column-normaliser
 from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, StreamlitLogHandler,
                         _switched_off_gateways, APP_BUILD, DEFAULT_GATEWAY_FIDS, _GA_N_SEED,
                         _apply_blocked_caps, _ensure_base_30d_metrics, _fmt_secs,
@@ -111,6 +113,11 @@ def render():
         # escape hatch). If Numba is unavailable it self-falls-back to the NumPy path.
         if "genetic_numba" not in {k for k, _ in choices}:
             choices.append(("genetic_numba", "Genetic algorithm (Numba + pre-clustering)"))
+        # OPT-IN full-matrix BIN-grain GA (genetic_fullmatrix). Reuses the genetic
+        # block's ctx + enforcement; only the DELIVERED endpoint is swapped for the
+        # full-matrix GA's split (see the override just before `_deliver_G` below).
+        if "genetic_fullmatrix" not in {k for k, _ in choices}:
+            choices.append(("genetic_fullmatrix", "GA - Full matrix (BIN grain, experimental)"))
         labels = {k: lbl for k, lbl in choices}
         keys = [k for k, _ in choices]
         # Default to the Genetic algorithm (the production engine); fall back to softmax/first.
@@ -151,7 +158,7 @@ def render():
         _pre_engine = str(ss.get("engine_key_select", _pre_default) or _pre_default)
         if _pre_engine not in _pre_keys:      # stale session value (e.g. a removed key) → default
             _pre_engine = _pre_default
-        if _pre_engine in ("genetic", "genetic_numba"):
+        if _pre_engine in ("genetic", "genetic_numba", "genetic_fullmatrix"):
             _cpu_seeds_default = max(1, min(_physical_cpu_count(), 16))
             # [FN-299]
             def _budget_panel():
@@ -188,6 +195,26 @@ def render():
                              "result. ON: every seed runs the FULL generation cap regardless, so the candidate "
                              "count becomes exact (= seeds × restarts × generations × λ) and the run is longer, "
                              "usually with no better split. Use for a deterministic, maximum-budget search.")
+                    st.checkbox(
+                        "Exact projector seed (successive-LP, experimental)", value=False,
+                        key="use_exact_band_solver",
+                        help="OFF (default): the band-aware warm-start seed uses the fast multiplicative "
+                             "constrained-projection HEURISTIC. ON: ALSO compute an EXACT seed that minimises "
+                             "the TRUE projector band breach via successive LPs on the analytic Jacobian of the "
+                             "projector — reaching 0 breach is a genuine compliance certificate. Adds a one-time "
+                             "solve before the search; only ever helps (feasibility-first ranking keeps the best "
+                             "seed). Local optimum only (fractional-VAMP nonconvexity), so it is a diagnostic + "
+                             "seed, not a global guarantee.")
+                    st.checkbox(
+                        "Anchor search on the compliant seed (recommended)", value=True,
+                        key="anchor_ref_on_seed",
+                        help="ON (default): recentre the CMA-ES so its tilts fan out FROM the lowest-breach "
+                             "warm-start seed — i.e. the search STARTS at that compliant split and only tilts "
+                             "to shape risk/revenue from there. This fixes the representational loss where a "
+                             "share-space seed can't be reproduced by the 45-dial tilt genome (so the old "
+                             "warm-start blurred the seed's compliance away). Feasibility-first ranking keeps "
+                             "the compliant anchor as the incumbent, so the result can't come back worse than "
+                             "the seed. OFF: tilt around the revenue-greedy reference (previous behaviour).")
                     with st.expander("Advanced — step size (CMA-ES σ)", expanded=False):
                         st.caption("CMA-ES already auto-adapts the step size every generation; these only "
                                    "nudge its starting point and limits. σ₀×1.5 and damping×1.5 are the "
@@ -234,9 +261,9 @@ def render():
                     _ratio = float(ss.get("last_ga_ratio", 0.0) or 0.0)
                     if _ratio > 0:
                         _exp = _bud_floor * _ratio
-                        _lo_c, _hi_c = _exp * 0.85, _exp * 1.15
+                        _, _hi_c = _exp * 0.85, _exp * 1.15
                     else:
-                        _lo_c, _hi_c = float(_bud_floor), float(_bud_ceil)
+                        _, _hi_c = float(_bud_floor), float(_bud_ceil)
                     # End-to-end ETA, calibrated from the last run (fixed overhead + candidates ÷ rate).
                     _lc = int(ss.get("last_ga_cands", 0) or 0)
                     _lsecs = float(ss.get("last_ga_secs", 0.0) or 0.0)
@@ -287,8 +314,12 @@ def render():
                                        and os.environ.get("ROUTING_GA_PRECLUSTER", "1") != "0")
                 # These two flags keep the rest of the tab from special-casing the genetic key.
                 # ('genetic' is retained here only so any legacy session/state value still resolves.)
-                _is_genetic = engine_key in ("genetic", "genetic_numba")
-                _use_numba = (engine_key == "genetic_numba")
+                # genetic_fullmatrix reuses the SAME genetic block (ctx build + greedy/LP
+                # endpoints + enforcement); its distinct full-matrix split is swapped in
+                # just before delivery. It runs the Numba path so the shared block never
+                # hits the removed NumPy fallback.
+                _is_genetic = engine_key in ("genetic", "genetic_numba", "genetic_fullmatrix")
+                _use_numba = engine_key in ("genetic_numba", "genetic_fullmatrix")
                 # (Bypass-enforcement checkbox removed — the enforcement layer no longer gates the
                 # delivered split; the GA search output is delivered directly. See the delivery site.)
 
@@ -680,7 +711,7 @@ def render():
         # Genetic search budget — rendered BELOW the engine form (moved down from the top of the tab),
         # so it sits beneath '1. Engine Type & Settings'. Kept OUTSIDE the form as a live fragment so
         # editing generations/λ/seeds/restarts refreshes the candidate-count + ETA immediately.
-        if _pre_engine in ("genetic", "genetic_numba"):
+        if _pre_engine in ("genetic", "genetic_numba", "genetic_fullmatrix"):
             (st.fragment(_budget_panel) if hasattr(st, "fragment") else _budget_panel)()
 
         if submit_engine:
@@ -769,17 +800,15 @@ def render():
                 _pct = int(round(frac * 100))
                 _el = _pt.time() - _run_t0
                 if frac >= 0.999:
-                    _rem = ""
+                    pass                          # finished — no ETA to compute
                 elif _t6_0 is not None:
                     # FINAL stage (pool compression) is one long blocking call that never ticks the
                     # bar, so a fraction-based linear ETA freezes the fraction while time keeps
                     # elapsing and balloons (the old "~4386s left" bug). Anchor it to elapsed time in
                     # the stage vs the calibrated compression time instead.
                     _eta = int(max(1, min(_C_est - (_pt.time() - _t6_0), _T_est)))
-                    _rem = f" · ~{_eta}s left (est.)"
                 elif frac <= 0.02:
                     _eta = int(max(1, min(_T_est - _el, _T_est)))
-                    _rem = f" · ~{_eta}s left (est.)"
                 else:
                     # Blend the calibrated remaining with a live linear extrapolation, then HARD-
                     # CLAMP to [1, total estimate]. The clamp is the safety net: a frozen fraction
@@ -788,7 +817,6 @@ def render():
                     _eta_lin = _el * (1.0 - frac) / max(frac, 1e-6)
                     _eta = frac * _eta_lin + (1.0 - frac) * _eta_model
                     _eta = int(max(1, min(_eta, _T_est)))
-                    _rem = f" · ~{_eta}s left (est.)"
                 _txt = f"{_pct}%" + (f" · {label}" if label else "")
                 try:
                     _pbar.progress(frac, text=_txt)
@@ -923,7 +951,7 @@ def render():
                                  if ss.get('block_gw_cb', False) else ""))
                         # Step-size (CMA-ES σ) overrides — echoed ONLY when dialled off their no-op defaults,
                         # so a tuning A/B is self-documenting in the saved run bundle (absent line ⇒ defaults).
-                        if _gv('engine_key') in ("genetic", "genetic_numba"):
+                        if _gv('engine_key') in ("genetic", "genetic_numba", "genetic_fullmatrix"):
                             _s0m = float(ss.get("ga_sigma0_mult", 1.5) or 1.5)
                             _sfl = float(ss.get("ga_sigma_floor", 0.0) or 0.0)
                             _dmp = float(ss.get("ga_damps_mult", 1.5) or 1.5)
@@ -1048,8 +1076,8 @@ def render():
                     mid_list_path = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                     if os.path.exists(mid_list_path) and "gateway" in forecast_temp.columns:
                         try:
-                            mid_df = pd.read_csv(mid_list_path)
-                            clean_cols = {str(c).lower().replace(" ", "").replace("_", ""): c for c in mid_df.columns}
+                            mid_df = load_mid_list(mid_list_path)
+                            clean_cols = _norm_cols(mid_df)
                             v_col, g_col = clean_cols.get("vampmid"), clean_cols.get("gatewayfid")
                             
                             if v_col and g_col:
@@ -1111,8 +1139,8 @@ def render():
                     try:
                         if os.path.exists(mid_list_path) and {"gateway", "currency"}.issubset(adf.columns):
                             from routing_optimiser.forecast_pipeline import _canonical_gateway
-                            _mm = pd.read_csv(mid_list_path)
-                            _cc = {str(c).lower().replace(" ", "").replace("_", ""): c for c in _mm.columns}
+                            _mm = load_mid_list(mid_list_path)
+                            _cc = _norm_cols(_mm)
                             _gcol, _curcol = _cc.get("gatewayfid"), _cc.get("currency")
                             if _gcol and _curcol:
                                 _mm["_g"] = _mm[_gcol].map(_canonical_gateway).astype(str).str.strip().str.lower()
@@ -1216,7 +1244,17 @@ def render():
                     except Exception as _e:  # noqa: BLE001
                         _diag(f"   [data-shape diagnostics failed: {_e}]")
 
-                    if "original_bank_name" in agg_adf.columns:
+                    if engine_key == "genetic_fullmatrix":
+                        # TRUE BIN GRAIN: the full-matrix engine decides each BIN
+                        # independently, so DON'T collapse BINs into their issuing parent
+                        # bank. Identity map ⇒ parent_bank == bank == BIN, so _gk keys on
+                        # BIN and ctx (hence the full-matrix genome) is built per BIN. All
+                        # downstream steps are grain-agnostic — they just get more cells
+                        # (slower). This is what makes "GA - Full matrix" actually BIN-grain.
+                        bin_to_bank = {b: b for b in agg_adf["bank"].unique()}
+                        log("   [full-matrix] TRUE BIN GRAIN: parent-bank collapse DISABLED — "
+                            "optimising per BIN (more cells, slower).")
+                    elif "original_bank_name" in agg_adf.columns:
                         valid_banks = agg_adf[agg_adf["original_bank_name"].str.strip() != ""]
                         bin_to_bank = valid_banks.groupby("bank")["original_bank_name"].agg(lambda x: x.mode()[0] if not x.mode().empty else "UNKNOWN").to_dict()
                     else:
@@ -1349,24 +1387,28 @@ def render():
                         _fid_brand, _fid_active, _fid_proc = {}, {}, {}
                         _norm_b = lambda s: str(s).strip().lower().replace(" ", "")
                         if os.path.exists(mid_list_path):
-                            _mmx = pd.read_csv(mid_list_path)
-                            _ccx = {str(c).lower().replace(" ", "").replace("_", ""): c for c in _mmx.columns}
+                            _mmx = load_mid_list(mid_list_path)
+                            _ccx = _norm_cols(_mmx)
                             _gx, _cx = _ccx.get("gatewayfid"), _ccx.get("currency")
                             _bx, _ax, _px = _ccx.get("brand"), _ccx.get("isactive"), _ccx.get("gateway")
                             if _gx and _cx:
                                 _gcol = _mmx[_gx].map(_cg_ex).astype(str).str.strip().str.lower()
-                                _rng = range(len(_mmx))
-                                for _i, _g, _c in zip(_rng, _gcol,
+                                # Hoist the per-row columns to lists once (avoids 3 boxed .iloc[_i]
+                                # scalar lookups per row); identical scalar values, same order.
+                                _bvals = _mmx[_bx].tolist() if _bx else None
+                                _avals = _mmx[_ax].tolist() if _ax else None
+                                _pvals = _mmx[_px].tolist() if _px else None
+                                for _i, _g, _c in zip(range(len(_mmx)), _gcol,
                                                       _mmx[_cx].astype(str).str.strip().str.lower()):
                                     if _c in ("", "excluded", "nan", "none"):
                                         continue
                                     _fid_cur.setdefault(_g, _c)
-                                    if _bx and _g not in _fid_brand:
-                                        _fid_brand[_g] = _norm_b(_mmx[_bx].iloc[_i])
-                                    if _ax and _g not in _fid_active:
-                                        _fid_active[_g] = str(_mmx[_ax].iloc[_i]).strip().lower() in ("true", "1", "yes", "t", "y")
-                                    if _px and _g not in _fid_proc:
-                                        _fid_proc[_g] = _norm_b(_mmx[_px].iloc[_i])
+                                    if _bvals is not None and _g not in _fid_brand:
+                                        _fid_brand[_g] = _norm_b(_bvals[_i])
+                                    if _avals is not None and _g not in _fid_active:
+                                        _fid_active[_g] = str(_avals[_i]).strip().lower() in ("true", "1", "yes", "t", "y")
+                                    if _pvals is not None and _g not in _fid_proc:
+                                        _fid_proc[_g] = _norm_b(_pvals[_i])
                         if _auto_explore:   # currency-capable gateways, filtered + minus scrubbed / switched-off
                             import json as _json
                             _skip = set()
@@ -1512,8 +1554,8 @@ def render():
                     xborder_fids = set()
                     try:
                         if os.path.exists(mid_list_path):
-                            _mmx = pd.read_csv(mid_list_path)
-                            _ccx = {str(c).lower().replace(" ", "").replace("_", ""): c for c in _mmx.columns}
+                            _mmx = load_mid_list(mid_list_path)
+                            _ccx = _norm_cols(_mmx)
                             _gx, _xb = _ccx.get("gatewayfid"), _ccx.get("iscrossborder")
                             if _gx and _xb:
                                 from routing_optimiser.forecast_pipeline import _canonical_gateway
@@ -1594,8 +1636,8 @@ def render():
                             try:
                                 from routing_optimiser.forecast_pipeline import _canonical_gateway as _cg_sib
                                 if os.path.exists(mid_list_path):
-                                    _mms = pd.read_csv(mid_list_path)
-                                    _ccs = {str(c).lower().replace(" ", "").replace("_", ""): c for c in _mms.columns}
+                                    _mms = load_mid_list(mid_list_path)
+                                    _ccs = _norm_cols(_mms)
                                     _gs, _ps, _bs = _ccs.get("gatewayfid"), _ccs.get("gateway"), _ccs.get("brand")
                                     if _gs and _ps:
                                         _brc = (_mms[_bs].astype(str).str.strip().str.lower() if _bs else pd.Series([""] * len(_mms)))
@@ -1865,8 +1907,8 @@ def render():
                     fid2vamp = {}
                     _mmp = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                     if os.path.exists(_mmp):
-                        _mmd = pd.read_csv(_mmp)
-                        _cc = {str(c).lower().replace(" ", "").replace("_", ""): c for c in _mmd.columns}
+                        _mmd = load_mid_list(_mmp)
+                        _cc = _norm_cols(_mmd)
                         if _cc.get("gatewayfid") and _cc.get("vampmid"):
                             fid2vamp = dict(zip(_mmd[_cc["gatewayfid"]].astype(str).str.strip().str.lower(),
                                                 _mmd[_cc["vampmid"]].astype(str).str.strip()))
@@ -2399,7 +2441,7 @@ def render():
                     # and volume redistributed to eligible ones; wallet-incapable gateways
                     # keep only their non-wallet share.
                     from routing_optimiser.eligibility import (
-                        load_restrictions, load_usa_only, apply_restrictions, WALLET_VALUES, unenforceable_fields)
+                        load_restrictions, load_usa_only, apply_restrictions, unenforceable_fields)
                     _rr_path = os.path.join(PROJECT_ROOT, "config", "inputs", "routing_restrictions.json")
                     _elig_rules = load_restrictions(_rr_path)
                     _unenf = unenforceable_fields(_elig_rules, ["rpgt", "currency", "bank"])
@@ -3062,7 +3104,10 @@ def render():
                         return sum(1 for _mk in _tt2
                                    if _tt2[_mk] > 0 and _vv[_mk] / _tt2[_mk] > float(vamp_cap) + 1e-9)
 
-                    if engine_key in ("genetic", "genetic_numba"):
+                    if engine_key in ("genetic", "genetic_numba", "genetic_fullmatrix"):
+                        # genetic_fullmatrix enters this SAME branch so it reuses the ctx build,
+                        # greedy+LP compliant split and endpoints; its distinct full-matrix split
+                        # is swapped in at the delivery-site override (see `_deliver_G` below).
                         # ---- Global GA: revenue − λ·risk, WARM-STARTED from softmax + HARD-
                         # ENFORCED on output. The GA population is seeded with softmax's
                         # revenue-optimal and compliant splits, so (with elitism) it can't
@@ -3549,9 +3594,19 @@ def render():
                         _ga_pop = _pop_ovr if _pop_ovr > 0 else int(np.clip(round(4 * _n_mid), 30, 80))
                         _ga_gen = int(ss.get("ga_generations", 80) or 80)
                         _ga_pat = 12
+                        # SHORT-CIRCUIT for genetic_fullmatrix: the tilt CMA-ES endpoint search is
+                        # DISCARDED by the full-matrix override at delivery, so don't spend ~50 min on
+                        # it. Trivialise it (1 seed, 1 gen) — the block still defines every variable the
+                        # delivery path needs; only _comp_share_G (greedy+LP seed) and ctx matter here.
+                        if engine_key == "genetic_fullmatrix":
+                            _ga_pop, _ga_gen = 4, 1
+                            log("   [full-matrix] tilt CMA-ES search short-circuited (1 seed × 1 gen) — "
+                                "its result is replaced by the full-matrix GA at delivery.")
                         # multi-seed: keep the fittest of N parallel CMA-ES starts. N is the tab-2
                         # "Number of seeds" control (defaults to core count); _GA_N_SEED is the fallback.
                         _N_SEED = max(1, int(ss.get("ga_n_seeds", _GA_N_SEED) or _GA_N_SEED))
+                        if engine_key == "genetic_fullmatrix":
+                            _N_SEED = 1       # short-circuit: single trivial seed (result discarded)
                                               # (module constant, also read by the settings-aware ETA)
                         _GA_GAIN_MAX = 3.5   # wider per-MID gain range (was 2.0) → more cross-MID reach
                         # CMA-ES self-adapts (covariance + step size) and ranks feasibility-first, so the
@@ -3699,17 +3754,12 @@ def render():
                                 # joblib, and inner_max_num_threads=1 stops the workers × BLAS-threads
                                 # oversubscription. loky is the ONLY supported backend — if it can't
                                 # run, the run fails loudly (no threading / sequential fallback).
-                                _ga_backend = "loky"
                                 _try_backends = ["loky"]
                                 _njobs = min(int(_N_SEED), os.cpu_count() or 1)
                                 # Can we stream results as each seed returns? (joblib >=1.3 has
                                 # return_as). If so we log a per-seed convergence summary the moment
                                 # each finishes; the generator is ORDERED so the fittest tie-break
                                 # stays byte-identical to the blocking call. Older joblib → blocking.
-                                try:
-                                    _gen_ok = ("return_as" in _insp_jl.signature(Parallel).parameters)
-                                except Exception:  # noqa: BLE001
-                                    _gen_ok = False
 
                                 # [FN-341]
                                 def _log_seed(_idx, _infoc, _t0, _best_holder):
@@ -3775,13 +3825,13 @@ def render():
                                         return
                                     _done = 0
                                     _active = 0
-                                    _best = None; _best_fit = None
+                                    _best = None; _best_fit = None; _best_nv = None
                                     try:
                                         for _fn in os.listdir(_prog_dir):
                                             if _fn.endswith(".txt"):
                                                 try:
                                                     with open(os.path.join(_prog_dir, _fn)) as _pf:
-                                                        _parts = _pf.read().split("|")   # "total|best|fit"
+                                                        _parts = _pf.read().split("|")   # "total|best|fit|nviol"
                                                     _v = int(((_parts[0]).strip() or "0"))
                                                     _done += _v
                                                     if _v > 0:
@@ -3792,6 +3842,8 @@ def render():
                                                             _best = _bs
                                                             _best_fit = (float(_parts[2]) if (len(_parts) > 2
                                                                          and _parts[2].strip()) else None)
+                                                            _best_nv = (int(_parts[3]) if (len(_parts) > 3
+                                                                        and _parts[3].strip()) else None)
                                                 except Exception:  # noqa: BLE001
                                                     pass
                                     except Exception:  # noqa: BLE001
@@ -3818,9 +3870,10 @@ def render():
                                         _emit["n"], _emit["t"] = _done, _now
                                         _bstr = (f" · best score {_best:,.0f}" if _best is not None else "")
                                         _fstr = (f" · fitness {_best_fit:,.0f}" if _best_fit is not None else "")
+                                        _nstr = (f" · MIDs unmet {_best_nv}" if _best_nv is not None else "")
                                         log(f"   GA progress: ≈ {_done:,} candidate splits evaluated so far "
                                             f"({_active}/{int(_nseed)} seeds active, {_rate:,.0f}/s) · "
-                                            f"t+{_now - _t0:.0f}s{_bstr}{_fstr}")
+                                            f"t+{_now - _t0:.0f}s{_bstr}{_fstr}{_nstr}")
 
                                 # ---- GA-Numba: PRE-COMPILE the kernel ONCE in the main process ----
                                 # Otherwise all 16 loky workers cold-compile the fused kernel
@@ -4112,6 +4165,52 @@ def render():
                                     log(f"   delivered split — true-band breach {_br:.4g} "
                                         "(0 = all month bands satisfied by the real pro-rata projection; "
                                         "exact in-search scoring, no post-hoc correction).")
+                                    # PER-MID CONSTRAINT BREAKDOWN — target vs Now for every configured
+                                    # constraint, from the SAME exact-band projection that produced the
+                                    # breach above (so these numbers reconcile with the GA's score). Best
+                                    # effort; never breaks the run.
+                                    try:
+                                        _epx = ctx.get("exact_bands") if isinstance(ctx, dict) else None
+                                        _scx2 = ctx.get("_exact_bands_selfcheck") if isinstance(ctx, dict) else None
+                                        _mcn2 = params.get("mid_constraints", []) if isinstance(params, dict) else []
+                                        if _epx is not None and _scx2 is not None and _mcn2:
+                                            from routing_optimiser.band_scoring import shares_to_prop_raw as _s2pr_rep
+                                            _pr_rep = _s2pr_rep(np.asarray(_sh, float)[None, :], _scx2["inc"])
+                                            _now_by = {}
+                                            for _bd in _epx.report(_pr_rep):
+                                                if len(_bd["months"]) == 1:
+                                                    _now_by[(_bd["midl"], _bd["months"][0], _bd["metric"])] = _bd["now"]
+                                            _mlab2 = {"txn": "VI Txn", "vamp": "VAMP", "vamp_pct": "VAMP %"}
+                                            log("   ── per-MID constraint breakdown (delivered split · exact M-band projection) ──")
+                                            log("      vampMid | scope | metric | type | prio | target | now | miss | minimal relaxation")
+                                            for _rr2 in _mcn2:
+                                                _mid2 = str(_rr2.get("vampMid"))
+                                                _mo2 = _rr2.get("month")
+                                                _mtr2 = str(_rr2.get("metric", "txn"))
+                                                _dir2 = str(_rr2.get("direction", "range"))
+                                                _tg2 = float(_rr2.get("target") or 0.0)
+                                                _tl2 = float(_rr2.get("tol") or 0.0)
+                                                _prio2 = int(_rr2.get("priority", 1) or 1)
+                                                _sc2 = "ALL" if _mo2 is None else f"M{int(_mo2)}"
+                                                _now2 = _now_by.get((_mid2.strip().lower(),
+                                                                     (None if _mo2 is None else int(_mo2)), _mtr2))
+                                                if _now2 is None:
+                                                    log(f"      {_mid2} | {_sc2} | {_mlab2.get(_mtr2, _mtr2)} | {_dir2} | "
+                                                        f"{_prio2} | {_tg2:,.0f} | (no band) | — | —")
+                                                    continue
+                                                _lo2, _hi2 = _tg2 * (1.0 - _tl2), _tg2 * (1.0 + _tl2)
+                                                _hi_on2 = _dir2 in ("range", "ceiling")
+                                                _lo_on2 = _dir2 in ("range", "floor")
+                                                if (not _hi_on2 or _now2 <= _hi2 + 1e-6) and (not _lo_on2 or _now2 >= _lo2 - 1e-6):
+                                                    _miss2, _rel2 = "✓ met", "—"
+                                                else:
+                                                    _miss2 = "under" if (_lo_on2 and _now2 < _lo2) else "over"
+                                                    _need2 = (abs(_now2 / _tg2 - 1.0) * 100.0) if _tg2 > 0 else 0.0
+                                                    _rel2 = f"Tol >= {_need2:.0f}%  or  Target -> {_now2:,.0f}"
+                                                log(f"      {_mid2} | {_sc2} | {_mlab2.get(_mtr2, _mtr2)} | {_dir2} | "
+                                                    f"{_prio2} | {_tg2:,.0f} | {_now2:,.0f} | {_miss2} | {_rel2}")
+                                    except Exception as _bde:  # noqa: BLE001
+                                        log(f"   [per-MID breakdown skipped: {type(_bde).__name__}: {_bde}]")
                                 except Exception as _e:  # noqa: BLE001
                                     log(f"   [Warning] delivered-split band readout skipped ({_e}).")
                             ctx["risk_min_w"] = 0.0
@@ -4183,7 +4282,7 @@ def render():
                         # _leaned_ref is a no-op; set a positive value to re-enable the lean.
                         _ref_gamma_auto = 0.0
                         log("   reference lean: OFF (γ=0) — compliant start comes from the "
-                            "compliant + risk-greedy warm-start seeds.")
+                            "compliant + band-aware constrained-projection warm-start seeds.")
                         _safe_wall0 = _gatime.time()
                         # risk-min endpoint (dial 0): same GA (EXACT in-search band scoring; read-only
                         # true-band readout, no correction), with the
@@ -4191,23 +4290,143 @@ def render():
                         # dial 0 sits inside every band harder. Intermediate dials inherit this via the
                         # frontier blend between the dial-0 and dial-99 endpoints.
                         _warm_dial0 = None
+                        _exact_G = None    # optional exact projector-defined seed (successive-LP); see below
                         _band_mult = 1.0   # band penalty strength fixed at 1.0 (input removed)
-                        # #1 DIVERSE SEEDS: hand the risk-min search BOTH the revenue-greedy compliant
-                        # split AND a risk-greedy split (each cell's share leaning to its lowest-risk
-                        # gateways), so it starts inside the risk-min basin, not just the revenue corner.
+                        # #1 DIVERSE SEEDS: hand the risk-min search the revenue-greedy compliant split
+                        # PLUS a BAND-AWARE greedy compliant split (the revenue-greedy split nudged so
+                        # each MID moves toward its month bands), so the search starts band-feasible-or-
+                        # close rather than in a band-oblivious corner. (This REPLACES the old risk-greedy
+                        # seed.) Feasibility-first ranking means it can only help.
                         try:
-                            _zrc, _ = _gg._risk_z_per_cell(np.asarray(ctx["risk"], float),
-                                                           np.asarray(ctx["cell_starts"], np.intp),
-                                                           np.asarray(ctx["cell_counts"], np.intp),
-                                                           int(ctx["n_row"]))
-                            _rw = np.asarray(ctx["elig"], float) * np.exp(-6.0 * _zrc)     # lean low-risk
-                            _seg = np.add.reduceat(_rw, np.asarray(ctx["cell_starts"], np.intp))
-                            _risk_greedy_G = _rw / np.repeat(np.where(_seg > 1e-12, _seg, 1.0),
-                                                             np.asarray(ctx["cell_counts"], np.intp))
-                            ctx["warm_shares"] = [np.asarray(_comp_share_G, float), _risk_greedy_G]
+                            _band_greedy_G = np.asarray(_comp_share_G, float)
+                            if (_ga_bands and ctx.get("exact_bands") is not None
+                                    and isinstance(ctx.get("_exact_bands_selfcheck"), dict)
+                                    and ctx["_exact_bands_selfcheck"].get("inc") is not None):
+                                _band_greedy_G = _gg.band_greedy_shares(
+                                    np.asarray(_comp_share_G, float),
+                                    ctx["cell_starts"], ctx["cell_counts"], ctx["elig"],
+                                    ctx["mid_rows"], _mids_u,
+                                    ctx["exact_bands"], ctx["_exact_bands_selfcheck"]["inc"],
+                                    max_share=float(ctx.get("max_share", 1.0) or 1.0))
+                                # Confirm the band-aware seed is LIVE + emit a FEASIBILITY CHECK: run
+                                # the exact projector on the constrained-projection seed (min band
+                                # breach s.t. per-cell simplex + max-share) and report the verdict.
+                                # Reaching 0 breach is a genuine feasibility CERTIFICATE (a compliant
+                                # split exists); non-zero is a strong — not proof — infeasibility signal.
+                                try:
+                                    from routing_optimiser.band_scoring import shares_to_prop_raw as _s2pr_seed
+                                    _inc_seed = ctx["_exact_bands_selfcheck"]["inc"]
+                                    _v0 = float(ctx["exact_bands"].penalty(
+                                        _s2pr_seed(np.asarray(_comp_share_G, float)[None, :], _inc_seed))[0])
+                                    _v1 = float(ctx["exact_bands"].penalty(
+                                        _s2pr_seed(np.asarray(_band_greedy_G, float)[None, :], _inc_seed))[0])
+                                    log(f"   diverse seeds: revenue-greedy compliant + BAND-AWARE "
+                                        f"constrained-projection seed (per-cell simplex + max-share QP; "
+                                        f"replaces risk-greedy) — seed band breach {_v0:.4g} → {_v1:.4g}.")
+                                    # Per-band verdict from the exact projector on the seed.
+                                    _pretty = {str(_r.get("vampMid")).strip().lower(): str(_r.get("vampMid"))
+                                               for _r in (params.get("mid_constraints", []) or [])}
+                                    _rep_s = ctx["exact_bands"].report(
+                                        _s2pr_seed(np.asarray(_band_greedy_G, float)[None, :], _inc_seed))
+                                    _unmet = []
+                                    for _r in _rep_s:
+                                        _nw = float(_r["now"])
+                                        if ((_r["ceil"] is not None and _nw > float(_r["ceil"]) + 1e-6)
+                                                or (_r["floor"] is not None and _nw < float(_r["floor"]) - 1e-6)):
+                                            _unmet.append(_pretty.get(str(_r["midl"]), str(_r["midl"])))
+                                    _nb = len(_rep_s)
+                                    log("   ── FEASIBILITY CHECK (constrained projection: min band breach "
+                                        "s.t. per-cell simplex + max-share) ──")
+                                    if not _unmet:
+                                        log(f"      verdict: ✓ a COMPLIANT split EXISTS — all {_nb} band(s) "
+                                            "satisfiable (feasibility certificate); seeded into the search.")
+                                    else:
+                                        log(f"      verdict: ✗ {len(set(_unmet))} of {_nb} band(s) NOT reachable "
+                                            f"by the projection (min total breach {_v1:.4g}) → constraints appear "
+                                            "INFEASIBLE under this scope (not a proof — the search explores further).")
+                                        log("      still unmet: " + ", ".join(sorted(set(_unmet))))
+                                except Exception:  # noqa: BLE001
+                                    log("   diverse seeds: revenue-greedy compliant + BAND-AWARE "
+                                        "constrained-projection seed (replaces risk-greedy).")
+                            else:
+                                log("   diverse seeds: revenue-greedy compliant only "
+                                    "(no active month bands → band-aware seed not built).")
+                            # keep the legacy name so the cache-key hash below still hashes the 2nd seed
+                            _risk_greedy_G = np.asarray(_band_greedy_G, float)
+                            _seeds = [np.asarray(_comp_share_G, float), _risk_greedy_G]
+                            # OPTIONAL exact projector-defined seed: successive-LP that minimises the TRUE
+                            # projector band breach using the analytic Jacobian (exact_band_solver). Default
+                            # OFF (one-time solve; opt in via the tab-2 checkbox). Appended as a THIRD diverse
+                            # seed — feasibility-first ranking means it can only help. 0 breach = a genuine
+                            # compliance certificate; a positive floor is a strong (not proof) infeasibility
+                            # signal. Local optimum only (fractional-VAMP nonconvexity + fixed active mask).
+                            if (bool(ss.get("use_exact_band_solver"))
+                                    and engine_key != "genetic_fullmatrix"   # skip: ~16min at BIN grain, seed discarded
+                                    and _ga_bands and ctx.get("exact_bands") is not None
+                                    and isinstance(ctx.get("_exact_bands_selfcheck"), dict)
+                                    and ctx["_exact_bands_selfcheck"].get("inc") is not None):
+                                try:
+                                    from routing_optimiser.exact_band_solver import solve_least_breach as _slb
+                                    _inc_x = ctx["_exact_bands_selfcheck"]["inc"]
+                                    _exact_G, _xinfo = _slb(
+                                        ctx["exact_bands"], _inc_x, np.asarray(_comp_share_G, float),
+                                        ctx["cell_starts"], ctx["cell_counts"], ctx["elig"],
+                                        max_share=float(ctx.get("max_share", 1.0) or 1.0))
+                                    if _xinfo.get("ok"):
+                                        _seeds.append(np.asarray(_exact_G, float))
+                                        _verd = ("✓ COMPLIANT certificate (a feasible split provably exists)"
+                                                 if _xinfo.get("feasible")
+                                                 else "local min > 0 → appears INFEASIBLE under this scope (not a proof)")
+                                        log("   ── EXACT projector seed (successive-LP on the TRUE band values "
+                                            "+ analytic Jacobian) ──")
+                                        log(f"      breach {_xinfo['breach0']:.4g} → {_xinfo['breach']:.4g} "
+                                            f"in {_xinfo['outer']} LP step(s); {_xinfo['n_free']} band-feeding "
+                                            f"gateways free. Verdict: {_verd}.")
+                                    else:
+                                        _exact_G = None
+                                        log("   exact projector seed skipped: "
+                                            f"{_xinfo.get('reason', 'unavailable')}.")
+                                except Exception as _xe:  # noqa: BLE001
+                                    _exact_G = None
+                                    log(f"   exact projector seed skipped: {type(_xe).__name__}: {_xe}")
+                            ctx["warm_shares"] = _seeds
                         except Exception:  # noqa: BLE001
                             _risk_greedy_G = np.asarray(_comp_share_G, float)
                             ctx["warm_shares"] = np.asarray(_comp_share_G, float)
+                        # ── ANCHOR THE SEARCH ON THE COMPLIANT SEED (recentre the CMA-ES reference) ──
+                        # The 45-dial tilt genome can't REPRESENT a share-space seed (43,522 gateways), so
+                        # fitting a seed to a genome blurs its compliance away — which is why the search used
+                        # to START at 12 unmet MIDs even though a seed reached 5. Instead we make the
+                        # lowest-breach seed the REFERENCE the tilts fan out from: θ=0 then decodes to EXACTLY
+                        # that compliant split, so the CMA-ES genuinely starts compliant and only tilts to
+                        # shape risk/revenue from there (feasibility-first keeps the anchor as the incumbent,
+                        # so it can't return worse than the seed). Overriding ctx['ref_share'] here also flows
+                        # into the cache key below, so an anchored run can't reload a stale non-anchored
+                        # result. Restored right after the risk-min solve so downstream sees the original.
+                        _ref_share_backup = ctx.get("ref_share")
+                        _anchored = False
+                        if (bool(ss.get("anchor_ref_on_seed", True))
+                                and _ga_bands and ctx.get("exact_bands") is not None
+                                and isinstance(ctx.get("_exact_bands_selfcheck"), dict)
+                                and ctx["_exact_bands_selfcheck"].get("inc") is not None):
+                            try:
+                                from routing_optimiser.band_scoring import shares_to_prop_raw as _s2pr_anc
+                                _inc_anc = ctx["_exact_bands_selfcheck"]["inc"]
+                                _cands = [("revenue-greedy compliant", np.asarray(_comp_share_G, float)),
+                                          ("band-aware seed", np.asarray(_risk_greedy_G, float))]
+                                if _exact_G is not None:
+                                    _cands.append(("exact projector seed", np.asarray(_exact_G, float)))
+                                _scored = sorted(
+                                    ((float(ctx["exact_bands"].penalty(_s2pr_anc(_c[None, :], _inc_anc))[0]), _nm, _c)
+                                     for _nm, _c in _cands), key=lambda x: x[0])
+                                _abp, _anm, _anchor = _scored[0]
+                                ctx["ref_share"] = np.ascontiguousarray(np.asarray(_anchor, float))
+                                _anchored = True
+                                log(f"   anchor: CMA-ES reference recentred on the lowest-breach seed "
+                                    f"('{_anm}', band breach {_abp:.4g}) — θ=0 now decodes to this compliant "
+                                    f"split, so the search STARTS here instead of losing it in the genome fit.")
+                            except Exception as _ae:  # noqa: BLE001
+                                log(f"   anchor: skipped ({type(_ae).__name__}: {_ae}); default reference kept.")
                         _n_fine_rm = int(min(40, max(0, _n_cells)))   # #4 richer per-cell genome (bounded)
                         _rm_w = _risk_aversion * _rev_ref / _vamp_ref
                         # #6 DISK CACHE: the risk-min search is deterministic, so a re-run with identical
@@ -4227,6 +4446,9 @@ def render():
                                     _h.update(np.ascontiguousarray(np.asarray(_v)).tobytes())
                             _h.update(np.ascontiguousarray(np.asarray(_comp_share_G, float)).tobytes())
                             _h.update(np.ascontiguousarray(np.asarray(_risk_greedy_G, float)).tobytes())
+                            if _exact_G is not None:               # hash the exact seed too (else a stale hit)
+                                _h.update(b"exact_band_seed")
+                                _h.update(np.ascontiguousarray(np.asarray(_exact_G, float)).tobytes())
                             _h.update(repr((float(vamp_cap) if vamp_cap is not None else None,
                                             float(ctx.get("max_share", 1.0) or 1.0),
                                             float(ctx.get("floor", 0.0) or 0.0), repr(_mid_month_rules),
@@ -4278,6 +4500,8 @@ def render():
                                             pass
                                 except Exception:  # noqa: BLE001
                                     pass
+                        if _anchored:                                        # restore the original reference
+                            ctx["ref_share"] = _ref_share_backup             # so downstream/frontier is unaffected
                         ss["ga_hist_rev"] = None                              # revenue-max CMA-ES removed
                         ss["ga_hist_safe"] = (_inf2.get("history") if _inf2 else None)   # convergence chart
                         # Engine-workings charts reflect the risk-min search (now the ONLY CMA-ES run).
@@ -4300,29 +4524,33 @@ def render():
                         # parallel seeds is ~free; restarts (IPOP λ-doubling) cost the most — this
                         # readout is how you see whether a knob earned its time.
                         try:
-                            _eff_best = (float(_inf2.get("best_fit")) if (_inf2 and
-                                         _inf2.get("best_fit") is not None) else float("nan"))
-                            _eff_cands = int(ss.get("last_ga_cands", 0) or 0)
-                            _eff_ssecs = float(ss.get("last_ga_secs", 0.0) or 0.0)   # search-only wall
-                            _eff_rst = max(1, int(ss.get("ga_restarts", 4) or 4))
-                            _eff_cps = (_eff_cands / _eff_ssecs) if (_eff_cands > 0 and _eff_ssecs > 0) else 0.0
-                            _eff_spm = (_eff_best / (_eff_ssecs / 60.0)) if (_eff_ssecs > 0
-                                        and _eff_best == _eff_best) else float("nan")   # nan-safe
-                            _eff_mode = str((_inf2 or {}).get("restart_mode", "ipop"))
-                            log("   ④ EFFICIENCY (how much search these settings bought, and how fast):")
-                            log(f"      settings   : {int(_N_SEED)} seeds × {_eff_rst} restarts × "
-                                f"{int(_ga_gen)} gens × λ{int(_ga_pop)} · restart-mode={_eff_mode}")
-                            log(f"      best score : {_eff_best:,.0f}" if _eff_best == _eff_best
-                                else "      best score : n/a")
-                            if _eff_cands > 0 and _eff_ssecs > 0:
-                                log(f"      search cost: {_eff_cands:,} candidate splits in "
-                                    f"{_eff_ssecs:.0f}s ({_eff_cps:,.0f}/s throughput)")
-                            else:
-                                log("      search cost: candidate count unavailable this run "
-                                    "(live counter reported 0)")
-                            if _eff_spm == _eff_spm:
-                                log(f"      EFFICIENCY : {_eff_spm:,.0f} score/min "
-                                    "— compare across runs on the SAME data (higher = better settings)")
+                            # The full-matrix engine runs AFTER this point and logs its OWN ④ efficiency
+                            # readout from its real stats — its tilt endpoint here is short-circuited to
+                            # 1 gen, so best_fit / candidate count are NOT the delivered search. Skip.
+                            if engine_key != "genetic_fullmatrix":
+                                _eff_best = (float(_inf2.get("best_fit")) if (_inf2 and
+                                             _inf2.get("best_fit") is not None) else float("nan"))
+                                _eff_cands = int(ss.get("last_ga_cands", 0) or 0)
+                                _eff_ssecs = float(ss.get("last_ga_secs", 0.0) or 0.0)   # search-only wall
+                                _eff_rst = max(1, int(ss.get("ga_restarts", 4) or 4))
+                                _eff_cps = (_eff_cands / _eff_ssecs) if (_eff_cands > 0 and _eff_ssecs > 0) else 0.0
+                                _eff_spm = (_eff_best / (_eff_ssecs / 60.0)) if (_eff_ssecs > 0
+                                            and _eff_best == _eff_best) else float("nan")   # nan-safe
+                                _eff_mode = str((_inf2 or {}).get("restart_mode", "ipop"))
+                                log("   ④ EFFICIENCY (how much search these settings bought, and how fast):")
+                                log(f"      settings   : {int(_N_SEED)} seeds × {_eff_rst} restarts × "
+                                    f"{int(_ga_gen)} gens × λ{int(_ga_pop)} · restart-mode={_eff_mode}")
+                                log(f"      best score : {_eff_best:,.0f}" if _eff_best == _eff_best
+                                    else "      best score : n/a")
+                                if _eff_cands > 0 and _eff_ssecs > 0:
+                                    log(f"      search cost: {_eff_cands:,} candidate splits in "
+                                        f"{_eff_ssecs:.0f}s ({_eff_cps:,.0f}/s throughput)")
+                                else:
+                                    log("      search cost: candidate count unavailable this run "
+                                        "(live counter reported 0)")
+                                if _eff_spm == _eff_spm:
+                                    log(f"      EFFICIENCY : {_eff_spm:,.0f} score/min "
+                                        "— compare across runs on the SAME data (higher = better settings)")
                         except Exception as _effe:  # noqa: BLE001 - a readout must never break a run
                             log(f"   [Warning] ④ efficiency self-report skipped ({_effe}).")
                         # Use the risk-min GA for dial 0 only if it is compliant; else fall back to the
@@ -4366,6 +4594,173 @@ def render():
                             except Exception as _bpe:  # noqa: BLE001
                                 log(f"   [Warning] pre-enforcement auto-block detect skipped "
                                     f"({type(_bpe).__name__}: {_bpe}); post-hoc cap still applies.")
+
+                        # OPT-IN FULL-MATRIX ENGINE OVERRIDE. genetic_fullmatrix reuses everything
+                        # above (ctx build, greedy+LP compliant split _comp_share_G, eligibility) but
+                        # replaces the DELIVERED split with a full-matrix BIN-grain GA seeded from the
+                        # KNOWN-COMPLIANT _comp_share_G. soft_cap == hard_cap so the result is feasible
+                        # BY CONSTRUCTION (the elite seed is compliant + never-worse guarantee) — safe
+                        # even though the VAMP-cap enforcement below is off. Boundary-hugging (ride to a
+                        # soft cap, then LP-tighten) is deferred until enforcement is re-wired.
+                        if engine_key == "genetic_fullmatrix":
+                            try:
+                                from routing_optimiser.genetic_fullmatrix import (
+                                    problem_from_ctx as _fm_prob, run_fullmatrix_ga as _fm_run,
+                                    reconstruct_full_split as _fm_recon)
+                                # ---- feed the per-MID BAND constraints into the full-matrix problem ----
+                                # Map each tab-3 rule to its vampMid index and a (metric, lo, hi) band.
+                                # metric: txn->1, vamp(count)->2, vamp_pct(rate)->3. direction sets lo/hi.
+                                # CAVEAT (logged): this is a LINEAR 30-day proxy (Σ cell_vol×share), NOT the
+                                # exact pro-rata month-M5 projection the tilt engine uses — verify the
+                                # logged per-band values against the tilt readout on the first run.
+                                _fm_name2idx = {str(_m).strip().lower(): _i
+                                                for _i, _m in enumerate(_mids_u)}
+                                _fm_metric_code = {"txn": 1, "vamp": 2, "vamp_pct": 3}
+                                _fm_bands = {}
+                                _fm_applied, _fm_unmapped = [], []
+                                for _rc in (params.get("mid_constraints", []) or []):
+                                    _nm = str(_rc.get("vampMid", "")).strip().lower()
+                                    _j = _fm_name2idx.get(_nm)
+                                    _mc = _fm_metric_code.get(str(_rc.get("metric", "txn")), 1)
+                                    if _j is None:
+                                        _fm_unmapped.append(str(_rc.get("vampMid", "")))
+                                        continue
+                                    _tgt = float(_rc.get("target", 0.0) or 0.0)
+                                    _tol = float(_rc.get("tol") or 0.0)
+                                    _dir = str(_rc.get("direction", "range")).strip().lower()
+                                    if _dir == "ceiling":
+                                        _lo, _hi = float("-inf"), _tgt
+                                    elif _dir == "floor":
+                                        _lo, _hi = _tgt, float("inf")
+                                    else:                                  # range ± tol
+                                        _lo, _hi = _tgt * (1.0 - _tol), _tgt * (1.0 + _tol)
+                                    _fm_bands[_j] = (_mc, _lo, _hi)
+                                    _fm_applied.append(f"{_rc.get('vampMid')}[{_rc.get('metric')}"
+                                                       f"/{_dir}] lo={_lo:.0f} hi={_hi:.0f}")
+                                if _fm_unmapped:
+                                    log(f"   [full-matrix] ⚠ {len(_fm_unmapped)} band(s) did NOT match a "
+                                        f"vampMid and are IGNORED: {', '.join(_fm_unmapped)}")
+                                # EXACT M5 band projector: if the tilt's exact-bands object + incidence
+                                # are on ctx, fold the SAME pro-rata M5 breach the tilt uses into the
+                                # fitness (not the 30-day linear proxy). Else fall back to the proxy.
+                                _fm_eb = ctx.get("exact_bands")
+                                _fm_sc = ctx.get("_exact_bands_selfcheck")
+                                _fm_inc = _fm_sc.get("inc") if isinstance(_fm_sc, dict) else None
+                                _fm_use_exact = (_fm_eb is not None and _fm_inc is not None)
+                                from routing_optimiser.band_scoring import shares_to_prop_raw as _fm_s2pr
+                                # SEED SELECTION: start from the LOWEST-breach available compliant split
+                                # (the band-aware constrained-projection seed / exact-projector seed), NOT
+                                # the band-oblivious _comp_share_G. The never-worse guarantee then forces
+                                # the delivered breach ≤ this seed's breach — so the search can only match
+                                # or beat the feasibility check, never regress below it (mirrors the tilt
+                                # 'anchor' step).
+                                _fm_seed = np.asarray(_comp_share_G, float)
+                                if _fm_use_exact:
+                                    def _fm_breach(_sv):
+                                        return float(_fm_eb.penalty(_fm_s2pr(
+                                            np.asarray(_sv, float)[None, :], _fm_inc))[0])
+                                    _fm_seed_b = _fm_breach(_fm_seed)
+                                    for _cnm, _cand in [("band-aware", locals().get("_risk_greedy_G")),
+                                                        ("exact-proj", locals().get("_exact_G"))]:
+                                        if _cand is None:
+                                            continue
+                                        _cb = _fm_breach(_cand)
+                                        if _cb < _fm_seed_b:
+                                            _fm_seed, _fm_seed_b = np.asarray(_cand, float), _cb
+                                            log(f"   [full-matrix] seed → '{_cnm}' (exact M5 breach {_cb:.4g}).")
+                                    log(f"   [full-matrix] chosen seed exact M5 breach = {_fm_seed_b:.4g} "
+                                        "(never-worse guarantee: delivered breach ≤ this).")
+                                _fm_p, _fm_meta = _fm_prob(
+                                    ctx, soft_cap_mult=1.0,
+                                    seed_full=_fm_seed,
+                                    mid_bands=({} if _fm_use_exact else _fm_bands))
+                                _fm_bpf = None
+                                if _fm_use_exact:
+                                    _fm_colmap = np.asarray(_fm_meta["keep_idx"])[_fm_p.order]
+                                    _fm_nrow = int(ctx["n_row"])
+                                    def _fm_bpf(_srt_sh, _eb=_fm_eb, _inc=_fm_inc,
+                                                _cm=_fm_colmap, _nr=_fm_nrow):
+                                        _f = np.zeros((_srt_sh.shape[0], _nr))
+                                        _f[:, _cm] = _srt_sh
+                                        return np.asarray(_eb.penalty(_fm_s2pr(_f, _inc)), dtype=float)
+                                    log("   [full-matrix] EXACT M5 band projector wired into the fitness "
+                                        "(same pro-rata projection as the tilt engine; replaces the linear "
+                                        "30-day proxy). Bands: " + " · ".join(_fm_applied))
+                                elif _fm_applied:
+                                    log("   [full-matrix] ⚠ exact band projector unavailable — using the "
+                                        "LINEAR 30-day proxy (verify vs the tilt band readout): "
+                                        + " · ".join(_fm_applied))
+                                # Honour the tab-2 "Generations" setting (was hardcoded 200 and
+                                # early-stopped at ~gen 26 by patience). Scale patience with the
+                                # budget so it doesn't quit prematurely, but can still stop if truly
+                                # plateaued (infeasible bands).
+                                _fm_gens = int(ss.get("ga_generations", 80) or 80)
+                                # Honour the "Run all generations (no early-stopping)" checkbox
+                                # (ga_no_early_stop) — same control the tilt engine uses. ON =>
+                                # patience > generations so the stale-counter can never trigger.
+                                _fm_no_stop = bool(ss.get("ga_no_early_stop", False))
+                                _fm_pat = (_fm_gens + 1 if _fm_no_stop else max(30, _fm_gens // 3))
+                                # All four search-budget dropdowns now feed the full-matrix engine
+                                # (previously only Generations did; Population read a nonexistent
+                                # key so it was stuck at 64, and Seeds/Restarts were ignored).
+                                _fm_pop_ovr = int(ss.get("ga_pop_override", 0) or 0)
+                                _fm_pop = _fm_pop_ovr if _fm_pop_ovr > 0 else 64      # 0 = auto
+                                _fm_nseeds = max(1, int(ss.get("ga_n_seeds", 1) or 1))
+                                _fm_restarts = max(1, int(ss.get("ga_restarts", 1) or 1))
+                                _fm_rmode = str(ss.get("ga_restart_mode", "lean") or "lean")
+                                log(f"   [full-matrix] search budget: {_fm_nseeds} seed(s) × "
+                                    f"{_fm_restarts} restart(s) × {_fm_gens} generations · pop "
+                                    f"{_fm_pop} · restart-mode {_fm_rmode}; "
+                                    + ("early-stop DISABLED (run-all-generations ON)"
+                                       if _fm_no_stop else f"patience {_fm_pat}") + ".")
+                                _fm_best, _fm_info = _fm_run(
+                                    _fm_p, reference_shares=_fm_meta["reference_kept"],
+                                    pop_size=_fm_pop, generations=_fm_gens, patience=_fm_pat,
+                                    n_seeds=_fm_nseeds, restarts=_fm_restarts,
+                                    restart_mode=_fm_rmode, seed=0, log_fn=log,
+                                    numba=True,   # verify-gated; self-falls-back to numpy
+                                    band_penalty_fn=_fm_bpf)
+                                _fm_full = _fm_recon(_fm_best, _fm_meta)
+                                if _fm_use_exact and _fm_bpf is not None:
+                                    try:   # self-check: delivered split's EXACT M5 breach (compare to tilt)
+                                        _fm_brc = float(_fm_eb.penalty(_fm_s2pr(
+                                            np.asarray(_fm_full, float)[None, :], _fm_inc))[0])
+                                        log(f"   [full-matrix] delivered split EXACT M5 band breach = "
+                                            f"{_fm_brc:.4g}  (0 = all month bands met; compare to the "
+                                            "tilt per-MID breakdown above — should be consistent).")
+                                    except Exception as _bce:  # noqa: BLE001
+                                        log(f"   [full-matrix] band self-check skipped ({type(_bce).__name__}).")
+                                log(f"   [full-matrix] evaluated {_fm_info['splits_evaluated']:,} "
+                                    f"candidate splits over {_fm_info['generations_run']} "
+                                    f"generations (pop {_fm_info['pop_size']}); "
+                                    f"vwsr={_fm_info['vwsr']:.5f} "
+                                    f"viol={_fm_info['violation']:.2e} "
+                                    f"feasible={_fm_info['feasible']} "
+                                    f"improved_over_compliant_seed={_fm_info['improved_over_seed']}")
+                                # ④ EFFICIENCY — the FULL-MATRIX engine's OWN stats (the tilt-endpoint
+                                # readout above was skipped for this engine, as it's short-circuited).
+                                _fm_secs = float(_fm_info.get("seconds", 0.0) or 0.0)
+                                _fm_cnt = int(_fm_info.get("splits_evaluated", 0) or 0)
+                                log("   ④ EFFICIENCY (full-matrix GA — the delivered search):")
+                                log(f"      settings   : {_fm_nseeds} seed(s) × {_fm_restarts} restart(s) × "
+                                    f"{_fm_gens} gens × pop {_fm_pop} · restart-mode={_fm_rmode}")
+                                log(f"      result     : vwsr {_fm_info.get('vwsr', float('nan')):.5f} · "
+                                    f"viol {_fm_info.get('violation', float('nan')):.2e} · "
+                                    f"feasible={_fm_info.get('feasible')}")
+                                if _fm_cnt > 0 and _fm_secs > 0:
+                                    log(f"      search cost: {_fm_cnt:,} candidate splits in {_fm_secs:.0f}s "
+                                        f"({_fm_cnt / _fm_secs:,.0f}/s throughput)")
+                                # Feed the SAME tab-3 convergence chart the tilt GA uses
+                                # (dial-0 slot). history rows already match its 8-field
+                                # layout; last_ga_cands scales the candidate x-axis.
+                                ss["ga_hist_safe"] = _fm_info.get("history")
+                                ss["ga_hist_rev"] = None
+                                ss["last_ga_cands"] = int(_fm_info.get("splits_evaluated", 0))
+                                _safe_endpoint_G = _fm_full
+                                _comp_endpoint_G = _fm_full
+                            except Exception as _fme:  # noqa: BLE001
+                                log(f"   [full-matrix] FAILED ({type(_fme).__name__}: {_fme}); "
+                                    "falling back to the CMA-ES risk-min endpoint.")
 
                         # ENFORCEMENT REMOVED — a single dial-0 variation only. The delivered split is
                         # the GA / CMA-ES risk-min endpoint (_safe_endpoint_G) with ONLY the eligibility

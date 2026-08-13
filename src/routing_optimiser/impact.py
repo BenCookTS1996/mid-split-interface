@@ -19,9 +19,12 @@ def cell_baseline_vs_proposed(split: pd.DataFrame,
     keyed by rpgt. Multiply successful attempts by this to get revenue.
     """
     # [FN-149]
+    _default_ticket = (float(np.mean(list(avg_ticket.values()) or [25.0]))
+                       if isinstance(avg_ticket, dict) else None)   # rpgt-independent — hoisted
+
     def ticket(rpgt):
         if isinstance(avg_ticket, dict):
-            return float(avg_ticket.get(rpgt, np.mean(list(avg_ticket.values()) or [25.0])))
+            return float(avg_ticket.get(rpgt, _default_ticket))
         return float(avg_ticket)
 
     # Expected success rate per cell under each split (volume/ share weighted).

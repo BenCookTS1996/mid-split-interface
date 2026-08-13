@@ -35,11 +35,13 @@ from typing import Dict, Tuple
 
 import pandas as pd
 
+from .schema import TEMPLATE_META_COLUMNS, TEMPLATE_TRAILING_COLUMNS
+
 __build__ = "2026-07-22-backup-blend+rules-to-split"
 
 # Non-gateway columns in a wide rule sheet (everything else is a gateway weight column).
-_ID_COLS = {"go live", "bin group", "brand", "rpgt", "currency", "bin",
-            "paymentmethodprovider", "sticky", "country", "check", "dup check"}
+# Non-gateway (meta) template columns — single source of truth is schema.py.
+_ID_COLS = {c.strip().lower() for c in (TEMPLATE_META_COLUMNS + TEMPLATE_TRAILING_COLUMNS)}
 _DYNAMIC_BIN = {"other", "all"}
 _PMP_ALL = ("non_gp_ap", "googlepay", "applepay")
 _COUNTRY_ALL = ("usa", "non-usa")
@@ -276,7 +278,15 @@ def parse_rules_to_split(rules_dir: str) -> pd.DataFrame:
             continue
         gw_cols = [c for c, n in cmap.items() if n not in _ID_COLS]
         for _, r in df.iterrows():
-            rp, cur, bnk = str(r[rp_c]).strip(), str(r[cur_c]).strip(), str(r[bin_c]).strip()
+            rp, cur = str(r[rp_c]).strip(), str(r[cur_c]).strip()
+            # BIN join-key normalisation: pandas float-infers a BIN column that has any
+            # blank/NaN cells, so "400022" stringifies as "400022.0" and never matches the
+            # attempts side ("400022") — every cell misses the impact join and the 30D cards
+            # collapse. Strip a trailing ".0" ONLY when the value is otherwise all digits
+            # (leaves genuine non-numeric bank labels untouched).
+            bnk = str(r[bin_c]).strip()
+            if bnk.endswith(".0") and bnk[:-2].isdigit():
+                bnk = bnk[:-2]
             for gc in gw_cols:
                 try:
                     w = float(str(r[gc]).replace("%", "").replace(",", "").strip())

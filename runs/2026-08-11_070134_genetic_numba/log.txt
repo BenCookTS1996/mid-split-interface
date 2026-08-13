@@ -1,0 +1,408 @@
+[06:24:56 +   0.1s] ═════════════════════════ RUN DIAGNOSTICS ═════════════════════════
+[06:24:56 +   0.1s]    started 2026-08-11 06:24:56 · python 3.8.10 · pandas 2.0.3 · numpy 1.24.4
+[06:24:56 +   0.1s]    APP_BUILD: 2026-07-24l
+[06:24:56 +   0.1s]    backend build markers (if any ≠ expected → stale bytecode; clear __pycache__):
+[06:24:56 +   0.1s]       optimiser        2026-07-29-vamp-lp-singlegw-fixed-cell-revival
+[06:24:56 +   0.1s]       eligibility      2026-07-29-eligibility-ban-mask-cache+population-operator
+[06:24:56 +   0.1s]       success_rates    (no __build__)
+[06:24:56 +   0.1s]       forecast_pipeline (no __build__)
+[06:24:56 +   0.1s]       data_loader      (no __build__)
+[06:24:56 +   0.1s]       sql_runner       2026-07-04-templated-params
+[06:24:56 +   0.1s]       constraints      (no __build__)
+[06:24:56 +   0.1s]       base             2026-07-22-bounds-cache+qp-projection+feasible-guard
+[06:24:56 +   0.1s]       softmax          2026-07-22-softmax-analytic-projection
+[06:24:56 +   0.1s]       thompson         2026-08-03-thompson-leggauss-hoist+batched-quadrature
+[06:24:56 +   0.1s]       genetic_global   2026-07-31-riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel+vol-weighted-viol+penalty-shape+repair-input+sigma-controls+fitness-trace+active-priority+viol-breakdown+capcell-detail+breach-tol+band-workings
+[06:24:56 +   0.1s]       portfolio        2026-07-22-portfolio-fista+infeasible-flag
+[06:24:56 +   0.1s]       impact_calcs     2026-07-28-count-only-pool-search
+[06:24:56 +   0.1s]    RUN CONFIG:
+[06:24:56 +   0.1s]       company=TotalAV · scheme=visa · attempts_window=2026-07-27 → 2026-08-10
+[06:24:56 +   0.1s]       engine=genetic_numba · score_grain=Bank × Currency · opt_grain=Bank × Currency × RPGT
+[06:24:56 +   0.1s]       vamp_cap=0.06 · exploration_floor=0.01 · max_gateway_share=0.97
+[06:24:56 +   0.1s]       bayes_method=Empirical Bayes · shrink κ=300 · time_decay=on 15d · xborder_penalty=0.6
+[06:24:56 +   0.1s]       max_pools_target=500
+[06:24:56 +   0.1s]       band scoring=EXACT in-search (per-generation pro-rata projection; no proxy, no post-hoc correction)
+[06:24:56 +   0.1s]       engine_params={}
+[06:24:56 +   0.1s]       auto_explore=True · RPGT_scope=ALL · hold_unselected_at_baseline=True
+[06:24:56 +   0.1s]       gateway auto-block=ON · >=100 consecutive failed attempts
+[06:24:56 +   0.1s]       step-size (CMA-ES σ) TUNED: σ₀×1.5 · σ_floor=0 · damping×1.5 (defaults: σ₀×1 · σ_floor=0 · damping×1)
+[06:24:56 +   0.1s]       per-MID constraints configured: 11
+[06:24:56 +   0.1s]          • WorldPay - Total AV | ALL-RPGT | M5 | vamp [ceiling] target=1600.0 tol=n/a prio=1
+[06:24:56 +   0.1s]          • Adyen_TotalAV | ALL-RPGT | M5 | vamp [ceiling] target=2600.0 tol=n/a prio=1
+[06:24:56 +   0.1s]          • Braintree USA - Total AV | ALL-RPGT | M5 | vamp [ceiling] target=1200.0 tol=n/a prio=1
+[06:24:56 +   0.1s]          • WoodForest - Total AV | ALL-RPGT | M5 | txn [ceiling] target=25000.0 tol=n/a prio=1
+[06:24:56 +   0.1s]          • WorldPay - Total AV | ALL-RPGT | M5 | txn [ceiling] target=60000.0 tol=n/a prio=1
+[06:24:56 +   0.1s]          • Adyen - TotalAV - NA | ALL-RPGT | M5 | txn [floor] target=25000.0 tol=n/a prio=1
+[06:24:56 +   0.1s]          • Adyen_TotalAVPro | ALL-RPGT | M5 | txn [range] target=50000.0 tol=20% prio=1
+[06:24:56 +   0.1s]          • Adyen_TotalAVUltimate | ALL-RPGT | M5 | txn [range] target=50000.0 tol=20% prio=1
+[06:24:56 +   0.1s]          • Adyen_TotalAVPremium | ALL-RPGT | M5 | txn [range] target=50000.0 tol=20% prio=1
+[06:24:56 +   0.1s]          • PaySafe - Total AV | ALL-RPGT | M5 | txn [ceiling] target=20000.0 tol=n/a prio=1
+[06:24:56 +   0.1s]          • Authorize - Total AV | ALL-RPGT | M5 | txn [ceiling] target=10000.0 tol=n/a prio=1
+[06:24:56 +   0.1s]    INPUT FILES:
+[06:24:56 +   0.1s]       outputs dir: data/outputs/AUG/TotalAV/  [0.00 MB, mtime 2026-08-02 00:24:40]
+[06:24:56 +   0.1s]       MID list: /Users/ben.cook/Downloads/routing_optimiser/data/mappings/Master_MID_List.csv  [0.09 MB, mtime 2026-07-23 10:12:46]
+[06:24:56 +   0.1s] ════════════════════════════════════════════════════════════════════
+[06:24:56 +   0.1s] ▶ ① Fetch attempts/success data — started
+[06:24:56 +   0.1s] 06:24:56     > SQL attempts_success.sql: loading cached result from /Users/ben.cook/Downloads/routing_optimiser/app/../.cache/attempts_success_3b1f3a564d_baaee2313a.parquet
+[06:24:56 +   0.1s]    attempts source: cache
+[06:24:56 +   0.1s] 06:24:56     > SQL processor_benchmark.sql: loading cached result from /Users/ben.cook/Downloads/routing_optimiser/app/../.cache/processor_benchmark_e2f0c1a6b2_baaee2313a.parquet
+[06:24:56 +   0.1s]    cross-brand processor benchmark: 30 (processor, currency) rates (cache) → untested-MID layer-2 prior.
+[06:24:56 +   0.1s]    ✓ ① Fetch attempts/success data — finished in 0.0s
+[06:24:56 +   0.1s] ▶ ② Pre-processing (Bayesian smoothing) — started
+[06:24:56 +   0.2s]    (reused parsed attempts from in-memory cache)
+[06:24:56 +   0.2s]    (reused parsed baseline forecast from in-memory cache)
+[06:24:58 +   2.1s]    currency filter: dropped 0 attempt rows where currency disagreed with Master MID currency
+[06:24:59 +   2.6s]    volume-override filter: dropped 0 rows for 15 switched-off gateways (target=0, trx/both)
+[06:24:59 +   2.9s]    RPGT scope: volume/eligibility/VAMP restricted to 4 RPGT(s) (149,601/340,443 attempts, 25,315/51,434 forecast rows); score pooled over ALL RPGTs.
+[06:24:59 +   3.0s]    eligibility window: 149,601 attempt rows in 30D ending 2026-08-10
+[06:24:59 +   3.0s] ②·diag DATA SHAPES after pre-processing/filters:
+[06:24:59 +   3.0s]       attempts (post-filter, eligibility window): rows=149,601 · currencies=5 · gateways=35 · rpgts=4 · Σattempts=149,601 · Σamount=1,893,187
+[06:24:59 +   3.0s]       forecast baseline (routing volume): rows=25,315 · currencies=5 · gateways=15 · rpgts=4 · Σvolume=182,850
+[06:24:59 +   3.0s]       RPGTs available=['addon renewal', 'addon sale', 'annual sub renewal', 'annual sub sale', 'monthly initial', 'monthly renewal', 'p6m renewals', 'upgrades'] · scoped=['addon sale', 'annual sub sale', 'monthly initial', 'upgrades']
+[06:25:01 +   4.7s]    Optimisation grain: Bank×Currency×RPGT (per-RPGT cells); Engine Score grain: Bank×Currency (pooled).
+[06:25:01 +   5.0s]    risk seeding: 21,204 gateway-cell(s) with NO VAMP data seeded from the opt-grain weighted-avg VAMP rate (currency/global fallback 0.0299) — so 0-VAMP gateways aren't treated as risk-free.
+[06:25:01 +   5.0s]    auto-explore capable set: 29 gateway(s) after Master-MID guards (from 482; dropped 401 inactive, 0 PayPal, 52 other-brand vs 'TotalAV').
+[06:25:02 +   5.6s]    exploration: injected 20518 fallback candidate row(s) into single-gateway cells (29 gateway(s), auto: currency-capable); seeded at the bank×currency average (weak prior) + explore cap.
+[06:25:03 +   7.3s]    25,398 dense aggregated cell × gateway success rates (full-window rate, 30D eligibility)
+[06:25:03 +   7.3s]    cross-border penalty 60% applied to 4115 gateway cells (64 cross-border FIDs)
+[06:25:03 +   7.3s]    score→opt align: broadcast pooled Bank×Currency score to 4 RPGT cell-grain(s).
+[06:25:04 +   8.0s]    exploration seeding: 20518 untested gateway cell(s) seeded (attempts=0 → weak/uncertain prior, scored cautiously): 20518 from a same-processor+brand+currency sibling, 0 from a CROSS-BRAND processor benchmark, 0 from the bank×currency average.
+[06:25:04 +   8.1s]    ✓ ② Pre-processing (Bayesian smoothing) — finished in 8.0s
+[06:25:04 +   8.1s] ▶ ③ Assemble routing cells from 30D attempts (forecast supplies volume only) — started
+[06:25:17 +  20.4s] ④·diag ROUTING CELLS assembled:
+[06:25:17 +  20.4s]       cells=7,371 · total gateway-rows=43,522 · total forecast volume=187,017
+[06:25:17 +  20.4s]       gateways/cell: min=2 p50=4 mean=5.9 p95=12 max=14
+[06:25:17 +  20.4s]       cells with 1 gateway (cap unsatisfiable): 0 · cells >50 gateways: 0
+[06:25:17 +  20.4s]       gateway-rows on POOLED prior (no per-cell attempts): 0 · auto-explore injected rows: 20,518
+[06:25:17 +  20.5s]       currencies=['aud', 'cad', 'eur', 'gbp', 'usd'] · distinct banks(×cur)=3,687 · rpgt grain values=['Addon Sale', 'Annual Sub Sale', 'Monthly Initial', 'Upgrades']
+[06:25:17 +  20.5s]    ✓ ③ Assemble routing cells from 30D attempts (forecast supplies volume only) — finished in 12.4s
+[06:25:17 +  20.5s] ▶ ④ Run genetic_numba engine across the Risk↔Conversion axis — started
+[06:25:17 +  20.5s]    1 dials: 0
+[06:25:17 +  20.5s]    pre-clustering ON → GA runs on rule-safe pre-clustered cells (near-lossless; expand-back before enforcement).
+[06:25:17 +  20.5s]    optimiser build: 2026-07-29-vamp-lp-singlegw-fixed-cell-revival (expect 2026-07-16-vamp-frontier-lp — if not, clear __pycache__).
+[06:25:22 +  26.3s]    MID VAMP rates from pro-rata export (18,387 MID×cell rates).
+[06:25:27 +  30.6s]    priority→band weight (GAP=8): prio1=1  (higher weight ⇒ the GA works harder to satisfy that tier)
+[06:25:38 +  41.7s]    back-fill sub-cell rows injected into cap scaffold: 225,900
+[06:25:39 +  42.5s]    per-MID cap projection scaffold: 580,122 t0 rows, 1,035,082 capped-MID rows (18,899 cells).
+[06:25:49 +  52.7s]    per-MID target±tolerance caps: 9 active; 6 MID(s) scaled/retired.
+[06:25:50 +  53.5s]    eligibility: 1 ban rule(s), 186 wallet-incapable id(s), global wallet share 30.9%; 6 USA-only id(s), global Non-USA share 38.9%.
+[06:25:50 +  53.9s]    backup catch-all blended into the GA fitness: 20 (currency×rpgt) pool(s).
+[06:25:51 +  55.2s]    genetic build: 2026-07-31-riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel+vol-weighted-viol+penalty-shape+repair-input+sigma-controls+fitness-trace+active-priority+viol-breakdown+capcell-detail+breach-tol+band-workings — global GA, own revenue-greedy reference (genetic_ref, not softmax) + exact hard enforcement.
+[06:25:54 +  58.2s]    GA objective: maximise VOLUME-WEIGHTED SUCCESS RATE (avg-ticket factor dropped; fixed).
+[06:25:55 +  59.0s]    GA fitness: 11 month-specific per-MID band(s) folded into the search (calibrated volume-ratio proxy + re-projection correction; vamp_pct left to post-enforcement).
+[06:25:59 +  63.0s]    GA scores ELIGIBILITY-ADJUSTED shares: 0 banned row(s), wallet=on, USA-only=on (returned split is RAW; enforcement blends once). Set ROUTING_GA_ELIG=0 to disable.
+[06:26:24 +  87.4s]    GA fitness: EXACT per-generation band scoring ON — 11 band(s), pre-clustering OFF, incidence 47768×43522 (22861 nnz). Delivered split gets an incidence self-check (must read ~0 to trust).
+[06:26:24 +  87.4s]    GA problem size: 7371 cells (rpgt×currency×bank), 43522 cell×gateway rows, 15 vampMids → genome D = 45. CMA-ES per-generation cost ∝ D² (covariance update) and ∝ D³ (eigen-refresh); D is the dimension k-means pre-clustering would reduce.
+[06:26:24 +  87.5s]    Compressibility probe: 7371 cells → ~5667 distinct decode-signatures (≈1.3× cell-reduction CEILING); 0 single-gateway cells are genome-invariant. Upper bound on what k-means pre-clustering could trim from the 43522-row hot loop — optimistic (true lossless merge also needs matching success/ticket rates).
+[06:26:24 +  87.5s]    CMA-ES (cross-cell per-MID 3-axis tilt, 15 vampMids): λ=64, gen cap=150 (covariance-adapted + reseeded restarts + polish). dial 0 = risk-MINIMISED compliant; dial 99 = max-revenue compliant; blended between (monotonic frontier); dial 100 = uncapped revenue ceiling.
+[06:26:24 +  87.5s]    revenue-max (dial 99) endpoint: greedy revenue-compliant split $364,706 (CMA-ES revenue search removed — greedy is LP-optimal here, so its result was always discarded).
+[06:26:24 +  87.5s]    reference lean: OFF (γ=0) — compliant start comes from the compliant + risk-greedy warm-start seeds.
+[06:26:24 +  88.1s]    GA-Numba: compiling the kernel once in the main process (first run after a code/version change only; cached to .numba_cache and reused by every later run and every split/settings combination)…
+[06:26:24 +  88.1s]       numba cache: dir=/var/folders/v3/yj8zmzg91k3dyqn869lb2t4h0000gp/T/routing_optimiser_numba_cache · exists=True · 5 kernel file(s) present before compile (>0 ⇒ a prior compile persisted; 0 on the FIRST run after a kernel/code change is normal)
+[06:27:03 + 126.7s]    GA-Numba: kernel COMPILED (first run after a kernel/code change — expected once; later runs with the SAME code load this from .numba_cache in <1s) in 38.6s (max rel-obj diff 5.6e-14, max abs-viol 1.7e-11) — workers will load it from cache and skip re-verifying.
+[06:27:03 + 126.7s]    multi-seed GA (risk-min endpoint): launching 8 seed(s) across 8 loky worker(s) — gens≤150, pop=64 each; ≥153,600 candidate splits (more with restart λ-growth), count logged live every few seconds…
+[06:27:03 + 126.7s]    diverse-seed search ON: 8 workers spread across the revenue↔risk axis, explore/exploit gain_max 2.45–4.55 (same budget/time).
+[06:28:15 + 198.8s]    GA progress: ≈ 192 candidate splits evaluated so far (3/8 seeds active, 3/s) · t+72s · best score -278 · fitness 335,809
+[06:28:24 + 207.8s]    GA progress: ≈ 576 candidate splits evaluated so far (6/8 seeds active, 7/s) · t+81s · best score -278 · fitness 335,809
+[06:28:33 + 216.9s]    GA progress: ≈ 1,024 candidate splits evaluated so far (6/8 seeds active, 11/s) · t+90s · best score -251 · fitness 328,678
+[06:28:42 + 225.9s]    GA progress: ≈ 1,472 candidate splits evaluated so far (7/8 seeds active, 15/s) · t+99s · best score -251 · fitness 328,678
+[06:28:51 + 234.9s]    GA progress: ≈ 2,048 candidate splits evaluated so far (7/8 seeds active, 19/s) · t+108s · best score -251 · fitness 328,678
+[06:29:00 + 244.0s]    GA progress: ≈ 2,816 candidate splits evaluated so far (7/8 seeds active, 24/s) · t+117s · best score -251 · fitness 328,678
+[06:29:09 + 253.0s]    GA progress: ≈ 3,328 candidate splits evaluated so far (7/8 seeds active, 26/s) · t+126s · best score -251 · fitness 328,678
+[06:29:18 + 262.0s]    GA progress: ≈ 3,904 candidate splits evaluated so far (7/8 seeds active, 29/s) · t+135s · best score -251 · fitness 328,678
+[06:29:27 + 271.1s]    GA progress: ≈ 4,608 candidate splits evaluated so far (7/8 seeds active, 32/s) · t+144s · best score -251 · fitness 328,678
+[06:29:36 + 280.1s]    GA progress: ≈ 5,248 candidate splits evaluated so far (7/8 seeds active, 34/s) · t+153s · best score -251 · fitness 328,678
+[06:29:45 + 289.1s]    GA progress: ≈ 6,080 candidate splits evaluated so far (8/8 seeds active, 37/s) · t+162s · best score -251 · fitness 328,678
+[06:29:54 + 298.1s]    GA progress: ≈ 6,720 candidate splits evaluated so far (8/8 seeds active, 39/s) · t+171s · best score -251 · fitness 328,678
+[06:30:03 + 307.1s]    GA progress: ≈ 7,616 candidate splits evaluated so far (8/8 seeds active, 42/s) · t+180s · best score -251 · fitness 328,678
+[06:30:12 + 316.2s]    GA progress: ≈ 8,192 candidate splits evaluated so far (8/8 seeds active, 43/s) · t+190s · best score -234 · fitness 337,009
+[06:30:21 + 325.2s]    GA progress: ≈ 8,832 candidate splits evaluated so far (8/8 seeds active, 44/s) · t+199s · best score -234 · fitness 337,009
+[06:30:30 + 334.3s]    GA progress: ≈ 9,728 candidate splits evaluated so far (8/8 seeds active, 47/s) · t+208s · best score -234 · fitness 337,009
+[06:30:39 + 343.3s]    GA progress: ≈ 10,368 candidate splits evaluated so far (8/8 seeds active, 48/s) · t+217s · best score -234 · fitness 337,009
+[06:30:48 + 352.3s]    GA progress: ≈ 11,264 candidate splits evaluated so far (8/8 seeds active, 50/s) · t+226s · best score -234 · fitness 337,009
+[06:30:57 + 361.4s]    GA progress: ≈ 11,904 candidate splits evaluated so far (8/8 seeds active, 51/s) · t+235s · best score -234 · fitness 337,009
+[06:31:07 + 370.4s]    GA progress: ≈ 12,480 candidate splits evaluated so far (8/8 seeds active, 51/s) · t+244s · best score -234 · fitness 337,009
+[06:31:16 + 379.4s]    GA progress: ≈ 13,312 candidate splits evaluated so far (8/8 seeds active, 53/s) · t+253s · best score -215 · fitness 344,974
+[06:31:25 + 388.5s]    GA progress: ≈ 13,952 candidate splits evaluated so far (8/8 seeds active, 53/s) · t+262s · best score -215 · fitness 344,974
+[06:31:34 + 397.5s]    GA progress: ≈ 14,528 candidate splits evaluated so far (8/8 seeds active, 54/s) · t+271s · best score -215 · fitness 344,974
+[06:31:43 + 406.5s]    GA progress: ≈ 15,360 candidate splits evaluated so far (8/8 seeds active, 55/s) · t+280s · best score -215 · fitness 344,974
+[06:31:52 + 415.6s]    GA progress: ≈ 16,000 candidate splits evaluated so far (8/8 seeds active, 55/s) · t+289s · best score -215 · fitness 344,974
+[06:32:01 + 424.6s]    GA progress: ≈ 16,896 candidate splits evaluated so far (8/8 seeds active, 57/s) · t+298s · best score -215 · fitness 344,974
+[06:32:10 + 433.6s]    GA progress: ≈ 17,472 candidate splits evaluated so far (8/8 seeds active, 57/s) · t+307s · best score -215 · fitness 344,974
+[06:32:19 + 442.7s]    GA progress: ≈ 18,112 candidate splits evaluated so far (8/8 seeds active, 57/s) · t+316s · best score -215 · fitness 344,974
+[06:32:28 + 451.7s]    GA progress: ≈ 18,944 candidate splits evaluated so far (8/8 seeds active, 58/s) · t+325s · best score -215 · fitness 344,974
+[06:32:37 + 460.7s]    GA progress: ≈ 19,584 candidate splits evaluated so far (8/8 seeds active, 59/s) · t+334s · best score -215 · fitness 344,974
+[06:32:46 + 469.8s]    GA progress: ≈ 20,480 candidate splits evaluated so far (8/8 seeds active, 60/s) · t+343s · best score -215 · fitness 344,974
+[06:32:55 + 478.8s]    GA progress: ≈ 21,056 candidate splits evaluated so far (8/8 seeds active, 60/s) · t+352s · best score -215 · fitness 344,974
+[06:33:04 + 487.8s]    GA progress: ≈ 21,632 candidate splits evaluated so far (8/8 seeds active, 60/s) · t+361s · best score -215 · fitness 344,974
+[06:33:13 + 496.9s]    GA progress: ≈ 22,272 candidate splits evaluated so far (8/8 seeds active, 60/s) · t+370s · best score -215 · fitness 344,974
+[06:33:22 + 505.9s]    GA progress: ≈ 23,040 candidate splits evaluated so far (8/8 seeds active, 61/s) · t+379s · best score -215 · fitness 344,974
+[06:33:31 + 514.9s]    GA progress: ≈ 23,680 candidate splits evaluated so far (8/8 seeds active, 61/s) · t+388s · best score -215 · fitness 344,974
+[06:33:40 + 524.0s]    GA progress: ≈ 24,320 candidate splits evaluated so far (8/8 seeds active, 61/s) · t+397s · best score -204 · fitness 342,279
+[06:33:49 + 533.0s]    GA progress: ≈ 25,088 candidate splits evaluated so far (8/8 seeds active, 62/s) · t+406s · best score -204 · fitness 342,279
+[06:33:58 + 542.1s]    GA progress: ≈ 25,728 candidate splits evaluated so far (8/8 seeds active, 62/s) · t+415s · best score -204 · fitness 342,279
+[06:34:07 + 551.1s]    GA progress: ≈ 26,368 candidate splits evaluated so far (8/8 seeds active, 62/s) · t+424s · best score -204 · fitness 342,279
+[06:34:16 + 560.1s]    GA progress: ≈ 27,072 candidate splits evaluated so far (8/8 seeds active, 62/s) · t+433s · best score -204 · fitness 342,279
+[06:34:25 + 569.2s]    GA progress: ≈ 27,776 candidate splits evaluated so far (8/8 seeds active, 63/s) · t+442s · best score -204 · fitness 342,279
+[06:34:34 + 578.2s]    GA progress: ≈ 28,416 candidate splits evaluated so far (8/8 seeds active, 63/s) · t+452s · best score -204 · fitness 342,279
+[06:34:43 + 587.2s]    GA progress: ≈ 29,184 candidate splits evaluated so far (8/8 seeds active, 63/s) · t+461s · best score -204 · fitness 342,279
+[06:34:52 + 596.3s]    GA progress: ≈ 29,888 candidate splits evaluated so far (8/8 seeds active, 64/s) · t+470s · best score -203 · fitness 344,912
+[06:35:01 + 605.3s]    GA progress: ≈ 30,464 candidate splits evaluated so far (8/8 seeds active, 64/s) · t+479s · best score -197 · fitness 340,453
+[06:35:10 + 614.3s]    GA progress: ≈ 31,360 candidate splits evaluated so far (8/8 seeds active, 64/s) · t+488s · best score -197 · fitness 340,453
+[06:35:20 + 623.4s]    GA progress: ≈ 32,000 candidate splits evaluated so far (8/8 seeds active, 64/s) · t+497s · best score -197 · fitness 340,453
+[06:35:29 + 632.4s]    GA progress: ≈ 32,640 candidate splits evaluated so far (8/8 seeds active, 65/s) · t+506s · best score -197 · fitness 340,453
+[06:35:38 + 641.4s]    GA progress: ≈ 33,408 candidate splits evaluated so far (8/8 seeds active, 65/s) · t+515s · best score -197 · fitness 340,453
+[06:35:47 + 650.5s]    GA progress: ≈ 34,048 candidate splits evaluated so far (8/8 seeds active, 65/s) · t+524s · best score -190 · fitness 335,196
+[06:35:56 + 659.5s]    GA progress: ≈ 34,688 candidate splits evaluated so far (8/8 seeds active, 65/s) · t+533s · best score -190 · fitness 335,196
+[06:36:05 + 668.5s]    GA progress: ≈ 35,520 candidate splits evaluated so far (8/8 seeds active, 66/s) · t+542s · best score -190 · fitness 348,384
+[06:36:14 + 677.6s]    GA progress: ≈ 36,096 candidate splits evaluated so far (8/8 seeds active, 66/s) · t+551s · best score -189 · fitness 347,699
+[06:36:23 + 686.6s]    GA progress: ≈ 36,736 candidate splits evaluated so far (8/8 seeds active, 66/s) · t+560s · best score -181 · fitness 348,918
+[06:36:32 + 695.6s]    GA progress: ≈ 37,632 candidate splits evaluated so far (8/8 seeds active, 66/s) · t+569s · best score -181 · fitness 348,918
+[06:36:41 + 704.7s]    GA progress: ≈ 38,144 candidate splits evaluated so far (8/8 seeds active, 66/s) · t+578s · best score -180 · fitness 344,791
+[06:36:50 + 713.7s]    GA progress: ≈ 39,168 candidate splits evaluated so far (8/8 seeds active, 67/s) · t+587s · best score -170 · fitness 344,061
+[06:36:59 + 722.7s]    GA progress: ≈ 39,680 candidate splits evaluated so far (8/8 seeds active, 67/s) · t+596s · best score -170 · fitness 344,061
+[06:37:08 + 731.7s]    GA progress: ≈ 40,704 candidate splits evaluated so far (8/8 seeds active, 67/s) · t+605s · best score -163 · fitness 340,441
+[06:37:17 + 740.8s]    GA progress: ≈ 41,216 candidate splits evaluated so far (8/8 seeds active, 67/s) · t+614s · best score -163 · fitness 340,441
+[06:37:26 + 749.8s]    GA progress: ≈ 42,240 candidate splits evaluated so far (8/8 seeds active, 68/s) · t+623s · best score -163 · fitness 340,441
+[06:37:35 + 758.8s]    GA progress: ≈ 42,752 candidate splits evaluated so far (8/8 seeds active, 68/s) · t+632s · best score -163 · fitness 340,441
+[06:37:44 + 767.9s]    GA progress: ≈ 43,776 candidate splits evaluated so far (8/8 seeds active, 68/s) · t+641s · best score -147 · fitness 341,682
+[06:37:53 + 776.9s]    GA progress: ≈ 44,288 candidate splits evaluated so far (8/8 seeds active, 68/s) · t+650s · best score -147 · fitness 341,682
+[06:38:02 + 785.9s]    GA progress: ≈ 45,312 candidate splits evaluated so far (8/8 seeds active, 69/s) · t+659s · best score -147 · fitness 341,682
+[06:38:11 + 794.9s]    GA progress: ≈ 45,824 candidate splits evaluated so far (8/8 seeds active, 69/s) · t+668s · best score -147 · fitness 341,682
+[06:38:20 + 804.0s]    GA progress: ≈ 46,848 candidate splits evaluated so far (8/8 seeds active, 69/s) · t+677s · best score -147 · fitness 341,682
+[06:38:29 + 813.0s]    GA progress: ≈ 47,360 candidate splits evaluated so far (8/8 seeds active, 69/s) · t+686s · best score -147 · fitness 341,682
+[06:38:38 + 822.0s]    GA progress: ≈ 48,384 candidate splits evaluated so far (8/8 seeds active, 70/s) · t+695s · best score -147 · fitness 341,682
+[06:38:47 + 831.1s]    GA progress: ≈ 48,896 candidate splits evaluated so far (8/8 seeds active, 69/s) · t+704s · best score -147 · fitness 341,682
+[06:38:56 + 840.1s]    GA progress: ≈ 49,920 candidate splits evaluated so far (8/8 seeds active, 70/s) · t+713s · best score -147 · fitness 341,682
+[06:39:05 + 849.1s]    GA progress: ≈ 50,432 candidate splits evaluated so far (8/8 seeds active, 70/s) · t+722s · best score -147 · fitness 341,682
+[06:39:14 + 858.1s]    GA progress: ≈ 51,136 candidate splits evaluated so far (8/8 seeds active, 70/s) · t+731s · best score -147 · fitness 341,682
+[06:39:23 + 867.2s]    GA progress: ≈ 51,968 candidate splits evaluated so far (8/8 seeds active, 70/s) · t+740s · best score -147 · fitness 341,682
+[06:39:32 + 876.2s]    GA progress: ≈ 52,480 candidate splits evaluated so far (8/8 seeds active, 70/s) · t+750s · best score -147 · fitness 341,682
+[06:39:41 + 885.2s]    GA progress: ≈ 53,312 candidate splits evaluated so far (8/8 seeds active, 70/s) · t+759s · best score -147 · fitness 341,682
+[06:39:50 + 894.2s]    GA progress: ≈ 54,016 candidate splits evaluated so far (8/8 seeds active, 70/s) · t+768s · best score -147 · fitness 341,682
+[06:39:59 + 903.3s]    GA progress: ≈ 54,720 candidate splits evaluated so far (8/8 seeds active, 70/s) · t+777s · best score -147 · fitness 341,682
+[06:40:08 + 912.3s]    GA progress: ≈ 55,552 candidate splits evaluated so far (8/8 seeds active, 71/s) · t+786s · best score -147 · fitness 341,682
+[06:40:17 + 921.3s]    GA progress: ≈ 56,256 candidate splits evaluated so far (8/8 seeds active, 71/s) · t+795s · best score -147 · fitness 341,682
+[06:40:26 + 930.3s]    GA progress: ≈ 57,088 candidate splits evaluated so far (8/8 seeds active, 71/s) · t+804s · best score -147 · fitness 341,682
+[06:40:35 + 939.4s]    GA progress: ≈ 57,792 candidate splits evaluated so far (8/8 seeds active, 71/s) · t+813s · best score -147 · fitness 341,682
+[06:40:45 + 948.4s]    GA progress: ≈ 58,624 candidate splits evaluated so far (8/8 seeds active, 71/s) · t+822s · best score -147 · fitness 341,682
+[06:40:54 + 957.4s]    GA progress: ≈ 59,264 candidate splits evaluated so far (8/8 seeds active, 71/s) · t+831s · best score -147 · fitness 341,682
+[06:41:03 + 966.5s]    GA progress: ≈ 60,160 candidate splits evaluated so far (8/8 seeds active, 72/s) · t+840s · best score -147 · fitness 341,682
+[06:41:12 + 975.5s]    GA progress: ≈ 60,736 candidate splits evaluated so far (8/8 seeds active, 72/s) · t+849s · best score -147 · fitness 341,682
+[06:41:21 + 984.5s]    GA progress: ≈ 61,696 candidate splits evaluated so far (8/8 seeds active, 72/s) · t+858s · best score -147 · fitness 341,682
+[06:41:30 + 993.6s]    GA progress: ≈ 62,208 candidate splits evaluated so far (8/8 seeds active, 72/s) · t+867s · best score -147 · fitness 341,682
+[06:41:39 +1002.6s]    GA progress: ≈ 62,912 candidate splits evaluated so far (8/8 seeds active, 72/s) · t+876s · best score -147 · fitness 341,682
+[06:41:48 +1011.6s]    GA progress: ≈ 63,744 candidate splits evaluated so far (8/8 seeds active, 72/s) · t+885s · best score -147 · fitness 341,682
+[06:41:57 +1020.7s]    GA progress: ≈ 64,256 candidate splits evaluated so far (8/8 seeds active, 72/s) · t+894s · best score -147 · fitness 341,682
+[06:42:06 +1029.7s]    GA progress: ≈ 65,088 candidate splits evaluated so far (8/8 seeds active, 72/s) · t+903s · best score -147 · fitness 341,682
+[06:42:15 +1038.8s]    GA progress: ≈ 65,792 candidate splits evaluated so far (8/8 seeds active, 72/s) · t+912s · best score -147 · fitness 341,682
+[06:42:24 +1047.8s]    GA progress: ≈ 66,560 candidate splits evaluated so far (8/8 seeds active, 72/s) · t+921s · best score -147 · fitness 341,682
+[06:42:33 +1056.8s]    GA progress: ≈ 67,328 candidate splits evaluated so far (8/8 seeds active, 72/s) · t+930s · best score -147 · fitness 341,682
+[06:42:42 +1065.9s]    GA progress: ≈ 68,032 candidate splits evaluated so far (8/8 seeds active, 72/s) · t+939s · best score -147 · fitness 341,682
+[06:42:51 +1074.9s]    GA progress: ≈ 68,800 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+948s · best score -147 · fitness 341,682
+[06:43:00 +1083.9s]    GA progress: ≈ 69,568 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+957s · best score -147 · fitness 341,682
+[06:43:09 +1093.0s]    GA progress: ≈ 70,336 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+966s · best score -147 · fitness 341,682
+[06:43:18 +1102.0s]    GA progress: ≈ 70,912 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+975s · best score -147 · fitness 341,682
+[06:43:27 +1111.0s]    GA progress: ≈ 71,744 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+984s · best score -147 · fitness 341,682
+[06:43:36 +1120.1s]    GA progress: ≈ 72,384 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+993s · best score -147 · fitness 341,682
+[06:43:45 +1129.1s]    GA progress: ≈ 73,152 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1002s · best score -147 · fitness 341,682
+[06:43:54 +1138.2s]    GA progress: ≈ 73,920 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1011s · best score -147 · fitness 341,682
+[06:44:03 +1147.2s]    GA progress: ≈ 74,432 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1021s · best score -147 · fitness 341,682
+[06:44:12 +1156.2s]    GA progress: ≈ 75,264 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1030s · best score -147 · fitness 341,682
+[06:44:21 +1165.3s]    GA progress: ≈ 75,904 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1039s · best score -147 · fitness 341,682
+[06:44:30 +1174.3s]    GA progress: ≈ 76,608 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1048s · best score -147 · fitness 341,682
+[06:44:39 +1183.3s]    GA progress: ≈ 77,184 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1057s · best score -147 · fitness 341,682
+[06:44:48 +1192.4s]    GA progress: ≈ 78,144 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1066s · best score -147 · fitness 341,682
+[06:44:58 +1201.4s]    GA progress: ≈ 78,720 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1075s · best score -147 · fitness 341,682
+[06:45:07 +1210.4s]    GA progress: ≈ 79,616 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1084s · best score -147 · fitness 341,682
+[06:45:16 +1219.5s]    GA progress: ≈ 80,192 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1093s · best score -147 · fitness 341,682
+[06:45:25 +1228.5s]    GA progress: ≈ 80,896 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1102s · best score -147 · fitness 341,682
+[06:45:34 +1237.6s]    GA progress: ≈ 81,664 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1111s · best score -147 · fitness 341,682
+[06:45:43 +1246.6s]    GA progress: ≈ 82,240 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1120s · best score -147 · fitness 341,682
+[06:45:52 +1255.6s]    GA progress: ≈ 83,008 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1129s · best score -147 · fitness 341,682
+[06:46:01 +1264.7s]    GA progress: ≈ 83,712 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1138s · best score -147 · fitness 341,682
+[06:46:10 +1273.7s]    GA progress: ≈ 84,288 candidate splits evaluated so far (8/8 seeds active, 73/s) · t+1147s · best score -147 · fitness 341,682
+[06:46:19 +1282.7s]    GA progress: ≈ 85,248 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1156s · best score -147 · fitness 341,682
+[06:46:28 +1291.8s]    GA progress: ≈ 85,824 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1165s · best score -147 · fitness 341,682
+[06:46:37 +1300.8s]    GA progress: ≈ 86,784 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1174s · best score -147 · fitness 341,682
+[06:46:46 +1309.9s]    GA progress: ≈ 87,360 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1183s · best score -147 · fitness 341,682
+[06:46:55 +1318.9s]    GA progress: ≈ 88,256 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1192s · best score -147 · fitness 341,682
+[06:47:04 +1327.9s]    GA progress: ≈ 88,896 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1201s · best score -147 · fitness 341,682
+[06:47:13 +1337.0s]    GA progress: ≈ 89,728 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1210s · best score -147 · fitness 341,682
+[06:47:22 +1346.0s]    GA progress: ≈ 90,432 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1219s · best score -147 · fitness 341,682
+[06:47:31 +1355.0s]    GA progress: ≈ 91,008 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1228s · best score -147 · fitness 341,682
+[06:47:40 +1364.1s]    GA progress: ≈ 91,904 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1237s · best score -147 · fitness 341,682
+[06:47:49 +1373.1s]    GA progress: ≈ 92,480 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1246s · best score -147 · fitness 341,682
+[06:47:58 +1382.2s]    GA progress: ≈ 93,120 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1255s · best score -147 · fitness 341,682
+[06:48:07 +1391.2s]    GA progress: ≈ 93,952 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1265s · best score -147 · fitness 341,682
+[06:48:16 +1400.2s]    GA progress: ≈ 94,528 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1274s · best score -147 · fitness 341,682
+[06:48:25 +1409.3s]    GA progress: ≈ 95,168 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1283s · best score -147 · fitness 341,682
+[06:48:34 +1418.3s]    GA progress: ≈ 96,064 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1292s · best score -147 · fitness 341,682
+[06:48:43 +1427.3s]    GA progress: ≈ 96,704 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1301s · best score -147 · fitness 341,682
+[06:48:53 +1436.4s]    GA progress: ≈ 97,600 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1310s · best score -147 · fitness 341,682
+[06:49:02 +1445.4s]    GA progress: ≈ 98,240 candidate splits evaluated so far (8/8 seeds active, 74/s) · t+1319s · best score -147 · fitness 341,682
+[06:49:11 +1454.5s]    GA progress: ≈ 99,136 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1328s · best score -147 · fitness 341,682
+[06:49:20 +1463.5s]    GA progress: ≈ 99,776 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1337s · best score -147 · fitness 341,682
+[06:49:29 +1472.5s]    GA progress: ≈ 100,480 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1346s · best score -147 · fitness 341,682
+[06:49:38 +1481.6s]    GA progress: ≈ 101,248 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1355s · best score -147 · fitness 341,682
+[06:49:47 +1490.6s]    GA progress: ≈ 101,888 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1364s · best score -147 · fitness 341,682
+[06:49:56 +1499.6s]    GA progress: ≈ 102,592 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1373s · best score -147 · fitness 341,682
+[06:50:05 +1508.6s]    GA progress: ≈ 103,424 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1382s · best score -147 · fitness 341,682
+[06:50:14 +1517.7s]    GA progress: ≈ 103,936 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1391s · best score -147 · fitness 341,682
+[06:50:23 +1526.7s]    GA progress: ≈ 104,768 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1400s · best score -147 · fitness 341,682
+[06:50:32 +1535.8s]    GA progress: ≈ 105,280 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1409s · best score -147 · fitness 341,682
+[06:50:41 +1544.8s]    GA progress: ≈ 106,176 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1418s · best score -147 · fitness 341,682
+[06:50:50 +1553.8s]    GA progress: ≈ 107,008 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1427s · best score -147 · fitness 341,682
+[06:50:59 +1562.9s]    GA progress: ≈ 107,520 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1436s · best score -147 · fitness 341,682
+[06:51:08 +1571.9s]    GA progress: ≈ 108,416 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1445s · best score -147 · fitness 341,682
+[06:51:17 +1580.9s]    GA progress: ≈ 109,312 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1454s · best score -147 · fitness 341,682
+[06:51:26 +1590.0s]    GA progress: ≈ 109,760 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1463s · best score -147 · fitness 341,682
+[06:51:35 +1599.0s]    GA progress: ≈ 110,656 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1472s · best score -147 · fitness 341,682
+[06:51:44 +1608.0s]    GA progress: ≈ 111,552 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1481s · best score -147 · fitness 341,682
+[06:51:53 +1617.1s]    GA progress: ≈ 112,064 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1490s · best score -147 · fitness 341,682
+[06:52:02 +1626.1s]    GA progress: ≈ 112,896 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1499s · best score -147 · fitness 341,682
+[06:52:11 +1635.2s]    GA progress: ≈ 113,472 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1508s · best score -147 · fitness 341,682
+[06:52:20 +1644.2s]    GA progress: ≈ 114,240 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1518s · best score -147 · fitness 341,682
+[06:52:29 +1653.2s]    GA progress: ≈ 114,880 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1527s · best score -147 · fitness 341,682
+[06:52:38 +1662.3s]    GA progress: ≈ 115,584 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1536s · best score -147 · fitness 341,682
+[06:52:47 +1671.3s]    GA progress: ≈ 116,480 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1545s · best score -147 · fitness 341,682
+[06:52:56 +1680.3s]    GA progress: ≈ 116,928 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1554s · best score -147 · fitness 341,682
+[06:53:05 +1689.4s]    GA progress: ≈ 117,824 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1563s · best score -147 · fitness 341,682
+[06:53:15 +1698.4s]    GA progress: ≈ 118,592 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1572s · best score -147 · fitness 341,682
+[06:53:24 +1707.4s]    GA progress: ≈ 119,168 candidate splits evaluated so far (8/8 seeds active, 75/s) · t+1581s · best score -147 · fitness 341,682
+[06:53:33 +1716.5s]    GA progress: ≈ 120,064 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1590s · best score -147 · fitness 341,682
+[06:53:42 +1725.5s]    GA progress: ≈ 120,960 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1599s · best score -147 · fitness 341,682
+[06:53:51 +1734.5s]    GA progress: ≈ 121,408 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1608s · best score -147 · fitness 341,682
+[06:54:00 +1743.5s]    GA progress: ≈ 122,304 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1617s · best score -147 · fitness 341,682
+[06:54:09 +1752.6s]    GA progress: ≈ 122,944 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1626s · best score -147 · fitness 341,682
+[06:54:18 +1761.6s]    GA progress: ≈ 123,648 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1635s · best score -147 · fitness 341,682
+[06:54:27 +1770.7s]    GA progress: ≈ 124,352 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1644s · best score -147 · fitness 341,682
+[06:54:36 +1779.7s]    GA progress: ≈ 124,992 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1653s · best score -147 · fitness 341,682
+[06:54:45 +1788.7s]    GA progress: ≈ 125,696 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1662s · best score -147 · fitness 341,682
+[06:54:54 +1797.8s]    GA progress: ≈ 126,336 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1671s · best score -147 · fitness 341,682
+[06:55:03 +1806.8s]    GA progress: ≈ 127,232 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1680s · best score -147 · fitness 341,682
+[06:55:12 +1815.9s]    GA progress: ≈ 127,680 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1689s · best score -147 · fitness 341,682
+[06:55:21 +1824.9s]    GA progress: ≈ 128,576 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1698s · best score -147 · fitness 341,682
+[06:55:30 +1833.9s]    GA progress: ≈ 129,344 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1707s · best score -147 · fitness 341,682
+[06:55:39 +1843.0s]    GA progress: ≈ 129,920 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1716s · best score -147 · fitness 341,682
+[06:55:48 +1852.0s]    GA progress: ≈ 130,816 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1725s · best score -147 · fitness 341,682
+[06:55:57 +1861.0s]    GA progress: ≈ 131,712 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1734s · best score -147 · fitness 341,682
+[06:56:06 +1870.1s]    GA progress: ≈ 132,160 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1743s · best score -147 · fitness 341,682
+[06:56:15 +1879.1s]    GA progress: ≈ 133,056 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1752s · best score -147 · fitness 341,682
+[06:56:24 +1888.1s]    GA progress: ≈ 133,760 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1761s · best score -147 · fitness 341,682
+[06:56:33 +1897.2s]    GA progress: ≈ 134,400 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1770s · best score -147 · fitness 341,682
+[06:56:42 +1906.2s]    GA progress: ≈ 135,296 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1780s · best score -147 · fitness 341,682
+[06:56:51 +1915.3s]    GA progress: ≈ 135,744 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1789s · best score -147 · fitness 341,682
+[06:57:00 +1924.3s]    GA progress: ≈ 136,640 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1798s · best score -147 · fitness 341,682
+[06:57:09 +1933.3s]    GA progress: ≈ 137,088 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1807s · best score -147 · fitness 341,682
+[06:57:18 +1942.4s]    GA progress: ≈ 137,984 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1816s · best score -147 · fitness 341,682
+[06:57:28 +1951.4s]    GA progress: ≈ 138,432 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1825s · best score -147 · fitness 341,682
+[06:57:37 +1960.4s]    GA progress: ≈ 139,328 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1834s · best score -147 · fitness 341,682
+[06:57:46 +1969.5s]    GA progress: ≈ 140,160 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1843s · best score -147 · fitness 341,682
+[06:57:55 +1978.5s]    GA progress: ≈ 140,800 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1852s · best score -147 · fitness 341,682
+[06:58:04 +1987.5s]    GA progress: ≈ 141,440 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1861s · best score -147 · fitness 341,682
+[06:58:13 +1996.6s]    GA progress: ≈ 142,144 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1870s · best score -147 · fitness 341,682
+[06:58:22 +2005.6s]    GA progress: ≈ 142,848 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1879s · best score -147 · fitness 341,682
+[06:58:31 +2014.6s]    GA progress: ≈ 143,616 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1888s · best score -147 · fitness 341,682
+[06:58:40 +2023.7s]    GA progress: ≈ 144,320 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1897s · best score -147 · fitness 341,682
+[06:58:49 +2032.7s]    GA progress: ≈ 144,960 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1906s · best score -147 · fitness 341,682
+[06:58:58 +2041.7s]    GA progress: ≈ 145,216 candidate splits evaluated so far (8/8 seeds active, 76/s) · t+1915s · best score -147 · fitness 341,682
+[06:58:58 +2041.7s]       • seed 1/8 finished (t+1915s): fitness -1e+15→-1e+15, feasible=False, violation=176.8, 300/300 gens, σ_final=0.0703  ← best so far
+[06:58:58 +2041.7s]       • seed 2/8 finished (t+1915s): fitness -1e+15→-1e+15, feasible=False, violation=167.7, 288/300 gens (early-stop), σ_final=0.0713  ← best so far
+[06:58:58 +2041.7s]       • seed 3/8 finished (t+1915s): fitness -1e+15→-1e+15, feasible=False, violation=169.2, 300/300 gens, σ_final=0.0839
+[06:58:58 +2041.7s]       • seed 4/8 finished (t+1915s): fitness -1e+15→-1e+15, feasible=False, violation=162.2, 300/300 gens, σ_final=0.0665  ← best so far
+[06:58:58 +2041.7s]       • seed 5/8 finished (t+1915s): fitness -1e+15→-1e+15, feasible=False, violation=173.7, 200/300 gens (early-stop), σ_final=0.171
+[06:58:58 +2041.8s]       • seed 6/8 finished (t+1915s): fitness -1e+15→-1e+15, feasible=False, violation=172.5, 300/300 gens, σ_final=0.0709
+[06:58:58 +2041.8s]       • seed 7/8 finished (t+1915s): fitness -1e+15→-1e+15, feasible=False, violation=157.1, 296/300 gens (early-stop), σ_final=0.0717  ← best so far
+[06:58:58 +2041.8s]       • seed 8/8 finished (t+1915s): fitness -1e+15→-1e+15, feasible=False, violation=146.9, 285/300 gens (early-stop), σ_final=0.0741  ← best so far
+[06:58:58 +2041.8s]    multi-seed GA: 8 seeds in PARALLEL (loky, 8 workers) in 1915.1s.
+[06:58:58 +2041.8s]    ── GA-Numba verification ──────────────────────────────
+[06:58:58 +2041.8s]       kernel build   : 2026-07-31-ga-numba-persistent-cache+precompile+fixed-quadratic-breach+eligibility-in-kernel+step-aware-verify+vol-weighted-viol+penalty-shape+active-priority+breach-tol
+[06:58:58 +2041.8s]       DECISION       : ✓ USING Numba fused float64 kernel (verified once at pre-compile; workers trusted the cached kernel — see the compile line above for the diff figures)
+[06:58:58 +2041.8s]       workers        : 8/8 used Numba
+[06:58:58 +2041.8s]       worker 1st-eval: min=0.6s max=0.6s · 0/8 RE-COMPILED (>8s ⇒ cache miss in worker → slow search)
+[06:58:58 +2041.8s]       note           : per-run speed-up is larger than the tiny verify batch shows; compile is paid ONCE per worker process.
+[06:58:58 +2041.8s]    ───────────────────────────────────────────────────────
+[06:58:59 +2043.2s]    ── exact-bands incidence self-check ── max|prop_raw(incidence) − truth| = 0.000e+00  (Σtruth=3907.5; ≈0 ⇒ the search's column→prop-key map matches _prop_items_from_gran incl. the blend)
+[06:59:00 +2043.9s]    delivered split — true-band breach 3.777 (0 = all month bands satisfied by the real pro-rata projection; exact in-search scoring, no post-hoc correction).
+[06:59:00 +2043.9s]    convergence history: 285 generation(s) recorded (main search; the re-projection run's own short history is NOT used for the chart).
+[06:59:00 +2043.9s]    ④ EFFICIENCY (how much search these settings bought, and how fast):
+[06:59:00 +2043.9s]       settings   : 8 seeds × 2 restarts × 150 gens × λ64 · restart-mode=lean
+[06:59:00 +2043.9s]       best score : -1,000,000,000,000,147
+[06:59:00 +2043.9s]       search cost: 145,216 candidate splits in 1915s (76/s throughput)
+[06:59:00 +2043.9s]       EFFICIENCY : -31,330,637,619,005 score/min — compare across runs on the SAME data (higher = better settings)
+[06:59:00 +2043.9s]    GA risk-min (dial 0) endpoint: aggregate VAMP rate 0.0168 vs revenue-max (dial 99) 0.0227; revenue $342,355 vs $364,706.
+[06:59:23 +2066.9s]    Enforcement OFF: delivered split = GA search output + eligibility (bans / wallet-incapable / USA-only); no VAMP-cap / per-MID band projection.
+[06:59:24 +2067.5s]    ── GA single variation (dial 0): MIDs over cap=0 (informational — no cap enforced), succ=0.6829, risk=0.0302
+[06:59:24 +2067.5s]    GA total wall time: 32m 36s (1 GA run [risk-min] × 15 vampMid tilts; enforcement removed).
+[06:59:24 +2067.6s]    ── GRANULAR PROFILE SAMPLES · dial 0 · 6 of 10,424 cells (currency × bank × rpgt) ──
+[06:59:24 +2067.6s]       each row: gateway · baseline% → proposed% (Δpp) · fc volume · VAMP risk · vampMid
+[06:59:24 +2067.7s]       • usd / 434769 / Monthly Initial  ·  cell_vol=11,374  ·  12 active gateway(s)
+[06:59:24 +2067.7s]           adyen-usd-tav-avonline           6.0% →  87.5% (+81.5pp) · vol   10,121 · risk   2.59% · Adyen_TotalAntivirusOnline
+[06:59:24 +2067.7s]           adyen-usd-tav                   10.4% →   1.0% ( -9.3pp) · vol      116 · risk   2.64% · Adyen_TotalAV
+[06:59:24 +2067.7s]           adyen-usd-tav-prem               5.9% →   1.0% ( -4.9pp) · vol      116 · risk   2.64% · Adyen_TotalAVPremium
+[06:59:24 +2067.8s]           adyen-usd-tav-pro                9.9% →   1.0% ( -8.9pp) · vol      116 · risk   2.64% · Adyen_TotalAVPro
+[06:59:24 +2067.8s]           adyen-usd-tav-secure             9.3% →   1.0% ( -8.3pp) · vol      116 · risk   2.61% · Adyen_TotalAVSecure
+[06:59:24 +2067.8s]           adyen-usd-tav-ultimate           8.0% →   1.0% ( -7.0pp) · vol      116 · risk   2.64% · Adyen_TotalAVUltimate
+[06:59:24 +2067.8s]           adyen-usd-tsc-x-tav             11.0% →   1.0% (-10.0pp) · vol      116 · risk   2.65% · Adyen_TotalSecurity
+[06:59:24 +2067.8s]           braintree-usd-tav                6.0% →   1.0% ( -5.0pp) · vol      116 · risk   2.64% · Braintree USA - Total AV
+[06:59:24 +2067.8s]           checkout-usd-tav-new             2.6% →   1.0% ( -1.6pp) · vol      116 · risk   2.64% · Checkout - Total AV
+[06:59:24 +2067.8s]           worldpay-usd-tav-nt             10.4% →   1.0% ( -9.4pp) · vol      116 · risk   2.64% · WorldPay - Total AV
+[06:59:24 +2067.8s]           adyen-usd-tav-na                13.8% →   1.0% (-12.9pp) · vol      111 · risk   2.67% · Adyen - TotalAV - NA
+[06:59:24 +2067.8s]           authorize-usd-tav                1.2% →   0.8% ( -0.3pp) · vol       96 · risk   2.64% · Authorize - Total AV
+[06:59:24 +2067.8s]       • usd / 418550 / Monthly Initial  ·  cell_vol=11,385  ·  12 active gateway(s)
+[06:59:24 +2067.8s]           adyen-usd-tav-avonline           6.0% →  87.6% (+81.6pp) · vol   10,131 · risk   2.59% · Adyen_TotalAntivirusOnline
+[06:59:24 +2067.8s]           adyen-usd-tav                   10.4% →   1.0% ( -9.3pp) · vol      116 · risk   2.64% · Adyen_TotalAV
+[06:59:24 +2067.8s]           adyen-usd-tav-na                13.8% →   1.0% (-12.8pp) · vol      116 · risk   2.67% · Adyen - TotalAV - NA
+[06:59:24 +2067.8s]           adyen-usd-tav-prem               5.9% →   1.0% ( -4.9pp) · vol      116 · risk   2.64% · Adyen_TotalAVPremium
+[06:59:24 +2067.8s]           adyen-usd-tav-pro                9.9% →   1.0% ( -8.9pp) · vol      116 · risk   2.64% · Adyen_TotalAVPro
+[06:59:24 +2067.8s]           adyen-usd-tav-secure             9.3% →   1.0% ( -8.3pp) · vol      116 · risk   2.61% · Adyen_TotalAVSecure
+[06:59:24 +2067.8s]           adyen-usd-tav-ultimate           8.0% →   1.0% ( -7.0pp) · vol      116 · risk   2.64% · Adyen_TotalAVUltimate
+[06:59:24 +2067.8s]           adyen-usd-tsc-x-tav             11.0% →   1.0% (-10.0pp) · vol      116 · risk   2.65% · Adyen_TotalSecurity
+[06:59:24 +2067.8s]           braintree-usd-tav                6.0% →   1.0% ( -5.0pp) · vol      116 · risk   2.64% · Braintree USA - Total AV
+[06:59:24 +2067.8s]           checkout-usd-tav-new             2.6% →   1.0% ( -1.6pp) · vol      116 · risk   2.64% · Checkout - Total AV
+[06:59:24 +2067.8s]           worldpay-usd-tav-nt             10.4% →   1.0% ( -9.4pp) · vol      116 · risk   2.64% · WorldPay - Total AV
+[06:59:24 +2067.8s]           authorize-usd-tav                1.2% →   0.8% ( -0.4pp) · vol       90 · risk   2.64% · Authorize - Total AV
+[06:59:24 +2067.8s]       • usd / 436616 / Monthly Initial  ·  cell_vol=11,397  ·  12 active gateway(s)
+[06:59:24 +2067.8s]           adyen-usd-tav-avonline           6.0% →  87.7% (+81.7pp) · vol   10,147 · risk   2.59% · Adyen_TotalAntivirusOnline
+[06:59:24 +2067.8s]           adyen-usd-tav                   10.4% →   1.0% ( -9.3pp) · vol      117 · risk   2.64% · Adyen_TotalAV
+[06:59:24 +2067.8s]           adyen-usd-tav-na                13.8% →   1.0% (-12.8pp) · vol      117 · risk   2.67% · Adyen - TotalAV - NA
+[06:59:24 +2067.8s]           adyen-usd-tav-prem               5.9% →   1.0% ( -4.9pp) · vol      117 · risk   2.64% · Adyen_TotalAVPremium
+[06:59:24 +2067.8s]           adyen-usd-tav-pro                9.9% →   1.0% ( -8.9pp) · vol      117 · risk   2.64% · Adyen_TotalAVPro
+[06:59:24 +2067.8s]           adyen-usd-tav-secure             9.3% →   1.0% ( -8.3pp) · vol      117 · risk   2.61% · Adyen_TotalAVSecure
+[06:59:24 +2067.8s]           adyen-usd-tav-ultimate           8.0% →   1.0% ( -7.0pp) · vol      117 · risk   2.64% · Adyen_TotalAVUltimate
+[06:59:24 +2067.8s]           adyen-usd-tsc-x-tav             11.0% →   1.0% (-10.0pp) · vol      117 · risk   2.65% · Adyen_TotalSecurity
+[06:59:24 +2067.8s]           braintree-usd-tav                6.0% →   1.0% ( -5.0pp) · vol      117 · risk   2.64% · Braintree USA - Total AV
+[06:59:24 +2067.8s]           checkout-usd-tav-new             2.6% →   1.0% ( -1.6pp) · vol      117 · risk   2.64% · Checkout - Total AV
+[06:59:24 +2067.8s]           worldpay-usd-tav-nt             10.4% →   1.0% ( -9.4pp) · vol      117 · risk   2.64% · WorldPay - Total AV
+[06:59:24 +2067.8s]           authorize-usd-tav                1.2% →   0.7% ( -0.4pp) · vol       84 · risk   2.64% · Authorize - Total AV
+[06:59:24 +2067.9s]       • cad / 414865 / Monthly Initial  ·  cell_vol=2  ·  4 active gateway(s)
+[06:59:24 +2067.9s]           adyen-cad-tav                    0.0% →  33.3% (+33.3pp) · vol        1 · risk   2.99% · Adyen_TotalAV
+[06:59:24 +2067.9s]           braintree-cad-tav                0.0% →  33.3% (+33.3pp) · vol        1 · risk   2.99% · Braintree USA - Total AV
+[06:59:24 +2067.9s]           worldpay-cad-tav-nt              0.0% →  33.3% (+33.3pp) · vol        1 · risk   2.99% · WorldPay - Total AV
+[06:59:24 +2067.9s]           paysafe-cad-tav                100.0% →   0.0% (-100.0pp) · vol        0 · risk   2.99% · PaySafe - Total AV
+[06:59:24 +2067.9s]       • usd / 467961 / Upgrades  ·  cell_vol=2  ·  10 active gateway(s)
+[06:59:24 +2067.9s]           adyen-usd-tav                    0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99% · Adyen_TotalAV
+[06:59:24 +2067.9s]           adyen-usd-tav-avonline           0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99% · Adyen_TotalAntivirusOnline
+[06:59:24 +2067.9s]           adyen-usd-tav-prem               0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99% · Adyen_TotalAVPremium
+[06:59:24 +2067.9s]           adyen-usd-tav-pro                0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99% · Adyen_TotalAVPro
+[06:59:24 +2067.9s]           adyen-usd-tav-secure             0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99% · Adyen_TotalAVSecure
+[06:59:24 +2067.9s]           adyen-usd-tav-ultimate           0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99% · Adyen_TotalAVUltimate
+[06:59:24 +2067.9s]           adyen-usd-tsc-x-tav              0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99% · Adyen_TotalSecurity
+[06:59:24 +2068.0s]           braintree-usd-tav                0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99% · Braintree USA - Total AV
+[06:59:24 +2068.0s]           worldpay-usd-tav-nt              0.0% →  11.1% (+11.1pp) · vol        0 · risk   2.99% · WorldPay - Total AV
+[06:59:24 +2068.0s]           paysafe-usd-tav                100.0% →   0.0% (-100.0pp) · vol        0 · risk   2.99% · PaySafe - Total AV
+[06:59:24 +2068.0s]       • cad / 435784 / Monthly Initial  ·  cell_vol=2  ·  4 active gateway(s)
+[06:59:24 +2068.0s]           adyen-cad-tav                    0.0% →  33.3% (+33.3pp) · vol        1 · risk   2.99% · Adyen_TotalAV
+[06:59:24 +2068.0s]           braintree-cad-tav                0.0% →  33.3% (+33.3pp) · vol        1 · risk   2.99% · Braintree USA - Total AV
+[06:59:24 +2068.0s]           worldpay-cad-tav-nt              0.0% →  33.3% (+33.3pp) · vol        1 · risk   2.99% · WorldPay - Total AV
+[06:59:24 +2068.0s]           paysafe-cad-tav                100.0% →   0.0% (-100.0pp) · vol        0 · risk   2.99% · PaySafe - Total AV
+[06:59:36 +2080.2s] 06:59:36     build_cell_problems: 21086/25315 (83%) gateway-cells on the pooled prior (sparse per-cell attempts); 4229 matched, so the join keys ARE aligned — expected at BIN grain, not a mismatch.
+[06:59:37 +2080.5s]    ✓ ④ Run genetic_numba engine across the Risk↔Conversion axis — finished in 2060.1s
+[06:59:37 +2080.5s] ▶ ⑤ Pre-calculate impact frames for all variations — started
+[06:59:37 +2081.1s]    ✓ ⑤ Pre-calculate impact frames for all variations — finished in 0.6s
+[06:59:37 +2081.1s] ▶ ⑥ Pre-compute pool-targeted compression for all 1 dial(s) (target <= 500) — started
+[07:01:34 +2198.0s]       dial 0: 499 pools (fidelity 97.3%)
+[07:01:34 +2198.0s]    compression (sequential, 1 dial(s), method=ward/knapsack) finished in 116.9s
+[07:01:34 +2198.0s]    ✓ ⑥ Pre-compute pool-targeted compression for all 1 dial(s) (target <= 500) — finished in 116.9s
+[07:01:34 +2198.1s] ✅ Total run time 2198.1s

@@ -1,4 +1,4 @@
-"""Impact-tab calculations extracted from streamlit_app.py (behaviour unchanged):
+"""Impact-tab calculations originally split out of streamlit_app.py (since evolved):
 VAMP pre/post projection from the saved exports, wallet-capability lookup, the
 production split-template builder, and the small Streamlit cache wrappers that keep
 the Impact tab fast. Kept here to keep streamlit_app.py smaller and more organised.
@@ -14,6 +14,31 @@ import os
 import numpy as np
 import pandas as pd
 import streamlit as st
+
+from app_common import load_mid_list, _norm_cols, _renorm_share, _fid2vamp_from  # memoised MID reader + helpers
+
+
+def _wide_by_mid(mids, vamp_pre, txn_pre, vamp_post, txn_post):
+    """Assemble the per-vampMid VAMP/VI-Txn M0–5 (pre & post) wide table from the four
+    (vampMid × period) frames. Shared, byte-identical builder for the three projection paths."""
+    out = pd.DataFrame({"vampMid": sorted(mids)}).set_index("vampMid")
+    for m in range(6):
+        out[f"VAMP M{m}"] = vamp_pre[m] if m in vamp_pre.columns else 0.0
+        out[f"VI Txn M{m}"] = txn_pre[m] if m in txn_pre.columns else 0.0
+        out[f"VAMP Post M{m}"] = vamp_post[m] if m in vamp_post.columns else 0.0
+        out[f"VI Txn Post M{m}"] = txn_post[m] if m in txn_post.columns else 0.0
+    return out.fillna(0.0).reset_index()
+
+
+def _apply_keep(t0, excluded_mids, kill_eff, month_0):
+    """Set t0['_keep'] IN PLACE = per-row switch-off retention fraction: 0.0 for a binary-excluded
+    MID (in excluded_mids and NOT date-gated), else its effective-date keep fraction. Shared,
+    byte-identical across the three projection paths. Returns t0."""
+    _keep = _mid_keep_fraction(t0["vampMid"], t0["period"], kill_eff, month_0)
+    _dated = {m for m, _ in (kill_eff or ())}
+    _binary = t0["vampMid"].isin(excluded_mids) & ~t0["vampMid"].isin(_dated)
+    t0["_keep"] = np.where(_binary, 0.0, _keep)
+    return t0
 
 __build__ = "2026-07-28-count-only-pool-search"
 
@@ -139,10 +164,7 @@ def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mid
     # the active gateways in the cell (transactions still conserved). The removal is
     # gated by each switch-off's effective_date (kill_eff): a switched-off vampMid
     # keeps its volume until its effective month, then drops (mid-month pro-rated).
-    _keep = _mid_keep_fraction(t0["vampMid"], t0["period"], kill_eff, month_0)
-    _dated = {m for m, _ in (kill_eff or ())}
-    _binary = t0["vampMid"].isin(excluded_mids) & ~t0["vampMid"].isin(_dated)
-    t0["_keep"] = np.where(_binary, 0.0, _keep)
+    _apply_keep(t0, excluded_mids, kill_eff, month_0)
     _have = t0["prop"].notna() & (t0["_keep"] > 0.0)
     t0["_active_pre"] = t0["pre_txn"] * t0["_keep"]
     t0["_active_tot"] = t0.groupby(["Currency", "BIN", "period"])["_active_pre"].transform("sum")
@@ -176,13 +198,7 @@ def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mid
     txn_pre = t0.groupby(["vampMid", "period"])["pre_txn"].sum().unstack(fill_value=0.0)
     txn_post = t0.groupby(["vampMid", "period"])["post_txn"].sum().unstack(fill_value=0.0)
 
-    out = pd.DataFrame({"vampMid": sorted(tp["vampMid"].unique())}).set_index("vampMid")
-    for m in range(6):
-        out[f"VAMP M{m}"] = vamp_pre[m] if m in vamp_pre.columns else 0.0
-        out[f"VI Txn M{m}"] = txn_pre[m] if m in txn_pre.columns else 0.0
-        out[f"VAMP Post M{m}"] = vamp_post[m] if m in vamp_post.columns else 0.0
-        out[f"VI Txn Post M{m}"] = txn_post[m] if m in txn_post.columns else 0.0
-    return out.fillna(0.0).reset_index()
+    return _wide_by_mid(tp["vampMid"].unique(), vamp_pre, txn_pre, vamp_post, txn_post)
 
 
 # [FN-251]
@@ -259,10 +275,7 @@ def _vamp_post_core(pp, prop_items, excluded_mids=frozenset(), kill_eff=(), mont
     # switched-off vampMid keeps its volume until its effective month, then drops
     # (mid-month pro-rated). vampMids in excluded_mids with no effective date are
     # removed for all periods (binary fallback).
-    _keep = _mid_keep_fraction(t0["vampMid"], t0["period"], kill_eff, month_0)
-    _dated = {m for m, _ in (kill_eff or ())}
-    _binary = t0["vampMid"].isin(excluded_mids) & ~t0["vampMid"].isin(_dated)
-    t0["_keep"] = np.where(_binary, 0.0, _keep)
+    _apply_keep(t0, excluded_mids, kill_eff, month_0)
     t0["prop_raw"] = t0["prop_raw"] * t0["_keep"]
     t0["_active_vi"] = t0["VI_Txn_Count"] * t0["_keep"]
     # Group the cell keys ONCE and reuse for all three per-cell sums (the 5-col key is
@@ -317,13 +330,7 @@ def _vamp_post_core(pp, prop_items, excluded_mids=frozenset(), kill_eff=(), mont
     vamp_post = pp.groupby(["vampMid", "period"])["VAMP_Post_c"].sum().unstack(fill_value=0.0)
     txn_pre = t0.groupby(["vampMid", "period"])["VI_Txn_Count"].sum().unstack(fill_value=0.0)
     txn_post = t0.groupby(["vampMid", "period"])["post_txn"].sum().unstack(fill_value=0.0)
-    out = pd.DataFrame({"vampMid": sorted(pp["vampMid"].unique())}).set_index("vampMid")
-    for m in range(6):
-        out[f"VAMP M{m}"] = vamp_pre[m] if m in vamp_pre.columns else 0.0
-        out[f"VI Txn M{m}"] = txn_pre[m] if m in txn_pre.columns else 0.0
-        out[f"VAMP Post M{m}"] = vamp_post[m] if m in vamp_post.columns else 0.0
-        out[f"VI Txn Post M{m}"] = txn_post[m] if m in txn_post.columns else 0.0
-    return out.fillna(0.0).reset_index()
+    return _wide_by_mid(pp["vampMid"].unique(), vamp_pre, txn_pre, vamp_post, txn_post)
 
 
 # [FN-253]
@@ -513,10 +520,9 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                 # fid -> vampMid map (for the rules xlsx, keyed by gatewayFid columns).
                 _f2v = {}
                 try:
-                    _mdf = pd.read_csv(_mid_path)
+                    _mdf = load_mid_list(_mid_path)
                     _mdf.columns = [c.strip() for c in _mdf.columns]
-                    _f2v = dict(zip(_mdf["gatewayFid"].astype(str).str.strip().str.lower(),
-                                    _mdf["vampMid"].astype(str).str.strip()))
+                    _f2v = _fid2vamp_from(_mdf, "gatewayFid", "vampMid")
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -659,12 +665,9 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                                 _cl.append(f"    {str(r['_vml'])[:22]:22s} {r['_cur']}/{r['_bn']}/{str(r['_rp'])[:12]:12s} "
                                            f"pmp={str(r['_pm'])[:8]:8s} ctry={str(r['_ct'])[:7]:7s} "
                                            f"t3%={r['t3_pct']:>6.2f} rules%={r['rules_pct']:>6.2f} Δ%={r['dpct']:>+6.2f}")
-                            _sp_focus = _sp[_sp["_vml"].str.contains(_cmid, na=False)]
                         else:
                             _cl.append("\n=== (1) INPUT-SPLIT DIFF: prop_items not 7-tuple (enforced grain); skipped ===")
-                            _sp_focus = None
                     else:
-                        _sp_focus = None
                         _cl.append("\n=== (1) INPUT-SPLIT DIFF: exported rules not found in "
                                    f"{_rules_dir} (PoolTargeted_Rules_*.xlsx); skipped ===")
 
@@ -1102,10 +1105,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     if "_bf_inj" not in t0.columns:
         t0["_bf_inj"] = 0
     # Effective-date-gated switch-off (see _vamp_post_core / _mid_keep_fraction).
-    _keep = _mid_keep_fraction(t0["vampMid"], t0["period"], kill_eff, month_0)
-    _dated = {m for m, _ in (kill_eff or ())}
-    _binary = t0["vampMid"].isin(excluded_mids) & ~t0["vampMid"].isin(_dated)
-    t0["_keep"] = np.where(_binary, 0.0, _keep)
+    _apply_keep(t0, excluded_mids, kill_eff, month_0)
     t0["prop_raw"] = t0["prop_raw"] * t0["_keep"]
     # PIPELINE ENFORCEMENT (static masks): wallet-incapable gateways can't serve wallet-pmp
     # sub-cells; USA-only gateways can't serve Non-USA sub-cells — zero their proposed share
@@ -1242,10 +1242,11 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
 # [FN-261]
 def mid_table_from_granular(gran):
     """Per-vampMid VAMP / VI-Txn M0–5 (pre & post) table, derived by AGGREGATING the
-    granular pre/post frame from compute_vamp_prepost_granular. Because it reads the
-    same projection, it is numerically identical to compute_vamp_post_from_prorata —
-    so the Impact tab can run ONE granular projection and reuse it for both the
-    filterable detail AND this per-MID table (instead of two projections)."""
+    granular pre/post frame from compute_vamp_prepost_granular. This granular projection is the
+    AUTHORITATIVE one — it adds go-live timing, zero-baseline back-fill and the exploration floor
+    that the coarser compute_vamp_post_from_prorata does NOT, so the two are no longer identical.
+    The Impact tab runs this ONE projection and reuses it for both the filterable detail AND this
+    per-MID table."""
     if gran is None or getattr(gran, "empty", True):
         cols = ["vampMid"] + [f"{p} M{m}" for m in range(6)
                               for p in ("VAMP", "VI Txn", "VAMP Post", "VI Txn Post")]
@@ -1254,13 +1255,7 @@ def mid_table_from_granular(gran):
     _vq = gran.groupby(["vampMid", "period"])["VAMP_Post"].sum().unstack(fill_value=0.0)
     _tp = gran.groupby(["vampMid", "period"])["VI_Txn_Pre"].sum().unstack(fill_value=0.0)
     _tq = gran.groupby(["vampMid", "period"])["VI_Txn_Post"].sum().unstack(fill_value=0.0)
-    out = pd.DataFrame({"vampMid": sorted(gran["vampMid"].unique())}).set_index("vampMid")
-    for m in range(6):
-        out[f"VAMP M{m}"] = _vp[m] if m in _vp.columns else 0.0
-        out[f"VI Txn M{m}"] = _tp[m] if m in _tp.columns else 0.0
-        out[f"VAMP Post M{m}"] = _vq[m] if m in _vq.columns else 0.0
-        out[f"VI Txn Post M{m}"] = _tq[m] if m in _tq.columns else 0.0
-    return out.fillna(0.0).reset_index()
+    return _wide_by_mid(gran["vampMid"].unique(), _vp, _tp, _vq, _tq)
 
 
 # [FN-262]
@@ -1279,7 +1274,7 @@ def process_wallet_incapable(mid_list_path):
     if not mid_list_path or not os.path.exists(mid_list_path):
         return set()
     try:
-        _m = pd.read_csv(mid_list_path)
+        _m = load_mid_list(mid_list_path)
     except Exception:
         return set()
     _norm = {c: str(c).lower().replace(" ", "").replace("_", "") for c in _m.columns}
@@ -1383,8 +1378,8 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     _fid_cur, _fid_active = {}, {}
     try:
         if mid_list_path and os.path.exists(mid_list_path):
-            _mm = pd.read_csv(mid_list_path)
-            _cc = {str(c).lower().replace(" ", "").replace("_", ""): c for c in _mm.columns}
+            _mm = load_mid_list(mid_list_path)
+            _cc = _norm_cols(_mm)
             _gx, _cx, _ax = _cc.get("gatewayfid"), _cc.get("currency"), _cc.get("isactive")
             if _gx and _cx:
                 for _i in range(len(_mm)):
@@ -1435,7 +1430,7 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
 
     # [FN-272]
     def _cap_rows(V):
-        """VECTORISED twin of the old per-Series `_cap_shares`, applied to a whole (rows×gw)
+        """VECTORISED per-row cap + water-fill, applied to a whole (rows×gw)
         array at once. Each row (already normalised to sum 1) is capped at `_cap`, water-filling
         excess into the OTHER gateways already present. No-op for a row with <2 non-zero gateways
         or cap 1.0. Byte-identical to the scalar version — same 50-sweep water-fill, same order."""
@@ -1582,8 +1577,8 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
     # so the projection sees no proposed shares and shows post == pre.
     if mid_list_path and os.path.exists(mid_list_path):
         try:
-            _mm = pd.read_csv(mid_list_path)
-            _cc = {str(c).lower().replace(" ", "").replace("_", ""): c for c in _mm.columns}
+            _mm = load_mid_list(mid_list_path)
+            _cc = _norm_cols(_mm)
             _gx, _vx = _cc.get("gatewayfid"), _cc.get("vampmid")
             if _gx and _vx:
                 for _f, _v in zip(_mm[_gx].astype(str).str.strip().str.lower(),
@@ -1675,8 +1670,7 @@ def enforced_split_frame(split, brand, go_live, wallet_incapable=frozenset(), fi
     # Pool pmp / Country to the BIN grain by MEAN share, then re-normalise per (rpgt, currency, bank).
     out = (allm.groupby(["rpgt", "currency", "bank", "gateway"], as_index=False)["_s"].mean()
            .rename(columns={"_s": "share"}))
-    _t2 = out.groupby(["rpgt", "currency", "bank"])["share"].transform("sum")
-    out["share"] = (out["share"] / _t2).where(_t2 > 0, 0.0)
+    _renorm_share(out, ["rpgt", "currency", "bank"])
     return out[cols]
 
 
@@ -1860,7 +1854,8 @@ def pool_targeted_compression(ss, split_ideal, *, target_pools, sig, wallet_ctx,
 # [FN-280]
 def rpgt_avg_ticket(cell_agg):
     """RPGT-level average ticket from the 30D actuals (the window ending just before
-    Month 0): Σ succ_amount / Σ successes per RPGT. Returns {rpgt_lower: ticket}."""
+    Month 0): Σ succ_amount / Σ successes per RPGT. Returns {rpgt_lower: ticket}.
+    Kept as the FALLBACK for (rpgt, currency) combos with no per-currency actuals."""
     if cell_agg is None or getattr(cell_agg, "empty", True):
         return {}
     g = cell_agg.groupby("rpgt_join").agg(rev=("cell_rev", "sum"), succ=("cell_succ", "sum"))
@@ -1868,17 +1863,65 @@ def rpgt_avg_ticket(cell_agg):
             for rp, r in g.iterrows()}
 
 
+def rpgt_currency_avg_ticket(cell_agg):
+    """RPGT × Currency average ticket from the 30D actuals: Σ succ_amount / Σ successes
+    per (rpgt, currency). Returns {(rpgt_lower, currency_lower): ticket}. Finer grain
+    than ``rpgt_avg_ticket`` so a given RPGT no longer shares one blended ticket across
+    currencies. Combos with no actuals are simply absent (caller falls back to the
+    RPGT-level ticket)."""
+    if cell_agg is None or getattr(cell_agg, "empty", True):
+        return {}
+    if "currency_join" not in getattr(cell_agg, "columns", []):
+        return {}
+    g = cell_agg.groupby(["rpgt_join", "currency_join"]).agg(
+        rev=("cell_rev", "sum"), succ=("cell_succ", "sum"))
+    return {(str(rp).strip().lower(), str(cur).strip().lower()):
+            (float(r["rev"]) / float(r["succ"]) if float(r["succ"]) > 0 else 0.0)
+            for (rp, cur), r in g.iterrows()}
+
+
 # [FN-281]
-def mid_revenue_month_table(granular, rpgt_ticket, months=range(6)):
+def mid_revenue_month_table(granular, rpgt_ticket, months=range(6), rc_ticket=None):
     """Per-vampMid × month VI Txn + $Revenue (pre/post) from the pro-rata granular.
 
-    $Revenue = Σ_RPGT ticket[RPGT] × VI_Txn[vampMid, RPGT, month] (RPGT-level ticket
-    from the actuals). VI Txn is the origination (t=0) volume, matching the VAMP
-    table's 'VI Txn M{m}'. Returns a wide DataFrame: vampMid + per-month
+    $Revenue = Σ ticket × VI_Txn[vampMid, RPGT, currency, month]. The ticket is the
+    RPGT × Currency average from the actuals when ``rc_ticket`` is supplied — with NO
+    fallback: every (RPGT, currency) in the granular MUST have a 30D-actuals ticket, and
+    a missing one raises (a data problem to surface, not mask). Without ``rc_ticket`` the
+    RPGT-level ticket is used (legacy behaviour). VI Txn is the origination (t=0) volume,
+    matching the VAMP table's 'VI Txn M{m}'. Returns a wide DataFrame: vampMid + per-month
     VI Txn / $Revenue / VI Txn Post / $Revenue Post."""
     g = granular.copy()
     g["period"] = pd.to_numeric(g["period"], errors="coerce").fillna(-1).astype(int)
-    _tk = g["RPGT"].astype(str).str.strip().str.lower().map(lambda r: rpgt_ticket.get(r, 0.0)).astype(float)
+    _rp = g["RPGT"].astype(str).str.strip().str.lower()
+    if rc_ticket is not None:
+        if "Currency" not in g.columns:
+            raise ValueError("mid_revenue_month_table: rc_ticket supplied but the granular has "
+                             "no 'Currency' column — cannot price at RPGT × Currency.")
+        _cur = g["Currency"].astype(str).str.strip().str.lower()
+        _keys = list(zip(_rp.tolist(), _cur.tolist()))
+        # Fallback for (RPGT, currency) combos with no 30D-actuals ticket — e.g. HELD / unscoped
+        # RPGTs (renewals) that carry no SCORED attempts, so they legitimately have no ticket.
+        # Priceable combos keep their EXACT RPGT×Currency ticket; only the gaps fall back to that
+        # currency's average ticket, then the RPGT-level ticket, then a global average, then 0.
+        # (This used to raise; held RPGTs in the granular made that too strict — a routine data
+        # shape, not a data error.)
+        _by_cur = {}
+        for (_rk, _ck), _tv in rc_ticket.items():
+            _by_cur.setdefault(_ck, []).append(float(_tv))
+        _cur_avg = {c: (sum(v) / len(v)) for c, v in _by_cur.items() if v}
+        _glob_avg = (sum(float(t) for t in rc_ticket.values()) / len(rc_ticket)) if rc_ticket else 0.0
+
+        def _tk_for(_k):
+            if _k in rc_ticket:
+                return float(rc_ticket[_k])
+            if _k[1] in _cur_avg:
+                return _cur_avg[_k[1]]
+            _rt = rpgt_ticket.get(_k[0]) if isinstance(rpgt_ticket, dict) else None
+            return float(_rt) if _rt else _glob_avg
+        _tk = pd.Series([_tk_for(k) for k in _keys], index=g.index, dtype=float)
+    else:
+        _tk = _rp.map(lambda r: rpgt_ticket.get(r, 0.0)).astype(float)
     _vp = pd.to_numeric(g["VI_Txn_Pre"], errors="coerce").fillna(0.0)
     _vq = pd.to_numeric(g["VI_Txn_Post"], errors="coerce").fillna(0.0)
     g["_rev_pre"] = _vp * _tk

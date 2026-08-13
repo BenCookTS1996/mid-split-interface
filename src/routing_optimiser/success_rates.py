@@ -42,7 +42,8 @@ def load_success_data(source) -> pd.DataFrame:
             f"column. Got: {sorted(df.columns.tolist())[:20]}"
         )
 
-    # Standardize RPGT strings using the schema mapping
+    # Canonicalise legacy RPGT aliases via schema.SCENARIO_TO_RPGT. Mostly a no-op now — the
+    # query emits canonical RPGT values, so only the 'Monthly Intiial' typo alias still fires.
     df["rpgt"] = df["rpgt"].map(SCENARIO_TO_RPGT).fillna(df["rpgt"])
 
     # 2. Safely extract values from the schema mapping using .get() to avoid KeyErrors
@@ -57,7 +58,7 @@ def load_success_data(source) -> pd.DataFrame:
         # 'success' column here mixed funnel stages and inflated the ratio.
         C.get("initial_success", "initialSuccess"): "success",
         C.get("amount", "amount"): "amount",
-    } if hasattr(C, "get") else {}
+    }
 
     # Apply only the renames where the source column actually exists
     valid_renames = {k: v for k, v in rename_map.items() if k in df.columns}

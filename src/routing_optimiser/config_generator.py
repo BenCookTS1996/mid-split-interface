@@ -13,43 +13,10 @@ import uuid
 
 import pandas as pd
 
-# RPGT -> (term, type selectors) ported from your config generator.
-RPGT_MAP = {
-    "Monthly Initial": ("p1m-ini", [
-        {"key": "charge.meta.item.duration", "operator": "Lt", "conversion": "", "values": ["3456000"]},
-        {"key": "charge.renewalNumber", "operator": "Equal", "conversion": "", "values": ["0"]},
-        {"key": "charge.meta.item.skuType", "operator": "Equal", "conversion": "", "values": ["SKU_TYPE_PRIMARY"]},
-    ]),
-    "Annual Sub Sale": ("p1y-ini", [
-        {"key": "charge.meta.item.duration", "operator": "Gt", "conversion": "", "values": ["3456000"]},
-        {"key": "charge.renewalNumber", "operator": "Equal", "conversion": "", "values": ["0"]},
-    ]),
-    "Addon Sale": ("addon-ini", [
-        {"key": "charge.meta.item.skuType", "operator": "Equal", "conversion": "", "values": ["SKU_TYPE_ADDON"]},
-        {"key": "charge.renewalNumber", "operator": "Equal", "conversion": "", "values": ["0"]},
-    ]),
-    "Upgrades": ("upgrade-ini", [
-        {"key": "charge.meta.item.name", "operator": "InLike", "conversion": "", "values": ["Modify", "Upgrade"]},
-        {"key": "charge.renewalNumber", "operator": "Equal", "conversion": "", "values": ["0"]},
-    ]),
-    "Monthly Renewal": ("p1m-ren", [
-        {"key": "charge.meta.item.duration", "operator": "Lt", "conversion": "", "values": ["3456000"]},
-        {"key": "charge.renewalNumber", "operator": "Gt", "conversion": "", "values": ["0"]},
-    ]),
-    "Annual Sub Renewal": ("p1y-ren", [
-        {"key": "charge.meta.item.duration", "operator": "Gt", "conversion": "", "values": ["25920000"]},
-        {"key": "charge.renewalNumber", "operator": "Gt", "conversion": "", "values": ["0"]},
-    ]),
-    "P6M Renewals": ("p6m-ren", [
-        {"key": "charge.meta.item.duration", "operator": "Gt", "conversion": "", "values": ["3456000"]},
-        {"key": "charge.meta.item.duration", "operator": "Lt", "conversion": "", "values": ["25920000"]},
-        {"key": "charge.renewalNumber", "operator": "Gt", "conversion": "", "values": ["0"]},
-    ]),
-    "Addon Renewal": ("addon-ren", [
-        {"key": "charge.meta.item.skuType", "operator": "Equal", "conversion": "", "values": ["SKU_TYPE_ADDON"]},
-        {"key": "charge.renewalNumber", "operator": "Gt", "conversion": "", "values": ["0"]},
-    ]),
-}
+# RPGT selector map now lives in schema.py (single source of truth) — this used to be a
+# local copy that had drifted from connector_pool_configs (missing SKU_TYPE_PRIMARY on
+# 'Annual Sub Sale'). Imported so both generators emit identical selectors.
+from .schema import RPGT_MAP  # noqa: E402
 
 
 # [FN-032]

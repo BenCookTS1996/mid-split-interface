@@ -379,6 +379,17 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
     (see `_canonical_gateway`), so downstream routing sees one row per
     real gateway per cell.
     """
+    # Auto-detect a MASTERCARD export and delegate to the Mastercard normaliser.
+    # MC exports carry chargeback columns (CB_Pre / Sim_CBs) and/or 'mastercardMid',
+    # and never carry the VAMP columns — so this is a safe, backward-compatible switch
+    # that lets the shared read path (data_loader.load_forecast) handle both schemes.
+    _cols = set(str(c) for c in df.columns)
+    _is_mc = (("mastercardMid" in _cols) or bool({"CB_Pre", "Sim_CBs", "MC_Txn_Pre"} & _cols)) \
+        and not bool({"vampMid", "VAMP_Pre", "Sim_VAMPs", "VI_Txn_Pre"} & _cols)
+    if _is_mc:
+        from .mastercard_forecast_pipeline import _normalise_pre as _mc_normalise_pre
+        return _mc_normalise_pre(df)
+
     d = df.copy()
     d.columns = [str(c) for c in d.columns]
     ren = {"vampMid": "gateway", "BIN": "bank", "Currency": "currency"}
@@ -478,4 +489,8 @@ def load_pre_forecast(path: str) -> pd.DataFrame:
 # [FN-079]
 def looks_like_effective_rate(df: pd.DataFrame) -> bool:
     cols = set(df.columns)
-    return "vampMid" in cols and bool({"Sim_Sales", "Txn_Pre", "VI_Txn_Pre"} & cols)
+    _vamp = "vampMid" in cols and bool({"Sim_Sales", "Txn_Pre", "VI_Txn_Pre"} & cols)
+    # Also recognise the Mastercard effective-rate / bin-impact exports so the shared
+    # read path normalises them (via _normalise_pre's auto-detect) into the contract.
+    _mc = "mastercardMid" in cols and bool({"Sim_Sales", "Txn_Pre", "MC_Txn_Pre", "CB_Pre", "Sim_CBs"} & cols)
+    return _vamp or _mc

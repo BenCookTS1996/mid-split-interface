@@ -8,8 +8,9 @@ pandas DataFrames — exactly the ones produced by `build_split_exports` in the 
 templates). All the pool-building logic (grouping, provider combination, priority,
 weight normalisation, selectors, naming) is preserved verbatim.
 
-(The older `config_generator.build_configs` — a simpler per-cell pooler used by the
-retired k-means tab — is left untouched; this module is the script-faithful path.)
+(The older `config_generator.build_configs` — a simpler per-cell pooler — is left untouched;
+this module is the script-faithful path. `build_configs` is NOT dead: it is still exported and
+called from scripts/run_pipeline.py, even though the k-means *tab* it once backed is retired.)
 
 Entry point: ``generate_configs(exports, brand_key, date, ...)`` → returns
 ``(pools, counts)`` where ``pools`` is ``{pool_name: pool_dict}`` (ready to write
@@ -33,45 +34,32 @@ BRANDS = {
 GENERIC_SKIP = {"tdr": {"pool-paypal"}}
 
 SALE_TERMS = ("p1m-ini", "p1y-ini", "addon-ini", "upgrade-ini")
-RENEWAL_TERMS = ("p1m-ren", "p1y-ren", "p6m-ren", "addon-ren")
+RENEWAL_TERMS = ("p1m-ren", "asr", "p6m-ren", "addon-ren")   # 'asr' = Annual Sub Renewal
 
-RPGT_MAP = {
-    "Monthly Initial": ("p1m-ini", [
-        {"key": "charge.meta.item.duration", "operator": "Lt", "conversion": "", "values": ["3456000"]},
-        {"key": "charge.renewalNumber", "operator": "Equal", "conversion": "", "values": ["0"]},
-        {"key": "charge.meta.item.skuType", "operator": "Equal", "conversion": "", "values": ["SKU_TYPE_PRIMARY"]},
-    ]),
-    "Annual Sub Sale": ("p1y-ini", [
-        {"key": "charge.meta.item.duration", "operator": "Gt", "conversion": "", "values": ["3456000"]},
-        {"key": "charge.renewalNumber", "operator": "Equal", "conversion": "", "values": ["0"]},
-        {"key": "charge.meta.item.skuType", "operator": "Equal", "conversion": "", "values": ["SKU_TYPE_PRIMARY"]},
-    ]),
-    "Addon Sale": ("addon-ini", [
-        {"key": "charge.meta.item.skuType", "operator": "Equal", "conversion": "", "values": ["SKU_TYPE_ADDON"]},
-        {"key": "charge.renewalNumber", "operator": "Equal", "conversion": "", "values": ["0"]},
-    ]),
-    "Upgrades": ("upgrade-ini", [
-        {"key": "charge.meta.item.name", "operator": "InLike", "conversion": "", "values": ["Modify", "Upgrade"]},
-        {"key": "charge.renewalNumber", "operator": "Equal", "conversion": "", "values": ["0"]},
-    ]),
-    "Monthly Renewal": ("p1m-ren", [
-        {"key": "charge.meta.item.duration", "operator": "Lt", "conversion": "", "values": ["3456000"]},
-        {"key": "charge.renewalNumber", "operator": "Gt", "conversion": "", "values": ["0"]},
-    ]),
-    "Annual Sub Renewal": ("p1y-ren", [
-        {"key": "charge.meta.item.duration", "operator": "Gt", "conversion": "", "values": ["25920000"]},
-        {"key": "charge.renewalNumber", "operator": "Gt", "conversion": "", "values": ["0"]},
-    ]),
-    "P6M Renewals": ("p6m-ren", [
-        {"key": "charge.meta.item.duration", "operator": "Gt", "conversion": "", "values": ["3456000"]},
-        {"key": "charge.meta.item.duration", "operator": "Lt", "conversion": "", "values": ["25920000"]},
-        {"key": "charge.renewalNumber", "operator": "Gt", "conversion": "", "values": ["0"]},
-    ]),
-    "Addon Renewal": ("addon-ren", [
-        {"key": "charge.meta.item.skuType", "operator": "Equal", "conversion": "", "values": ["SKU_TYPE_ADDON"]},
-        {"key": "charge.renewalNumber", "operator": "Gt", "conversion": "", "values": ["0"]},
-    ]),
-}
+# JSON FILENAME term aliases — short codes used ONLY in the generated config filename. The `term`
+# itself is unchanged everywhere else (prefix/priority logic, pool payload, RPGT_MAP), so this is a
+# purely cosmetic rename of the -ini sale terms in the output filenames.
+FILENAME_TERM_ALIAS = {"upgrade-ini": "upgr", "p1y-ini": "as", "p1m-ini": "mi", "addon-ini": "ads"}
+
+
+def _fname_term(term):
+    """Return the filename alias for `term` (identity if the term isn't aliased)."""
+    return FILENAME_TERM_ALIAS.get(term, term)
+
+
+def scheme_code(card_scheme):
+    """Map a card-scheme NAME to the pool `scheme_filter` code `make_pool` understands.
+
+    'visa' → 'vi'  (pool gets method.paymentScheme == card_visa).
+    anything else, e.g. 'mastercard' → 'non-vi'  (the everything-but-Visa bucket:
+    method.paymentScheme != card_visa). Mastercard deliberately reuses 'non-vi' rather than an
+    explicit card_mastercard filter."""
+    return "vi" if str(card_scheme or "visa").strip().lower() == "visa" else "non-vi"
+
+# RPGT selector map now lives in schema.py (single source of truth). This module's copy was
+# the authoritative one (it carries SKU_TYPE_PRIMARY on 'Annual Sub Sale'); it has been hoisted
+# to schema so config_generator shares the exact same selectors.
+from .schema import RPGT_MAP
 
 PROVIDER_TAG = {"non_gp_ap": "", "APPLEPAY": "-ap", "GOOGLEPAY": "-gp"}
 
@@ -127,7 +115,8 @@ def rows_from_dataframe(df, brand_name):
         return []
     check_idx = headers.index("Check")
     connector_cols = [h for h in headers[check_idx + 1:] if h and h != "DUP CHECK"]
-    connector_indices = [i for i, h in enumerate(headers) if h in connector_cols]
+    _cc_set = set(connector_cols)
+    connector_indices = [i for i, h in enumerate(headers) if h in _cc_set]
     try:
         country_idx = headers.index("Country")
     except ValueError:
@@ -306,10 +295,11 @@ def process_compressed_rows(cfg, rows, scheme_filter, count_only=False):
                 else:
                     tag = PROVIDER_TAG[p_set[0]]
                 country_tag = "-us" if country_label == "USA" else ("-nonus" if country_label == "Non-USA" else "")
-                file_prefix = f"rr-{cfg['prefix']}" if term.endswith("-ren") else cfg["prefix"]
+                file_prefix = (f"rr-{cfg['prefix']}" if (term.endswith("-ren") or term in RENEWAL_TERMS)
+                               else cfg["prefix"])
                 tag_n[f"{tag}{country_tag}"] += 1
                 n = tag_n[f"{tag}{country_tag}"]
-                name = f"{file_prefix}-{term}-{cfg['date']}-{scheme_filter}{tag}{country_tag}-bins-{n}"
+                name = f"{file_prefix}-{_fname_term(term)}-{cfg['date']}-{scheme_filter}{tag}{country_tag}-bins-{n}"
                 if count_only:                       # search needs only len(pools) → skip payload
                     out[name] = None
                     continue
@@ -376,8 +366,9 @@ def process_backup_rows(cfg, rows, scheme_filter, count_only=False):
                 else:
                     tag = PROVIDER_TAG[p_set[0]]
                 country_tag = "-us" if country_label == "USA" else ("-nonus" if country_label == "Non-USA" else "")
-                file_prefix = f"rr-{cfg['prefix']}" if term.endswith("-ren") else cfg["prefix"]
-                name = f"{file_prefix}-{term}-{cfg['date']}-{scheme_filter}{tag}{country_tag}"
+                file_prefix = (f"rr-{cfg['prefix']}" if (term.endswith("-ren") or term in RENEWAL_TERMS)
+                               else cfg["prefix"])
+                name = f"{file_prefix}-{_fname_term(term)}-{cfg['date']}-{scheme_filter}{tag}{country_tag}"
                 if count_only:                       # search needs only len(pools) → skip payload
                     out[name] = None
                     continue

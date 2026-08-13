@@ -57,22 +57,12 @@ Run:  streamlit run app/streamlit_app.py
 """
 from __future__ import annotations
 
-import calendar
-import datetime
-import io
-import json
-import logging
 import os
 import sys
-import zipfile
-from datetime import date
 
 import warnings
 
-import pandas as pd
 import streamlit as st
-import yaml
-import numpy as np
 
 # Silence the benign divide-by-zero / 0-0 RuntimeWarnings from the MANY guarded
 # `np.where(denom > 0, num / denom, fallback)` share/rate calculations: np.where
@@ -106,22 +96,8 @@ try:
 except Exception:  # noqa: BLE001 - a read-only dir must never stop the app loading
     pass
 
-from routing_optimiser import (  # noqa: E402
-    HardConstraints, OptimiserSettings, SoftConstraints, build_cell_problems,
-    build_configs, build_pipeline_config, cell_baseline_vs_proposed,
-    compress_split, count_config_rules, engine_choices, gateway_success_rates,
-    gateway_volume_shift, headline_impact, key_contributors, list_sql_files,
-    detect_blocked_gateways, gateway_move_vs_reference, load_forecast,
-    load_success_data, optimise_split, portfolio_summary, prepare_inputs,
-    rpgt_gateway_sensitivity, run_sql_file, run_vamp_pipeline,
-    traffic_moved_curve)
-from routing_optimiser.engines import ENGINES, get_engine  # noqa: E402
-
-try:
-    import plotly.express as px
-    HAS_PLOTLY = True
-except Exception:
-    HAS_PLOTLY = False
+# Engine / optimiser / impact functions are imported by the tab modules that use them —
+# this orchestrator intentionally pulls in almost nothing from the backend.
 
 # Shared brand mark (favicon + red-banner logo).
 _BRAND_ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAASFBMVEVHcEzILDfJLDi2JS21JS68KDHfNETmN0jmN0jkNkfmN0isIiqsIirDKjThNUW4Jy3KLDivIyu8KDHEKzTmN0jEKzS0Ji3KLTfpm+j9AAAAGHRSTlMAFTKMsMD7/8y0jtz/9OQGd/I9/2LkIteIBpNuAAABKklEQVR4AWXTWaKDMAgFUDLXhpiBRve/0xcnGl7Pn4JecIAvpY11PryWt1bwS5uImHw4rW8NUi4RuX62FHEXZXGoYbZMHTqedR+EtfH1Zx0p/LOqO99edR+YTCl4Ste5JUwKDzCM49cHhs/rG3Jsa/DU77JsefOE6ObF1WflOTVeNAj67tBPAoKkaL0zHDcIG6WzY4GIFwVCI+r+WAwqXhoIhYj24IPnBgOCo2H13nNEFBm607B7v/KQWGBi6JBWv/CaGLW8wZB2X6Dhw3HI5uiSSPOjHmyGk7J0S7uCbJDZDQbNdUolA7SILDaA0ol1fU6ME9tpUq7Ie9NasSaaPUNttcZYiascwGu1TkwOIBeXrPy1SiehjwWlZqaW3Wj4kVUzbk+pO9MUsD95+yDzjpcQNgAAAABJRU5ErkJggg=="
@@ -379,28 +355,15 @@ st.markdown("""
 
 # Shared constants, the log handler, and small helpers now live in app_common.py so each
 # tab can import them from its own file. (Tab bodies are being split out one at a time.)
-from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, INPUTS_DIR, GCP_PROJECT,
-                        RPGT_LIST, COMPANIES, StreamlitLogHandler, _switched_off_gateways)
+from app_common import ss, PROJECT_ROOT, SQL_DIR, GCP_PROJECT, APP_BUILD
 import tab1_baseline
 import tab2_engine
 import tab3_impact
-from app_common import _locked_panel, _split_df_to_xlsx_bytes
-from app_common import (APP_BUILD, DEFAULT_GATEWAY_FIDS, _GA_N_SEED, _TAV_FIDS, _TDR_FIDS, _TAB_FIDS,
-                        _apply_blocked_caps, _ensure_base_30d_metrics, _fmt_secs, _impact_eval_frame,
-                        _ink_caption, _load_ga_perf, _physical_cpu_count, _save_ga_perf, _variance_gap_temp)
 os.chdir(PROJECT_ROOT)  # Ensures the app always operates out of the project root
 
 
 
 
-# [FN-285]
-def _chart_title(text: str, container=None):
-    """Render a chart title ABOVE the chart (outside the plot area), so titles
-    sit consistently above every figure rather than inside the plot canvas."""
-    html = ("<div style='font-weight:700; color:#0B1F3A; font-size:0.9rem; "
-            "line-height:1.25; margin:6px 0 14px 4px; position:relative; z-index:3;'>"
-            + str(text) + "</div>")
-    (container or st).markdown(html, unsafe_allow_html=True)
 
 
 
@@ -415,41 +378,14 @@ def _chart_title(text: str, container=None):
 
 
 
-# _switched_off_gateways moved to app_common.py (imported above).
 
 
 
 
-# Impact-tab calc/export/cache helpers live in impact_calcs.py (kept out of this
-# file for size). Imported here so all call sites resolve unchanged.
-from impact_calcs import (  # noqa: E402
-    build_split_exports, build_kill_eff, compute_vamp_post_by_mid, compute_vamp_post_from_prorata,
-    compute_vamp_prepost_granular, process_wallet_incapable, enforced_prop_items,
-    enforced_split_frame,
-    rpgt_avg_ticket, mid_revenue_month_table, mid_table_from_granular,
-    pool_targeted_compression,
-    _c_prepost_granular, _c_read_parquet, _c_vamp_post_prorata, _mtime,
-)
 
 
-# Default gateway (vampMid) allow-list for the attempts_success.sql query.
-# The query is scoped to these gatewayFids; edit here to broaden/narrow the pull.
-# ss, RPGT_LIST, COMPANIES moved to app_common.py (imported above).
 
 
-# --- cached expensive steps -------------------------------------------------
-# [FN-286]
-def resolve_attempts(attempts_export: str, _key: str):
-    """Success-rate data (a ROUTING input, not the forecast).
-
-    Priority: an exported file if given; else run attempts_success.sql on
-    BigQuery. There is no sample fallback — if BigQuery fails, we raise.
-    """
-    if attempts_export and os.path.exists(attempts_export):
-        return attempts_export, "exported file"
-    sql_path = os.path.join(SQL_DIR, "attempts_success.sql")
-    return run_sql_file(sql_path, CACHE_DIR, use_cache=True,
-                        fallback_csv=None, project=GCP_PROJECT)
 
 
 # Per-step helpers used to live here (step_attempts / step_success_rates /
@@ -457,21 +393,6 @@ def resolve_attempts(attempts_export: str, _key: str):
 # flow and calls the backend directly, so those helpers were removed.
 
 
-# [FN-287]
-def bar(df, x, y, title, color=None):
-    if HAS_PLOTLY:
-        fig = px.bar(df, x=x, y=y, color=color, title=title)
-        fig.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=360,
-                          legend=dict(font=dict(color='#0B1F3A', size=8)))
-        fig.update_xaxes(tickfont=dict(color='#0B1F3A', size=8))
-        fig.update_yaxes(tickfont=dict(color='#0B1F3A', size=8))
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.caption(title)
-        st.bar_chart(df.set_index(x)[y])
-
-
-# StreamlitLogHandler moved to app_common.py (imported above).
 
 
 
@@ -803,8 +724,6 @@ with tab_eng:
 # ============================================================================
 with tab_imp:
     tab3_impact.render()
-
-        # (Risk Detail sub-tab removed per request.)
 
 
 # ============================================================================

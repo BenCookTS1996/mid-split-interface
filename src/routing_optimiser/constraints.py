@@ -27,6 +27,13 @@ class HardConstraints:
     # portfolio level in a later aggregation step).
     vamp_cap: float | None = 0.009
 
+    # SOFT VAMP ceiling (>= vamp_cap). Used by the full-matrix GA's dual-ceiling
+    # scoring: a mid "passes" in-search by the cheaper of the hard/soft route, so
+    # the search may ride up to `max_pass_vamp` before enforcement tightens it back
+    # to the hard `vamp_cap`. None -> falls back to vamp_cap (single hard wall).
+    # Only the full-matrix engine reads this; other engines ignore it.
+    max_pass_vamp: float | None = None
+
     # Gateways that are hard-banned for this cell (e.g. currency not supported).
     banned_gateways: tuple[str, ...] = ()
 

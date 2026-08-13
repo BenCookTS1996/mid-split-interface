@@ -37,11 +37,10 @@ STATIC (precomputed once) and the only per-candidate inputs are the per-cell sha
 `psum>0` active mask. `vshare`/`pshare` are the exact per-cell normalisations `_project_capped`
 uses. This module precomputes the static pieces and evaluates the (piecewise-)linear form.
 
-`project_reference` re-implements `_project_capped`'s array math directly (a readable oracle);
-`BandProjector` precomputes the collapse and evaluates it. The synthetic test asserts the two
-are identical — including a cell whose candidate share is entirely zero (the psum==0 path) —
-proving the collapse is exact for the VAMP/Txn COUNT metrics. (The `vamp_pct` RATE metric is
-out of scope: project VAMP and volume separately and divide at the end.)
+`BandProjector` precomputes the static collapse of `_project_capped` and evaluates it; the
+collapse is exact for the VAMP/Txn COUNT metrics — including a cell whose candidate share is
+entirely zero (the psum==0 path). (The `vamp_pct` RATE metric is out of scope: project VAMP
+and volume separately and divide at the end.)
 
 Inputs (both frames use lower-cased helper columns):
   T0   : cur, bin, rpgt, pmp, ctry, mid, midl, per, vi, vc, pr, fcp, bf, excl, emask, iscap
@@ -214,44 +213,9 @@ def _shares(T0, prop, by_rpgt, gcode, ngc, base):
     return pshare, vshare, psum
 
 
-# [FN-016]
-def project_reference(T0: pd.DataFrame, Pc: pd.DataFrame, pool: np.ndarray, prop: dict,
-                      by_rpgt: bool = False) -> dict:
-    """Faithful re-implementation of `_project_capped`'s array math (a readable oracle).
-
-    ANALOGY — the two-cohort model that ALL three projectors here share: split each MID's
-    volume into a HELD cohort (stays put) and a MOVED cohort (the movable fraction mv=pr·fcp,
-    re-routed across gateways by the candidate's proposed shares). In a cell the candidate
-    leaves empty (psum==0) nothing can move, so the held cohort keeps 100%. The final band
-    value = held volume + the candidate's slice of the redistributed moved pool.
-
-    Returns {(midl, per): [vamp_post, txn_post]} for the capped MIDs.
-    """
-    T0 = T0.reset_index(drop=True)
-    Pc = Pc.reset_index(drop=True)
-    gcode, ngc, base, ctot, mv_static = _static(T0)
-    excl = T0["excl"].to_numpy(bool)
-    pshare, vshare, psum = _shares(T0, prop, by_rpgt, gcode, ngc, base)
-    mv = np.where(psum > 0, mv_static, 0.0)                 # <-- psum-gated (app line 3951)
-
-    moved_tot = np.bincount(gcode, weights=base * mv, minlength=ngc)[gcode]
-    ptxn = ctot * (base * (1.0 - mv) + moved_tot * pshare)
-    ptxn = np.where(excl, 0.0, ptxn)
-
-    pc_to_t0 = _origin_map(T0, Pc)
-    gi = np.where(pc_to_t0 >= 0, pc_to_t0, 0)
-    move_pc = np.where(pc_to_t0 >= 0, mv[gi], 0.0)
-    psh_pc = np.where(pc_to_t0 >= 0, vshare[gi], 0.0)
-    vp = Pc["vc"].to_numpy(float) * (1.0 - move_pc) + np.asarray(pool, float) * psh_pc
-
-    out = {}
-    for (mk, p), v in pd.Series(vp).groupby([Pc["midl"].to_numpy(), Pc["per"].to_numpy()]).sum().items():
-        out[(mk, int(p))] = [float(v), 0.0]
-    cap = T0["iscap"].to_numpy(bool)
-    for (mk, p), v in pd.Series(ptxn[cap]).groupby(
-            [T0["midl"].to_numpy()[cap], T0["per"].to_numpy()[cap]]).sum().items():
-        out.setdefault((mk, int(p)), [0.0, 0.0])[1] = float(v)
-    return out
+# NOTE: the `project_reference` oracle (a readable NumPy re-implementation of `_project_capped`)
+# was removed — it was never called and no test asserted equivalence. `BandProjector` and
+# `PopulationBandProjector` below are the live implementations of the same two-cohort math.
 
 
 class BandProjector:
@@ -356,7 +320,7 @@ class PopulationBandProjector:
     """Exact `_project_capped` band values for a WHOLE population of candidate splits at once,
     restricted to just the sub-cells that feed the banded (midl,period) pairs.
 
-    Same math as `BandProjector`/`project_reference` (two-cohort held/moved, psum-gated
+    Same math as `BandProjector` (two-cohort held/moved, psum-gated
     movable fraction, per-sub-cell pshare/vshare renormalisation) but vectorised over P
     candidates with dense NumPy so it can be called inside the GA worker's fitness in place
     of the volume-ratio proxy. Only cells that are (a) a capped banded t0 cell or (b) an
@@ -495,14 +459,18 @@ class PopulationBandProjector:
         # TypingError. A writeable re-alloc in the worker (re-cached on the worker's own copy,
         # reused for its lifetime) fixes it; the main process keeps its original buffers.
         # Numerically identical — same np.zeros scratch, fully overwritten each call.
+        # NB: must test EVERY buffer, not just the first. joblib only memmaps arrays over its
+        # size threshold (~1 MB), so the small per-cell scratch (psum/vpsum/moved, sized ncell)
+        # can stay writeable while the large per-row scratch (pr/pshare/vshare/mvrow, sized nR)
+        # is memmapped read-only — checking fixed[0] alone would miss that and the kernel fails.
         fixed = getattr(self, "_nbbuf_fixed", None)
-        if fixed is None or not fixed[0].flags.writeable:
+        if fixed is None or not all(b.flags.writeable for b in fixed):
             nR = len(self._gcode); ncell = int(self._ngc)
             fixed = (np.zeros(ncell), np.zeros(ncell), np.zeros(ncell),     # psum, vpsum, moved
                      np.zeros(nR), np.zeros(nR), np.zeros(nR), np.zeros(nR))  # pr, pshare, vshare, mvrow
             self._nbbuf_fixed = fixed
         vt = getattr(self, "_nbbuf_vt", None)
-        if vt is None or vt[0] != int(P) or not vt[1].flags.writeable:
+        if vt is None or vt[0] != int(P) or not (vt[1].flags.writeable and vt[2].flags.writeable):
             B = int(self._B)
             vt = (int(P), np.zeros((int(P), B)), np.zeros((int(P), B)))     # vamp, txn (outputs)
             self._nbbuf_vt = vt

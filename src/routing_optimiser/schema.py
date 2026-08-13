@@ -52,8 +52,10 @@ TEMPLATE_META_COLUMNS = [
 ]
 TEMPLATE_TRAILING_COLUMNS = ["DUP CHECK"]
 
-# Map the success-data scenario names onto the RPGT names used in the templates
-# and the VAMP pipeline. Extend this as your taxonomy grows.
+# Map legacy success-data scenario names onto the canonical RPGT names. NOTE: the current
+# attempts_success.sql already emits canonical RPGT values, so most keys below now MISS and are
+# restored by the `.fillna` in load_success_data — only the 'Monthly Intiial' typo alias still
+# actively fires. Kept for the legacy `transactionScenario` shape and old cached parquet.
 SCENARIO_TO_RPGT = {
     "Monthly Sale": "Monthly Initial",
     "Annual Sale": "Annual Sub Sale",
@@ -68,6 +70,50 @@ SCENARIO_TO_RPGT = {
     # outputs may still carry the typo, so canonicalise it here at the single loader
     # chokepoint (load_success_data) rather than relying on per-tab maps.
     "Monthly Intiial": "Monthly Initial",
+}
+
+# --- RPGT -> (term, ConnectorPool type selectors) ---------------------------
+# SINGLE SOURCE OF TRUTH for the connector-pool selector map. Both the
+# script-faithful generator (connector_pool_configs) and the older per-cell
+# pooler (config_generator) import THIS map so the deployed selectors can't
+# drift. 'Annual Sub Sale' carries skuType==SKU_TYPE_PRIMARY, matching
+# 'Monthly Initial' (the other primary/initial-sale RPGT).
+RPGT_MAP = {
+    "Monthly Initial": ("p1m-ini", [
+        {"key": "charge.meta.item.duration", "operator": "Lt", "conversion": "", "values": ["3456000"]},
+        {"key": "charge.renewalNumber", "operator": "Equal", "conversion": "", "values": ["0"]},
+        {"key": "charge.meta.item.skuType", "operator": "Equal", "conversion": "", "values": ["SKU_TYPE_PRIMARY"]},
+    ]),
+    "Annual Sub Sale": ("p1y-ini", [
+        {"key": "charge.meta.item.duration", "operator": "Gt", "conversion": "", "values": ["3456000"]},
+        {"key": "charge.renewalNumber", "operator": "Equal", "conversion": "", "values": ["0"]},
+        {"key": "charge.meta.item.skuType", "operator": "Equal", "conversion": "", "values": ["SKU_TYPE_PRIMARY"]},
+    ]),
+    "Addon Sale": ("addon-ini", [
+        {"key": "charge.meta.item.skuType", "operator": "Equal", "conversion": "", "values": ["SKU_TYPE_ADDON"]},
+        {"key": "charge.renewalNumber", "operator": "Equal", "conversion": "", "values": ["0"]},
+    ]),
+    "Upgrades": ("upgrade-ini", [
+        {"key": "charge.meta.item.name", "operator": "InLike", "conversion": "", "values": ["Modify", "Upgrade"]},
+        {"key": "charge.renewalNumber", "operator": "Equal", "conversion": "", "values": ["0"]},
+    ]),
+    "Monthly Renewal": ("p1m-ren", [
+        {"key": "charge.meta.item.duration", "operator": "Lt", "conversion": "", "values": ["3456000"]},
+        {"key": "charge.renewalNumber", "operator": "Gt", "conversion": "", "values": ["0"]},
+    ]),
+    "Annual Sub Renewal": ("asr", [
+        {"key": "charge.meta.item.duration", "operator": "Gt", "conversion": "", "values": ["25920000"]},
+        {"key": "charge.renewalNumber", "operator": "Gt", "conversion": "", "values": ["0"]},
+    ]),
+    "P6M Renewals": ("p6m-ren", [
+        {"key": "charge.meta.item.duration", "operator": "Gt", "conversion": "", "values": ["3456000"]},
+        {"key": "charge.meta.item.duration", "operator": "Lt", "conversion": "", "values": ["25920000"]},
+        {"key": "charge.renewalNumber", "operator": "Gt", "conversion": "", "values": ["0"]},
+    ]),
+    "Addon Renewal": ("addon-ren", [
+        {"key": "charge.meta.item.skuType", "operator": "Equal", "conversion": "", "values": ["SKU_TYPE_ADDON"]},
+        {"key": "charge.renewalNumber", "operator": "Gt", "conversion": "", "values": ["0"]},
+    ]),
 }
 
 

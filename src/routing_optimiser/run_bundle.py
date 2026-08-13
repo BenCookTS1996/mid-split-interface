@@ -157,7 +157,7 @@ class _ProgressWriter:
     parallel seed reports its own live count to its own file — the main process sums the files
     to show an aggregate "candidate splits evaluated so far" while the search runs. Best-effort:
     any write failure is swallowed so progress reporting can NEVER break a run."""
-    __slots__ = ("path", "total", "best", "best_fit")
+    __slots__ = ("path", "total", "best", "best_fit", "best_nv")
 
     # [FN-219]
     def __init__(self, path: str):
@@ -165,27 +165,32 @@ class _ProgressWriter:
         self.total = 0
         self.best = None                  # best-so-far engine score for this seed (higher = better)
         self.best_fit = None              # FITNESS (revenue-ish objective) of that best-so-far split
+        self.best_nv = None               # # vampMids with an unmet per-MID band on that best split
 
     # [FN-220]
-    def __call__(self, inc: int, score=None, fitness=None) -> None:
+    def __call__(self, inc: int, score=None, fitness=None, nviol=None) -> None:
         try:
             self.total += int(inc)
             if score is not None:
                 _s = float(score)
-                # Track fitness ALONGSIDE the best score (not its own max): we want the revenue of
-                # the split that owns the current best score, so they stay a matched pair.
+                # Track fitness + unmet-MID count ALONGSIDE the best score (not their own max/min):
+                # we want the revenue and constraint state of the split that OWNS the current best
+                # score, so they stay a matched triple.
                 if self.best is None or _s > self.best:
                     self.best = _s
                     if fitness is not None:
                         self.best_fit = float(fitness)
+                    if nviol is not None:
+                        self.best_nv = int(nviol)
             _tmp = self.path + ".tmp"
             with open(_tmp, "w") as _f:
-                # "total|best|fit" — best/fit blank until a score is reported (back-compatible: the
-                # poller reads field 0 as the count, and treats missing fields 1/2 as None).
-                _f.write("{}|{}|{}".format(
+                # "total|best|fit|nviol" — trailing fields blank until reported (back-compatible: the
+                # poller reads field 0 as the count and treats missing fields as None).
+                _f.write("{}|{}|{}|{}".format(
                     self.total,
                     "" if self.best is None else repr(self.best),
-                    "" if self.best_fit is None else repr(self.best_fit)))
+                    "" if self.best_fit is None else repr(self.best_fit),
+                    "" if self.best_nv is None else int(self.best_nv)))
             os.replace(_tmp, self.path)   # atomic swap so the poller never reads a torn record
         except Exception:  # noqa: BLE001
             pass

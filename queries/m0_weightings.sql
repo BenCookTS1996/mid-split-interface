@@ -1,6 +1,8 @@
--- Projected Visa transaction counts for the CURRENT month, split by risk-defined
--- subscription product type (RPGT). Used to auto-fill "2 · M0 Transaction Weightings"
--- on tab 1. `{company}` is substituted by sql_runner from the app's Company selector.
+-- Projected transaction counts for the CURRENT month for the selected card scheme, split by
+-- risk-defined subscription product type (RPGT). Used to auto-fill "2 · M0 Transaction
+-- Weightings" on tab 1 and Validate Split. `{company}` and `{CARD_SCHEME}` ('visa' or
+-- 'mastercard') are substituted by sql_runner from the app's Company / Card Scheme selectors.
+-- Mastercard collapses maestro (mirrors attempts_success.sql).
 -- Projection: run-rate of completed days this month, scaled to the full month (>=14
 -- completed days -> month-to-date run-rate; <14 -> trailing-14-day run-rate).
 SELECT
@@ -41,8 +43,10 @@ SELECT
                         when riskdata2025.cardTypeN like '%mc_google_pay%' then 'mastercard'
                         when riskdata2025.cardTypeN like '%mc_applepay%' then 'mastercard'
                         when riskdata2025.cardTypeN like '%maestro_usa%' then 'mastercard'
+                        when riskdata2025.cardTypeN like '%mastercard%' then 'mastercard'
+                        when riskdata2025.cardTypeN like '%maestro%' then 'mastercard'
                         when riskdata2025.cardTypeN like '%visa%' then 'visa'
-                        else riskdata2025.accountType end) = "visa"  ))
+                        else riskdata2025.accountType end) = '{CARD_SCHEME}'  ))
                 AND (( riskdata2025.recordType = "transaction"  ))
                 AND (NOT COALESCE(( left((case
                         when riskdata2025.cardTypeN like "%nyce%" then "nyce"
@@ -52,6 +56,8 @@ SELECT
                         when riskdata2025.cardTypeN like '%mc_google_pay%' then 'mastercard'
                         when riskdata2025.cardTypeN like '%mc_applepay%' then 'mastercard'
                         when riskdata2025.cardTypeN like '%maestro_usa%' then 'mastercard'
+                        when riskdata2025.cardTypeN like '%mastercard%' then 'mastercard'
+                        when riskdata2025.cardTypeN like '%maestro%' then 'mastercard'
                         when riskdata2025.cardTypeN like '%visa%' then 'visa'
                         else riskdata2025.accountType end),6) = "paypal"  ), FALSE))
 
@@ -76,8 +82,10 @@ SELECT
                         when riskdata2025.cardTypeN like '%mc_google_pay%' then 'mastercard'
                         when riskdata2025.cardTypeN like '%mc_applepay%' then 'mastercard'
                         when riskdata2025.cardTypeN like '%maestro_usa%' then 'mastercard'
+                        when riskdata2025.cardTypeN like '%mastercard%' then 'mastercard'
+                        when riskdata2025.cardTypeN like '%maestro%' then 'mastercard'
                         when riskdata2025.cardTypeN like '%visa%' then 'visa'
-                        else riskdata2025.accountType end) = "visa"  ))
+                        else riskdata2025.accountType end) = '{CARD_SCHEME}'  ))
                 AND (( riskdata2025.recordType = "transaction"  ))
                 AND (NOT COALESCE(( left((case
                         when riskdata2025.cardTypeN like "%nyce%" then "nyce"
@@ -87,6 +95,8 @@ SELECT
                         when riskdata2025.cardTypeN like '%mc_google_pay%' then 'mastercard'
                         when riskdata2025.cardTypeN like '%mc_applepay%' then 'mastercard'
                         when riskdata2025.cardTypeN like '%maestro_usa%' then 'mastercard'
+                        when riskdata2025.cardTypeN like '%mastercard%' then 'mastercard'
+                        when riskdata2025.cardTypeN like '%maestro%' then 'mastercard'
                         when riskdata2025.cardTypeN like '%visa%' then 'visa'
                         else riskdata2025.accountType end),6) = "paypal"  ), FALSE))
 
@@ -97,7 +107,7 @@ SELECT
                 THEN riskdata2025.gatewayTransactionId
                 ELSE NULL END)
             / 14 ) * EXTRACT(DAY FROM LAST_DAY(DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)))
-    END AS riskdata2025_visa_trx_count
+    END AS riskdata2025_scheme_trx_count
 FROM `sapient-tangent-172609.Risk_Data.risk-data-bc-test`  AS riskdata2025
 WHERE ((( cast(riskdata2025.recordDate as timestamp)  ) >= ((TIMESTAMP_ADD(TIMESTAMP_TRUNC(TIMESTAMP(FORMAT_TIMESTAMP('%F %H:%M:%E*S', CURRENT_TIMESTAMP())), DAY), INTERVAL -31 DAY))) AND ( cast(riskdata2025.recordDate as timestamp)  ) < ((TIMESTAMP_ADD(TIMESTAMP_ADD(TIMESTAMP_TRUNC(TIMESTAMP(FORMAT_TIMESTAMP('%F %H:%M:%E*S', CURRENT_TIMESTAMP())), DAY), INTERVAL -31 DAY), INTERVAL 31 DAY))))) AND (case
             when riskdata2025.Company like "%TotalAV%" then "TotalAV"

@@ -25,8 +25,8 @@ Two pieces, both pure-NumPy/scipy and fully unit-testable off the live pipeline:
      projects the population and returns the exact band violation per candidate, using the
      SAME `_pen` as `_obj_viol`.
 
-Wiring (increment 3, separate) removes the proxy band term from the kernel + `_obj_viol` and
-adds `ExactBandPenalty.penalty(prop_raw)` to `viol` per generation.
+This wiring is now LIVE (under `ctx['exact_bands']`): it removes the proxy band term from the
+kernel + `_obj_viol` and adds `ExactBandPenalty.penalty(prop_raw)` to `viol` per generation.
 """
 from __future__ import annotations
 
@@ -170,3 +170,31 @@ class ExactBandPenalty:
             if spec.floor is not None and float(spec.floor) > 0:
                 penalties += self._pen(np.maximum(1.0 - band_total / max(float(spec.floor), 1e-9), 0.0)) * spec.weight
         return penalties
+
+    # [FN-032]
+    def report(self, prop_raw) -> list:
+        """Per-band projected value ('Now') for a single candidate (first of the population).
+
+        Read-only counterpart to `penalty()` — the SAME exact projection, but returns the raw
+        projected metric per band instead of the fine, so callers (e.g. the run-log breakdown)
+        can show target vs Now per constraint that reconciles with the search's own breach.
+        Returns a list aligned with `self.specs`: dicts of midl / months / metric / ceil / floor /
+        now."""
+        prop_raw = np.ascontiguousarray(prop_raw, dtype=float)
+        if prop_raw.ndim == 1:
+            prop_raw = prop_raw[None, :]
+        vamp, txn = self.project(prop_raw)
+        rows = []
+        for spec in self.specs:
+            metric_values = txn if spec.metric == "txn" else vamp
+            band_total = 0.0
+            for month in spec.months:
+                band_col = self._band_to_index.get((spec.midl, int(month)))
+                if band_col is not None:
+                    band_total += float(metric_values[0, band_col])
+            rows.append({"midl": spec.midl, "months": tuple(int(m) for m in spec.months),
+                         "metric": spec.metric,
+                         "ceil": (None if spec.ceil is None else float(spec.ceil)),
+                         "floor": (None if spec.floor is None else float(spec.floor)),
+                         "now": band_total})
+        return rows

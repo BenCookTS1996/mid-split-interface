@@ -44,23 +44,48 @@ def _covered_rpgts(merged_dir: str) -> set:
     return covered
 
 
+def _prepost_idcol(df: pd.DataFrame) -> str:
+    """The MID identifier column name: 'vampMid' (Visa) or 'mastercardMid' (Mastercard).
+    Falls back to the first column so the table never crashes on an unexpected shape."""
+    for c in ("vampMid", "mastercardMid"):
+        if c in df.columns:
+            return c
+    return str(df.columns[0]) if len(df.columns) else "vampMid"
+
+
 # [FN-390]
 def _to_prepost(df: pd.DataFrame) -> pd.DataFrame:
-    """Rename the pipeline's mid_level.csv columns onto the tab-3 table names."""
+    """Rename the pipeline's mid_level.csv columns onto the tab-3 table names.
+
+    Handles BOTH schemes: Visa mid_level.csv uses vampMid / FC_VAMP_Month_* / FC_VI_Txn_Month_*;
+    Mastercard uses mastercardMid / FC_CB_Month_* (chargebacks) / FC_MC_Txn_Month_* (transactions).
+    The Mastercard columns are mapped onto the SAME shared table (chargebacks under the VAMP
+    columns, MC txns under the VI Txn columns) so the pre/post view renders for either scheme.
+    """
     ren = {}
     for m in range(6):
         ren[f"FC_VAMP_Month_{m}"] = f"VAMP M{m}"
         ren[f"FC_VAMP_Month_{m}_Post"] = f"VAMP Post M{m}"
         ren[f"FC_VI_Txn_Month_{m}"] = f"VI Txn M{m}"
         ren[f"FC_VI_Txn_Month_{m}_Post"] = f"VI Txn Post M{m}"
-    vp = df.rename(columns=ren).copy()
-    cols = ["vampMid"]
+    # Mastercard mid_level.csv uses different VALUE names — map them onto the same columns (only
+    # when the Visa names are absent, so a Visa file is never touched). The ID column keeps its real
+    # name ('mastercardMid') so the table labels it correctly.
+    if "vampMid" not in df.columns and "mastercardMid" in df.columns:
+        for m in range(6):
+            ren[f"FC_CB_Month_{m}"] = f"VAMP M{m}"
+            ren[f"FC_CB_Month_{m}_Post"] = f"VAMP Post M{m}"
+            ren[f"FC_MC_Txn_Month_{m}"] = f"VI Txn M{m}"
+            ren[f"FC_MC_Txn_Month_{m}_Post"] = f"VI Txn Post M{m}"
+    vp = df.rename(columns=ren)   # rename returns a fresh frame; no extra .copy() needed
+    _id = _prepost_idcol(vp)
+    cols = [_id]
     for m in range(6):
         cols += [f"VAMP M{m}", f"VI Txn M{m}", f"VAMP Post M{m}", f"VI Txn Post M{m}"]
     cols = [c for c in cols if c in vp.columns]
     vp = vp[cols].copy()
     for c in cols:
-        if c != "vampMid":
+        if c != _id:
             vp[c] = pd.to_numeric(vp[c], errors="coerce").fillna(0.0)
     if "VAMP M0" in vp.columns:
         vp = vp.sort_values("VAMP M0", ascending=False)
@@ -78,7 +103,13 @@ def _render_prepost_table(vp: pd.DataFrame, fit_content: bool = False, bold: boo
     _tw = "auto" if fit_content else "100%"
     _dw = "max-content" if fit_content else "100%"
     _disp = "display:inline-block; max-width:100%;" if fit_content else ""
-    col_groups, cols = [], ["vampMid"]
+    _id = _prepost_idcol(vp)                       # 'vampMid' (Visa) or 'mastercardMid' (Mastercard)
+    # Conditional-formatting thresholds. Visa keys off VAMP counts (1500/1200); Mastercard keys off
+    # chargeback counts (100/70) with a 1.5% / 0.9% ratio. (count, rate) — both must be exceeded.
+    _is_mc = (_id == "mastercardMid")
+    _red_cnt, _red_rate = (100.0, 0.015) if _is_mc else (1500.0, 0.015)
+    _amb_cnt, _amb_rate = (70.0, 0.009) if _is_mc else (1200.0, 0.012)
+    col_groups, cols = [], [_id]
     for m in range(6):
         grp = [f"VAMP M{m}", f"VI Txn M{m}", f"VAMP Post M{m}", f"VI Txn Post M{m}"]
         grp = [c for c in grp if c in vp.columns]
@@ -86,9 +117,9 @@ def _render_prepost_table(vp: pd.DataFrame, fit_content: bool = False, bold: boo
             cols.extend(grp)
             col_groups.append(grp)
 
-    total = {"vampMid": "TOTAL"}
+    total = {_id: "TOTAL"}
     for c in cols:
-        if c != "vampMid":
+        if c != _id:
             total[c] = vp[c].sum()
     vp_view = pd.concat([vp[cols], pd.DataFrame([total])], ignore_index=True)
 
@@ -97,7 +128,7 @@ def _render_prepost_table(vp: pd.DataFrame, fit_content: bool = False, bold: boo
     html.append(f'<table style="width:{_tw}; border-collapse:collapse; font-family:inherit; '
                 'font-size:0.68rem; line-height:1.1;"><tr>')
     html.append('<th style="background-color:var(--tav-red); color:#FFF; padding:3px 6px; '
-                'text-align:left; position:sticky; left:0; width:1%; white-space:nowrap;">vampMid</th>')
+                f'text-align:left; position:sticky; left:0; width:1%; white-space:nowrap;">{_id}</th>')
     for gi, grp in enumerate(col_groups):
         for c in grp:
             html.append(f'<th style="background-color:var(--tav-red); color:#FFF; padding:3px 6px; '
@@ -108,26 +139,27 @@ def _render_prepost_table(vp: pd.DataFrame, fit_content: bool = False, bold: boo
     html.append('</tr>')
 
     for _, r in vp_view.iterrows():
-        is_total = str(r["vampMid"]) == "TOTAL"
+        is_total = str(r[_id]) == "TOTAL"
         tb = "border-top:2px solid var(--tav-ink);" if is_total else "border-bottom:1px solid var(--tav-line);"
         wt = ("800" if is_total else "600") if bold else ("600" if is_total else "400")
-        # Conditional formatting (matches tab 3): a VAMP cell (and its paired VI Txn) is
-        # RED when its VAMP rate > 1.5% and VAMP > 1500, AMBER when rate > 1.2% and VAMP > 1200.
+        # Conditional formatting: a VAMP/CB cell (and its paired txn) is RED / AMBER when BOTH its
+        # count and its rate exceed the scheme thresholds set above (Visa 1500·1.5% / 1200·1.2%;
+        # Mastercard 100·1.5% / 70·0.9%).
         _bgmap = {}
         if not is_total:
             for c in cols:
-                if c != "vampMid" and c.startswith("VAMP"):
+                if c != _id and c.startswith("VAMP"):
                     _txn = c.replace("VAMP", "VI Txn")
                     _vv = float(r[c]); _tt = float(r[_txn]) if _txn in r.index else 0.0
                     _rt = (_vv / _tt) if _tt > 0 else 0.0
-                    if _rt > 0.015 and _vv > 1500:
+                    if _rt > _red_rate and _vv > _red_cnt:
                         _bgmap[c] = _bgmap[_txn] = "background-color:rgba(230,55,72,0.30);"
-                    elif _rt > 0.012 and _vv > 1200:
+                    elif _rt > _amb_rate and _vv > _amb_cnt:
                         _bgmap[c] = _bgmap[_txn] = "background-color:rgba(245,158,11,0.38);"
         html.append('<tr>')
         html.append(f'<td style="padding:2px 8px; text-align:left; color:#000000; font-weight:{wt}; '
                     f'{tb} position:sticky; left:0; background-color:var(--tav-card); width:1%; '
-                    f'white-space:nowrap;">{r["vampMid"]}</td>')
+                    f'white-space:nowrap;">{r[_id]}</td>')
         for gi, grp in enumerate(col_groups):
             for c in grp:
                 ital = "font-style:italic;" if "Post" in c else ""
@@ -145,17 +177,13 @@ def _render_prepost_table(vp: pd.DataFrame, fit_content: bool = False, bold: boo
 def _read_export_manifest(rules_dir: str) -> dict:
     """Read _export_manifest.json (the drift-guard stamp) from an exported rules folder.
     Returns {} if absent/unreadable. Looks in the folder and one level up (the zip root)."""
-    import json
+    from app_common import read_json
     if not rules_dir or not os.path.isdir(rules_dir):
         return {}
     for cand in (rules_dir, os.path.dirname(os.path.normpath(rules_dir))):
         p = os.path.join(cand, "_export_manifest.json")
         if os.path.exists(p):
-            try:
-                with open(p) as f:
-                    return json.load(f)
-            except Exception:  # noqa: BLE001
-                return {}
+            return read_json(p, default={})
     return {}
 
 
@@ -166,11 +194,6 @@ def _drift_check(ss, rules_dir: str) -> None:
     man = _read_export_manifest(rules_dir)
     if not man:
         return
-    st.markdown(
-        f"<span style='color:#808080; font-size:0.8rem;'>Rules built for: dial <b>{man.get('dial')}</b> · "
-        f"pools≤<b>{man.get('max_pools')}</b> · engine <b>{man.get('engine')}</b> · "
-        f"go-live <b>{man.get('go_live')}</b> · max-share <b>{man.get('max_share')}</b> · "
-        f"built {man.get('built_at')}</span>", unsafe_allow_html=True)
     _cur = ss.get("_split_export_sig")
     if _cur is not None and list(_cur) != list(man.get("exp_sig", [])):
         st.warning("⚠ **Split drift:** these rule files were exported for a different split than your "
@@ -200,8 +223,7 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
     # kept in sync every rerun by the Build Baseline sub-tab (from its widgets), so it's available
     # here even on a fresh reopen without running/loading a baseline first. Fall back to {} (all
     # fields below have sensible defaults) if it's somehow absent.
-    from app_common import SQL_DIR, CACHE_DIR, RPGT_LIST  # shared constants (fn-level import avoids any load-order cycle)
-    from routing_optimiser import run_sql_file
+    from app_common import RPGT_LIST, fetch_m0_weightings, green_button_css  # shared constants + helpers
     fs = ss.get("forecast_settings") or {}
 
     _company = str(fs.get("company", "TotalAV"))
@@ -217,7 +239,6 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
     _today = datetime.date.today()
     _m0 = _d("month_0", _today.replace(day=1))
     _rpgts = list((fs.get("m0_transaction_weightings") or {}).keys())
-    _prev_force = {str(r).strip().lower() for r in (fs.get("force_actuals_for") or [])}
 
     # Everything sits in a FORM: changing any input does NOT rerun/reload the app — the
     # pipeline (and the whole tab) only re-evaluates when you click the submit button.
@@ -232,144 +253,132 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
     # a plain st.button. These inputs pre-fill ONCE from the Build Baseline forecast_settings, then
     # are edited independently here (validate a split against its own assumed M0 without touching
     # the baseline). The form's submit handler reads them back from session_state.
-    _scheme = str(fs.get("card_scheme", "visa") or "visa")
-
+    # NOTE: the Card Scheme selector lives inside the '1. Rules Import' card below (on the same row as
+    # the Exported rules folder) so it can drive that folder's scheme-specific default. It is read
+    # BEFORE the M0 fetch button that needs `_scheme`, and it overrides a LOCAL copy of fs so the whole
+    # validate run uses the selected scheme without touching the saved baseline.
     def _v_fetch_m0(_co, _sch):
-        try:
-            _m0sql = os.path.join(SQL_DIR, "m0_weightings.sql")
-            _m0path, _m0src = run_sql_file(_m0sql, CACHE_DIR, use_cache=True,
-                                           project=GCP_PROJECT, params={"company": _co})
-            _m0df = (pd.read_parquet(_m0path) if str(_m0path).endswith(".parquet")
-                     else pd.read_csv(_m0path))
-            _rc = "riskdata2025_risk_defined_subscription_product_type"
-            _vc = "riskdata2025_visa_trx_count"
-            if _rc not in _m0df.columns or _vc not in _m0df.columns:
-                _c0 = list(_m0df.columns)          # positional fallback
-                _m0df = _m0df.rename(columns={_c0[0]: _rc, _c0[1]: _vc})
-            _fetched = {}
-            for _, _row in _m0df.iterrows():
-                _v = _row[_vc]
-                _fetched[str(_row[_rc]).strip()] = int(round(float(_v))) if pd.notna(_v) else 0
-            # TotalAV + visa only: same agreed renewal reductions as Build Baseline so the fetched
-            # numbers match across the two tabs.
-            if str(_co) == "TotalAV" and str(_sch).strip().lower() == "visa":
-                for _rp, _sub in (("Monthly Renewal", 8000),
-                                  ("Annual Sub Renewal", 1500),
-                                  ("Addon Renewal", 500)):
-                    if _rp in _fetched:
-                        _fetched[_rp] = _fetched[_rp] - _sub
-            for _rp in RPGT_LIST:
-                ss[f"validate_assumed_{_rp}"] = max(0, int(_fetched.get(_rp, 0)))
-            ss["validate_m0_total_key"] = int(sum(max(0, int(_fetched.get(_rp, 0))) for _rp in RPGT_LIST))
-            ss.pop("_v_m0_fetch_err", None)
-            ss["_v_m0_fetch_msg"] = (f"Filled from BigQuery ({_m0src}) for {_co} — "
-                                     f"projected {ss['validate_m0_total_key']:,} Visa txns across "
-                                     f"{sum(1 for _rp in RPGT_LIST if _fetched.get(_rp))} RPGT(s).")
-        except Exception as _me:  # noqa: BLE001
-            ss.pop("_v_m0_fetch_msg", None)
-            ss["_v_m0_fetch_err"] = f"{type(_me).__name__}: {_me}"
+        fetch_m0_weightings(_co, _sch, assumed_prefix="validate_assumed_",
+                            total_key="validate_m0_total_key", msg_key="_v_m0_fetch_msg",
+                            err_key="_v_m0_fetch_err")
 
-    with st.container(border=True):
-        st.markdown("<h5 style='margin-top:0; margin-bottom:0.25rem;'>M0 Transaction Weightings</h5>",
-                    unsafe_allow_html=True)
-        # Green button, white text (scoped to this button's key).
-        st.markdown(
-            "<style>.st-key-validate_fetch_m0_btn button{background-color:#22C36B !important;"
-            "border-color:#22C36B !important;} .st-key-validate_fetch_m0_btn button,"
-            ".st-key-validate_fetch_m0_btn button *{color:#ffffff !important;} "
-            ".st-key-validate_fetch_m0_btn button:hover{background-color:#1EA95D !important;"
-            "border-color:#1EA95D !important;}</style>",
-            unsafe_allow_html=True)
-        _vfb1, _vfb2 = st.columns([1, 1.5], vertical_alignment="center")
-        _vfb1.button("Fetch projected M0 from BigQuery", key="validate_fetch_m0_btn",
-                     on_click=_v_fetch_m0, args=(_company, _scheme),
-                     help=f"Query last month's projected Visa transactions per RPGT for "
-                          f"{_company} and fill the weightings below.")
-        if ss.get("_v_m0_fetch_err"):
-            _vfb2.markdown("<span style='color:#e63748; font-size:0.8rem;'>✗ M0 fetch failed: "
-                           f"{ss.get('_v_m0_fetch_err')}</span>", unsafe_allow_html=True)
-        else:
-            _vmsg = ss.get("_v_m0_fetch_msg", "")
-            _vfb2.markdown("<span style='color:var(--tav-muted); font-size:0.8rem;'>"
-                           f"{('✓ ' + _vmsg) if _vmsg else ''}</span>", unsafe_allow_html=True)
-        # Pre-fill ONCE from Build Baseline's current M0 values, then edit independently here.
-        _w0 = fs.get("m0_transaction_weightings") or {}
-        ss.setdefault("validate_m0_total_key", int(fs.get("m0_total_transactions", 0) or 0))
-        for _rp in RPGT_LIST:
-            ss.setdefault(f"validate_assumed_{_rp}", int(_w0.get(_rp, 0) or 0))
-        _v_alloc = sum(int(ss.get(f"validate_assumed_{_rp}", 0) or 0) for _rp in RPGT_LIST)
-        _v_total = int(ss.get("validate_m0_total_key", 0) or 0)
-        _vmt1, _vmt2 = st.columns([3, 2], vertical_alignment="center")
-        _vmt1.number_input(f"M0 {_company} - {_scheme} - Total", 0, 50_000_000,
-                           step=1000, key="validate_m0_total_key",
-                           help="Total starting transactions for month 0.")
-        if _v_total == _v_alloc:
-            _vmt2.markdown("<div style='color:#1D9E75; font-size:0.8rem; font-weight:700;'>"
-                           "✓ matches RPGT sum</div>", unsafe_allow_html=True)
-        else:
-            _vd = _v_alloc - _v_total
-            _vmt2.markdown("<div style='color:#e63748; font-size:0.8rem; font-weight:700;'>"
-                           f"⚠ RPGT sum {_v_alloc:,} ≠ Total "
-                           f"({'+' if _vd > 0 else ''}{_vd:,})</div>", unsafe_allow_html=True)
-        _vw_cols = st.columns(2)
-        for _i, _rpgt in enumerate(RPGT_LIST):
-            _vw_cols[_i % 2].number_input(
-                _rpgt, 0, 50_000_000, step=500, key=f"validate_assumed_{_rpgt}",
-                help="Assumed month-0 volume for this type.")
-
-    with st.form("validate_form", border=False):
-        # Left: '1. Rules Import' then '2. Live actuals' below it.
-        # Right: '2. Inputs & Assumptions' then 'Target volumes' below it.
-        _L, _R = st.columns(2)
-        with _L:
+    # ---- 2×2 grid, OUTSIDE the form: the M0 fetch button can't live in st.form, so Rules /
+    #      Live / Attempts sit beside it and read from session_state at submit (like the M0 card).
+    #      LEFT col: 1. Rules Import → 2. M0 Transaction Weightings · RIGHT col: 3. Live actuals → 4. Attempts.
+    _gL, _gR = st.columns(2)
+    with _gL:
+        with st.container(border=True):   # bordered card so it aligns with the M0 card below
             st.markdown("**1. Rules Import**")
-            _ri1, _ri2 = st.columns(2)   # narrow the folder box to ≈ the Start Date width
+            # Folder input + Card Scheme on ONE row. Scheme is read first so the folder can default to
+            # its scheme-specific subfolder (data/exported_rules/<scheme>). Selecting a scheme drives the
+            # Visa-vs-Mastercard forecast pipeline + attempts/success SQL; we override a LOCAL copy of fs
+            # so build_pipeline_config and every fs.get('card_scheme') use it (baseline untouched).
+            # Fill the columns LEFT→RIGHT (folder then scheme). The scheme VALUE is available from
+            # session_state before either widget renders, so we don't need to render the selectbox first
+            # to know it. Filling out of order (scheme in _ri2 before folder in _ri1) plus a state-
+            # mutating callback in this nested-column block is what tripped Streamlit's "Bad setIn index"
+            # delta on the next callback-driven rerun (e.g. the M0 fetch).
+            _ri1, _ri2 = st.columns([3, 1])
+            _scheme_default = str(fs.get("card_scheme", "visa") or "visa").strip().lower()
+            ss.setdefault("validate_card_scheme", _scheme_default)
+            _scheme = str(ss.get("validate_card_scheme") or _scheme_default).strip().lower()
+            fs = {**fs, "card_scheme": _scheme}
+            ss.setdefault("validate_rules_dir", os.path.join("data", "exported_rules", _scheme))
+
+            # Rules folder follows the scheme via an on_change CALLBACK (a programmatic write in the
+            # render body would make st.tabs jump back to 'Build Baseline').
+            def _v_scheme_changed():
+                _sc = str(ss.get("validate_card_scheme", "visa") or "visa").strip().lower()
+                ss["validate_rules_dir"] = os.path.join("data", "exported_rules", _sc)
+
             rules_dir = _ri1.text_input(
-                "Exported rules folder", value=ss.get("validate_rules_dir", ""),
-                key="validate_rules_dir",
+                "Exported rules folder", key="validate_rules_dir",
                 help="Folder containing ALL the rule files for this run (your exported split "
-                     "templates). Any RPGT with NO rule file here is automatically routed on "
-                     "ACTUALS (force-actuals).")
+                     "templates). Defaults to data/exported_rules/<scheme>. Any RPGT with NO rule file "
+                     "here is automatically routed on ACTUALS (force-actuals).")
+            _ri2.selectbox(
+                "Card Scheme", ["visa", "mastercard"], key="validate_card_scheme",
+                on_change=_v_scheme_changed,
+                help="Which card scheme's pipeline to validate. Selects the Visa vs Mastercard forecast "
+                     "pipeline and the attempts/success SQL, and points the rules folder at that "
+                     "scheme's subfolder. Defaults to the Build Baseline scheme.")
             _drift_check(ss, ss.get("validate_rules_dir", ""))   # flag if these rules ≠ tab-3's split
 
-            st.markdown("**2. Live actuals**")
-            v_use_live = st.checkbox(
-                "Use Live Actuals",
-                value=bool(ss.get("validate_use_live", fs.get("use_live_actuals", False))),
-                key="validate_use_live", help="Blend in real recent results. Uses the dates below.")
-            _d1, _d2 = st.columns(2)
-            v_start = _d1.date_input("Start Date", value=ss.get("validate_actuals_start", _d("start_date", _today)),
-                                     key="validate_actuals_start")
-            v_end = _d2.date_input("End Date", value=ss.get("validate_actuals_end", _d("end_date", _today)),
-                                   key="validate_actuals_end")
-            st.markdown("**Force Actuals for**")
-            # Two side-by-side columns of tickboxes (alternating left / right).
-            _fa1, _fa2 = st.columns(2)
-            v_force_manual = []
-            for _i, r in enumerate(_rpgts):
-                _fac = _fa1 if (_i % 2 == 0) else _fa2
-                if _fac.checkbox(r, value=(str(r).strip().lower() in _prev_force),
-                                 key=f"validate_fa_{r}"):
-                    v_force_manual.append(r)
+        with st.container(border=True):
+            st.markdown("<h5 style='margin-top:0; margin-bottom:0.25rem;'>2. M0 Transaction Weightings</h5>",
+                        unsafe_allow_html=True)
+            # Green button, white text (scoped to this button's key).
+            green_button_css("validate_fetch_m0_btn")
+            _vfb1, _vfb2 = st.columns([1, 1.5], vertical_alignment="center")
+            _vfb1.button("Fetch projected M0 from BigQuery", key="validate_fetch_m0_btn",
+                         on_click=_v_fetch_m0, args=(_company, _scheme),
+                         help=f"Query last month's projected {_scheme.title()} transactions per RPGT "
+                              f"for {_company} and fill the weightings below.")
+            if ss.get("_v_m0_fetch_err"):
+                _vfb2.markdown("<span style='color:#e63748; font-size:0.8rem;'>✗ M0 fetch failed: "
+                               f"{ss.get('_v_m0_fetch_err')}</span>", unsafe_allow_html=True)
+            else:
+                _vfb2.markdown("<span></span>", unsafe_allow_html=True)  # fetch success message suppressed
+            # Pre-fill ONCE from Build Baseline's current M0 values, then edit independently here.
+            _w0 = fs.get("m0_transaction_weightings") or {}
+            ss.setdefault("validate_m0_total_key", int(fs.get("m0_total_transactions", 0) or 0))
+            for _rp in RPGT_LIST:
+                ss.setdefault(f"validate_assumed_{_rp}", int(_w0.get(_rp, 0) or 0))
+            _v_alloc = sum(int(ss.get(f"validate_assumed_{_rp}", 0) or 0) for _rp in RPGT_LIST)
+            _v_total = int(ss.get("validate_m0_total_key", 0) or 0)
+            _vmt1, _vmt2 = st.columns([3, 2], vertical_alignment="center")
+            _vmt1.number_input(f"M0 {_company} - {_scheme} - Total", 0, 50_000_000,
+                               step=1000, key="validate_m0_total_key",
+                               help="Total starting transactions for month 0.")
+            if _v_total == _v_alloc:
+                _vmt2.markdown("<div style='color:#1D9E75; font-size:0.8rem; font-weight:700;'>"
+                               "✓ matches RPGT sum</div>", unsafe_allow_html=True)
+            else:
+                _vd = _v_alloc - _v_total
+                _vmt2.markdown("<div style='color:#e63748; font-size:0.8rem; font-weight:700;'>"
+                               f"⚠ RPGT sum {_v_alloc:,} ≠ Total "
+                               f"({'+' if _vd > 0 else ''}{_vd:,})</div>", unsafe_allow_html=True)
+            _vw_cols = st.columns(2)
+            for _i, _rpgt in enumerate(RPGT_LIST):
+                _vw_cols[_i % 2].number_input(
+                    _rpgt, 0, 50_000_000, step=500, key=f"validate_assumed_{_rpgt}",
+                    help="Assumed month-0 volume for this type.")
+    with _gR:
+        st.markdown("**3. Live actuals**")
+        v_use_live = st.checkbox(
+            "Use Live Actuals",
+            value=bool(ss.get("validate_use_live", fs.get("use_live_actuals", False))),
+            key="validate_use_live", help="Blend in real recent results. Uses the dates below.")
+        _d1, _d2 = st.columns(2)
+        v_start = _d1.date_input("Start Date", value=ss.get("validate_actuals_start", _d("start_date", _today)),
+                                 key="validate_actuals_start")
+        v_end = _d2.date_input("End Date", value=ss.get("validate_actuals_end", _d("end_date", _today)),
+                               key="validate_actuals_end")
 
-            # Attempts & success data window (same inputs as the Routing engine tab). Used to
-            # pull the success-rate data that populates tab 3's impact views for this split.
-            st.markdown("**3. Attempts & success data**")
-            _yday = _today - datetime.timedelta(days=1)
-            _as1, _as2 = st.columns(2)
-            v_att_start = _as1.date_input(
-                "Start date",
-                value=ss.get("validate_attempts_start", _yday - datetime.timedelta(days=14)),
-                key="validate_attempts_start",
-                help="Success-rate data window (attempts & successes) used to populate tab 3's "
-                     "impact views for the validated split.")
-            v_att_end = _as2.date_input(
-                "End date", value=ss.get("validate_attempts_end", _yday),
-                key="validate_attempts_end")
-        with _R:
-            st.markdown("**2.  Inputs & Assumptions**")
-            # Future Anchor beneath Split Go Live (left); Thermometer beneath t0 lookback (right).
-            _gc, _tc = st.columns(2)
+        # Attempts & success data window (same inputs as the Routing engine tab). Used to
+        # pull the success-rate data that populates tab 3's impact views for this split.
+        st.markdown("**4. Attempts & success data**")
+        _yday = _today - datetime.timedelta(days=1)
+        # Default Start date = the 1st of the month 3 months ago (e.g. Aug -> 1 May).
+        _mi3 = (_today.year * 12 + _today.month - 1) - 3
+        _att_start_default = datetime.date(_mi3 // 12, _mi3 % 12 + 1, 1)
+        _as1, _as2 = st.columns(2)
+        v_att_start = _as1.date_input(
+            "Start date",
+            value=ss.get("validate_attempts_start", _att_start_default),
+            key="validate_attempts_start",
+            help="Success-rate data window (attempts & successes) used to populate tab 3's "
+                 "impact views for the validated split.")
+        v_att_end = _as2.date_input(
+            "End date", value=ss.get("validate_attempts_end", _yday),
+            key="validate_attempts_end")
+
+    # 5. Inputs & Assumptions (LEFT column) with the run log to its RIGHT (populated on submit).
+    _ia_col, _log_col = st.columns(2)
+    with _ia_col:
+        with st.form("validate_form", border=True):
+            st.markdown("**5. Inputs & Assumptions**")
+            _gc, _tc = st.columns(2)   # go-live / anchor (left) · lookback / thermometer (right)
             with _gc:
                 v_go_live = st.date_input(
                     "Split Go Live date", value=ss.get("validate_go_live", _d("split_go_live_date", _m0)),
@@ -386,14 +395,30 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
                     "Thermometer sample (months)", min_value=1, max_value=12,
                     value=int(ss.get("validate_thermo", int(fs.get("thermometer_sample_months", 2) or 2))),
                     key="validate_thermo", help="Actuarial thermometer_sample_months.")
-            # M0 target volumes / weightings now live in the 'M0 Transaction Weightings' card ABOVE
-            # the form (so the fetch button can use an on_click callback, which st.form forbids).
-            # The submit handler reads company_target_volume + per-RPGT from session_state.
-            st.markdown("**Target volumes**")
-            st.caption("Set in the **M0 Transaction Weightings** card above "
-                       "(pre-filled from Build Baseline, editable here, with a BigQuery fetch).")
-
-        run = st.form_submit_button("Run VAMP pipeline with these rules", type="primary")
+            # Inside the form so changing it does NOT rerun the tab — it only takes effect when
+            # the green submit button is pressed. Defaults to ALL RPGTs.
+            _force_opts = [str(r) for r in _rpgts]
+            v_force_manual = st.multiselect(
+                "Force Actuals for", options=_force_opts, default=list(_force_opts),
+                key="validate_force_actuals",
+                help="These transaction types use live actuals instead of the forecast for "
+                     "month 0. Leave empty to force none.")
+            # Optionally reuse a prior run's forecast outputs instead of running the pipeline
+            # live via BigQuery. Both controls live in the form so ticking the box does not
+            # reload the tab — it only takes effect on the green submit button.
+            v_use_prev = st.checkbox(
+                "Load a previously-run forecast (skip the live pipeline)",
+                value=bool(ss.get("validate_use_prev", False)), key="validate_use_prev",
+                help="Reuse an existing data/outputs/<MONTH>/<COMPANY>/ folder from a prior "
+                     "run instead of re-running the VAMP pipeline. The rules folder above is "
+                     "still parsed for the impact split.")
+            v_prev_dir = st.text_input(
+                "Forecast outputs folder", value=ss.get("validate_prev_dir", ""),
+                key="validate_prev_dir",
+                help="The data/outputs/<MONTH>/<COMPANY>/ folder containing mid_level.csv "
+                     "(and the other VAMP export CSVs) from a previous run. Only used when the "
+                     "box above is ticked.")
+            run = st.form_submit_button("Run validation with these rules", type="primary")
 
     if run:
         if v_use_live and v_start > v_end:
@@ -407,12 +432,54 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
             st.error(f"No rule files (.xlsx/.csv) found in: {rules_dir}")
             return
 
+        if v_use_prev:
+            # ---- Load a previously-run forecast: reuse a prior run's outputs, no BigQuery. ----
+            if not v_prev_dir or not os.path.isdir(v_prev_dir):
+                st.error(f"Forecast outputs folder not found: {v_prev_dir or '(empty)'}")
+                return
+            _mid = os.path.join(v_prev_dir, "mid_level.csv")
+            if not os.path.exists(_mid):
+                st.error(f"mid_level.csv not found in: {v_prev_dir} — is this a completed "
+                         "data/outputs/<MONTH>/<COMPANY>/ run folder?")
+                return
+            try:
+                _df = pd.read_csv(_mid)
+            except Exception as _e:  # noqa: BLE001
+                st.error(f"Could not read {_mid}: {type(_e).__name__}: {_e}")
+                return
+            ss["validate_result"] = _df
+            ss["validate_out_dir"] = v_prev_dir
+            # Point tab 3 (impact) at this loaded forecast and request the populate-from-split
+            # (parse rules -> split, pull the attempts/success window, build eval frames).
+            ss["pipeline_out_dir"] = v_prev_dir
+            ss["validate_populate_req"] = {
+                "rules_dir": rules_dir,
+                "attempts_start": str(v_att_start),
+                "attempts_end": str(v_att_end),
+                "company": _company,
+                "scheme": str(fs.get("card_scheme", "visa") or "visa"),
+            }
+            _log_col.success(f"Loaded previously-run forecast — {len(_df)} vampMids from "
+                             f"`{v_prev_dir}`. Impact populates on tab 3.")
+            _df = ss.get("validate_result")
+            if _df is not None and not getattr(_df, "empty", True):
+                st.markdown(f"**Pipeline pre vs post** · output: `{v_prev_dir}`")
+                _render_prepost_table(_to_prepost(_df), bold=False)
+            return
+
         merged_dir = os.path.join(PROJECT_ROOT, "data", "rules", "_validate", _month, _company)
         nr = _stage_rules(rules_dir, merged_dir)
 
+        _scheme = str(fs.get("card_scheme", "visa") or "visa").strip().lower()
+        _is_mc = (_scheme == "mastercard")
         try:
-            from routing_optimiser.forecast_pipeline import (build_pipeline_config,
-                                                             run_vamp_pipeline)
+            if _is_mc:
+                from routing_optimiser.mastercard_forecast_pipeline import (
+                    build_mc_pipeline_config as build_pipeline_config,
+                    run_mastercard_pipeline as run_vamp_pipeline)
+            else:
+                from routing_optimiser.forecast_pipeline import (build_pipeline_config,
+                                                                 run_vamp_pipeline)
         except Exception as _ie:  # noqa: BLE001
             st.error(f"Could not import the pipeline runner: {type(_ie).__name__}: {_ie}")
             return
@@ -421,11 +488,14 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
         cfg.setdefault("paths", {})
         cfg["paths"]["chunked_files_dir"] = merged_dir            # absolute -> used as-is
         # Separate output dir so this never clobbers tab 1/tab 3's live outputs.
-        cfg["paths"]["output_dir"] = os.path.join("data", "outputs", "_validate",
-                                                  "{month_var}", "{company}") + os.sep
+        # Mastercard runs land in their own subfolder so the two schemes never collide.
+        _validate_out = os.path.join("data", "outputs", "_validate", "{month_var}", "{company}")
+        if _is_mc:
+            _validate_out = os.path.join(_validate_out, "mastercard")
+        cfg["paths"]["output_dir"] = _validate_out + os.sep
         cfg["run_settings"]["use_chunked_csv_files"] = True
 
-        # Live actuals from the '4 · Live actuals' inputs above.
+        # Live actuals from the '2. Live actuals' inputs above.
         cfg.setdefault("actuarial_settings", {})
         cfg["run_settings"]["use_live_actuals"] = bool(v_use_live)
         if v_use_live:
@@ -457,8 +527,9 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
         cfg["actuarial_settings"]["t0_lookback_months"] = int(v_lookback)
         cfg["actuarial_settings"]["thermometer_sample_months"] = int(v_thermo)
 
-        status = st.status(f"Running the VAMP pipeline with {nr} rule file(s)… "
-                           f"(BigQuery; uses cache where available)", expanded=True)
+        # Run log renders into the RIGHT column beside '5. Inputs & Assumptions' (created above).
+        status = _log_col.status(f"Running the {'MASTERCARD' if _is_mc else 'VAMP'} pipeline with "
+                                 f"{nr} rule file(s)… (BigQuery; uses cache where available)", expanded=True)
         with status:
             _area = st.empty()
             _lines: list[str] = []
@@ -522,6 +593,6 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
     _df = ss.get("validate_result")
     if _df is not None and not getattr(_df, "empty", True):
         st.markdown(f"**Pipeline pre vs post** · output: `{ss.get('validate_out_dir', '')}`")
-        _render_prepost_table(_to_prepost(_df))
+        _render_prepost_table(_to_prepost(_df), bold=False)
     elif not run:
         st.info("Point at your exported rules folder and run the pipeline to see its pre/post table.")

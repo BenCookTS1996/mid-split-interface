@@ -14,6 +14,9 @@ from .sql_runner import list_sql_files, run_sql_file
 from .forecast_pipeline import (build_pipeline_config, load_pre_forecast,
                                 normalise_pre_from_effective_rate,
                                 run_vamp_pipeline)
+from .mastercard_forecast_pipeline import (build_mc_pipeline_config,
+                                           load_mc_pre_forecast,
+                                           run_mastercard_pipeline)
 
 __all__ = [
     "HardConstraints", "SoftConstraints", "OptimiserSettings",
@@ -29,4 +32,5 @@ __all__ = [
     "list_sql_files", "run_sql_file",
     "build_pipeline_config", "run_vamp_pipeline", "load_pre_forecast",
     "normalise_pre_from_effective_rate",
+    "build_mc_pipeline_config", "run_mastercard_pipeline", "load_mc_pre_forecast",
 ]

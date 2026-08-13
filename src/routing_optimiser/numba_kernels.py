@@ -33,7 +33,7 @@ import time
 
 import numpy as np
 
-__build__ = "2026-07-31-ga-numba-persistent-cache+precompile+fixed-quadratic-breach+eligibility-in-kernel+step-aware-verify+vol-weighted-viol+penalty-shape+active-priority+breach-tol"
+__build__ = "2026-08-11-ga-numba-persistent-cache+precompile+fixed-quadratic-breach+eligibility-in-kernel+step-aware-verify+vol-weighted-viol+penalty-shape+active-priority+breach-tol+stable-softmax"
 
 # PERSISTENT compile cache — set BEFORE numba is imported (this module is the ONLY importer
 # of numba in the project, so setting it here wins). Numba's default cache lives inside a
@@ -122,26 +122,41 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
     Xout = np.empty((P, N), dtype=np.float64)   # PRE-eligibility decoded shares (for exact bands)
     w = np.empty(N, dtype=np.float64)
     X = np.empty(N, dtype=np.float64)
+    aa = np.empty(N, dtype=np.float64)          # per-column tilt score `a` (for stabilised softmax)
     midv = np.empty(M, dtype=np.float64)
     midvr = np.empty(M, dtype=np.float64)
 
     for p in range(P):
-        # ---- decode: softmax tilt weights on eligible columns -----------------------
+        # ---- decode: per-column tilt score `a`, then STABILISED softmax -------------
+        # First store `a` per eligible column; the per-cell exp below subtracts that cell's MAX
+        # `a` (shift-invariant → identical result) so exp can never overflow to +inf — which used
+        # to give inf/inf = NaN for a large tilt·z. Mirrors genetic_global._decode_midtilt3.
         for g in range(N):
             if elig[g] > 0.5:
                 m = mid_id[g]
                 a = -G[p, m] * zr[g] + G[p, M + m] * zq[g] + G[p, 2 * M + m]
                 if n_fine > 0 and fine_idx[g] >= 0:
                     a -= G[p, 3 * M + fine_idx[g]] * zr_cell[g]
-                w[g] = ref[g] * np.exp(a) * elig[g]
+                aa[g] = a
             else:
-                w[g] = 0.0
-        # ---- per-cell renormalise ---------------------------------------------------
+                aa[g] = 0.0
+        # ---- per-cell stabilised weights + renormalise ------------------------------
         for c in range(C):
             s0 = cs[c]
             s1 = s0 + cc[c]
+            # per-cell max of `a` over ELIGIBLE columns (0.0 if the cell has none eligible)
+            have_max = False
+            amax = 0.0
+            for g in range(s0, s1):
+                if elig[g] > 0.5 and ((not have_max) or aa[g] > amax):
+                    amax = aa[g]
+                    have_max = True
             seg = 0.0
             for g in range(s0, s1):
+                if elig[g] > 0.5:
+                    w[g] = ref[g] * np.exp(aa[g] - amax) * elig[g]
+                else:
+                    w[g] = 0.0
                 seg += w[g]
             if seg <= 1e-12:
                 seg = 1.0

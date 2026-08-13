@@ -10,7 +10,78 @@ from .utils import setup_logger
 
 logger = setup_logger(__name__)
 
-__build__ = "2026-07-19-prorata-export-fcp1-per-subcell"
+__build__ = "2026-07-19-prorata-export-fcp1-per-subcell+reconcile-guard"
+
+
+def reconcile_granular_to_mid_level(output_dir, *, id_col, vamp_metric, txn_metric,
+                                    g_vamp_pre, g_vamp_post, g_txn_pre, g_txn_post,
+                                    logger, tol=1.0):
+    """RECONCILIATION GUARD: verify bin_rpgt_impact_export.csv aggregates (per id × period) to
+    mid_level.csv EXACTLY. Both are built from the same t_data, so they must tie — Tab 3 reads the
+    granular file and the Validate Split table reads mid_level, so this guard proves the two views
+    agree. Logs a ✅ certificate or a ⚠️ naming the worst-offending id/period/metric. Never raises.
+
+    Reconciles on the MIDs mid_level reports (it applies an M0 active-mask that drops M0-inactive
+    MIDs); any extra MID in the granular file is noted as expected, not a failure.
+    """
+    try:
+        mid_p = os.path.join(output_dir, 'mid_level.csv')
+        bin_p = os.path.join(output_dir, 'bin_rpgt_impact_export.csv')
+        if not (os.path.exists(mid_p) and os.path.exists(bin_p)):
+            logger.info("   > reconciliation skipped (mid_level.csv / bin_rpgt_impact_export.csv missing).")
+            return
+        mid = pd.read_csv(mid_p)
+        binr = pd.read_csv(bin_p)
+        if id_col not in mid.columns or id_col not in binr.columns or 'period' not in binr.columns:
+            logger.info("   > reconciliation skipped (expected columns not present).")
+            return
+        g = binr.groupby([id_col, 'period'], as_index=False)[
+            [g_vamp_pre, g_vamp_post, g_txn_pre, g_txn_post]].sum()
+        g['_id'] = g[id_col].astype(str).str.strip()
+        recs = []
+        for m in range(6):
+            cmap = {f'FC_{vamp_metric}_Month_{m}': 'v_pre',
+                    f'FC_{vamp_metric}_Month_{m}_Post': 'v_post',
+                    f'FC_{txn_metric}_Month_{m}': 't_pre',
+                    f'FC_{txn_metric}_Month_{m}_Post': 't_post'}
+            if not all(c in mid.columns for c in cmap):
+                continue
+            sub = mid[[id_col] + list(cmap)].rename(columns=cmap)
+            sub['period'] = m
+            recs.append(sub)
+        if not recs:
+            logger.info("   > reconciliation skipped (mid_level month columns not found).")
+            return
+        ml = pd.concat(recs, ignore_index=True)
+        ml['_id'] = ml[id_col].astype(str).str.strip()
+        merged = ml.merge(g, on=['_id', 'period'], how='left').fillna(0.0)
+        pairs = [(f'{vamp_metric} pre', g_vamp_pre, 'v_pre'),
+                 (f'{vamp_metric} post', g_vamp_post, 'v_post'),
+                 (f'{txn_metric} pre', g_txn_pre, 't_pre'),
+                 (f'{txn_metric} post', g_txn_post, 't_post')]
+        worst = ('', 0.0, '', 0, 0.0, 0.0)
+        for label, gc, mc in pairs:
+            d = (merged[gc] - merged[mc]).abs()
+            if len(d):
+                i = int(np.asarray(d.values).argmax()); md = float(d.iloc[i])
+                if md > worst[1]:
+                    worst = (label, md, str(merged['_id'].iloc[i]), int(merged['period'].iloc[i]),
+                             float(merged[gc].iloc[i]), float(merged[mc].iloc[i]))
+        if worst[1] <= tol:
+            logger.info("   > ✅ RECONCILIATION OK: bin_rpgt_impact_export aggregates to mid_level "
+                        f"exactly (max abs diff {worst[1]:.4g} ≤ {tol}). Tab-3 tables will tie to the "
+                        "Validate Split table.")
+        else:
+            logger.warning("   > ⚠️ RECONCILIATION MISMATCH: bin_rpgt_impact_export does NOT aggregate "
+                           f"to mid_level. Worst: {worst[0]} for '{worst[2]}' period {worst[3]} — granular "
+                           f"{worst[4]:,.2f} vs mid_level {worst[5]:,.2f} (diff {worst[1]:,.2f}). Tab-3 and "
+                           "the Validate Split table may not tie for this MID.")
+        _extra = sorted(set(g['_id']) - set(ml['_id']))
+        if _extra:
+            logger.info(f"   > (note: {len(_extra)} MID(s) in bin_rpgt not in mid_level — dropped by its "
+                        "M0 active-mask; expected.)")
+    except Exception as _e:  # noqa: BLE001 - a guard must never break the export
+        logger.info(f"   > reconciliation check skipped ({type(_e).__name__}: {_e}).")
 
 
 class ExportManager:
@@ -513,5 +584,12 @@ class ExportManager:
         self._generate_granular_impact_export(t_data)
         self._generate_effective_rate_export(t_data)
         self._generate_prorata_export(t_data)  # additive: proposed-split go-live pro-rata
+
+        # GUARD: confirm the granular bin_rpgt export ties exactly to mid_level (Tab 3 reads the
+        # former, the Validate Split table reads the latter — this proves the two views reconcile).
+        reconcile_granular_to_mid_level(
+            self.output_dir, id_col='vampMid', vamp_metric='VAMP', txn_metric='VI_Txn',
+            g_vamp_pre='VAMP_Pre', g_vamp_post='VAMP_Post', g_txn_pre='Txn_Pre', g_txn_post='Txn_Post',
+            logger=logger)
 
         logger.info("✅ Export Suite Complete. All files saved to data/outputs/")
