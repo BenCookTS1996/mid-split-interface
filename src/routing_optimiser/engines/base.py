@@ -283,8 +283,6 @@ class BaseEngine:
         return (
             round(float(temperature or 0.05), 9),
             round(float(self.params.get("ref_risk_aversion", 0.0) or 0.0), 9),
-            round(float(self.params.get("explore_cap_total", 0.10) or 0.0), 9),
-            round(float(self.params.get("explore_cap_each", 0.01) or 0.0), 9),
         )
 
     # [FN-411]
@@ -385,39 +383,9 @@ class BaseEngine:
             weights = weights / weights.sum()
             self._t(f"STAGE B3  applied exploration floor={floor:g} to {eligible_count} eligible, renormalised")
 
-        # Auto-explore share cap (non-Thompson engines): capable-but-untested
-        # gateways collectively get at most `explore_cap_total` of the cell and at
-        # most `explore_cap_each` individually, so a flood of unproven gateways can't
-        # dilute the proven ones. The freed share flows to the proven (non-explore)
-        # gateways. Only applied when there IS at least one proven gateway to hold the
-        # volume; otherwise the explore gateways are all the cell has and must take it.
-        # This is a REFERENCE cap only — the downstream compliance/VAMP layer may push
-        # an explore gateway above the cap if that's the only way to meet a hard
-        # constraint (the override the user asked for). Thompson never calls this method
-        # (it allocates from its own Beta posterior), so it is unaffected by design.
-        is_explore = np.asarray(getattr(p, "is_explore", np.zeros(gateway_count, bool)), dtype=bool)
-        cap_total = float(self.params.get("explore_cap_total", 0.10) or 0.0)
-        cap_each = float(self.params.get("explore_cap_each", 0.01) or 0.0)
-        explore_mask = is_explore & eligible
-        proven_mask = eligible & ~is_explore
-        if explore_mask.any() and proven_mask.any() and (cap_total > 0.0 or cap_each > 0.0):
-            capped = weights.copy()
-            if cap_each > 0.0:
-                capped[explore_mask] = np.minimum(capped[explore_mask], cap_each)
-            explore_before = float(capped[explore_mask].sum())
-            if cap_total > 0.0 and explore_before > cap_total:
-                capped[explore_mask] *= cap_total / explore_before
-            explore_share = float(capped[explore_mask].sum())
-            # Proven gateways absorb the remaining (1 - explore share), keeping their relative mix.
-            proven_before = float(weights[proven_mask].sum())
-            if proven_before > 0:
-                capped[proven_mask] = weights[proven_mask] / proven_before * (1.0 - explore_share)
-            capped[~eligible] = 0.0
-            capped_total = capped.sum()
-            weights = capped / capped_total if capped_total > 0 else weights
-            self._t(f"STAGE B3b explore cap: {int(explore_mask.sum())} untested gw capped to "
-                    f"≤{cap_each:g} each / ≤{cap_total:g} total (share={explore_share:.3f}); "
-                    f"proven hold {1.0 - explore_share:.3f}")
+        # (Auto-explore share cap removed: untested-but-eligible gateways are scored like proven ones —
+        # their risk is the cell's real per-BIN rate, their conversion is the empirical-Bayes prior until
+        # they earn attempts. No reference cap is applied.)
         self._t("STAGE B4  REFERENCE split: "
                 + ", ".join(f"{gateway}={share:.3f}" for gateway, share in zip(p.gateways, weights)))
         return weights

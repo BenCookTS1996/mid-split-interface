@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__build__ = "2026-08-11-band-aware-constrained-projection-seed+riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel+vol-weighted-viol+penalty-shape+repair-input+sigma-controls+fitness-trace+active-priority+viol-breakdown+capcell-detail+breach-tol+band-workings+no-maxiter-bandgreedy+stable-softmax"
+__build__ = "2026-08-11-band-aware-constrained-projection-seed+riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel+vol-weighted-viol+penalty-shape+repair-input+sigma-controls+fitness-trace+active-priority+viol-breakdown+capcell-detail+breach-tol+band-workings+no-maxiter-bandgreedy+stable-softmax+bandgreedy-count-aware-priority+bandgreedy-multistart"
 
 
 # [FN-103]
@@ -1045,7 +1045,7 @@ def _project_capped_simplex_cells(s, cell_starts, cell_counts, elig, cap, total=
 # [FN-122b]
 def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mid_labels,
                        exact_bands, incidence, *, max_share=1.0, damping=0.5,
-                       tol=1e-6, patience=4):
+                       tol=1e-6, patience=4, return_key=False):
     """Band-AWARE compliant split via a small CONSTRAINED PROJECTION per pass: a warm-start seed
     for the CMA-ES that starts feasible (or much closer) w.r.t. the per-MID MONTH bands.
 
@@ -1081,47 +1081,107 @@ def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mi
         label_to_k.setdefault(str(lbl).strip().lower(), k)
     n_mid = len(mid_rows)
     best_s = s.copy()
-    best_breach = None
+    best_key = None            # (priority-weighted unmet-band count, total relative breach)
+    # COUNT-AWARE + PRIORITY-WEIGHTED: the old version kept the LOWEST-total-breach split, which spreads a
+    # tiny breach across many bands (min magnitude) instead of CLEARING bands (min count). We now keep the
+    # split with the FEWEST priority-weighted unmet bands (ties broken by total breach), and take a FULL
+    # (undamped) step on bands already within 5% of their limit so they actually cross the line — so the
+    # verdict/seed line up with what the count-rewarding GA reaches, not a pessimistic magnitude bound.
+    _prio_w = {}
+    for _sp in (getattr(exact_bands, "specs", []) or []):
+        _prio_w[str(getattr(_sp, "midl", "")).strip().lower()] = float(getattr(_sp, "weight", 1.0) or 1.0)
     _stall = 0
     _HARD_CAP = 10_000          # defensive only — convergence (below) is what actually stops it
     for _ in range(_HARD_CAP):
         prop_raw = shares_to_prop_raw(s[None, :], incidence)
         rep = exact_bands.report(prop_raw)
         mult = np.ones(n_mid, float)
+        full = np.zeros(n_mid, bool)                          # per-MID: near its limit → clear FULLY (undamped)
         moved = False
         breach = 0.0                                          # total RELATIVE band breach (0 = compliant)
+        unmet_w = 0.0                                         # priority-weighted count of unmet bands
         for r in rep:
-            k = label_to_k.get(str(r["midl"]).strip().lower())
+            _lbl = str(r["midl"]).strip().lower()
+            k = label_to_k.get(_lbl)
             now = float(r["now"])
+            _w = _prio_w.get(_lbl, 1.0)
             f = 1.0
+            _over = 0.0                                       # how far this band is past its limit (relative)
             if r["ceil"] is not None and now > float(r["ceil"]) > 0.0:
-                breach += now / float(r["ceil"]) - 1.0
+                _over = now / float(r["ceil"]) - 1.0
+                breach += _over
+                unmet_w += _w
                 f = min(f, float(r["ceil"]) / now)           # over a ceiling → shave down
             if r["floor"] is not None and 0.0 < now < float(r["floor"]):
-                breach += 1.0 - now / float(r["floor"])
+                _und = 1.0 - now / float(r["floor"])
+                breach += _und
+                unmet_w += _w
+                _over = max(_over, _und)
                 f = max(f, float(r["floor"]) / now)          # under a floor → feed up
             if k is not None and abs(f - 1.0) > 1e-6:
                 mult[k] *= f
+                if 0.0 < _over <= 0.05:                       # cheap to clear → take the full step, cross the line
+                    full[k] = True
                 moved = True
-        # Keep the LOWEST-breach split seen (guards against a late oscillation returning worse) and
-        # count consecutive passes with no meaningful (>0.1% relative) improvement.
-        if best_breach is None or breach < best_breach - max(1e-9, 1e-3 * best_breach):
-            best_breach = breach
+        # Keep the split with the FEWEST priority-weighted unmet bands, ties broken by total breach (this
+        # also hands the GA a better-count seed, not just a smaller-magnitude one). base is a candidate on
+        # pass 1, so it's still 'never worse than base'.
+        _key = (unmet_w, breach)
+        if best_key is None or _key < best_key:
+            best_key = _key
             best_s = s.copy()
             _stall = 0
         else:
             _stall += 1
-        # STOP: nothing to nudge, essentially compliant, or the breach has plateaued.
+        # STOP: nothing to nudge, essentially compliant, or no improvement for `patience` passes.
         if (not moved) or breach <= tol or _stall >= int(patience):
             break
-        mult = np.power(np.clip(mult, 1e-6, 1e6), float(damping))   # damped step for stability
+        # Damped step for stability, but a FULL step for near-boundary bands so they actually clear.
+        _exp = np.where(full, 1.0, float(damping))
+        mult = np.power(np.clip(mult, 1e-6, 1e6), _exp)
         for k, rows in enumerate(mid_rows):
             if len(rows) and abs(mult[k] - 1.0) > 1e-12:
                 s[rows] = s[rows] * mult[k]
         # Per-cell constrained projection (the small QP): back onto {0 ≤ x ≤ cap, Σ=1} over the
         # eligible rows, vectorised across ALL cells at once. Ineligible rows are pinned at 0.
         s = _project_capped_simplex_cells(s, starts, counts, elig, _cap, 1.0)
-    return best_s
+    # best_key is (priority-weighted unmet-band count, total relative breach) of the returned split.
+    return (best_s, (best_key if best_key is not None else (0.0, 0.0))) if return_key else best_s
+
+
+# [FN-122b]
+def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_rows, mid_labels,
+                             exact_bands, incidence, *, max_share=1.0, damping=0.5, tol=1e-6,
+                             patience=4, n_starts=1, rng_seed=0, jitter=0.5):
+    """MULTI-START `band_greedy_shares`: run the constrained projection from the base split PLUS
+    (n_starts − 1) log-normally-jittered starts, and keep the one with the LOWEST
+    (priority-weighted unmet-band count, total breach). A single projection is a fast (~seconds)
+    greedy that lands in one corner; a few restarts make the feasibility verdict — and the seed the
+    GA inherits — less dependent on that starting corner (it can clear a band the single pass left
+    just over). Cheap vs the GA. Returns (best_shares, best_key). n_starts ≤ 1 ⇒ a single pass."""
+    _kw = dict(max_share=max_share, damping=damping, tol=tol, patience=patience)
+    base = np.asarray(base_shares, float)
+    best_s, best_key = band_greedy_shares(
+        base, cell_starts, cell_counts, elig, mid_rows, mid_labels, exact_bands, incidence,
+        return_key=True, **_kw)
+    if int(n_starts) <= 1:
+        return best_s, best_key
+    _starts = np.asarray(cell_starts, np.intp)
+    _counts = np.asarray(cell_counts, np.intp)
+    _cap = float(max_share) if (max_share and float(max_share) > 0) else 1.0
+    _elig = np.asarray(elig, float)
+    rng = np.random.default_rng(int(rng_seed))
+    for _i in range(1, int(n_starts)):
+        # jitter the base multiplicatively (log-normal), then project onto each cell's capped simplex so
+        # every start is a VALID split before the greedy runs.
+        _pert = base * np.exp(rng.normal(0.0, float(jitter), size=base.shape))
+        _pert = _project_capped_simplex_cells(_pert, _starts, _counts, _elig, _cap, 1.0)
+        _s, _k = band_greedy_shares(
+            _pert, cell_starts, cell_counts, elig, mid_rows, mid_labels, exact_bands, incidence,
+            return_key=True, **_kw)
+        if _k < best_key:
+            best_key, best_s = _k, _s
+    return best_s, best_key
 
 
 # [FN-123]

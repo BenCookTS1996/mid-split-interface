@@ -29,6 +29,65 @@ from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, Strea
                         _save_ga_perf, _variance_gap_temp)
 
 
+def _m5_moveable_budget(m5_by_mid, constraints, min_vamp_by_mid=None):
+    """Moveable-M5-transaction budget planner + VAMP-floor feasibility for the Risk-Constraints panel.
+
+    m5_by_mid        : {vampMid_lower: baseline M5 Txn at the SELECTED RPGTs} — from the last run's
+                       bin_rpgt_impact_export.csv (period == 5, filtered to the chosen RPGTs).
+    constraints      : the parsed mid_constraints records (metric/month/target/tol/direction/vampMid).
+    min_vamp_by_mid  : {vampMid_lower: the MINIMUM achievable M5 VAMP for the MID} = the VAMP the engine
+                       CANNOT remove: held VAMP from the non-selected RPGTs (can't be rerouted) PLUS the
+                       exploration-floor residual in the selected RPGTs (each gateway keeps ≥ floor share).
+
+    Returns (total_moveable, remaining, warnings):
+      * total_moveable — Σ baseline M5 Txn across vampMids: the pool that can be reassigned.
+      * remaining      — total − Σ(required move per M5-Txn constraint). GROW consumes, SHRINK frees.
+                         Negative ⇒ the growth constraints ask for more than the pool + shrinks can give.
+      * warnings       — [(vampMid, val, note)]:
+                           • a Txn constraint on a MID with ~0 moveable M5 volume (Merrick), and
+                           • a VAMP ceiling whose MINIMUM achievable M5 VAMP already exceeds the
+                             ceiling — infeasible even after routing everything possible away.
+    """
+    total = float(sum(m5_by_mid.values())) if m5_by_mid else 0.0
+    min_vamp_by_mid = min_vamp_by_mid or {}
+    net_move = 0.0
+    warnings = []
+    for c in (constraints or []):
+        _metric = str(c.get("metric"))
+        _mo = c.get("month")
+        _name = str(c.get("vampMid", "")).strip()
+        _tgt = float(c.get("target", 0.0) or 0.0)
+        _tol = float(c.get("tol") or 0.0)
+        _dir = str(c.get("direction", "range"))
+        if _metric == "txn" and _mo == 5:
+            _base = float(m5_by_mid.get(_name.lower(), 0.0))
+            # 'required move' = the signed volume the constraint forces onto this MID (only the UNMET
+            # part: a ceiling already satisfied costs nothing). +ve = grow (consume), -ve = shrink (free).
+            if _dir == "ceiling":
+                _eff = min(0.0, _tgt * (1.0 + _tol) - _base)
+            elif _dir == "floor":
+                _eff = max(0.0, _tgt * (1.0 - _tol) - _base)
+            else:  # range
+                _lo, _hi = _tgt * (1.0 - _tol), _tgt * (1.0 + _tol)
+                _eff = (_lo - _base) if _base < _lo else ((_hi - _base) if _base > _hi else 0.0)
+            net_move += _eff
+            if _base <= 1e-6:
+                warnings.append((_name, _base,
+                                 "0 moveable M5 volume in the selected RPGTs — can't be grown or reduced"))
+        elif _metric == "vamp" and _mo == 5 and c.get("rpgt") is None and _dir in ("ceiling", "range"):
+            # VAMP floor infeasibility: the MINIMUM achievable VAMP (held non-selected RPGTs +
+            # exploration-floor residual in the selected RPGTs) can't drop below this. If even that
+            # exceeds the ceiling, no split can meet the constraint.
+            _hi = _tgt * (1.0 + _tol)
+            _minv = float(min_vamp_by_mid.get(_name.lower(), 0.0))
+            if _minv > _hi + 1e-6:
+                warnings.append((_name, _minv,
+                                 f"min achievable M5 VAMP ({_minv:,.0f}) exceeds the ceiling "
+                                 f"({_hi:,.0f}) — held (non-selected RPGTs) + exploration-floor "
+                                 "residual can't go lower"))
+    return total, (total - net_move), warnings
+
+
 # [FN-298]
 def render():
     out_dir = ss.get("pipeline_out_dir")
@@ -120,9 +179,10 @@ def render():
             choices.append(("genetic_fullmatrix", "GA - Full matrix (BIN grain, experimental)"))
         labels = {k: lbl for k, lbl in choices}
         keys = [k for k, _ in choices]
-        # Default to the Genetic algorithm (the production engine); fall back to softmax/first.
-        default_idx = (keys.index("genetic_numba") if "genetic_numba" in keys
-                       else (keys.index("softmax") if "softmax" in keys else 0))
+        # Default to the Full-matrix GA; fall back to the tilt genetic engine, then softmax/first.
+        default_idx = (keys.index("genetic_fullmatrix") if "genetic_fullmatrix" in keys
+                       else (keys.index("genetic_numba") if "genetic_numba" in keys
+                             else (keys.index("softmax") if "softmax" in keys else 0)))
         # Sections 1 & 2 sit side by side (Engine Type 1/3 | Data & Pre-Processing 2/3),
         # BOTH outside the form so the engine / method selectors show/hide inputs live.
         _ga_auto = True
@@ -153,8 +213,9 @@ def render():
         # 'genetic_numba' (the old 'genetic' is gone), so defaulting to it keeps this panel visible
         # on a fresh session where engine_key_select isn't set yet.
         _pre_keys = [k for k, _ in choices]
-        _pre_default = ("genetic_numba" if "genetic_numba" in _pre_keys
-                        else ("softmax" if "softmax" in _pre_keys else (_pre_keys[0] if _pre_keys else "")))
+        _pre_default = ("genetic_fullmatrix" if "genetic_fullmatrix" in _pre_keys
+                        else ("genetic_numba" if "genetic_numba" in _pre_keys
+                              else ("softmax" if "softmax" in _pre_keys else (_pre_keys[0] if _pre_keys else ""))))
         _pre_engine = str(ss.get("engine_key_select", _pre_default) or _pre_default)
         if _pre_engine not in _pre_keys:      # stale session value (e.g. a removed key) → default
             _pre_engine = _pre_default
@@ -164,7 +225,9 @@ def render():
             def _budget_panel():
                 with st.container(border=True):
                     st.markdown("##### Genetic search budget")
-                    _bc1, _bc2 = st.columns(2)
+                    # Each input is halved vs the old two-column layout (0.5 → 0.25 of the row); the
+                    # trailing 0.5 column is an empty spacer that absorbs the freed width.
+                    _bc1, _bc2, _bsp1 = st.columns([1, 1, 2])
                     _bc1.number_input(
                         "GA generations", min_value=20, max_value=400, value=150, step=10,
                         key="ga_generations",
@@ -175,7 +238,7 @@ def render():
                         key="ga_pop_override",
                         help="Candidate plans per generation (λ). 64 = default. 0 = auto-size from the "
                              "problem. Larger = more thorough, slower.")
-                    _bc3, _bc4 = st.columns(2)
+                    _bc3, _bc4, _bsp2 = st.columns([1, 1, 2])
                     _bc3.number_input(
                         "Number of seeds", min_value=1, max_value=16, value=_cpu_seeds_default, step=1,
                         key="ga_n_seeds",
@@ -215,7 +278,44 @@ def render():
                              "warm-start blurred the seed's compliance away). Feasibility-first ranking keeps "
                              "the compliant anchor as the incumbent, so the result can't come back worse than "
                              "the seed. OFF: tilt around the revenue-greedy reference (previous behaviour).")
-                    with st.expander("Advanced — step size (CMA-ES σ)", expanded=False):
+                    if _pre_engine == "genetic_fullmatrix":
+                        st.number_input(
+                            "MID-breach fixed penalty (full-matrix)", min_value=0.0, max_value=1.0,
+                            value=0.3, step=0.01, format="%.3f", key="fm_band_fixed",
+                            help="A small FLAT penalty added the INSTANT a per-MID band is breached, on top of "
+                                 "the overshoot² term — priority-weighted (a priority-1 breach costs 8× a "
+                                 "priority-2 one). It nudges the search to satisfy MORE bands rather than only "
+                                 "shrink one big overshoot. 0 = off (overshoot² only). Full-matrix engine only.")
+                        st.number_input(
+                            "Compressibility λ (full-matrix)", min_value=0.0, max_value=1.0,
+                            value=0.0, step=0.01, format="%.3f", key="fm_compress_lambda",
+                            help="Rewards cells COLLAPSING ONTO A SHARED CODEBOOK of shapes so the split "
+                                 "compresses into far fewer deployable configs — higher fidelity at your pool "
+                                 "target. It learns ≈(pool-target) centroid shapes by volume-weighted k-means "
+                                 "over the current best split's DELIVERED per-vampMid cell shapes (the same kind "
+                                 "of clustering tab-3 uses, refit as the search improves) and subtracts λ × each "
+                                 "candidate's volume-weighted distance to its nearest centroid from the "
+                                 "conversion score. It is NOT a 'fewer-gateways' reward — two cells with the SAME "
+                                 "shape cost nothing however spread; a cell routing DIFFERENTLY from its centroid "
+                                 "pays. Scored on delivered shares, so Country / paymentMethodProvider capability "
+                                 "is respected. Trades a little conversion. 0 = off; try 0.02–0.1 and watch tab-3 "
+                                 "fidelity vs vwsr. Full-matrix engine only.")
+                        st.number_input(
+                            "Feasibility-check starts (full-matrix)", min_value=1, max_value=16,
+                            value=4, step=1, format="%d", key="fm_feas_starts",
+                            help="How many independent starts the pre-search feasibility projection runs (base "
+                                 "split + jittered restarts), keeping the fewest-unmet result. NOTE each start "
+                                 "is a FULL projection that iterates to convergence (repeats the damped "
+                                 "correction until it stops improving), not a single iteration. Running several "
+                                 "starts makes the 'still unmet' verdict (and the seed the GA inherits) less "
+                                 "dependent on one starting corner, since different corners can converge to "
+                                 "different fewest-unmet counts. Each convergent projection is the ~few-second "
+                                 "greedy, so a handful is negligible vs the GA. 1 = a single convergent "
+                                 "projection from the base only (previous behaviour). Full-matrix engine only.")
+                    # CMA-ES σ controls only apply to the tilt genetic engines. The full-matrix GA is a
+                    # plain generational search (no step-size σ), so hide these dead knobs for it.
+                    if _pre_engine in ("genetic", "genetic_numba"):
+                      with st.expander("Advanced — step size (CMA-ES σ)", expanded=False):
                         st.caption("CMA-ES already auto-adapts the step size every generation; these only "
                                    "nudge its starting point and limits. σ₀×1.5 and damping×1.5 are the "
                                    "tuned defaults for this problem (σ floor stays a no-op at 0) — leave them "
@@ -362,6 +462,25 @@ def render():
                 # violation and made every run infeasible. 0 injects a fallback gateway into every
                 # single-gateway cell, so the search stays feasible.
                 ss["explore_min_cell_vol"] = 0
+                # ANY-BIN ELIGIBILITY toggle (default ON): inject the currency/company/wallet-eligible
+                # gateway set into EVERY matching cell, not just cells that would otherwise be single-
+                # gateway. Matches the business rule that eligibility is NOT BIN-restricted, so the
+                # optimiser gets far more sinks to satisfy tight per-MID VAMP bands (can turn an
+                # 'infeasible' set feasible). Applies to ALL engines (shared cell assembly). Injected
+                # gateways are 'explore' (untested) but are no longer share-capped — they're scored like
+                # proven ones (the cell's real per-BIN risk + an empirical-Bayes prior for conversion), so
+                # the optimiser can load an eligible gateway as far as its rate justifies.
+                st.checkbox(
+                    "Eligibility: any-BIN routing (inject eligible gateways into every cell)",
+                    value=True, key="explore_all_cells",
+                    help="ON (default): a gateway that is currency/company/wallet-eligible and not banned "
+                         "becomes a candidate in EVERY matching cell — even BINs where it has no attempts — "
+                         "so the optimiser can use the full 'any-BIN' eligibility, not only BINs a gateway "
+                         "has already processed. Many more sinks for tight VAMP bands. OFF: only inject into "
+                         "cells that would otherwise be single-gateway (previous behaviour). Untested-but-"
+                         "eligible gateways are scored like proven ones (no share cap), so the optimiser can "
+                         "load them as far as their rate justifies. Applies to ALL engines. Bigger candidate "
+                         "matrix ⇒ slower, heavier search.")
                 _grc1, _grc2 = st.columns(2)
                 _score_grain = _grc1.selectbox(
                     "Engine Score grain",
@@ -577,8 +696,9 @@ def render():
                 # Narrow VAMP-cap % input on the LEFT (≈20% width), the enable checkbox to its right.
                 # number_input can't render a literal '%' in its format string, so the '(%)'
                 # label above the box signals the value is a percentage (6.00 = 6%).
-                _v1, _v2 = st.columns([2, 8])
+                _v1, _v2, _v3 = st.columns([2, 4, 4])
                 vamp_on = _v2.checkbox("Enforce VAMP cap", value=True, key="vamp_on_cb")
+                _moveable_slot = _v3.empty()          # moveable-M5-txn counter (filled after the editor)
                 if vamp_on:
                     vamp_cap_pct = _v1.number_input("VAMP cap (%)", min_value=0.01, max_value=20.0,
                                                     value=6.0, step=0.1, format="%.2f", key="vamp_cap_inp")
@@ -616,6 +736,63 @@ def render():
                                     # VAMP / VAMP% caps (and disagreed with the scoped-rule baseline).
                                     _bv += float(pd.to_numeric(r.iloc[0].get(f"FC_VAMP_Month_{m}", 0), errors="coerce") or 0)
                             _base_totals[str(mid).strip().lower()] = (_bt, _bv)
+
+                # Moveable M5 transaction pool per vampMid, from the LAST run's granular export,
+                # restricted to the RPGTs chosen above (_rpgt_selected). Powers the moveable-budget
+                # counter beside the VAMP-cap checkbox + the per-MID feasibility warnings. Needs a prior
+                # run to have produced bin_rpgt_impact_export.csv (else the counter shows 'run once').
+                _m5_by_mid = {}
+                _m5_min_vamp = {}    # per-MID MINIMUM achievable M5 VAMP (held non-selected RPGTs +
+                                     # exploration-floor residual in the selected RPGTs)
+                try:
+                    _binrp = os.path.join(out_dir or "", "bin_rpgt_impact_export.csv")
+                    _floor_frac = float(ss.get("floor_sld", 1.0) or 0.0) / 100.0   # exploration floor share
+                    if os.path.exists(_binrp):
+                        _brdf = pd.read_csv(_binrp)
+                        _idc = ("vampMid" if "vampMid" in _brdf.columns
+                                else ("mastercardMid" if "mastercardMid" in _brdf.columns else None))
+                        _rpc = ("RPGT" if "RPGT" in _brdf.columns
+                                else ("rpgt" if "rpgt" in _brdf.columns else None))
+                        if _idc and _rpc and "period" in _brdf.columns:
+                            _selrp = {str(_x).strip().lower() for _x in (_rpgt_selected or [])}
+                            _p5 = (pd.to_numeric(_brdf["period"], errors="coerce") == 5)
+                            _rpl = _brdf[_rpc].astype(str).str.strip().str.lower()
+                            _idl = _brdf[_idc].astype(str).str.strip().str.lower()
+                            _vc = ("VAMP_Pre" if "VAMP_Pre" in _brdf.columns
+                                   else ("CB_Pre" if "CB_Pre" in _brdf.columns else None))
+                            # moveable M5 txn per MID: SELECTED RPGTs
+                            if "Txn_Pre" in _brdf.columns:
+                                _mask = _p5 & (_rpl.isin(_selrp) if _selrp else True)
+                                _sub = _brdf[_mask]
+                                if not _sub.empty:
+                                    _agg = _sub.groupby(_idl[_mask])["Txn_Pre"].sum()
+                                    _m5_by_mid = {str(_k): float(_v) for _k, _v in _agg.items()}
+                            # MINIMUM achievable M5 VAMP per MID:
+                            #  (a) held: VAMP from NON-selected RPGTs (can't be rerouted), plus
+                            #  (b) residual: in each SELECTED-RPGT cell (BIN×Currency×RPGT) the MID's
+                            #      gateway keeps ≥ floor share, so its min VAMP there is
+                            #      floor × cell_total_txn × (its VAMP rate). Sum both per MID.
+                            _minv = {}
+                            if _vc:
+                                if _selrp:                                   # (a) held from non-selected RPGTs
+                                    _hmask = _p5 & (~_rpl.isin(_selrp))
+                                    for _k, _v in _brdf[_hmask].groupby(_idl[_hmask])[_vc].sum().items():
+                                        _minv[str(_k)] = _minv.get(str(_k), 0.0) + float(_v)
+                                if "Txn_Pre" in _brdf.columns and _floor_frac > 0:   # (b) floor residual, selected
+                                    _smask = _p5 & (_rpl.isin(_selrp) if _selrp else True)
+                                    _ss2 = _brdf[_smask].copy()
+                                    if not _ss2.empty:
+                                        _cellcols = [c for c in ("BIN", "Currency") if c in _ss2.columns] + [_rpc]
+                                        _ss2["_ctot"] = _ss2.groupby(_cellcols)["Txn_Pre"].transform("sum")
+                                        _txn = pd.to_numeric(_ss2["Txn_Pre"], errors="coerce").fillna(0.0)
+                                        _rate = np.where(_txn > 0, pd.to_numeric(_ss2[_vc], errors="coerce").fillna(0.0) / _txn, 0.0)
+                                        _ss2["_resid"] = _floor_frac * _ss2["_ctot"] * _rate
+                                        for _k, _v in _ss2.groupby(_ss2[_idc].astype(str).str.strip().str.lower())["_resid"].sum().items():
+                                            _minv[str(_k)] = _minv.get(str(_k), 0.0) + float(_v)
+                            _m5_min_vamp = _minv
+                except Exception:  # noqa: BLE001 - a planning readout must never break the panel
+                    _m5_by_mid = {}
+                    _m5_min_vamp = {}
 
                 # RPGT scope, grain, hold-others and auto-explore now live in the "Engine Type
                 # and Settings" section above (their widgets set _rpgt_opts / _rpgt_selected /
@@ -666,6 +843,17 @@ def render():
                     _rules_seed, column_config=col_cfg, hide_index=True, num_rows="dynamic",
                     use_container_width=True, height=440, key="mid_constraints_editor")
 
+                # The editor lives inside the engine FORM, so its edits are only committed on a form
+                # submit. This SECOND submit button commits the current constraints and refreshes the
+                # moveable-M5-budget counter + feasibility warnings ABOVE — WITHOUT running the engine
+                # (that stays gated on 'Compute split variations' only). So you can iterate on the
+                # constraints and re-check the budget as many times as you like before running.
+                st.form_submit_button("Run Constraints Check", type="primary")
+                st.caption("Edit the constraints, then click **Run Constraints Check** to refresh the "
+                           "moveable-M5-txn budget + feasibility flags above (does not run the engine). "
+                           "The budget counter only reflects **M5** Txn constraints; constraints at other "
+                           "months are still enforced by the engine but aren't shown in the counter.")
+
                 _metric_key = {"Txn": "txn", "VAMP": "vamp", "VAMP %": "vamp_pct"}
                 clean_records = []
                 for row in edited_mids.to_dict("records"):
@@ -698,6 +886,46 @@ def render():
                     })
             params["mid_constraints"] = clean_records
             params["mid_base_totals"] = _base_totals
+
+            # ---- Moveable M5 transaction budget + per-MID feasibility (rendered beside the VAMP-cap
+            #      checkbox / below it). Updates live as constraints are edited. ----
+            try:
+                if not _m5_by_mid:
+                    _moveable_slot.markdown(
+                        "<div style='font-size:0.78rem; color:#6b7280; line-height:1.2;'>Moveable M5 txn: "
+                        "<i>run once to populate</i></div>", unsafe_allow_html=True)
+                else:
+                    _mv_total, _mv_left, _mv_warn = _m5_moveable_budget(
+                        _m5_by_mid, clean_records, _m5_min_vamp)
+                    _mv_clr = "#e63748" if _mv_left < -1e-6 else "#0B1F3A"
+                    # Counter line + any warnings rendered TOGETHER in the same slot, so the warnings
+                    # sit directly beneath the "… / … (selected RPGTs)" text.
+                    _html = (f"<div style='font-size:0.78rem; line-height:1.2;'>Moveable M5 txn budget: "
+                             f"<b style='color:{_mv_clr}'>{_mv_left:,.0f}</b> "
+                             f"<span style='color:#6b7280'>/ {_mv_total:,.0f} (selected RPGTs)</span></div>")
+                    # This counter is an M5 pool tool BY DESIGN: it only reflects Txn constraints set at
+                    # M5. If the user has entered Txn constraints at another month (M0–M4), say so plainly
+                    # here so an ignored constraint doesn't look like a silent failure — the engine still
+                    # enforces them; they're just out of this M5 counter's scope.
+                    _non_m5_txn = sum(1 for _c in (clean_records or [])
+                                      if str(_c.get("metric")) == "txn" and _c.get("month") not in (None, 5))
+                    _wl = []
+                    if _mv_left < -1e-6:
+                        _wl.append("<div>⚠ growth constraints exceed the moveable M5 pool by "
+                                   f"<b>{-_mv_left:,.0f}</b> txns — not all can be met.</div>")
+                    for _wn, _wb, _wnote in _mv_warn:
+                        _wl.append(f"<div>⚠ <b>{_wn}</b>: {_wnote}.</div>")
+                    if _wl:
+                        _html += ("<div style='color:#e63748; font-size:0.74rem; line-height:1.25; "
+                                  "margin-top:2px;'>" + "".join(_wl) + "</div>")
+                    if _non_m5_txn:
+                        _html += ("<div style='color:#6b7280; font-size:0.72rem; line-height:1.25; "
+                                  f"margin-top:2px;'>Note: {_non_m5_txn} non-M5 Txn constraint"
+                                  f"{'s' if _non_m5_txn != 1 else ''} not shown — this counter only "
+                                  "reflects M5. The engine still enforces them.</div>")
+                    _moveable_slot.markdown(_html, unsafe_allow_html=True)
+            except Exception:  # noqa: BLE001 - a planning readout must never break the panel
+                pass
 
             st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
             st.markdown("""<style>
@@ -940,8 +1168,7 @@ def render():
                         _diag(f"      max_pools_target={_gv('max_configs')}")
                         _diag("      band scoring=EXACT in-search (per-generation pro-rata projection; "
                               "no proxy, no post-hoc correction)")
-                        _pk = {k: params.get(k) for k in ("temperature", "temp_method",
-                                                          "explore_cap_total", "explore_cap_each", "n_variations")
+                        _pk = {k: params.get(k) for k in ("temperature", "temp_method", "n_variations")
                                if isinstance(params, dict) and k in params}
                         _diag(f"      engine_params={_pk}")
                         _diag(f"      auto_explore={_gv('_auto_explore')} · RPGT_scope={('ALL' if not _gv('_sel_rpgts', None) else _gv('_sel_rpgts'))} · "
@@ -951,7 +1178,9 @@ def render():
                                  if ss.get('block_gw_cb', False) else ""))
                         # Step-size (CMA-ES σ) overrides — echoed ONLY when dialled off their no-op defaults,
                         # so a tuning A/B is self-documenting in the saved run bundle (absent line ⇒ defaults).
-                        if _gv('engine_key') in ("genetic", "genetic_numba", "genetic_fullmatrix"):
+                        # These σ controls apply ONLY to the tilt genetic engines — the full-matrix GA has no
+                        # step-size σ, so it's excluded (its run log must not mention CMA-ES).
+                        if _gv('engine_key') in ("genetic", "genetic_numba"):
                             _s0m = float(ss.get("ga_sigma0_mult", 1.5) or 1.5)
                             _sfl = float(ss.get("ga_sigma_floor", 0.0) or 0.0)
                             _dmp = float(ss.get("ga_damps_mult", 1.5) or 1.5)
@@ -1460,7 +1689,12 @@ def render():
                             # ONLY cells that would otherwise be single-gateway (fewer than _MIN_GW
                             # eligible), so well-populated cells aren't bloated. The explore share cap
                             # keeps the injected fallbacks to ≤10% combined so the primary stays dominant.
-                            _MIN_GW = 2
+                            # ANY-BIN ELIGIBILITY (toggle 'explore_all_cells', default ON): a huge _MIN_GW
+                            # makes the "cell already has ≥ _MIN_GW gateways" skip below never fire, so the
+                            # eligible-but-untested gateways are injected into EVERY currency-matched cell
+                            # (not just single-gateway ones) — the full business eligibility footprint.
+                            _explore_all = bool(ss.get("explore_all_cells", True))
+                            _MIN_GW = (10 ** 9) if _explore_all else 2
                             _cellkey_cols = _gk + ["bank"]
                             _af_keys = list(zip(*[agg_forecast[c].astype(str).str.strip().str.lower()
                                                   for c in _cellkey_cols]))
@@ -1511,9 +1745,10 @@ def render():
                             if _new_rows:
                                 agg_forecast = pd.concat([agg_forecast, pd.DataFrame(_new_rows)], ignore_index=True)
                                 log(f"   exploration: injected {len(_new_rows)} fallback candidate row(s) into "
-                                    f"single-gateway cells ({len(set(k[3] for k in _inj_fc_keys))} gateway(s), "
+                                    f"{'EVERY eligible cell (any-BIN eligibility ON)' if _explore_all else 'single-gateway cells'}"
+                                    f" ({len(set(k[3] for k in _inj_fc_keys))} gateway(s), "
                                     f"{'auto: currency-capable' if _auto_explore else 'explore list'}); "
-                                    "seeded at the bank×currency average (weak prior) + explore cap.")
+                                    "seeded at the bank×currency average (weak prior).")
                             if _expl_min_vol > 0:
                                 log(f"   exploration volume gate ON (min cell volume {_expl_min_vol:,.0f}): "
                                     f"skipped {len(_pruned_cells)} near-empty cell(s) → fewer fallback rows "
@@ -3268,7 +3503,11 @@ def render():
                         if _mid_month_rules:
                             try:
                                 _ga_bands = _build_ga_bands(_ref_share_G)
-                                if _ga_bands:
+                                # This "volume-ratio proxy + re-projection correction" describes the TILT
+                                # engines' band fitness. The full-matrix engine scores bands EXACTLY (see its
+                                # own "EXACT per-generation band scoring" line), so don't print the proxy line
+                                # for it — it would be misleading.
+                                if _ga_bands and engine_key != "genetic_fullmatrix":
                                     log(f"   GA fitness: {len(_ga_bands)} month-specific per-MID band(s) folded "
                                         "into the search (calibrated volume-ratio proxy + re-projection "
                                         "correction; vamp_pct left to post-enforcement).")
@@ -3555,10 +3794,16 @@ def render():
                         # NOT the cell count, is what k-means pre-clustering would actually shrink. Small D
                         # ⇒ clustering is a rounding error; large D ⇒ the cube term makes it a real win.
                         _ga_D = 3 * _n_mid
-                        log(f"   GA problem size: {_n_cells} cells (rpgt×currency×bank), {int(len(G))} "
-                            f"cell×gateway rows, {_n_mid} vampMids → genome D = {_ga_D}. "
-                            f"CMA-ES per-generation cost ∝ D² (covariance update) and ∝ D³ (eigen-refresh); "
-                            f"D is the dimension k-means pre-clustering would reduce.")
+                        if engine_key == "genetic_fullmatrix":
+                            # Full-matrix has no tilt genome / covariance search — report just the problem
+                            # size, with none of the CMA-ES / genome-D / k-means framing (which is tilt-only).
+                            log(f"   full-matrix problem size: {_n_cells} cells (rpgt×currency×bank), "
+                                f"{int(len(G))} cell×gateway rows, {_n_mid} vampMids.")
+                        else:
+                            log(f"   GA problem size: {_n_cells} cells (rpgt×currency×bank), {int(len(G))} "
+                                f"cell×gateway rows, {_n_mid} vampMids → genome D = {_ga_D}. "
+                                f"CMA-ES per-generation cost ∝ D² (covariance update) and ∝ D³ (eigen-refresh); "
+                                f"D is the dimension k-means pre-clustering would reduce.")
                         # ── Compressibility probe (READ-ONLY; changes nothing) — the k-means ceiling ──
                         # The 48-knob genome decodes each cell's shares from its gateways' (vampMid,
                         # reference share, risk) alone, so two cells whose eligible gateways carry the SAME
@@ -3583,11 +3828,14 @@ def render():
                                     for g in range(_s0, _s1) if _elig_a[g])))
                             _distinct = max(1, len(_sig_all))
                             _ratio = _n_cells / _distinct
-                            log(f"   Compressibility probe: {_n_cells} cells → ~{_distinct} distinct "
-                                f"decode-signatures (≈{_ratio:.1f}× cell-reduction CEILING); {_single} "
-                                f"single-gateway cells are genome-invariant. Upper bound on what k-means "
-                                f"pre-clustering could trim from the {int(len(G))}-row hot loop — optimistic "
-                                f"(true lossless merge also needs matching success/ticket rates).")
+                            # The probe describes the TILT genome + k-means pre-clustering (which the
+                            # full-matrix engine doesn't use), so don't print it for full-matrix.
+                            if engine_key != "genetic_fullmatrix":
+                                log(f"   Compressibility probe: {_n_cells} cells → ~{_distinct} distinct "
+                                    f"decode-signatures (≈{_ratio:.1f}× cell-reduction CEILING); {_single} "
+                                    f"single-gateway cells are genome-invariant. Upper bound on what k-means "
+                                    f"pre-clustering could trim from the {int(len(G))}-row hot loop — optimistic "
+                                    f"(true lossless merge also needs matching success/ticket rates).")
                         except Exception as _e:  # noqa: BLE001 — a read-only probe must never break a run
                             log(f"   [Warning] compressibility probe skipped ({type(_e).__name__}: {_e}).")
                         _pop_ovr = int(ss.get("ga_pop_override", 0) or 0)   # 0 = auto-size
@@ -3599,9 +3847,13 @@ def render():
                         # it. Trivialise it (1 seed, 1 gen) — the block still defines every variable the
                         # delivery path needs; only _comp_share_G (greedy+LP seed) and ctx matter here.
                         if engine_key == "genetic_fullmatrix":
+                            # The tilt CMA-ES risk-min search is SKIPPED ENTIRELY for full-matrix (the actual
+                            # search call at _ga_solve_with_correction is bypassed below). These cosmetic
+                            # pop/gen values only feed the (discarded) perf/ETA readouts now; the CMA-ES does
+                            # not run at all.
                             _ga_pop, _ga_gen = 4, 1
-                            log("   [full-matrix] tilt CMA-ES search short-circuited (1 seed × 1 gen) — "
-                                "its result is replaced by the full-matrix GA at delivery.")
+                            log("   [full-matrix] the full-matrix GA is the delivered search; it starts from "
+                                "the band-aware warm-start seed. No preliminary endpoint search is run.")
                         # multi-seed: keep the fittest of N parallel CMA-ES starts. N is the tab-2
                         # "Number of seeds" control (defaults to core count); _GA_N_SEED is the fallback.
                         _N_SEED = max(1, int(ss.get("ga_n_seeds", _GA_N_SEED) or _GA_N_SEED))
@@ -3613,7 +3865,12 @@ def render():
                         # legacy GA knobs (breach-targeted mutation, smart init, adaptive λ) no longer
                         # apply — run_midtilt_ga accepts them for compatibility and ignores them.
                         _rev_of = lambda _sh: float((np.asarray(_sh, float) * _rev_coef).sum())
-                        log(f"   CMA-ES (cross-cell per-MID 3-axis tilt, {_n_mid} vampMids): λ={_ga_pop}, gen cap={_ga_gen} "
+                        # Tilt/CMA-ES search log lines are noise for the full-matrix engine (its tilt search
+                        # is short-circuited to 1 gen and DISCARDED). Route them through _tlog: a no-op for
+                        # genetic_fullmatrix, the normal log for the tilt engines. (The reference-lean and
+                        # anchor lines are already gated inline the same way.)
+                        _tlog = (lambda *_a, **_k: None) if engine_key == "genetic_fullmatrix" else log
+                        _tlog(f"   CMA-ES (cross-cell per-MID 3-axis tilt, {_n_mid} vampMids): λ={_ga_pop}, gen cap={_ga_gen} "
                             "(covariance-adapted + reseeded restarts + polish). dial 0 = risk-MINIMISED compliant; "
                             "dial 99 = max-revenue compliant; blended between (monotonic frontier); dial 100 = uncapped revenue ceiling.")
                         # [FN-339]
@@ -3962,7 +4219,7 @@ def render():
                                         if _bk in ("loky", "multiprocessing") and _JL_INNER_OK:
                                             _pk["inner_max_num_threads"] = 1   # avoid BLAS oversubscription
                                         _t_par0 = _st_t.time()
-                                        log(f"   multi-seed GA (risk-min endpoint): launching "
+                                        _tlog(f"   multi-seed GA (risk-min endpoint): launching "
                                             f"{int(_N_SEED)} seed(s) across {_njobs} {_bk} worker(s) "
                                             f"— gens≤{int(_ga_gen)}, pop={int(_ga_pop)} each; "
                                             f"≥{_total_cand:,} candidate splits (more with restart λ-growth), "
@@ -4106,7 +4363,7 @@ def render():
                                             f"— {_nbi.get('reason', 'unknown')}")
                                     _ns = _nbi.get("n_sample")
                                     if _ns:
-                                        log(f"      verified on    : {int(_ns)} sample genomes "
+                                        _tlog(f"      verified on    : {int(_ns)} sample genomes "
                                             "(θ=0 base + warm-start + random draws)")
                                     # Per-worker cache diagnostic: how each seed's FIRST eval timed.
                                     # <1s = worker LOADED the cached kernel; tens of seconds = it
@@ -4263,7 +4520,7 @@ def render():
                         # (dial 0) end below. Trade-off: in a rare case the search might beat greedy on
                         # revenue here — that upside is now forgone (greedy is the no-regression floor).
                         _comp_endpoint_G = _comp_share_G   # dial 99 = max-revenue compliant (greedy + LP)
-                        log(f"   revenue-max (dial 99) endpoint: greedy revenue-compliant split "
+                        _tlog(f"   revenue-max (dial 99) endpoint: greedy revenue-compliant split "
                             f"${_rev_of(_comp_share_G):,.0f} (CMA-ES revenue search removed — greedy is "
                             f"LP-optimal here, so its result was always discarded).")
                         _progress(_f_rmin, "GA risk-min endpoint…")
@@ -4281,8 +4538,13 @@ def render():
                         # ranking keeps from generation 0. This is equivalent to ref_gamma = 0, so
                         # _leaned_ref is a no-op; set a positive value to re-enable the lean.
                         _ref_gamma_auto = 0.0
-                        log("   reference lean: OFF (γ=0) — compliant start comes from the "
-                            "compliant + band-aware constrained-projection warm-start seeds.")
+                        # The reference lean (γ) is a TILT-engine device only; it never touches the
+                        # full-matrix engine (that short-circuited tilt search is discarded, and full-matrix
+                        # seeds straight from the band-aware warm-start below). So only log it for the tilt
+                        # engines — for full-matrix the message would be misleading.
+                        if engine_key != "genetic_fullmatrix":
+                            log("   reference lean: OFF (γ=0) — compliant start comes from the "
+                                "compliant + band-aware constrained-projection warm-start seeds.")
                         _safe_wall0 = _gatime.time()
                         # risk-min endpoint (dial 0): same GA (EXACT in-search band scoring; read-only
                         # true-band readout, no correction), with the
@@ -4302,12 +4564,21 @@ def render():
                             if (_ga_bands and ctx.get("exact_bands") is not None
                                     and isinstance(ctx.get("_exact_bands_selfcheck"), dict)
                                     and ctx["_exact_bands_selfcheck"].get("inc") is not None):
-                                _band_greedy_G = _gg.band_greedy_shares(
+                                # MULTI-START the constrained projection: run from the base split + a few
+                                # jittered starts and keep the fewest-unmet result, so the feasibility verdict
+                                # (and the seed the GA inherits) isn't pinned to one starting corner. Each
+                                # start is the ~seconds greedy, so a handful is still tiny vs the GA.
+                                _feas_starts = max(1, int(ss.get("fm_feas_starts", 4) or 1))
+                                _band_greedy_G, _bg_key = _gg.band_greedy_shares_multi(
                                     np.asarray(_comp_share_G, float),
                                     ctx["cell_starts"], ctx["cell_counts"], ctx["elig"],
                                     ctx["mid_rows"], _mids_u,
                                     ctx["exact_bands"], ctx["_exact_bands_selfcheck"]["inc"],
-                                    max_share=float(ctx.get("max_share", 1.0) or 1.0))
+                                    max_share=float(ctx.get("max_share", 1.0) or 1.0),
+                                    n_starts=_feas_starts, rng_seed=0)
+                                if _feas_starts > 1:
+                                    log(f"   feasibility projection: {_feas_starts} starts "
+                                        f"(base + {_feas_starts - 1} jittered) — kept the fewest-unmet result.")
                                 # Confirm the band-aware seed is LIVE + emit a FEASIBILITY CHECK: run
                                 # the exact projector on the constrained-projection seed (min band
                                 # breach s.t. per-cell simplex + max-share) and report the verdict.
@@ -4422,9 +4693,14 @@ def render():
                                 _abp, _anm, _anchor = _scored[0]
                                 ctx["ref_share"] = np.ascontiguousarray(np.asarray(_anchor, float))
                                 _anchored = True
-                                log(f"   anchor: CMA-ES reference recentred on the lowest-breach seed "
-                                    f"('{_anm}', band breach {_abp:.4g}) — θ=0 now decodes to this compliant "
-                                    f"split, so the search STARTS here instead of losing it in the genome fit.")
+                                # This anchor recentres the TILT engine's CMA-ES reference. For the full-matrix
+                                # engine that tilt search is short-circuited (1 gen) and DISCARDED — full-matrix
+                                # is a plain GA that seeds from its own band-aware split — so don't emit this
+                                # CMA-ES message for it (it would be misleading).
+                                if engine_key != "genetic_fullmatrix":
+                                    log(f"   anchor: CMA-ES reference recentred on the lowest-breach seed "
+                                        f"('{_anm}', band breach {_abp:.4g}) — θ=0 now decodes to this compliant "
+                                        f"split, so the search STARTS here instead of losing it in the genome fit.")
                             except Exception as _ae:  # noqa: BLE001
                                 log(f"   anchor: skipped ({type(_ae).__name__}: {_ae}); default reference kept.")
                         _n_fine_rm = int(min(40, max(0, _n_cells)))   # #4 richer per-cell genome (bounded)
@@ -4473,11 +4749,23 @@ def render():
                                 with open(_rm_path, "rb") as _f_rm:
                                     _obj = _pk_rm.load(_f_rm)
                                 _safe_G, _inf2 = _obj["safe_G"], _obj["inf2"]
-                                log("   risk-min (dial 0): loaded from disk cache "
+                                _tlog("   risk-min (dial 0): loaded from disk cache "
                                     "(deterministic — identical to re-searching).")
                         except Exception:  # noqa: BLE001
                             _safe_G = _inf2 = None; _rm_path = None
-                        if _safe_G is None:
+                        if _safe_G is None and engine_key == "genetic_fullmatrix":
+                            # FULL-MATRIX: the tilt CMA-ES risk-min endpoint is DISCARDED by the full-matrix
+                            # override below, so do NOT run the search at all (this replaces the old trivial,
+                            # wasted 1-gen short-circuit). Use the already-built band-aware warm-start seed as
+                            # a valid stand-in for _safe_G so the shared downstream code stays defined — the
+                            # override overwrites _safe_endpoint_G/_comp_endpoint_G with the real full-matrix
+                            # result. (_comp_share_G is only a crash-proof fallback for this DISCARDED
+                            # placeholder; it is never the delivered full-matrix seed.)
+                            _safe_G = np.asarray(locals().get("_risk_greedy_G", _comp_share_G), float)
+                            _inf2 = None
+                            log("   [full-matrix] no preliminary endpoint search is run; the band-aware seed "
+                                "is used as the placeholder endpoint (the full-matrix GA is the delivered search).")
+                        elif _safe_G is None:
                             # dial-0: bands scaled by UI strength; reference lean OFF (γ=0, #8) — the
                             # compliant start comes from the warm-start seeds; richer per-cell genome (#4)
                             # + extra restarts (#3) at this harder end.
@@ -4558,7 +4846,7 @@ def render():
                         _safe_endpoint_G = _safe_G if _agg_mid_ok(_safe_G) else _comp_endpoint_G
                         _rate_of = lambda _sh: (float((_cvol * np.asarray(_sh, float) * _rkr).sum())
                                                 / max(float((_cvol * np.asarray(_sh, float)).sum()), 1e-9))
-                        log(f"   GA risk-min (dial 0) endpoint: aggregate VAMP rate {_rate_of(_safe_endpoint_G):.4f} "
+                        _tlog(f"   GA risk-min (dial 0) endpoint: aggregate VAMP rate {_rate_of(_safe_endpoint_G):.4f} "
                             f"vs revenue-max (dial 99) {_rate_of(_comp_endpoint_G):.4f}; revenue "
                             f"${_rev_of(_safe_endpoint_G):,.0f} vs ${_rev_of(_comp_endpoint_G):,.0f}.")
                         # [FN-346]
@@ -4648,44 +4936,324 @@ def render():
                                 _fm_inc = _fm_sc.get("inc") if isinstance(_fm_sc, dict) else None
                                 _fm_use_exact = (_fm_eb is not None and _fm_inc is not None)
                                 from routing_optimiser.band_scoring import shares_to_prop_raw as _fm_s2pr
-                                # SEED SELECTION: start from the LOWEST-breach available compliant split
-                                # (the band-aware constrained-projection seed / exact-projector seed), NOT
-                                # the band-oblivious _comp_share_G. The never-worse guarantee then forces
-                                # the delivered breach ≤ this seed's breach — so the search can only match
-                                # or beat the feasibility check, never regress below it (mirrors the tilt
-                                # 'anchor' step).
-                                _fm_seed = np.asarray(_comp_share_G, float)
+                                # SEED SELECTION: start from the LOWEST-breach BAND-AWARE compliant split
+                                # (the band-aware constrained-projection seed / exact-projector seed). The
+                                # band-OBLIVIOUS greedy+LP split (_comp_share_G) is NO LONGER a seed — it's
+                                # kept only as an emergency fallback if NO band-aware candidate exists, so the
+                                # engine always has a valid seed instead of crashing. The never-worse
+                                # guarantee then forces the delivered breach ≤ this seed's breach.
+                                _fm_cands = [(_n, _c) for _n, _c in
+                                             (("band-aware", locals().get("_risk_greedy_G")),
+                                              ("exact-proj", locals().get("_exact_G"))) if _c is not None]
+                                if not _fm_cands:
+                                    # NO fallback: the full-matrix engine MUST seed from a band-aware split.
+                                    # If neither the band-aware constrained-projection nor the exact-projector
+                                    # seed was produced, crash loudly — never seed off the band-oblivious
+                                    # greedy+LP split.
+                                    raise RuntimeError(
+                                        "[full-matrix] no band-aware seed available (neither the band-aware "
+                                        "constrained-projection nor the exact-projector seed was produced). "
+                                        "Refusing to fall back to the band-oblivious greedy+LP split — fix the "
+                                        "band-aware seed construction upstream. (engine=genetic_fullmatrix)")
+                                _fm_sname, _fm_seed = _fm_cands[0][0], np.asarray(_fm_cands[0][1], float)
                                 if _fm_use_exact:
+                                    # Eligibility-aware band scoring: reproduce the DELIVERED eligibility
+                                    # transform (bans→0 + per-cell renorm, wallet blend + renorm, USA-only
+                                    # blend + renorm) on the shares BEFORE the M5 band projection. This is the
+                                    # row-for-row twin of delivery-time _restrict/apply_restrictions (via the
+                                    # precomputed operator ctx["elig_op"], whose cell segments match the
+                                    # projector's). Without it the GA scored the RAW pre-eligibility split, so
+                                    # the live 'MID unmet' UNDER-counted vs tab 3's delivered breakdown (e.g. 3
+                                    # vs 5). No-op if eligibility is disabled (ROUTING_GA_ELIG=0 / elig_op None).
+                                    from routing_optimiser.eligibility import apply_elig_pop as _apply_elig_pop
+                                    _fm_elig_op = ctx.get("elig_op")
+                                    def _fm_elig(_farr, _op=_fm_elig_op, _ap=_apply_elig_pop):
+                                        return _ap(_farr, _op) if _op is not None else _farr
+                                    # BANK AUTO-BLOCK flooring — reproduce the DELIVERED _apply_blocked_caps in the
+                                    # band hook (delivery applies it BEFORE eligibility). Blocked (bank,gateway)
+                                    # rows are capped to the exploration floor and the freed share redistributed to
+                                    # the cell's non-blocked rows; a cell with no non-blocked recipient is left
+                                    # unchanged. Without this the delivered split (tab 3) can show 1 extra breach
+                                    # the GA never saw (the Adyen-TotalAV-NA Txn case). No-op if auto-block off.
+                                    _fm_blk_row = None
+                                    if _blk_pairs_pre:
+                                        try:
+                                            _bbm = {str(_k).strip().lower(): str(_v).strip().lower()
+                                                    for _k, _v in (bin_to_bank or {}).items()}
+                                            _gwL = G["gateway"].astype(str).str.strip().str.lower()
+                                            _bkL = G["bank"].astype(str).str.strip().str.lower()
+                                            _pkL = _bkL.map(lambda _b: _bbm.get(_b, _b))
+                                            _fm_blk_row = np.array(
+                                                [((_b, _g) in _blk_pairs_pre) or ((_p, _g) in _blk_pairs_pre)
+                                                 for _b, _p, _g in zip(_bkL, _pkL, _gwL)], dtype=bool)
+                                            if not _fm_blk_row.any():
+                                                _fm_blk_row = None
+                                        except Exception:  # noqa: BLE001
+                                            _fm_blk_row = None
+                                    _fm_bcs = np.asarray(ctx["cell_starts"], np.intp)
+                                    _fm_bcc = np.asarray(ctx["cell_counts"], np.intp)
+                                    _fm_bfloor = float(floor)
+                                    def _fm_block(_farr, _blk=_fm_blk_row, _cs=_fm_bcs, _cc=_fm_bcc, _fl=_fm_bfloor):
+                                        if _blk is None:
+                                            return _farr
+                                        _X = np.asarray(_farr, float)
+                                        _one = _X.ndim == 1
+                                        if _one:
+                                            _X = _X[None, :]
+                                        _bm = _blk[None, :]
+                                        _capd = np.where(_bm, np.minimum(_X, _fl), _X)     # blocked -> <= floor
+                                        _freed = _X - _capd                                # >=0 on blocked rows
+                                        _recip = np.where(_bm, 0.0, _capd)                 # non-blocked recipients
+                                        _fc = np.repeat(np.add.reduceat(_freed, _cs, axis=1), _cc, axis=1)
+                                        _rc = np.repeat(np.add.reduceat(_recip, _cs, axis=1), _cc, axis=1)
+                                        _has = _rc > 1e-12
+                                        _add = np.where(_has, _recip * _fc / np.where(_has, _rc, 1.0), 0.0)
+                                        _outb = np.where(_has, _capd + _add, _X)           # no recipient → unchanged
+                                        return _outb[0] if _one else _outb
+                                    # Combined DELIVERY transform: block-floor THEN eligibility (delivery order).
+                                    def _fm_deliv(_farr, _bl=_fm_block, _el=_fm_elig):
+                                        return _el(_bl(_farr))
                                     def _fm_breach(_sv):
                                         return float(_fm_eb.penalty(_fm_s2pr(
-                                            np.asarray(_sv, float)[None, :], _fm_inc))[0])
+                                            _fm_deliv(np.asarray(_sv, float)[None, :]), _fm_inc))[0])
                                     _fm_seed_b = _fm_breach(_fm_seed)
-                                    for _cnm, _cand in [("band-aware", locals().get("_risk_greedy_G")),
-                                                        ("exact-proj", locals().get("_exact_G"))]:
-                                        if _cand is None:
-                                            continue
+                                    for _cnm, _cand in _fm_cands[1:]:     # compare the remaining band-aware seeds
                                         _cb = _fm_breach(_cand)
                                         if _cb < _fm_seed_b:
-                                            _fm_seed, _fm_seed_b = np.asarray(_cand, float), _cb
-                                            log(f"   [full-matrix] seed → '{_cnm}' (exact M5 breach {_cb:.4g}).")
-                                    log(f"   [full-matrix] chosen seed exact M5 breach = {_fm_seed_b:.4g} "
+                                            _fm_seed, _fm_seed_b, _fm_sname = np.asarray(_cand, float), _cb, _cnm
+                                    log(f"   [full-matrix] seed = '{_fm_sname}', exact M5 breach = {_fm_seed_b:.4g} "
                                         "(never-worse guarantee: delivered breach ≤ this).")
                                 _fm_p, _fm_meta = _fm_prob(
                                     ctx, soft_cap_mult=1.0,
                                     seed_full=_fm_seed,
                                     mid_bands=({} if _fm_use_exact else _fm_bands))
                                 _fm_bpf = None
+                                _fm_report_fn = None
+                                _fm_deliv_full = None   # shared full-grain delivery (band + compress)
+                                _fm_gather = None       # full-grain → kept-grain gather (compress distortion)
+                                _fm_codebook_fn = None  # exact tab-3 ward/knapsack codebook (set below)
                                 if _fm_use_exact:
                                     _fm_colmap = np.asarray(_fm_meta["keep_idx"])[_fm_p.order]
                                     _fm_nrow = int(ctx["n_row"])
-                                    def _fm_bpf(_srt_sh, _eb=_fm_eb, _inc=_fm_inc,
-                                                _cm=_fm_colmap, _nr=_fm_nrow):
-                                        _f = np.zeros((_srt_sh.shape[0], _nr))
-                                        _f[:, _cm] = _srt_sh
-                                        return np.asarray(_eb.penalty(_fm_s2pr(_f, _inc)), dtype=float)
+                                    # DELIVERY, split so the engine computes it ONCE per evaluation and
+                                    # feeds BOTH the band penalty and the compress distortion (dedupe):
+                                    #   _fm_deliv_full : raw kept shares → scatter to full n_row grain → apply
+                                    #                    the SAME blocked-caps + eligibility transform delivery
+                                    #                    uses (_fm_deliv). Reuses a preallocated scatter buffer
+                                    #                    (non-mapped columns stay 0, exactly like np.zeros; the
+                                    #                    eligibility helpers never mutate their input in place,
+                                    #                    verified) so no (P×n_row) allocation per generation.
+                                    #   _fm_gather     : full-grain delivered → gather the kept rows back +
+                                    #                    per-cell renormalise (kept-grain shape for the
+                                    #                    distortion). Together bit-identical to the old
+                                    #                    scatter→deliver→gather done once per hook.
+                                    # Respects Country / paymentMethodProvider capability (USA-only + wallet)
+                                    # and bank auto-block flooring, since it IS the delivery transform.
+                                    _fm_scatter = {"buf": None}
+
+                                    def _fm_deliv_full(_srt_sh, _dv=_fm_deliv, _cm=_fm_colmap,
+                                                       _nr=_fm_nrow, _sc=_fm_scatter):
+                                        _X = np.asarray(_srt_sh, float)
+                                        _one = _X.ndim == 1
+                                        if _one:
+                                            _X = _X[None, :]
+                                        _P = _X.shape[0]
+                                        _b = _sc["buf"]
+                                        if _b is None or _b.shape[0] < _P:
+                                            _b = np.zeros((_P, _nr), float)
+                                            _sc["buf"] = _b
+                                        _f = _b[:_P]
+                                        _f[:, _cm] = _X                # non-mapped cols stay 0 (never written)
+                                        _d = _dv(_f)                    # full-grain delivered (a NEW array)
+                                        return _d[0] if _one else _d
+
+                                    def _fm_gather(_fd, _cm=_fm_colmap,
+                                                   _cs=_fm_p.cell_start, _cc=_fm_p.cell_len):
+                                        _D = np.asarray(_fd, float)
+                                        _one = _D.ndim == 1
+                                        if _one:
+                                            _D = _D[None, :]
+                                        _d = _D[:, _cm]                 # gather kept rows
+                                        _seg = np.repeat(np.add.reduceat(_d, _cs, axis=1), _cc, axis=1)
+                                        _d = np.where(_seg > 1e-12, _d / np.where(_seg > 1e-12, _seg, 1.0), _d)
+                                        return _d[0] if _one else _d
+
+                                    # FULL-MATRIX-ONLY: a small FIXED penalty per breached MID band, on
+                                    # top of the quadratic overshoot. The specs already carry the PRIORITY
+                                    # weight (prio1=1, prio2=0.125) and band_scoring multiplies the WHOLE
+                                    # penalty (fixed + quadratic) by it — so the fixed cost is priority-
+                                    # weighted automatically. Rebuilt on the SAME projector + specs, so the
+                                    # tilt engine's shared exact_bands (breach_fixed=0) is untouched.
+                                    # ss['fm_band_fixed'] tunes it; 0 disables.
+                                    _fm_bfix = float(ss.get("fm_band_fixed", 0.3) or 0.0)
+                                    _fm_eb_pen = _fm_eb
+                                    if _fm_bfix > 0:
+                                        from routing_optimiser.band_scoring import ExactBandPenalty as _EBP_fm
+                                        _fm_eb_pen = _EBP_fm(
+                                            _fm_eb.projector, _fm_eb.specs, breach_fixed=_fm_bfix,
+                                            breach_quad=float(getattr(_fm_eb, "breach_quad", 1.0)),
+                                            breach_shape=("exponential" if getattr(
+                                                _fm_eb, "penalty_is_exponential", False) else "quadratic"))
+                                        log(f"   [full-matrix] MID-breach FIXED penalty = {_fm_bfix:g}/band "
+                                            "(priority-weighted, on top of the quadratic overshoot) — favours "
+                                            "satisfying MORE bands, not just shrinking overshoot.")
+                                    # NOTE both hooks now receive the engine's SHARED full-grain DELIVERED
+                                    # array (blocked-caps + eligibility already applied, once per evaluation),
+                                    # so they only roll up to prop-raw + score — no per-hook scatter/deliver.
+                                    def _fm_bpf(_fd, _eb=_fm_eb_pen, _inc=_fm_inc):
+                                        return np.asarray(
+                                            _eb.penalty(_fm_s2pr(np.asarray(_fd, float), _inc)), dtype=float)
+
+                                    # Heartbeat readout: (# distinct MIDs with an unmet band, total
+                                    # MID-constraint penalty, sorted NAMES of the unmet MIDs) at one split
+                                    # — fed to the progress line so the live log shows WHICH bands are stuck.
+                                    def _fm_report_fn(_fd, _eb=_fm_eb_pen, _inc=_fm_inc):
+                                        _pr = _fm_s2pr(np.asarray(_fd, float), _inc)
+                                        _pen = float(np.asarray(_eb.penalty(_pr))[0])
+                                        _un = set()
+                                        for _rr in _eb.report(_pr):
+                                            _nw = float(_rr["now"])
+                                            if ((_rr["ceil"] is not None and _nw > float(_rr["ceil"]) + 1e-6)
+                                                    or (_rr["floor"] is not None
+                                                        and _nw < float(_rr["floor"]) - 1e-6)):
+                                                _un.add(_rr["midl"])
+                                        return len(_un), _pen, sorted(_un)
                                     log("   [full-matrix] EXACT M5 band projector wired into the fitness "
-                                        "(same pro-rata projection as the tilt engine; replaces the linear "
-                                        "30-day proxy). Bands: " + " · ".join(_fm_applied))
+                                        "(exact per-generation pro-rata M5 projection — no 30-day linear "
+                                        "proxy). Bands: " + " · ".join(_fm_applied))
+                                    # EXACT tab-3 CODEBOOK for the compressibility regularizer: drive it with
+                                    # the SAME ward/knapsack allocator tab-3/5 uses (kmeans_compress), not our
+                                    # own k-means. Each refresh the engine hands us the current best's DELIVERED
+                                    # shares (GA-sorted); we reconstruct a per-cell split at the GA grain (one
+                                    # compressor cell per GA cell via a unique bank key; gateway column = global
+                                    # vampMid id so centroid columns ARE mids), run the exact ward/knapsack
+                                    # clustering to the pool budget, and return each cell's cluster CENTROID as
+                                    # its regularizer target (assign=identity, cent=(n_cells,n_mid)) — so the
+                                    # regularizer pulls the split toward the shape tab-3 would actually ship.
+                                    # We call the deterministic allocator (_build_compress_context +
+                                    # _compress_with_context) directly — NOT compress_to_pool_budget, whose
+                                    # binary search needs config-generation (BigQuery/brand) and can't run per
+                                    # generation. Grouping = tab-3's default (rpgt×currency); pmp
+                                    # sub-segmentation is a deploy-time refinement, not applied here.
+                                    try:
+                                        _cb_ncells = int(_fm_p.n_cells)
+                                        _cb_nmid = int(_fm_p.n_mids)
+                                        _cb_rcell = np.repeat(np.arange(_cb_ncells), _fm_p.cell_len)
+                                        _cb_rbank = _cb_rcell.astype(str)                       # bank = cell id
+                                        _cb_rgw = np.asarray(_fm_p.mid_id, np.intp).astype(str)  # gateway = mid id
+                                        _cb_rvol = np.asarray(_fm_p.vol, float)
+                                        _first_full = np.asarray(_fm_colmap)[np.asarray(_fm_p.cell_start, np.intp)]
+                                        _cur_col = "currency" if "currency" in G.columns else None
+                                        _rpg_col = next((c for c in ("rpgt", "_rpgt") if c in G.columns), None)
+                                        _cell_cur = (G[_cur_col].astype(str).to_numpy()[_first_full]
+                                                     if _cur_col else np.array(["all"] * _cb_ncells))
+                                        _cell_rpg = (G[_rpg_col].astype(str).to_numpy()[_first_full]
+                                                     if _rpg_col else np.array(["all"] * _cb_ncells))
+                                        _cb_rcur = _cell_cur[_cb_rcell]   # broadcast per-cell key to its rows
+                                        _cb_rrpg = _cell_rpg[_cb_rcell]   # (keeps one pivot row per GA cell)
+                                        _cb_cap = float(locals().get("max_share", 0.97) or 0.97)
+                                        # Config-gen context for the periodic BUDGET calibration (same
+                                        # sources tab-3's pool_targeted_core uses — see tab-2 ⑥ block).
+                                        _cb_wc = ss.get("wallet_ctx") or {}
+                                        _cb_gl = ss.get("split_go_live_date", date.today())
+                                        _cb_company = str((ss.get("forecast_settings", {}) or {}).get(
+                                            "company", "TotalAV"))
+                                        try:
+                                            from routing_optimiser.connector_pool_configs import (
+                                                BRANDS as _CB_BRANDS, company_to_brand_key as _cb_c2b)
+                                            _cb_bk = _cb_c2b(_cb_company)
+                                            _cb_bn = _CB_BRANDS.get(_cb_bk, {}).get("name", _cb_company)
+                                        except Exception:  # noqa: BLE001
+                                            _cb_bk, _cb_bn = "tav", _cb_company
+                                        _cb_mlp = os.path.join(PROJECT_ROOT, "data", "mappings",
+                                                               "Master_MID_List.csv")
+                                        _cb_blk = _blk_pairs_pre
+                                        _cb_floor = float(floor)
+                                        _cb_bud = {"B": None, "n": 0}   # calibrated cell-budget cache
+
+                                        def _fm_codebook_fn(_sd_row, _nc=_cb_ncells, _nm=_cb_nmid,
+                                                            _bank=_cb_rbank, _gw=_cb_rgw, _vol=_cb_rvol,
+                                                            _cur=_cb_rcur, _rpg=_cb_rrpg, _cap=_cb_cap,
+                                                            _wc=_cb_wc, _gl=_cb_gl, _bn=_cb_bn, _bk=_cb_bk,
+                                                            _mlp=_cb_mlp, _blk=_cb_blk, _flr=_cb_floor,
+                                                            _bud=_cb_bud):
+                                            from routing_optimiser import kmeans_compress as _kmc
+                                            _sh = np.asarray(_sd_row, float)
+                                            _pools = int(ss.get("max_configs", 0) or 0) or 200
+                                            _meth = str(ss.get("compress_method", "ward"))
+                                            _alloc = str(ss.get("compress_allocation", "knapsack"))
+                                            # (A) BUDGET CALIBRATION — occasionally run the REAL pool-targeted
+                                            # compression (WITH config generation) on the reconstructed split to
+                                            # find the CELL budget that yields <= target GENERATED pools, then
+                                            # reuse that budget for the cheap per-refresh clustering. Config-gen
+                                            # can't run every generation, so recalibrate every
+                                            # ss['fm_budget_recalib_every'] codebook calls (default 3); the
+                                            # cells->pools relationship is stable enough between refits. Any
+                                            # failure keeps the last good budget (or the raw pool target on the
+                                            # first call), logged — never crashes the search.
+                                            _bud["n"] += 1
+                                            _recal = int(ss.get("fm_budget_recalib_every", 3) or 3)
+                                            if _bud["B"] is None or (_recal > 0 and (_bud["n"] - 1) % _recal == 0):
+                                                try:
+                                                    from impact_calcs import pool_targeted_core as _ptc
+                                                    _full = np.zeros(_fm_nrow, float)
+                                                    _full[_fm_colmap] = _sh
+                                                    try:
+                                                        _rs = _explode(_endpoint_agg(_full))
+                                                    except Exception:  # noqa: BLE001 - un-exploded G grain
+                                                        _rs = _endpoint_agg(_full)
+                                                    if _blk:
+                                                        try:
+                                                            _rs, _ = _apply_blocked_caps(_rs, _blk, float(_flr))
+                                                        except Exception:  # noqa: BLE001
+                                                            pass
+                                                    _cl_r, _st_r = _ptc(
+                                                        _rs, target_pools=int(_pools), wallet_ctx=_wc,
+                                                        brand_name=_bn, brand_key=_bk, go_live=str(_gl),
+                                                        mid_list_path=_mlp, mode="sales",
+                                                        method=_meth, allocation=_alloc)
+                                                    _bud["B"] = max(1, int(_st_r.get("cells", _pools) or _pools))
+                                                    log("   [full-matrix] budget calibration (real config-gen): "
+                                                        f"{int(_st_r.get('pools', 0) or 0)} pools at {_bud['B']} "
+                                                        f"cells (target {_pools}, "
+                                                        f"feasible={bool(_st_r.get('feasible', True))}) — reusing "
+                                                        f"this {_bud['B']}-cell budget for the next {_recal} "
+                                                        "refresh(es).")
+                                                except Exception as _be:  # noqa: BLE001
+                                                    if _bud["B"] is None:
+                                                        _bud["B"] = int(_pools)
+                                                    log("   [full-matrix] ⚠ budget calibration failed "
+                                                        f"({type(_be).__name__}: {_be}); using cell "
+                                                        f"budget={_bud['B']}.")
+                                            _budget = int(_bud["B"] or _pools)
+                                            # (B) cheap per-refresh clustering at the CALIBRATED budget
+                                            _df = pd.DataFrame({"rpgt": _rpg, "currency": _cur, "bank": _bank,
+                                                                "gateway": _gw, "share": _sh,
+                                                                "cell_volume": _vol})
+                                            _ctx = _kmc._build_compress_context(
+                                                _df, ("rpgt", "currency"), _cap, 60, 42,
+                                                method=_meth, allocation=_alloc)
+                                            _cl, _st, _kcur = _kmc._compress_with_context(_ctx, int(_budget))
+                                            _cent = np.zeros((_nc, _nm), float)
+                                            if len(_cl):
+                                                _bkm = _cl["bank"].to_numpy(); _g = _cl["gateway"].to_numpy()
+                                                _sv = _cl["share"].to_numpy(float)
+                                                _cent[_bkm.astype(np.intp), _g.astype(np.intp)] = _sv
+                                            _assign = np.arange(_nc, dtype=np.intp)
+                                            _cconst = (_cent * _cent).sum(axis=1)
+                                            return _assign, _cent, _cconst
+                                        log("   [full-matrix] compressibility codebook = EXACT tab-3 "
+                                            f"{str(ss.get('compress_method','ward'))}/"
+                                            f"{str(ss.get('compress_allocation','knapsack'))} allocator "
+                                            "(grouped rpgt×currency, gateway=vampMid); cell budget calibrated "
+                                            "against REAL generated-pool counts every "
+                                            f"{int(ss.get('fm_budget_recalib_every', 3) or 3)} refresh(es) — "
+                                            "regularizer target IS the tab-3 compressed split.")
+                                    except Exception as _cbe:  # noqa: BLE001
+                                        log(f"   [full-matrix] ⚠ exact tab-3 codebook wiring failed "
+                                            f"({type(_cbe).__name__}: {_cbe}) — the engine will use its "
+                                            "internal volume-weighted k-means codebook instead.")
+                                        _fm_codebook_fn = None
                                 elif _fm_applied:
                                     log("   [full-matrix] ⚠ exact band projector unavailable — using the "
                                         "LINEAR 30-day proxy (verify vs the tilt band readout): "
@@ -4713,18 +5281,35 @@ def render():
                                     f"{_fm_pop} · restart-mode {_fm_rmode}; "
                                     + ("early-stop DISABLED (run-all-generations ON)"
                                        if _fm_no_stop else f"patience {_fm_pat}") + ".")
+                                _fm_clam = float(ss.get("fm_compress_lambda", 0.0) or 0.0)
+                                # Codebook size = the deployable-pool target (same knob tab-3/5 compress to);
+                                # 0/unset ⇒ 200. Refit cadence from ss (default every 8 gens). The learned
+                                # codebook + delivered-shape scoring replace the old fixed currency×rpgt
+                                # grouping — see genetic_fullmatrix for the objective.
+                                _fm_pools = int(ss.get("max_configs", 0) or 0) or 200
+                                _fm_refresh = max(1, int(ss.get("fm_compress_refresh", 8) or 8))
+                                if _fm_clam > 0 and _fm_deliv_full is None:
+                                    log("   [full-matrix] ⚠ compressibility λ set but no delivery transform "
+                                        "available (exact-bands path off) — the regularizer will score RAW "
+                                        "pre-eligibility shapes.")
                                 _fm_best, _fm_info = _fm_run(
                                     _fm_p, reference_shares=_fm_meta["reference_kept"],
                                     pop_size=_fm_pop, generations=_fm_gens, patience=_fm_pat,
                                     n_seeds=_fm_nseeds, restarts=_fm_restarts,
                                     restart_mode=_fm_rmode, seed=0, log_fn=log,
                                     numba=True,   # verify-gated; self-falls-back to numpy
-                                    band_penalty_fn=_fm_bpf)
+                                    band_penalty_fn=_fm_bpf, band_report_fn=_fm_report_fn,
+                                    compress_lambda=_fm_clam, compress_pools=_fm_pools,
+                                    compress_refresh=_fm_refresh,
+                                    deliver_full_fn=_fm_deliv_full, gather_fn=_fm_gather,
+                                    codebook_fn=_fm_codebook_fn)
                                 _fm_full = _fm_recon(_fm_best, _fm_meta)
                                 if _fm_use_exact and _fm_bpf is not None:
                                     try:   # self-check: delivered split's EXACT M5 breach (compare to tilt)
+                                        # Now matches the delivered split exactly: bank auto-block flooring THEN
+                                        # eligibility (bans/wallet/USA), the same two transforms delivery applies.
                                         _fm_brc = float(_fm_eb.penalty(_fm_s2pr(
-                                            np.asarray(_fm_full, float)[None, :], _fm_inc))[0])
+                                            _fm_deliv(np.asarray(_fm_full, float)[None, :]), _fm_inc))[0])
                                         log(f"   [full-matrix] delivered split EXACT M5 band breach = "
                                             f"{_fm_brc:.4g}  (0 = all month bands met; compare to the "
                                             "tilt per-MID breakdown above — should be consistent).")
@@ -4734,7 +5319,7 @@ def render():
                                     f"candidate splits over {_fm_info['generations_run']} "
                                     f"generations (pop {_fm_info['pop_size']}); "
                                     f"vwsr={_fm_info['vwsr']:.5f} "
-                                    f"viol={_fm_info['violation']:.2e} "
+                                    f"viol={_fm_info['violation']:,.4f} "
                                     f"feasible={_fm_info['feasible']} "
                                     f"improved_over_compliant_seed={_fm_info['improved_over_seed']}")
                                 # ④ EFFICIENCY — the FULL-MATRIX engine's OWN stats (the tilt-endpoint
@@ -4745,7 +5330,7 @@ def render():
                                 log(f"      settings   : {_fm_nseeds} seed(s) × {_fm_restarts} restart(s) × "
                                     f"{_fm_gens} gens × pop {_fm_pop} · restart-mode={_fm_rmode}")
                                 log(f"      result     : vwsr {_fm_info.get('vwsr', float('nan')):.5f} · "
-                                    f"viol {_fm_info.get('violation', float('nan')):.2e} · "
+                                    f"viol {_fm_info.get('violation', float('nan')):,.4f} · "
                                     f"feasible={_fm_info.get('feasible')}")
                                 if _fm_cnt > 0 and _fm_secs > 0:
                                     log(f"      search cost: {_fm_cnt:,} candidate splits in {_fm_secs:.0f}s "
@@ -4759,8 +5344,13 @@ def render():
                                 _safe_endpoint_G = _fm_full
                                 _comp_endpoint_G = _fm_full
                             except Exception as _fme:  # noqa: BLE001
-                                log(f"   [full-matrix] FAILED ({type(_fme).__name__}: {_fme}); "
-                                    "falling back to the CMA-ES risk-min endpoint.")
+                                # NO silent fallback: there is no preliminary endpoint to fall back to, so
+                                # crash loudly with the full traceback (matches the project's crash-loud policy).
+                                import traceback as _fm_tb
+                                log(f"   [full-matrix] FAILED ({type(_fme).__name__}: {_fme}) — crashing "
+                                    "loudly (no fallback; the full-matrix GA is the only search). "
+                                    "Traceback:\n" + _fm_tb.format_exc())
+                                raise
 
                         # ENFORCEMENT REMOVED — a single dial-0 variation only. The delivered split is
                         # the GA / CMA-ES risk-min endpoint (_safe_endpoint_G) with ONLY the eligibility

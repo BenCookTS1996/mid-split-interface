@@ -75,7 +75,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress"
+__build__ = "2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -659,6 +659,184 @@ if _HAS_NUMBA:                                       # pragma: no cover - env de
     _fused_eval_kernel = _njit(cache=True, parallel=True)(_fused_eval_kernel)
 
 
+# ---------------------------------------------------------------------------
+# Compressibility regularizer — VECTOR-QUANTIZATION distortion vs a learned codebook
+# ---------------------------------------------------------------------------
+# The λ_compress reward pushes cells to route ALIKE so the final split collapses into
+# few deployable configs. Concretely we learn a CODEBOOK of ~pool-target centroid shapes
+# (volume-weighted k-means over the ELITE's per-vampMid cell shapes, refreshed as the
+# elite improves — the same KIND of clustering tab-3 compression uses) and penalise each
+# candidate by its volume-weighted quantization error against that codebook:
+#     D_i = Σ_cells vol_c · ‖shape_ic − centroid[assign_c]‖²  / total_vol .
+# shape_ic[m] = Σ_{rows in cell c with vampMid m} share is the cell's shape (0 on absent
+# mids). This is NOT a 'fewer-gateways' reward: two cells with the SAME shape (however
+# spread across mids) cost 0; a cell that routes DIFFERENTLY from its codebook centroid
+# pays. Scored on DELIVERED shares (post eligibility + blocked-caps) so it rewards what
+# actually ships. Kernel is Numba-fused (verify-gated vs the numpy twin); the periodic
+# codebook refit is numpy/sklearn (cheap relative to per-generation evaluation).
+def _compress_distortion_kernel(shares, cell_starts, cell_counts, mid_id, vol,
+                                assign, cent, cconst, n_mid, total_vol):
+    """Volume-weighted VQ distortion of a population vs a FIXED codebook.
+
+    ‖shape − c_k‖² = Σ_m shape_m² − 2 Σ_m shape_m·c_k,m + ‖c_k‖²  (‖c_k‖²=cconst[k]),
+    so only a cell's OWN rows are touched; the absent-mid tail is the constant cconst[k].
+    Numba-safe: scalar loops + one thread-local n_mid buffer, cleared per cell. Each
+    candidate i writes only out[i] (no cross-candidate reduction) so _prange is
+    bit-identical to serial — the verify-gate confirms it. Returns distortion[P].
+    """
+    P = shares.shape[0]
+    n_cells = cell_starts.shape[0]
+    out = np.zeros(P)
+    for i in _prange(P):
+        buf = np.zeros(n_mid)
+        acc = 0.0
+        for c in range(n_cells):
+            s = cell_starts[c]
+            n = cell_counts[c]
+            k = assign[c]
+            for j in range(n):               # accumulate this cell's per-mid shape
+                buf[mid_id[s + j]] += shares[i, s + j]
+            term_sq = 0.0
+            term_cross = 0.0
+            for j in range(n):               # consume buf once per mid, then clear it
+                mm = mid_id[s + j]
+                b = buf[mm]
+                if b != 0.0:
+                    term_sq += b * b
+                    term_cross += b * cent[k, mm]
+                    buf[mm] = 0.0
+            acc += vol[s] * (term_sq - 2.0 * term_cross + cconst[k])
+        out[i] = acc / total_vol
+    return out
+
+
+if _HAS_NUMBA:                                       # pragma: no cover - env dependent
+    _compress_distortion_kernel = _njit(cache=True, parallel=True)(_compress_distortion_kernel)
+
+
+def _compress_distortion_numpy(shares, cell_start, cell_len, mid_id, vol,
+                               assign, cent, cconst, n_mid, total_vol):
+    """Vectorised twin of ``_compress_distortion_kernel`` (the verify-gate reference).
+    ``cconst`` is accepted for signature parity but unused (the full diff is formed)."""
+    sh = np.atleast_2d(np.asarray(shares, float))
+    P = sh.shape[0]
+    n_cells = cell_start.shape[0]
+    cm = np.zeros((P, n_cells, n_mid))
+    for m in range(n_mid):
+        cm[:, :, m] = np.add.reduceat(sh * (mid_id == m), cell_start, axis=1)
+    diff = cm - cent[assign][None, :, :]                     # (P, n_cells, n_mid)
+    d2 = (diff * diff).sum(axis=2)                           # (P, n_cells)
+    cvol = vol[cell_start]                                   # (n_cells,) cell volume
+    return (d2 * cvol[None, :]).sum(axis=1) / (float(total_vol) or 1.0)
+
+
+def _lloyd_weighted(X, w, k, seed, iters=50):
+    """Deterministic volume-weighted Lloyd k-means (numpy fallback when sklearn is
+    absent). k-means++ init, `iters` refinements. Returns (labels[intp], centroids)."""
+    rng = np.random.default_rng(seed)
+    n = X.shape[0]
+    k = int(max(1, min(k, n)))
+    w = np.maximum(np.asarray(w, float), 1e-12)
+    # weighted k-means++ seeding
+    c0 = int(rng.integers(0, n))
+    cents = [X[c0]]
+    d2 = ((X - cents[0]) ** 2).sum(axis=1)
+    for _ in range(1, k):
+        p = (d2 * w)
+        tot = p.sum()
+        idx = int(rng.integers(0, n)) if tot <= 0 else int(np.searchsorted(np.cumsum(p / tot), rng.random()))
+        idx = min(max(idx, 0), n - 1)
+        cents.append(X[idx])
+        d2 = np.minimum(d2, ((X - X[idx]) ** 2).sum(axis=1))
+    C = np.asarray(cents, float)
+    labels = np.zeros(n, np.intp)
+    for _ in range(iters):
+        dists = ((X[:, None, :] - C[None, :, :]) ** 2).sum(axis=2)   # (n, k)
+        new = dists.argmin(axis=1).astype(np.intp)
+        if _ and np.array_equal(new, labels):
+            labels = new
+            break
+        labels = new
+        for j in range(k):
+            m = labels == j
+            if m.any():
+                C[j] = (X[m] * w[m, None]).sum(axis=0) / w[m].sum()
+    return labels, C
+
+
+def _fit_codebook(shape_mat, cvol, pools, seed):
+    """Learn a codebook of centroid SHAPES from per-cell shapes (volume-weighted, so
+    high-volume cells pull the centroids — matching tab-3's compressor). K = min(pools,
+    n_cells). Returns (assign[intp] (n_cells,), cent (K,n_mid), cconst (K,) = ‖cent‖²)."""
+    X = np.ascontiguousarray(shape_mat, float)
+    w = np.maximum(np.asarray(cvol, float), 1e-12)
+    n_cells = X.shape[0]
+    K = int(max(1, min(int(pools), n_cells)))
+    try:                                             # sklearn matches tab-3's KMeans
+        from sklearn.cluster import KMeans          # lazy: engine stays numpy-only if absent
+        km = KMeans(n_clusters=K, n_init=2, max_iter=50, random_state=int(seed))
+        km.fit(X, sample_weight=w)
+        assign = km.labels_.astype(np.intp)
+        cent = np.ascontiguousarray(km.cluster_centers_, float)
+    except Exception:                                # noqa: BLE001 - numpy fallback
+        assign, cent = _lloyd_weighted(X, w, K, seed)
+        cent = np.ascontiguousarray(cent, float)
+    cconst = np.ascontiguousarray((cent * cent).sum(axis=1), float)
+    return assign, cent, cconst
+
+
+def _cell_shape_matrix(shares_row, cell_start, mid_id, n_mid):
+    """Per-cell per-vampMid shape matrix for ONE split: (n_cells, n_mid)."""
+    sh = np.asarray(shares_row, float)[None, :]
+    n_cells = cell_start.shape[0]
+    cm = np.zeros((n_cells, n_mid))
+    for m in range(n_mid):
+        cm[:, m] = np.add.reduceat(sh[0] * (mid_id == m), cell_start)
+    return cm
+
+
+def make_distortion(problem, *, use_numba=False, verify=True, rng=None):
+    """Return (dist_fn, backend). dist_fn(shares_pop, assign, cent, cconst) -> D[P].
+    numpy by default; the njit kernel is verified bit-exact vs numpy on a random codebook
+    (any mismatch/error → numpy), so the codebook may change each refresh without re-verify."""
+    p = problem
+    cs = np.ascontiguousarray(p.cell_start, np.intp)
+    cc = np.ascontiguousarray(p.cell_len, np.intp)
+    mid = np.ascontiguousarray(p.mid_id, np.intp)
+    vol = np.ascontiguousarray(p.vol, float)
+    nmid = int(p.n_mids)
+    tv = float(_cell_volume_total(p)) or 1.0
+
+    def _np(shares, assign, cent, cconst):
+        return _compress_distortion_numpy(shares, cs, cc, mid, vol,
+                                          np.asarray(assign, np.intp), cent, cconst, nmid, tv)
+
+    fn, backend = _np, "numpy"
+    if use_numba and _HAS_NUMBA:
+        try:                                         # pragma: no cover - env dependent
+            _rng = rng or np.random.default_rng(0)
+            K = int(max(1, min(8, p.n_cells)))
+            a = _rng.integers(0, K, size=p.n_cells).astype(np.intp)
+            ct = np.ascontiguousarray(_rng.random((K, nmid)), float)
+            kc = np.ascontiguousarray((ct * ct).sum(axis=1), float)
+            _R = int(p.cell_id.shape[0])
+            sh = np.ascontiguousarray(
+                _segment_softmax(_rng.standard_normal((3, _R)), cs, cc), float)
+            ref = _np(sh, a, ct, kc)
+            got = _compress_distortion_kernel(sh, cs, cc, mid, vol, a, ct, kc, nmid, tv)
+            if np.allclose(ref, got, rtol=1e-9, atol=1e-12):
+                def fn(shares, assign, cent, cconst):
+                    return _compress_distortion_kernel(
+                        np.ascontiguousarray(shares, float), cs, cc, mid, vol,
+                        np.ascontiguousarray(assign, np.intp),
+                        np.ascontiguousarray(cent, float),
+                        np.ascontiguousarray(cconst, float), nmid, tv)
+                backend = "numba"
+        except Exception:                            # noqa: BLE001
+            fn, backend = _np, "numpy"
+    return fn, backend
+
+
 def make_fused_eval(problem, *, use_numba=False, verify=True, rng=None):
     """Return (eval_pop, info). eval_pop(logits_pop) -> (vwsr, viol).
 
@@ -768,8 +946,10 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                       pop_size=60, generations=120, elite=6,
                       mutation_rate=0.3, mutation_strength=0.4,
                       patience=25, seed=0, log_fn=None, numba=False,
-                      band_penalty_fn=None, n_seeds=1, restarts=1,
-                      restart_mode="lean"):
+                      band_penalty_fn=None, band_report_fn=None, n_seeds=1, restarts=1,
+                      restart_mode="lean", compress_lambda=0.0,
+                      compress_pools=200, compress_refresh=8, deliver_fn=None,
+                      codebook_fn=None, deliver_full_fn=None, gather_fn=None):
     """Evolve a full-matrix BIN-grain split that maximises VWSR under dual VAMP
     ceilings, hugging the boundary via adaptive tolerance.
 
@@ -796,18 +976,121 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     eval_pop, _eval_info = make_fused_eval(p, use_numba=numba)
     log(f"[fullmatrix-ga] evaluator backend={_eval_info.get('backend')}"
         + (f" ({_eval_info.get('reason')})" if _eval_info.get('reason') else ""))
+    # Make the parallelism visible: numba defaults NUMBA_NUM_THREADS to ALL cores for the
+    # parallel=True kernels (each candidate writes only its own slot, so more threads scale
+    # throughput WITHOUT reordering any float sum — bit-identical). If this logs 1, or the
+    # backend above is 'numpy', the search is NOT using the fast path — investigate before
+    # chasing other speedups.
+    if _eval_info.get("backend") == "numba":
+        try:                                            # pragma: no cover - env dependent
+            import numba as _nb
+            log(f"[fullmatrix-ga] numba threads={_nb.get_num_threads()} "
+                f"(of {_nb.config.NUMBA_DEFAULT_NUM_THREADS} detected cores); "
+                "set NUMBA_NUM_THREADS to override.")
+        except Exception:                               # noqa: BLE001
+            pass
 
     # EXACT band penalty (optional). When `band_penalty_fn` is supplied, the kernel's
     # (linear) band term is expected OFF (mid_band_metric all 0), and the exact
     # per-generation M5 band breach is ADDED here from the caller's projector. It maps
     # sorted kept-row shares -> full opt-grain shares internally. This is the faithful
     # replacement for the 30-day linear proxy (matches the tilt engine's band scoring).
+    # COMPRESSIBILITY REGULARIZER (λ_compress ≥ 0). Rewards cells COLLAPSING ONTO A SHARED CODEBOOK of
+    # shapes so the split compresses into few deployable configs. We LEARN a codebook of ≈`compress_pools`
+    # centroid shapes (volume-weighted k-means over the ELITE's per-vampMid cell shapes — the same KIND of
+    # clustering tab-3 compression uses — refreshed every `compress_refresh` gens as the elite improves) and
+    # subtract from VWSR the volume-weighted VQ distortion of each candidate against that codebook
+    # (‖cell_shape − nearest-assigned centroid‖²). This is NOT a 'fewer-gateways' reward: two cells with the
+    # SAME shape (however spread across mids) cost 0; a cell that routes DIFFERENTLY from its centroid pays.
+    # Scored on DELIVERED shares (post blocked-caps + eligibility via `deliver_fn`) so it rewards what
+    # actually ships — a gateway a cell can't use (Country / paymentMethodProvider capability) never enters
+    # its delivered shape. Distortion is the Numba-fused kernel (verify-gated); the codebook refit is
+    # numpy/sklearn. λ=0 ⇒ today's behaviour (regularizer OFF, no per-generation cost).
+    _compress_on = float(compress_lambda or 0.0) > 0.0
+    _clam = float(compress_lambda or 0.0)
+    _cb = {"assign": None, "cent": None, "cconst": None, "src": None}   # codebook (refreshed in-loop)
+    # DELIVERY DEDUPE: the band penalty and the compress distortion BOTH need the
+    # eligibility + blocked-caps DELIVERED shares. When the caller supplies both
+    # `deliver_full_fn` (raw kept (P,R) shares → full-grain delivered (P,n_row)) and
+    # `gather_fn` (full-grain → kept-grain (P,R) for the distortion), the engine computes
+    # the delivered array ONCE per evaluation and feeds BOTH — instead of each hook
+    # scattering+delivering independently (which ran the whole transform twice per
+    # generation when λ>0). Bit-identical: the same deterministic transform, reused. With
+    # those hooks absent it falls back to the old per-hook delivery (band delivers on the
+    # raw shares it's given; compress uses `deliver_fn`).
+    _have_full = callable(deliver_full_fn) and callable(gather_fn)
+    _deliver = deliver_fn if callable(deliver_fn) else (lambda _X: _X)
+
+    def _deliver_full(sh):
+        """Raw kept (P,R) shares → full-grain delivered (P,n_row); None if no deduped hook."""
+        return deliver_full_fn(sh) if _have_full else None
+
+    def _deliver_kept(sh, fd):
+        """Kept-grain delivered (P,R) for the distortion, reusing the shared full delivery."""
+        if _have_full:
+            return np.asarray(gather_fn(fd), float)
+        return np.asarray(_deliver(sh), float)
+
+    if _compress_on:
+        _nmid = int(p.n_mids)
+        _cvol = np.asarray(p.vol[p.cell_start], float)            # (n_cells,) cell volume
+        _dist_fn, _dist_backend = make_distortion(p, use_numba=numba)
+
+        def _refresh_codebook(logits_row):
+            """(Re)learn the codebook from ONE split's DELIVERED per-cell shapes.
+
+            When ``codebook_fn`` is supplied (the caller's EXACT tab-3 ward/knapsack
+            compressor), it maps the delivered GA-grain shares to (assign, cent, cconst)
+            at the per-vampMid grain — so the regularizer's target IS the split tab-3
+            would ship. On any failure we fall back to the internal volume-weighted
+            k-means codebook (logged, never silent), so the search never stalls."""
+            _s = _segment_softmax(np.asarray(logits_row, float)[None, :], p.cell_start, p.cell_len)
+            _fd = _deliver_full(_s)
+            _sd = _deliver_kept(_s, _fd)                          # (1, R) delivered shares
+            if callable(codebook_fn):
+                try:
+                    _a, _ct, _kc = codebook_fn(_sd[0])
+                    _cb["assign"] = np.ascontiguousarray(_a, np.intp)
+                    _cb["cent"] = np.ascontiguousarray(_ct, float)
+                    _cb["cconst"] = np.ascontiguousarray(_kc, float)
+                    _cb["src"] = "callback"
+                    return
+                except Exception as _cbe:                          # noqa: BLE001
+                    log(f"[fullmatrix-ga] codebook_fn failed ({type(_cbe).__name__}: {_cbe}) — "
+                        "falling back to the internal volume-weighted k-means codebook this refresh.")
+            _shape = _cell_shape_matrix(_sd[0], p.cell_start, p.mid_id, _nmid)
+            _a, _ct, _kc = _fit_codebook(_shape, _cvol, compress_pools, int(seed))
+            _cb["assign"], _cb["cent"], _cb["cconst"], _cb["src"] = _a, _ct, _kc, "kmeans"
+
     def _eval_with_bands(logits):
         v, x = eval_pop(logits)
-        if band_penalty_fn is not None:
-            sh = _segment_softmax(logits, p.cell_start, p.cell_len)
-            x = x + np.asarray(band_penalty_fn(sh), dtype=float)
+        _need_band = band_penalty_fn is not None
+        _need_comp = _compress_on and _cb["cent"] is not None
+        if not (_need_band or _need_comp):
+            return v, x
+        _sh = _segment_softmax(logits, p.cell_start, p.cell_len)
+        _fd = _deliver_full(_sh)                                  # shared delivery — computed ONCE
+        if _need_band:
+            x = x + np.asarray(band_penalty_fn(_fd if _have_full else _sh), dtype=float)
+        if _need_comp:
+            _sd = _deliver_kept(_sh, _fd)
+            v = v - _clam * np.asarray(
+                _dist_fn(_sd, _cb["assign"], _cb["cent"], _cb["cconst"]), dtype=float)
         return v, x
+
+    def _rescore_compress(logits, keep_viol):
+        """Re-score ONLY the compress term of vwsr under the CURRENT codebook, keeping the
+        supplied violation. The band penalty is codebook-independent, so it is NOT recomputed
+        — this is what lets a codebook refresh skip the whole-population band projection.
+        Returns (vwsr, keep_viol), bit-identical to what _eval_with_bands would produce."""
+        _bv, _ = eval_pop(logits)
+        if _compress_on and _cb["cent"] is not None:
+            _sh = _segment_softmax(logits, p.cell_start, p.cell_len)
+            _fd = _deliver_full(_sh)
+            _sd = _deliver_kept(_sh, _fd)
+            _bv = _bv - _clam * np.asarray(
+                _dist_fn(_sd, _cb["assign"], _cb["cent"], _cb["cconst"]), dtype=float)
+        return _bv, keep_viol
 
     # --- seed logits (reference mapped to sorted order) ---
     if reference_shares is None:
@@ -820,8 +1103,25 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     s0 = _segment_softmax(seed_logits[None, :], p.cell_start, p.cell_len)
     seed_vwsr = _vwsr(s0, p.vol, p.succ, total_vol)[0]
     seed_viol = _violation(s0, p)[0]
+    _fd0 = _deliver_full(s0) if (band_penalty_fn is not None or _compress_on) else None
     if band_penalty_fn is not None:
-        seed_viol = seed_viol + float(np.asarray(band_penalty_fn(s0), dtype=float)[0])
+        seed_viol = seed_viol + float(np.asarray(
+            band_penalty_fn(_fd0 if _have_full else s0), dtype=float)[0])
+    if _compress_on:
+        _refresh_codebook(seed_logits)                            # learn the initial codebook from the seed
+        _k0 = 0 if _cb["cent"] is None else _cb["cent"].shape[0]
+        _sd0 = _deliver_kept(s0, _fd0)
+        seed_vwsr = seed_vwsr - _clam * float(np.asarray(
+            _dist_fn(_sd0, _cb["assign"], _cb["cent"], _cb["cconst"])).reshape(-1)[0])
+        _cb_src = ("EXACT tab-3 ward/knapsack allocator" if _cb.get("src") == "callback"
+                   else "internal volume-weighted k-means")
+        log(f"[fullmatrix-ga] compressibility regularizer ON: λ={_clam:g}, codebook={_k0} centroid rows "
+            f"via {_cb_src} (target {int(compress_pools)} pools, refit every {int(compress_refresh)} gens), "
+            f"distortion backend={_dist_backend}, delivery-dedupe={'ON' if _have_full else 'off'}, "
+            f"scored on DELIVERED shares "
+            f"({'eligibility-aware' if (_have_full or callable(deliver_fn)) else 'raw — no deliver_fn'}) "
+            "— VWSR −= λ·volume-weighted VQ distortion; pushes cells to route ALIKE so the split "
+            "compresses into fewer configs; trades a little conversion.")
     seed_key = _key_of(seed_vwsr, seed_viol)
     best_logits = seed_logits.copy()
     best_key = seed_key
@@ -864,6 +1164,19 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             evaluated += pop.shape[0]
             stale = 0
             for gen in range(generations):
+                # Periodic codebook refit: re-learn the ≈pool-target centroid shapes from the
+                # current global best (its delivered shape), then RE-SCORE the live pop + best
+                # under the new codebook so the moving objective stays self-consistent. Only the
+                # compress term of vwsr depends on the codebook — the band violation does NOT — so
+                # `_rescore_compress` keeps the existing `viol` and skips the whole-population band
+                # projection (the expensive part). Bit-identical to a full re-eval.
+                if (_compress_on and int(compress_refresh) > 0 and gen > 0
+                        and gen % int(compress_refresh) == 0):
+                    _refresh_codebook(best_logits)
+                    vwsr, viol = _rescore_compress(pop, viol)
+                    best_vwsr = float(_rescore_compress(
+                        best_logits[None, :], np.asarray([best_viol]))[0][0])
+                    best_key = _key_of(best_vwsr, best_viol)
                 order = _rank(vwsr, viol)
                 top = order[0]
                 top_key = _key_of(vwsr[top], viol[top])
@@ -885,10 +1198,35 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 if _now - _last_prog >= _PROG_EVERY_S:
                     _last_prog = _now
                     _rate = evaluated / max(_now - _t0, 1e-9)
+                    # Optional per-MID-constraint readout at the current best (from the caller's exact
+                    # band report): distinct MIDs whose band is unmet + total MID-constraint penalty.
+                    _mid_extra = ""
+                    if band_report_fn is not None:
+                        try:
+                            _bsh = _segment_softmax(best_logits[None, :], p.cell_start, p.cell_len)
+                            _rep = band_report_fn(_deliver_full(_bsh) if _have_full else _bsh)
+                            # band_report_fn may return (count, penalty) or (count, penalty, [names]).
+                            _n_unmet, _mid_pen = _rep[0], _rep[1]
+                            _unmet_names = list(_rep[2]) if len(_rep) >= 3 else []
+                            _mid_extra = (f" · MID unmet {int(_n_unmet)} · "
+                                          f"MID penalty {float(_mid_pen):,.4f}")
+                            if _unmet_names:
+                                # Show WHICH bands are stuck; cap the list so the line stays readable.
+                                _cap = 8
+                                _shown = ", ".join(str(_x) for _x in _unmet_names[:_cap])
+                                if len(_unmet_names) > _cap:
+                                    _shown += f", +{len(_unmet_names) - _cap} more"
+                                _mid_extra += f" [{_shown}]"
+                        except Exception:  # noqa: BLE001 - never let the heartbeat break the search
+                            _mid_extra = ""
+                    # NB: best_key is the lexicographic tuple (feasible?, vwsr-or-−viol) from _key_of —
+                    # it must NOT be format-specced ('{:,.0f}' on a tuple raises). vwsr + viol below
+                    # already convey the score/feasibility, so it isn't printed.
                     log(f"[fullmatrix-ga] progress: ~{evaluated:,} splits · gen {gen} "
-                        f"(seed {_s + 1}/{n_seeds} restart {_r + 1}/{restarts}) · best vwsr "
-                        f"{best_vwsr:.5f} · viol {best_viol:.2e} · "
-                        f"{'feasible' if best_viol <= _FEAS_EPS else 'infeasible'} · {_rate:,.0f}/s")
+                        f"(seed {_s + 1}/{n_seeds} restart {_r + 1}/{restarts}) · "
+                        f"best vwsr {best_vwsr:.5f} · viol {best_viol:,.4f}"
+                        f"{_mid_extra} · {'feasible' if best_viol <= _FEAS_EPS else 'infeasible'} "
+                        f"· {_rate:,.0f}/s")
                 if stale >= patience:
                     log(f"[fullmatrix-ga] seed {_s + 1}/{n_seeds} restart {_r + 1}/"
                         f"{restarts}: converged at gen {gen} (no gain in {patience})")

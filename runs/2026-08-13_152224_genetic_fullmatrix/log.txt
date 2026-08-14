@@ -1,0 +1,512 @@
+[13:52:03 +   0.1s] ═════════════════════════ RUN DIAGNOSTICS ═════════════════════════
+[13:52:03 +   0.1s]    started 2026-08-13 13:52:03 · python 3.8.10 · pandas 2.0.3 · numpy 1.24.4
+[13:52:03 +   0.1s]    APP_BUILD: 2026-07-24l
+[13:52:03 +   0.1s]    backend build markers (if any ≠ expected → stale bytecode; clear __pycache__):
+[13:52:03 +   0.1s]       optimiser        2026-07-29-vamp-lp-singlegw-fixed-cell-revival
+[13:52:03 +   0.1s]       eligibility      2026-07-29-eligibility-ban-mask-cache+population-operator
+[13:52:03 +   0.1s]       success_rates    (no __build__)
+[13:52:03 +   0.1s]       forecast_pipeline (no __build__)
+[13:52:03 +   0.1s]       data_loader      (no __build__)
+[13:52:03 +   0.1s]       sql_runner       2026-07-04-templated-params
+[13:52:03 +   0.1s]       constraints      (no __build__)
+[13:52:03 +   0.1s]       base             2026-07-22-bounds-cache+qp-projection+feasible-guard
+[13:52:03 +   0.1s]       softmax          2026-07-22-softmax-analytic-projection
+[13:52:03 +   0.1s]       thompson         2026-08-03-thompson-leggauss-hoist+batched-quadrature
+[13:52:03 +   0.1s]       genetic_global   2026-08-11-band-aware-constrained-projection-seed+riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel+vol-weighted-viol+penalty-shape+repair-input+sigma-controls+fitness-trace+active-priority+viol-breakdown+capcell-detail+breach-tol+band-workings+no-maxiter-bandgreedy+stable-softmax
+[13:52:03 +   0.1s]       portfolio        2026-07-22-portfolio-fista+infeasible-flag
+[13:52:03 +   0.1s]       impact_calcs     2026-07-28-count-only-pool-search
+[13:52:03 +   0.1s]    RUN CONFIG:
+[13:52:03 +   0.1s]       company=TotalAV · scheme=visa · attempts_window=2026-05-01 → 2026-08-12
+[13:52:03 +   0.1s]       engine=genetic_fullmatrix · score_grain=Bank × Currency × RPGT · opt_grain=Bank × Currency × RPGT
+[13:52:03 +   0.1s]       vamp_cap=0.06 · exploration_floor=0.01 · max_gateway_share=0.97
+[13:52:03 +   0.1s]       bayes_method=Empirical Bayes · shrink κ=300 · time_decay=on 15d · xborder_penalty=0.6
+[13:52:03 +   0.1s]       max_pools_target=200
+[13:52:03 +   0.1s]       band scoring=EXACT in-search (per-generation pro-rata projection; no proxy, no post-hoc correction)
+[13:52:03 +   0.1s]       engine_params={}
+[13:52:03 +   0.1s]       auto_explore=True · RPGT_scope=ALL · hold_unselected_at_baseline=True
+[13:52:03 +   0.1s]       gateway auto-block=ON · >=100 consecutive failed attempts
+[13:52:03 +   0.1s]       step-size (CMA-ES σ) TUNED: σ₀×1.5 · σ_floor=0 · damping×1.5 (defaults: σ₀×1 · σ_floor=0 · damping×1)
+[13:52:03 +   0.1s]       per-MID constraints configured: 12
+[13:52:03 +   0.1s]          • WorldPay - Total AV | ALL-RPGT | M5 | vamp [ceiling] target=1600.0 tol=n/a prio=1
+[13:52:03 +   0.1s]          • Adyen_TotalAV | ALL-RPGT | M5 | vamp [ceiling] target=2600.0 tol=n/a prio=2
+[13:52:03 +   0.1s]          • Braintree USA - Total AV | ALL-RPGT | M5 | vamp [ceiling] target=1200.0 tol=n/a prio=1
+[13:52:03 +   0.1s]          • WoodForest - Total AV | ALL-RPGT | M5 | txn [ceiling] target=25000.0 tol=n/a prio=2
+[13:52:03 +   0.1s]          • Adyen - TotalAV - NA | ALL-RPGT | M5 | txn [floor] target=25000.0 tol=n/a prio=2
+[13:52:03 +   0.1s]          • Adyen_TotalAVPro | ALL-RPGT | M5 | txn [range] target=50000.0 tol=20% prio=2
+[13:52:03 +   0.1s]          • Adyen_TotalAVUltimate | ALL-RPGT | M5 | txn [range] target=50000.0 tol=20% prio=2
+[13:52:03 +   0.1s]          • Adyen_TotalAVPremium | ALL-RPGT | M5 | txn [range] target=50000.0 tol=20% prio=2
+[13:52:03 +   0.1s]          • PaySafe - Total AV | ALL-RPGT | M5 | txn [ceiling] target=20000.0 tol=n/a prio=2
+[13:52:03 +   0.1s]          • Authorize - Total AV | ALL-RPGT | M5 | txn [ceiling] target=10000.0 tol=n/a prio=2
+[13:52:03 +   0.1s]          • Adyen_TotalAVSecure | ALL-RPGT | M5 | txn [range] target=40000.0 tol=20% prio=2
+[13:52:03 +   0.1s]          • Adyen_TotalSecurity | ALL-RPGT | M5 | txn [range] target=40000.0 tol=20% prio=2
+[13:52:03 +   0.1s]    INPUT FILES:
+[13:52:03 +   0.1s]       outputs dir: data/outputs/AUG/TotalAV/  [0.00 MB, mtime 2026-08-02 00:24:40]
+[13:52:03 +   0.1s]       MID list: /Users/ben.cook/Downloads/routing_optimiser/data/mappings/Master_MID_List.csv  [0.09 MB, mtime 2026-07-23 10:12:46]
+[13:52:03 +   0.1s] ════════════════════════════════════════════════════════════════════
+[13:52:03 +   0.1s] ▶ ① Fetch attempts/success data — started
+[13:52:03 +   0.1s] 13:52:03     > SQL attempts_success.sql: loading cached result from /Users/ben.cook/Downloads/routing_optimiser/app/../.cache/attempts_success_3b1f3a564d_4de4a9b4da.parquet
+[13:52:03 +   0.1s]    attempts source: cache
+[13:52:03 +   0.1s] 13:52:03     > SQL processor_benchmark.sql: loading cached result from /Users/ben.cook/Downloads/routing_optimiser/app/../.cache/processor_benchmark_e2f0c1a6b2_4de4a9b4da.parquet
+[13:52:03 +   0.2s]    cross-brand processor benchmark: 33 (processor, currency) rates (cache) → untested-MID layer-2 prior.
+[13:52:03 +   0.2s]    ✓ ① Fetch attempts/success data — finished in 0.1s
+[13:52:03 +   0.2s] ▶ ② Pre-processing (Bayesian smoothing) — started
+[13:52:07 +   3.7s] 13:52:07        - baseline from bin_rpgt_impact_export.csv: 51,434 cell-rows
+[13:52:18 +  14.9s]    currency filter: dropped 811 attempt rows where currency disagreed with Master MID currency
+[13:52:21 +  17.4s]    volume-override filter: dropped 33,772 rows for 15 switched-off gateways (target=0, trx/both)
+[13:52:22 +  19.0s]    RPGT scope: volume/eligibility/VAMP restricted to 4 RPGT(s) (814,366/2,117,332 attempts, 25,315/51,434 forecast rows); score per selected RPGT.
+[13:52:23 +  19.5s]    eligibility window: 286,677 attempt rows in 30D ending 2026-08-12
+[13:52:23 +  19.5s] ②·diag DATA SHAPES after pre-processing/filters:
+[13:52:23 +  19.6s]       attempts (post-filter, eligibility window): rows=286,677 · currencies=5 · gateways=37 · rpgts=4 · Σattempts=286,677 · Σamount=3,648,275
+[13:52:23 +  19.6s]       forecast baseline (routing volume): rows=25,315 · currencies=5 · gateways=15 · rpgts=4 · Σvolume=182,850
+[13:52:23 +  19.6s]       RPGTs available=['addon renewal', 'addon sale', 'annual sub renewal', 'annual sub sale', 'monthly initial', 'monthly renewal', 'p6m renewals', 'upgrades'] · scoped=['addon sale', 'annual sub sale', 'monthly initial', 'upgrades']
+[13:52:23 +  19.6s]    [full-matrix] TRUE BIN GRAIN: parent-bank collapse DISABLED — optimising per BIN (more cells, slower).
+[13:52:23 +  19.7s]    Optimisation grain: Bank×Currency×RPGT (per-RPGT cells); Engine Score grain: per-RPGT.
+[13:52:24 +  20.5s]    risk seeding: 57,044 gateway-cell(s) with NO VAMP data seeded from the opt-grain weighted-avg VAMP rate (currency/global fallback 0.0298) — so 0-VAMP gateways aren't treated as risk-free.
+[13:52:24 +  20.5s]    auto-explore capable set: 29 gateway(s) after Master-MID guards (from 482; dropped 401 inactive, 0 PayPal, 52 other-brand vs 'TotalAV').
+[13:52:25 +  21.9s]    exploration: injected 51514 fallback candidate row(s) into single-gateway cells (29 gateway(s), auto: currency-capable); seeded at the bank×currency average (weak prior) + explore cap.
+[13:52:32 +  29.2s]    116,267 dense aggregated cell × gateway success rates (full-window rate, 30D eligibility)
+[13:52:32 +  29.2s]    cross-border penalty 60% applied to 16687 gateway cells (64 cross-border FIDs)
+[13:52:34 +  30.5s]    exploration seeding: 51514 untested gateway cell(s) seeded (attempts=0 → weak/uncertain prior, scored cautiously): 51514 from a same-processor+brand+currency sibling, 0 from a CROSS-BRAND processor benchmark, 0 from the bank×currency average.
+[13:52:34 +  30.6s]    ✓ ② Pre-processing (Bayesian smoothing) — finished in 30.4s
+[13:52:34 +  30.6s] ▶ ③ Assemble routing cells from 30D attempts (forecast supplies volume only) — started
+[13:53:25 +  81.9s] ④·diag ROUTING CELLS assembled:
+[13:53:25 +  82.0s]       cells=19,140 · total gateway-rows=112,891 · total forecast volume=205,367
+[13:53:25 +  82.0s]       gateways/cell: min=2 p50=4 mean=5.9 p95=12 max=14
+[13:53:25 +  82.0s]       cells with 1 gateway (cap unsatisfiable): 0 · cells >50 gateways: 0
+[13:53:25 +  82.0s]       gateway-rows on POOLED prior (no per-cell attempts): 0 · auto-explore injected rows: 51,514
+[13:53:25 +  82.0s]       currencies=['aud', 'cad', 'eur', 'gbp', 'usd'] · distinct banks(×cur)=9,542 · rpgt grain values=['Addon Sale', 'Annual Sub Sale', 'Monthly Initial', 'Upgrades']
+[13:53:25 +  82.0s]    ✓ ③ Assemble routing cells from 30D attempts (forecast supplies volume only) — finished in 51.4s
+[13:53:25 +  82.0s] ▶ ④ Run genetic_fullmatrix engine across the Risk↔Conversion axis — started
+[13:53:25 +  82.0s]    1 dials: 0
+[13:53:25 +  82.0s]    optimiser build: 2026-07-29-vamp-lp-singlegw-fixed-cell-revival (expect 2026-07-16-vamp-frontier-lp — if not, clear __pycache__).
+[13:53:40 +  96.6s]    MID VAMP rates from pro-rata export (31,507 MID×cell rates).
+[13:53:51 + 107.9s]    priority→band weight (GAP=8): prio1=1 · prio2=0.125  (higher weight ⇒ the GA works harder to satisfy that tier)
+[13:54:08 + 124.4s]    back-fill sub-cell rows injected into cap scaffold: 226,194
+[13:54:09 + 125.5s]    per-MID cap projection scaffold: 586,464 t0 rows, 1,161,217 capped-MID rows (19,844 cells).
+[13:54:23 + 140.0s]    per-MID target±tolerance caps: 11 active; 5 MID(s) scaled/retired.
+[13:54:29 + 145.7s]    eligibility: 1 ban rule(s), 186 wallet-incapable id(s), global wallet share 28.1%; 6 USA-only id(s), global Non-USA share 38.5%.
+[13:54:31 + 147.9s]    backup catch-all blended into the GA fitness: 20 (currency×rpgt) pool(s).
+[13:54:35 + 151.6s]    genetic build: 2026-08-11-band-aware-constrained-projection-seed+riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel+vol-weighted-viol+penalty-shape+repair-input+sigma-controls+fitness-trace+active-priority+viol-breakdown+capcell-detail+breach-tol+band-workings+no-maxiter-bandgreedy+stable-softmax — global GA, own revenue-greedy reference (genetic_ref, not softmax) + exact hard enforcement.
+[13:54:43 + 160.3s]    GA objective: maximise VOLUME-WEIGHTED SUCCESS RATE (avg-ticket factor dropped; fixed).
+[13:54:45 + 161.5s]    GA fitness: 12 month-specific per-MID band(s) folded into the search (calibrated volume-ratio proxy + re-projection correction; vamp_pct left to post-enforcement).
+[13:54:55 + 172.0s]    GA scores ELIGIBILITY-ADJUSTED shares: 0 banned row(s), wallet=on, USA-only=on (returned split is RAW; enforcement blends once). Set ROUTING_GA_ELIG=0 to disable.
+[13:54:57 + 173.8s]    auto-block (pre-GA): 22 bank×gateway pair(s) → 46 blocked row(s) KEPT eligible for the search, capped post-GA instead (hard-exclusion removed so exact MID bands can't be starved into infeasibility).
+[13:55:24 + 201.3s]    GA fitness: EXACT per-generation band scoring ON — 12 band(s), pre-clustering OFF, incidence 48798×112891 (23028 nnz). Delivered split gets an incidence self-check (must read ~0 to trust).
+[13:55:24 + 201.3s]    GA problem size: 19140 cells (rpgt×currency×bank), 112891 cell×gateway rows, 15 vampMids → genome D = 45. CMA-ES per-generation cost ∝ D² (covariance update) and ∝ D³ (eigen-refresh); D is the dimension k-means pre-clustering would reduce.
+[13:55:25 + 201.6s]    Compressibility probe: 19140 cells → ~14111 distinct decode-signatures (≈1.4× cell-reduction CEILING); 0 single-gateway cells are genome-invariant. Upper bound on what k-means pre-clustering could trim from the 112891-row hot loop — optimistic (true lossless merge also needs matching success/ticket rates).
+[13:55:25 + 201.6s]    [full-matrix] tilt CMA-ES search short-circuited (1 seed × 1 gen) — its result is replaced by the full-matrix GA at delivery.
+[13:55:25 + 201.6s]    CMA-ES (cross-cell per-MID 3-axis tilt, 15 vampMids): λ=4, gen cap=1 (covariance-adapted + reseeded restarts + polish). dial 0 = risk-MINIMISED compliant; dial 99 = max-revenue compliant; blended between (monotonic frontier); dial 100 = uncapped revenue ceiling.
+[13:55:25 + 201.6s]    revenue-max (dial 99) endpoint: greedy revenue-compliant split $549,090 (CMA-ES revenue search removed — greedy is LP-optimal here, so its result was always discarded).
+[13:55:25 + 201.6s]    reference lean: OFF (γ=0) — compliant start comes from the compliant + band-aware constrained-projection warm-start seeds.
+[13:55:48 + 224.4s]    diverse seeds: revenue-greedy compliant + BAND-AWARE constrained-projection seed (per-cell simplex + max-share QP; replaces risk-greedy) — seed band breach 0.7773 → 0.03295.
+[13:55:48 + 224.4s]    ── FEASIBILITY CHECK (constrained projection: min band breach s.t. per-cell simplex + max-share) ──
+[13:55:48 + 224.4s]       verdict: ✗ 5 of 12 band(s) NOT reachable by the projection (min total breach 0.03295) → constraints appear INFEASIBLE under this scope (not a proof — the search explores further).
+[13:55:48 + 224.4s]       still unmet: Adyen_TotalAV, Braintree USA - Total AV, PaySafe - Total AV, WoodForest - Total AV, WorldPay - Total AV
+[13:55:48 + 224.5s]    anchor: CMA-ES reference recentred on the lowest-breach seed ('band-aware seed', band breach 0.03295) — θ=0 now decodes to this compliant split, so the search STARTS here instead of losing it in the genome fit.
+[13:55:48 + 224.5s]    risk-min (dial 0): loaded from disk cache (deterministic — identical to re-searching).
+[13:55:48 + 224.5s]    GA risk-min (dial 0) endpoint: aggregate VAMP rate 0.0274 vs revenue-max (dial 99) 0.0264; revenue $547,436 vs $549,090.
+[13:55:49 + 226.3s]    auto-block (pre-enforcement): 22 bank×gateway capped to the exploration floor INSIDE enforcement → the freed volume is redistributed compliantly (no post-hoc VAMP perturbation).
+[13:55:50 + 226.6s]    [full-matrix] seed → 'band-aware' (exact M5 breach 0.03295).
+[13:55:50 + 226.6s]    [full-matrix] chosen seed exact M5 breach = 0.03295 (never-worse guarantee: delivered breach ≤ this).
+[13:55:52 + 229.1s]    [full-matrix] EXACT M5 band projector wired into the fitness (same pro-rata projection as the tilt engine; replaces the linear 30-day proxy). Bands: WorldPay - Total AV[vamp/ceiling] lo=-inf hi=1600 · Adyen_TotalAV[vamp/ceiling] lo=-inf hi=2600 · Braintree USA - Total AV[vamp/ceiling] lo=-inf hi=1200 · WoodForest - Total AV[txn/ceiling] lo=-inf hi=25000 · Adyen - TotalAV - NA[txn/floor] lo=25000 hi=inf · Adyen_TotalAVPro[txn/range] lo=40000 hi=60000 · Adyen_TotalAVUltimate[txn/range] lo=40000 hi=60000 · Adyen_TotalAVPremium[txn/range] lo=40000 hi=60000 · PaySafe - Total AV[txn/ceiling] lo=-inf hi=20000 · Authorize - Total AV[txn/ceiling] lo=-inf hi=10000 · Adyen_TotalAVSecure[txn/range] lo=32000 hi=48000 · Adyen_TotalSecurity[txn/range] lo=32000 hi=48000
+[13:55:52 + 229.1s]    [full-matrix] search budget: 8 seed(s) × 2 restart(s) × 231 generations · pop 64 · restart-mode Lean (constant-λ, spread-out); early-stop DISABLED (run-all-generations ON).
+[13:55:52 + 229.1s] [fullmatrix-ga] build=2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress R=112891 cells=19140 mids=15
+[13:55:57 + 233.7s] [fullmatrix-ga] evaluator backend=numba
+[13:55:57 + 233.7s] [fullmatrix-ga] budget: 8 seed(s) × 2 restart(s) × 231 gens (pop 64, mode=Lean (constant-λ, spread-out))
+[13:56:12 + 249.1s] [fullmatrix-ga] progress: ~760 splits · gen 12 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 49/s
+[13:56:29 + 265.6s] [fullmatrix-ga] progress: ~1,456 splits · gen 24 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 46/s
+[13:56:44 + 281.0s] [fullmatrix-ga] progress: ~2,036 splits · gen 34 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[13:57:00 + 297.1s] [fullmatrix-ga] progress: ~2,674 splits · gen 45 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[13:57:17 + 313.6s] [fullmatrix-ga] progress: ~3,312 splits · gen 56 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[13:57:33 + 329.7s] [fullmatrix-ga] progress: ~3,950 splits · gen 67 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[13:57:49 + 345.7s] [fullmatrix-ga] progress: ~4,588 splits · gen 78 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[13:58:05 + 362.0s] [fullmatrix-ga] progress: ~5,226 splits · gen 89 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[13:58:21 + 377.7s] [fullmatrix-ga] progress: ~5,922 splits · gen 101 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[13:58:37 + 393.6s] [fullmatrix-ga] progress: ~6,676 splits · gen 114 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[13:58:52 + 408.7s] [fullmatrix-ga] progress: ~7,372 splits · gen 126 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[13:59:08 + 424.5s] [fullmatrix-ga] progress: ~8,126 splits · gen 139 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[13:59:23 + 439.6s] [fullmatrix-ga] progress: ~8,822 splits · gen 151 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[13:59:39 + 455.4s] [fullmatrix-ga] progress: ~9,518 splits · gen 163 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[13:59:54 + 471.0s] [fullmatrix-ga] progress: ~10,214 splits · gen 175 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[14:00:10 + 487.1s] [fullmatrix-ga] progress: ~10,968 splits · gen 188 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[14:00:26 + 503.2s] [fullmatrix-ga] progress: ~11,664 splits · gen 200 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[14:00:43 + 519.5s] [fullmatrix-ga] progress: ~12,244 splits · gen 210 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[14:00:58 + 534.9s] [fullmatrix-ga] progress: ~12,824 splits · gen 220 (seed 1/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[14:01:16 + 553.0s] [fullmatrix-ga] progress: ~13,526 splits · gen 0 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:01:32 + 568.6s] [fullmatrix-ga] progress: ~14,106 splits · gen 10 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:01:48 + 584.8s] [fullmatrix-ga] progress: ~14,686 splits · gen 20 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:02:04 + 600.4s] [fullmatrix-ga] progress: ~15,324 splits · gen 31 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:02:19 + 615.4s] [fullmatrix-ga] progress: ~15,962 splits · gen 42 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:02:34 + 630.8s] [fullmatrix-ga] progress: ~16,600 splits · gen 53 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:02:49 + 646.0s] [fullmatrix-ga] progress: ~17,296 splits · gen 65 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:03:05 + 661.6s] [fullmatrix-ga] progress: ~18,050 splits · gen 78 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:03:20 + 676.7s] [fullmatrix-ga] progress: ~18,688 splits · gen 89 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:03:35 + 692.2s] [fullmatrix-ga] progress: ~19,326 splits · gen 100 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:03:50 + 707.3s] [fullmatrix-ga] progress: ~19,964 splits · gen 111 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:04:06 + 723.1s] [fullmatrix-ga] progress: ~20,660 splits · gen 123 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:04:22 + 739.1s] [fullmatrix-ga] progress: ~21,414 splits · gen 136 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:04:38 + 754.7s] [fullmatrix-ga] progress: ~22,226 splits · gen 150 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[14:04:53 + 770.0s] [fullmatrix-ga] progress: ~22,922 splits · gen 162 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[14:05:09 + 785.5s] [fullmatrix-ga] progress: ~23,502 splits · gen 172 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[14:05:24 + 801.2s] [fullmatrix-ga] progress: ~24,082 splits · gen 182 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:05:40 + 817.2s] [fullmatrix-ga] progress: ~24,662 splits · gen 192 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:05:56 + 833.2s] [fullmatrix-ga] progress: ~25,184 splits · gen 201 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:06:13 + 850.2s] [fullmatrix-ga] progress: ~25,648 splits · gen 209 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:06:30 + 867.3s] [fullmatrix-ga] progress: ~26,054 splits · gen 216 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:06:47 + 883.4s] [fullmatrix-ga] progress: ~26,402 splits · gen 222 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:07:02 + 898.5s] [fullmatrix-ga] progress: ~26,750 splits · gen 228 (seed 1/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:07:19 + 915.4s] [fullmatrix-ga] progress: ~27,220 splits · gen 4 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:07:34 + 930.4s] [fullmatrix-ga] progress: ~27,684 splits · gen 12 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:07:49 + 945.5s] [fullmatrix-ga] progress: ~28,090 splits · gen 19 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:08:05 + 962.2s] [fullmatrix-ga] progress: ~28,554 splits · gen 27 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:08:22 + 979.0s] [fullmatrix-ga] progress: ~29,018 splits · gen 35 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:08:38 + 995.1s] [fullmatrix-ga] progress: ~29,540 splits · gen 44 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:08:53 +1010.2s] [fullmatrix-ga] progress: ~30,062 splits · gen 53 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:09:09 +1025.5s] [fullmatrix-ga] progress: ~30,642 splits · gen 63 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:09:25 +1041.8s] [fullmatrix-ga] progress: ~31,106 splits · gen 71 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:09:41 +1057.4s] [fullmatrix-ga] progress: ~31,570 splits · gen 79 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:09:56 +1073.3s] [fullmatrix-ga] progress: ~32,092 splits · gen 88 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:10:13 +1090.0s] [fullmatrix-ga] progress: ~32,672 splits · gen 98 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:10:29 +1105.4s] [fullmatrix-ga] progress: ~33,252 splits · gen 108 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:10:45 +1121.7s] [fullmatrix-ga] progress: ~33,948 splits · gen 120 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:11:00 +1137.0s] [fullmatrix-ga] progress: ~34,586 splits · gen 131 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:11:16 +1152.7s] [fullmatrix-ga] progress: ~35,108 splits · gen 140 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:11:31 +1168.0s] [fullmatrix-ga] progress: ~35,688 splits · gen 150 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:11:47 +1183.6s] [fullmatrix-ga] progress: ~36,268 splits · gen 160 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:12:02 +1198.8s] [fullmatrix-ga] progress: ~36,848 splits · gen 170 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:12:18 +1214.8s] [fullmatrix-ga] progress: ~37,486 splits · gen 181 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:12:34 +1230.7s] [fullmatrix-ga] progress: ~38,182 splits · gen 193 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:12:49 +1246.3s] [fullmatrix-ga] progress: ~38,878 splits · gen 205 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:13:05 +1262.0s] [fullmatrix-ga] progress: ~39,516 splits · gen 216 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:13:21 +1278.0s] [fullmatrix-ga] progress: ~40,096 splits · gen 226 (seed 2/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:13:37 +1294.0s] [fullmatrix-ga] progress: ~40,740 splits · gen 5 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:13:52 +1309.2s] [fullmatrix-ga] progress: ~41,320 splits · gen 15 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:14:08 +1325.2s] [fullmatrix-ga] progress: ~42,016 splits · gen 27 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:14:24 +1340.5s] [fullmatrix-ga] progress: ~42,654 splits · gen 38 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:14:40 +1356.7s] [fullmatrix-ga] progress: ~43,292 splits · gen 49 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:14:56 +1372.4s] [fullmatrix-ga] progress: ~43,930 splits · gen 60 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:15:11 +1387.5s] [fullmatrix-ga] progress: ~44,684 splits · gen 73 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:15:26 +1403.0s] [fullmatrix-ga] progress: ~45,554 splits · gen 88 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:15:42 +1418.4s] [fullmatrix-ga] progress: ~46,424 splits · gen 103 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:15:57 +1433.9s] [fullmatrix-ga] progress: ~47,062 splits · gen 114 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:16:12 +1449.0s] [fullmatrix-ga] progress: ~47,642 splits · gen 124 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:16:28 +1464.6s] [fullmatrix-ga] progress: ~48,164 splits · gen 133 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:16:45 +1481.7s] [fullmatrix-ga] progress: ~48,628 splits · gen 141 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:17:01 +1498.2s] [fullmatrix-ga] progress: ~48,976 splits · gen 147 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:17:18 +1514.9s] [fullmatrix-ga] progress: ~49,324 splits · gen 153 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:17:34 +1530.5s] [fullmatrix-ga] progress: ~49,788 splits · gen 161 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:17:49 +1545.7s] [fullmatrix-ga] progress: ~50,310 splits · gen 170 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:18:05 +1561.7s] [fullmatrix-ga] progress: ~51,006 splits · gen 182 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 38/s
+[14:18:20 +1577.3s] [fullmatrix-ga] progress: ~51,818 splits · gen 196 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:18:36 +1593.0s] [fullmatrix-ga] progress: ~52,688 splits · gen 211 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:18:51 +1608.2s] [fullmatrix-ga] progress: ~53,442 splits · gen 224 (seed 2/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:19:07 +1623.7s] [fullmatrix-ga] progress: ~54,318 splits · gen 7 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:19:22 +1639.0s] [fullmatrix-ga] progress: ~55,188 splits · gen 22 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:19:38 +1654.4s] [fullmatrix-ga] progress: ~55,884 splits · gen 34 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:19:54 +1671.2s] [fullmatrix-ga] progress: ~56,406 splits · gen 43 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:20:11 +1687.8s] [fullmatrix-ga] progress: ~56,870 splits · gen 51 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:20:26 +1703.2s] [fullmatrix-ga] progress: ~57,334 splits · gen 59 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:20:42 +1718.4s] [fullmatrix-ga] progress: ~57,914 splits · gen 69 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:20:57 +1734.1s] [fullmatrix-ga] progress: ~58,726 splits · gen 83 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:21:13 +1749.5s] [fullmatrix-ga] progress: ~59,654 splits · gen 99 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:21:28 +1765.0s] [fullmatrix-ga] progress: ~60,582 splits · gen 115 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:21:43 +1780.2s] [fullmatrix-ga] progress: ~61,452 splits · gen 130 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:21:59 +1796.2s] [fullmatrix-ga] progress: ~62,322 splits · gen 145 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:22:15 +1811.7s] [fullmatrix-ga] progress: ~63,192 splits · gen 160 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:22:31 +1827.9s] [fullmatrix-ga] progress: ~63,830 splits · gen 171 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:22:48 +1844.6s] [fullmatrix-ga] progress: ~64,294 splits · gen 179 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:23:04 +1860.9s] [fullmatrix-ga] progress: ~64,700 splits · gen 186 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:23:20 +1877.1s] [fullmatrix-ga] progress: ~65,048 splits · gen 192 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:23:36 +1892.9s] [fullmatrix-ga] progress: ~65,512 splits · gen 200 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:23:51 +1908.3s] [fullmatrix-ga] progress: ~66,092 splits · gen 210 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 39/s
+[14:24:08 +1924.4s] [fullmatrix-ga] progress: ~66,846 splits · gen 223 (seed 3/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:24:23 +1940.3s] [fullmatrix-ga] progress: ~67,664 splits · gen 5 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:24:40 +1956.3s] [fullmatrix-ga] progress: ~68,476 splits · gen 19 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:24:55 +1971.8s] [fullmatrix-ga] progress: ~69,346 splits · gen 34 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:25:11 +1987.4s] [fullmatrix-ga] progress: ~70,274 splits · gen 50 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:25:26 +2002.6s] [fullmatrix-ga] progress: ~71,202 splits · gen 66 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:25:41 +2017.9s] [fullmatrix-ga] progress: ~72,130 splits · gen 82 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:25:56 +2033.3s] [fullmatrix-ga] progress: ~73,000 splits · gen 97 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:26:12 +2048.5s] [fullmatrix-ga] progress: ~73,754 splits · gen 110 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:26:27 +2064.2s] [fullmatrix-ga] progress: ~74,450 splits · gen 122 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:26:44 +2080.5s] [fullmatrix-ga] progress: ~75,088 splits · gen 133 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:26:59 +2096.2s] [fullmatrix-ga] progress: ~75,668 splits · gen 143 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:27:14 +2111.3s] [fullmatrix-ga] progress: ~76,306 splits · gen 154 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:27:30 +2127.2s] [fullmatrix-ga] progress: ~76,944 splits · gen 165 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:27:46 +2143.2s] [fullmatrix-ga] progress: ~77,640 splits · gen 177 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:28:02 +2158.4s] [fullmatrix-ga] progress: ~78,278 splits · gen 188 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:28:18 +2174.4s] [fullmatrix-ga] progress: ~78,974 splits · gen 200 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:28:34 +2190.4s] [fullmatrix-ga] progress: ~79,786 splits · gen 214 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:28:49 +2206.0s] [fullmatrix-ga] progress: ~80,656 splits · gen 229 (seed 3/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:29:04 +2221.1s] [fullmatrix-ga] progress: ~81,416 splits · gen 10 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:29:20 +2236.8s] [fullmatrix-ga] progress: ~82,112 splits · gen 22 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:29:36 +2253.1s] [fullmatrix-ga] progress: ~82,808 splits · gen 34 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:29:52 +2268.7s] [fullmatrix-ga] progress: ~83,446 splits · gen 45 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:30:07 +2284.2s] [fullmatrix-ga] progress: ~84,142 splits · gen 57 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:30:23 +2300.0s] [fullmatrix-ga] progress: ~84,954 splits · gen 71 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:30:38 +2315.0s] [fullmatrix-ga] progress: ~85,766 splits · gen 85 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:30:54 +2330.6s] [fullmatrix-ga] progress: ~86,578 splits · gen 99 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:31:09 +2346.2s] [fullmatrix-ga] progress: ~87,390 splits · gen 113 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:31:25 +2362.2s] [fullmatrix-ga] progress: ~88,086 splits · gen 125 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:31:41 +2378.0s] [fullmatrix-ga] progress: ~88,724 splits · gen 136 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:31:57 +2393.9s] [fullmatrix-ga] progress: ~89,362 splits · gen 147 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:32:12 +2409.2s] [fullmatrix-ga] progress: ~90,000 splits · gen 158 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:32:28 +2425.2s] [fullmatrix-ga] progress: ~90,638 splits · gen 169 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:32:45 +2441.4s] [fullmatrix-ga] progress: ~91,334 splits · gen 181 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:33:00 +2457.2s] [fullmatrix-ga] progress: ~92,088 splits · gen 194 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:33:16 +2472.7s] [fullmatrix-ga] progress: ~92,900 splits · gen 208 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:33:31 +2488.1s] [fullmatrix-ga] progress: ~93,538 splits · gen 219 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:33:47 +2504.3s] [fullmatrix-ga] progress: ~94,176 splits · gen 230 (seed 4/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:34:03 +2520.2s] [fullmatrix-ga] progress: ~94,878 splits · gen 10 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:34:19 +2536.3s] [fullmatrix-ga] progress: ~95,516 splits · gen 21 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:34:36 +2552.9s] [fullmatrix-ga] progress: ~96,154 splits · gen 32 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:34:53 +2569.5s] [fullmatrix-ga] progress: ~96,734 splits · gen 42 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:35:08 +2584.6s] [fullmatrix-ga] progress: ~97,198 splits · gen 50 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:35:23 +2599.8s] [fullmatrix-ga] progress: ~97,720 splits · gen 59 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:35:39 +2615.4s] [fullmatrix-ga] progress: ~98,242 splits · gen 68 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:35:54 +2631.3s] [fullmatrix-ga] progress: ~98,764 splits · gen 77 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:36:11 +2648.1s] [fullmatrix-ga] progress: ~99,286 splits · gen 86 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:36:27 +2663.6s] [fullmatrix-ga] progress: ~99,750 splits · gen 94 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:36:44 +2680.5s] [fullmatrix-ga] progress: ~100,272 splits · gen 103 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:37:01 +2697.5s] [fullmatrix-ga] progress: ~100,794 splits · gen 112 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:37:17 +2713.6s] [fullmatrix-ga] progress: ~101,258 splits · gen 120 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:37:33 +2729.6s] [fullmatrix-ga] progress: ~101,722 splits · gen 128 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:37:49 +2746.2s] [fullmatrix-ga] progress: ~102,186 splits · gen 136 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:38:06 +2762.4s] [fullmatrix-ga] progress: ~102,592 splits · gen 143 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:38:22 +2778.9s] [fullmatrix-ga] progress: ~103,056 splits · gen 151 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:38:38 +2794.4s] [fullmatrix-ga] progress: ~103,520 splits · gen 159 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:38:53 +2810.2s] [fullmatrix-ga] progress: ~104,100 splits · gen 169 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:39:09 +2826.2s] [fullmatrix-ga] progress: ~104,738 splits · gen 180 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:39:25 +2842.3s] [fullmatrix-ga] progress: ~105,376 splits · gen 191 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:39:42 +2858.7s] [fullmatrix-ga] progress: ~106,072 splits · gen 203 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:39:57 +2874.2s] [fullmatrix-ga] progress: ~106,768 splits · gen 215 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:40:12 +2889.3s] [fullmatrix-ga] progress: ~107,348 splits · gen 225 (seed 4/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:40:28 +2905.0s] [fullmatrix-ga] progress: ~107,934 splits · gen 3 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:40:44 +2921.2s] [fullmatrix-ga] progress: ~108,456 splits · gen 12 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:41:00 +2937.2s] [fullmatrix-ga] progress: ~109,094 splits · gen 23 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:41:16 +2953.3s] [fullmatrix-ga] progress: ~109,848 splits · gen 36 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:41:32 +2968.6s] [fullmatrix-ga] progress: ~110,660 splits · gen 50 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:41:47 +2984.2s] [fullmatrix-ga] progress: ~111,356 splits · gen 62 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 40/s
+[14:42:03 +3000.3s] [fullmatrix-ga] progress: ~112,110 splits · gen 75 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:42:19 +3015.6s] [fullmatrix-ga] progress: ~112,806 splits · gen 87 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:42:34 +3031.2s] [fullmatrix-ga] progress: ~113,502 splits · gen 99 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:42:50 +3047.1s] [fullmatrix-ga] progress: ~114,314 splits · gen 113 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:43:05 +3062.2s] [fullmatrix-ga] progress: ~115,126 splits · gen 127 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:43:21 +3078.0s] [fullmatrix-ga] progress: ~115,938 splits · gen 141 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:43:37 +3093.4s] [fullmatrix-ga] progress: ~116,750 splits · gen 155 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:43:52 +3108.9s] [fullmatrix-ga] progress: ~117,504 splits · gen 168 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:44:08 +3124.4s] [fullmatrix-ga] progress: ~118,316 splits · gen 182 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:44:24 +3140.5s] [fullmatrix-ga] progress: ~119,128 splits · gen 196 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:44:39 +3156.1s] [fullmatrix-ga] progress: ~119,940 splits · gen 210 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:44:55 +3171.9s] [fullmatrix-ga] progress: ~120,752 splits · gen 224 (seed 5/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:45:11 +3187.6s] [fullmatrix-ga] progress: ~121,628 splits · gen 7 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:45:27 +3203.6s] [fullmatrix-ga] progress: ~122,498 splits · gen 22 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:45:43 +3219.6s] [fullmatrix-ga] progress: ~123,368 splits · gen 37 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:45:59 +3235.5s] [fullmatrix-ga] progress: ~124,180 splits · gen 51 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:46:14 +3251.1s] [fullmatrix-ga] progress: ~124,876 splits · gen 63 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:46:31 +3267.4s] [fullmatrix-ga] progress: ~125,572 splits · gen 75 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:46:46 +3283.1s] [fullmatrix-ga] progress: ~126,210 splits · gen 86 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:47:01 +3298.2s] [fullmatrix-ga] progress: ~126,790 splits · gen 96 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:47:17 +3313.6s] [fullmatrix-ga] progress: ~127,370 splits · gen 106 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:47:33 +3329.7s] [fullmatrix-ga] progress: ~127,950 splits · gen 116 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:47:49 +3345.6s] [fullmatrix-ga] progress: ~128,588 splits · gen 127 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:48:04 +3361.0s] [fullmatrix-ga] progress: ~129,284 splits · gen 139 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:48:20 +3376.4s] [fullmatrix-ga] progress: ~130,038 splits · gen 152 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:48:36 +3392.4s] [fullmatrix-ga] progress: ~130,908 splits · gen 167 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 41/s
+[14:48:51 +3407.9s] [fullmatrix-ga] progress: ~131,778 splits · gen 182 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:49:06 +3422.9s] [fullmatrix-ga] progress: ~132,590 splits · gen 196 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:49:22 +3438.8s] [fullmatrix-ga] progress: ~133,344 splits · gen 209 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:49:38 +3455.0s] [fullmatrix-ga] progress: ~134,098 splits · gen 222 (seed 5/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:49:53 +3470.1s] [fullmatrix-ga] progress: ~134,800 splits · gen 2 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:50:09 +3485.5s] [fullmatrix-ga] progress: ~135,554 splits · gen 15 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:50:24 +3500.6s] [fullmatrix-ga] progress: ~136,308 splits · gen 28 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:50:40 +3516.6s] [fullmatrix-ga] progress: ~137,004 splits · gen 40 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:50:56 +3532.5s] [fullmatrix-ga] progress: ~137,700 splits · gen 52 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:51:11 +3547.9s] [fullmatrix-ga] progress: ~138,280 splits · gen 62 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:51:27 +3564.0s] [fullmatrix-ga] progress: ~138,918 splits · gen 73 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:51:43 +3579.4s] [fullmatrix-ga] progress: ~139,498 splits · gen 83 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:51:58 +3594.4s] [fullmatrix-ga] progress: ~140,078 splits · gen 93 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:52:13 +3609.4s] [fullmatrix-ga] progress: ~140,658 splits · gen 103 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:52:28 +3624.8s] [fullmatrix-ga] progress: ~141,412 splits · gen 116 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:52:44 +3640.9s] [fullmatrix-ga] progress: ~142,166 splits · gen 129 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:53:00 +3656.5s] [fullmatrix-ga] progress: ~142,804 splits · gen 140 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:53:17 +3673.6s] [fullmatrix-ga] progress: ~143,500 splits · gen 152 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:53:32 +3688.8s] [fullmatrix-ga] progress: ~144,080 splits · gen 162 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:53:48 +3704.6s] [fullmatrix-ga] progress: ~144,776 splits · gen 174 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:54:03 +3720.2s] [fullmatrix-ga] progress: ~145,588 splits · gen 188 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:54:19 +3735.7s] [fullmatrix-ga] progress: ~146,400 splits · gen 202 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:54:35 +3751.6s] [fullmatrix-ga] progress: ~147,328 splits · gen 218 (seed 6/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:54:51 +3768.0s] [fullmatrix-ga] progress: ~148,146 splits · gen 0 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:55:07 +3783.8s] [fullmatrix-ga] progress: ~148,900 splits · gen 13 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:55:23 +3799.9s] [fullmatrix-ga] progress: ~149,654 splits · gen 26 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:55:38 +3815.2s] [fullmatrix-ga] progress: ~150,408 splits · gen 39 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:55:53 +3830.2s] [fullmatrix-ga] progress: ~151,220 splits · gen 53 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:56:09 +3845.9s] [fullmatrix-ga] progress: ~152,148 splits · gen 69 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:56:24 +3861.0s] [fullmatrix-ga] progress: ~152,902 splits · gen 82 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:56:40 +3877.1s] [fullmatrix-ga] progress: ~153,540 splits · gen 93 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:56:56 +3893.2s] [fullmatrix-ga] progress: ~154,178 splits · gen 104 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:57:12 +3908.6s] [fullmatrix-ga] progress: ~154,874 splits · gen 116 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:57:28 +3924.7s] [fullmatrix-ga] progress: ~155,686 splits · gen 130 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:57:44 +3940.6s] [fullmatrix-ga] progress: ~156,556 splits · gen 145 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:57:59 +3955.8s] [fullmatrix-ga] progress: ~157,426 splits · gen 160 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:58:15 +3971.7s] [fullmatrix-ga] progress: ~158,296 splits · gen 175 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:58:31 +3988.1s] [fullmatrix-ga] progress: ~158,992 splits · gen 187 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:58:47 +4004.3s] [fullmatrix-ga] progress: ~159,572 splits · gen 197 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:59:04 +4020.5s] [fullmatrix-ga] progress: ~160,210 splits · gen 208 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:59:19 +4036.3s] [fullmatrix-ga] progress: ~160,848 splits · gen 219 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:59:35 +4052.0s] [fullmatrix-ga] progress: ~161,486 splits · gen 230 (seed 6/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[14:59:51 +4068.2s] [fullmatrix-ga] progress: ~162,130 splits · gen 9 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:00:07 +4084.1s] [fullmatrix-ga] progress: ~162,768 splits · gen 20 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:00:23 +4100.0s] [fullmatrix-ga] progress: ~163,406 splits · gen 31 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:00:39 +4116.2s] [fullmatrix-ga] progress: ~164,044 splits · gen 42 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:00:55 +4132.3s] [fullmatrix-ga] progress: ~164,740 splits · gen 54 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:01:11 +4147.6s] [fullmatrix-ga] progress: ~165,436 splits · gen 66 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:01:26 +4163.1s] [fullmatrix-ga] progress: ~166,074 splits · gen 77 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:01:43 +4179.4s] [fullmatrix-ga] progress: ~166,712 splits · gen 88 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:01:59 +4195.6s] [fullmatrix-ga] progress: ~167,350 splits · gen 99 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:02:14 +4211.3s] [fullmatrix-ga] progress: ~167,988 splits · gen 110 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:02:30 +4226.9s] [fullmatrix-ga] progress: ~168,568 splits · gen 120 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:02:46 +4243.0s] [fullmatrix-ga] progress: ~169,206 splits · gen 131 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:03:02 +4258.6s] [fullmatrix-ga] progress: ~169,844 splits · gen 142 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:03:17 +4274.2s] [fullmatrix-ga] progress: ~170,540 splits · gen 154 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:03:33 +4290.0s] [fullmatrix-ga] progress: ~171,294 splits · gen 167 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:03:49 +4305.9s] [fullmatrix-ga] progress: ~171,990 splits · gen 179 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:04:04 +4321.3s] [fullmatrix-ga] progress: ~172,744 splits · gen 192 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:04:21 +4337.4s] [fullmatrix-ga] progress: ~173,556 splits · gen 206 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:04:36 +4352.7s] [fullmatrix-ga] progress: ~174,252 splits · gen 218 (seed 7/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:04:52 +4369.3s] [fullmatrix-ga] progress: ~175,070 splits · gen 0 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:05:08 +4384.5s] [fullmatrix-ga] progress: ~175,882 splits · gen 14 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:05:24 +4400.5s] [fullmatrix-ga] progress: ~176,636 splits · gen 27 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:05:39 +4415.9s] [fullmatrix-ga] progress: ~177,390 splits · gen 40 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:05:55 +4431.9s] [fullmatrix-ga] progress: ~178,202 splits · gen 54 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:06:12 +4448.4s] [fullmatrix-ga] progress: ~178,956 splits · gen 67 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:06:28 +4464.5s] [fullmatrix-ga] progress: ~179,710 splits · gen 80 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 42/s
+[15:06:43 +4479.9s] [fullmatrix-ga] progress: ~180,464 splits · gen 93 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:06:58 +4494.9s] [fullmatrix-ga] progress: ~181,218 splits · gen 106 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:07:13 +4510.3s] [fullmatrix-ga] progress: ~182,030 splits · gen 120 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:07:29 +4525.8s] [fullmatrix-ga] progress: ~182,900 splits · gen 135 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:07:44 +4541.0s] [fullmatrix-ga] progress: ~183,596 splits · gen 147 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:07:59 +4556.1s] [fullmatrix-ga] progress: ~184,292 splits · gen 159 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:08:15 +4571.6s] [fullmatrix-ga] progress: ~184,988 splits · gen 171 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:08:30 +4587.1s] [fullmatrix-ga] progress: ~185,684 splits · gen 183 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:08:46 +4603.1s] [fullmatrix-ga] progress: ~186,380 splits · gen 195 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:09:02 +4618.6s] [fullmatrix-ga] progress: ~187,134 splits · gen 208 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:09:18 +4634.5s] [fullmatrix-ga] progress: ~187,888 splits · gen 221 (seed 7/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:09:33 +4649.7s] [fullmatrix-ga] progress: ~188,532 splits · gen 0 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:09:48 +4664.8s] [fullmatrix-ga] progress: ~189,170 splits · gen 11 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:10:04 +4680.8s] [fullmatrix-ga] progress: ~189,866 splits · gen 23 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:10:20 +4697.0s] [fullmatrix-ga] progress: ~190,620 splits · gen 36 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:10:36 +4712.7s] [fullmatrix-ga] progress: ~191,316 splits · gen 48 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:10:52 +4728.7s] [fullmatrix-ga] progress: ~192,012 splits · gen 60 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:11:08 +4744.4s] [fullmatrix-ga] progress: ~192,650 splits · gen 71 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:11:23 +4759.6s] [fullmatrix-ga] progress: ~193,288 splits · gen 82 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:11:38 +4775.1s] [fullmatrix-ga] progress: ~193,984 splits · gen 94 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:11:54 +4790.4s] [fullmatrix-ga] progress: ~194,680 splits · gen 106 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:12:10 +4806.4s] [fullmatrix-ga] progress: ~195,376 splits · gen 118 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:12:25 +4821.7s] [fullmatrix-ga] progress: ~196,014 splits · gen 129 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:12:40 +4837.3s] [fullmatrix-ga] progress: ~196,652 splits · gen 140 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:12:57 +4853.4s] [fullmatrix-ga] progress: ~197,348 splits · gen 152 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:13:12 +4869.1s] [fullmatrix-ga] progress: ~198,044 splits · gen 164 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:13:29 +4885.6s] [fullmatrix-ga] progress: ~198,740 splits · gen 176 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:13:44 +4900.6s] [fullmatrix-ga] progress: ~199,204 splits · gen 184 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:13:59 +4915.9s] [fullmatrix-ga] progress: ~199,784 splits · gen 194 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:14:15 +4931.8s] [fullmatrix-ga] progress: ~200,364 splits · gen 204 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:14:31 +4948.0s] [fullmatrix-ga] progress: ~201,002 splits · gen 215 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:14:47 +4964.0s] [fullmatrix-ga] progress: ~201,640 splits · gen 226 (seed 8/8 restart 1/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:15:03 +4979.9s] [fullmatrix-ga] progress: ~202,284 splits · gen 5 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:15:18 +4995.3s] [fullmatrix-ga] progress: ~202,922 splits · gen 16 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:15:34 +5010.9s] [fullmatrix-ga] progress: ~203,618 splits · gen 28 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:15:49 +5026.0s] [fullmatrix-ga] progress: ~204,372 splits · gen 41 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:16:04 +5041.2s] [fullmatrix-ga] progress: ~205,126 splits · gen 54 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:16:20 +5057.0s] [fullmatrix-ga] progress: ~205,822 splits · gen 66 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:16:36 +5072.9s] [fullmatrix-ga] progress: ~206,518 splits · gen 78 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:16:52 +5089.0s] [fullmatrix-ga] progress: ~207,156 splits · gen 89 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:17:08 +5104.8s] [fullmatrix-ga] progress: ~207,852 splits · gen 101 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:17:24 +5120.5s] [fullmatrix-ga] progress: ~208,548 splits · gen 113 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:17:39 +5136.0s] [fullmatrix-ga] progress: ~209,302 splits · gen 126 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:17:54 +5151.3s] [fullmatrix-ga] progress: ~210,056 splits · gen 139 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:18:10 +5167.1s] [fullmatrix-ga] progress: ~210,752 splits · gen 151 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:18:26 +5182.4s] [fullmatrix-ga] progress: ~211,448 splits · gen 163 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:18:41 +5197.8s] [fullmatrix-ga] progress: ~212,028 splits · gen 173 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:18:57 +5214.0s] [fullmatrix-ga] progress: ~212,666 splits · gen 184 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:19:13 +5229.8s] [fullmatrix-ga] progress: ~213,420 splits · gen 197 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:19:28 +5244.9s] [fullmatrix-ga] progress: ~214,174 splits · gen 210 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:19:43 +5260.0s] [fullmatrix-ga] progress: ~214,928 splits · gen 223 (seed 8/8 restart 2/2) · best vwsr 0.57805 · viol 3.52e-02 · infeasible · 43/s
+[15:19:53 +5269.8s] [fullmatrix-ga] evaluated 215,392 candidate splits over 3696 generations (8 seed(s) × 2 restart(s), pop 64) in 5036.0s = 43 splits/s
+[15:19:53 +5269.8s] [fullmatrix-ga] done vwsr=0.578045 viol=3.519e-02 feasible=False improved=False
+[15:19:53 +5269.8s]    [full-matrix] delivered split EXACT M5 band breach = 0.03519  (0 = all month bands met; compare to the tilt per-MID breakdown above — should be consistent).
+[15:19:53 +5269.8s]    [full-matrix] evaluated 215,392 candidate splits over 3696 generations (pop 64); vwsr=0.57805 viol=3.52e-02 feasible=False improved_over_compliant_seed=False
+[15:19:53 +5269.8s]    ④ EFFICIENCY (full-matrix GA — the delivered search):
+[15:19:53 +5269.8s]       settings   : 8 seed(s) × 2 restart(s) × 231 gens × pop 64 · restart-mode=Lean (constant-λ, spread-out)
+[15:19:53 +5269.8s]       result     : vwsr 0.57805 · viol 3.52e-02 · feasible=False
+[15:19:53 +5269.8s]       search cost: 215,392 candidate splits in 5036s (43/s throughput)
+[15:20:10 +5286.9s]    Enforcement OFF: delivered split = GA search output + eligibility (bans / wallet-incapable / USA-only); no VAMP-cap / per-MID band projection.
+[15:20:10 +5287.3s]    ── GA single variation (dial 0): MIDs over cap=0 (informational — no cap enforced), succ=0.6105, risk=0.0286
+[15:20:10 +5287.3s]    GA total wall time: 23s (1 GA run [risk-min] × 15 vampMid tilts; enforcement removed).
+[15:20:11 +5287.4s]    ── GRANULAR PROFILE SAMPLES · dial 0 · 6 of 10,457 cells (currency × bank × rpgt) ──
+[15:20:11 +5287.4s]       each row: gateway · baseline% → proposed% (Δpp) · fc volume · VAMP risk · vampMid
+[15:20:11 +5287.4s]       • usd / 403163 / Monthly Initial  ·  cell_vol=8,855  ·  12 active gateway(s)
+[15:20:11 +5287.4s]           woodforest-usd-tav              35.5% →  30.0% ( -5.6pp) · vol    2,654 · risk   0.80% · WoodForest - Total AV
+[15:20:11 +5287.4s]           adyen-usd-tsc-x-tav              3.4% →  25.6% (+22.2pp) · vol    2,264 · risk   0.78% · Adyen_TotalSecurity
+[15:20:11 +5287.4s]           adyen-usd-tav-na                 7.2% →  14.3% ( +7.0pp) · vol    1,266 · risk   0.81% · Adyen - TotalAV - NA
+[15:20:11 +5287.4s]           adyen-usd-tav-ultimate           5.2% →   7.5% ( +2.3pp) · vol      663 · risk   0.80% · Adyen_TotalAVUltimate
+[15:20:11 +5287.4s]           authorize-usd-tav                4.9% →   6.8% ( +1.9pp) · vol      604 · risk   0.80% · Authorize - Total AV
+[15:20:11 +5287.4s]           adyen-usd-tav-secure             6.9% →   5.1% ( -1.8pp) · vol      455 · risk   0.81% · Adyen_TotalAVSecure
+[15:20:11 +5287.4s]           adyen-usd-tav-prem               4.5% →   2.8% ( -1.8pp) · vol      244 · risk   0.80% · Adyen_TotalAVPremium
+[15:20:11 +5287.4s]           adyen-usd-tav-avonline           4.9% →   2.6% ( -2.3pp) · vol      234 · risk   0.79% · Adyen_TotalAntivirusOnline
+[15:20:11 +5287.4s]           adyen-usd-tav-pro                7.6% →   2.6% ( -4.9pp) · vol      234 · risk   0.80% · Adyen_TotalAVPro
+[15:20:11 +5287.4s]           checkout-usd-tav-new             2.3% →   2.6% ( +0.3pp) · vol      234 · risk   0.80% · Checkout - Total AV
+[15:20:11 +5287.4s]           adyen-usd-tav                    4.9% →   0.0% ( -4.9pp) · vol        2 · risk   0.80% · Adyen_TotalAV
+[15:20:11 +5287.5s]           paysafe-usd-tav                  2.2% →   0.0% ( -2.2pp) · vol        1 · risk   0.80% · PaySafe - Total AV
+[15:20:11 +5287.5s]       • usd / 447227 / Monthly Initial  ·  cell_vol=1,601  ·  12 active gateway(s)
+[15:20:11 +5287.5s]           woodforest-usd-tav               8.9% →  29.1% (+20.2pp) · vol      465 · risk   1.47% · WoodForest - Total AV
+[15:20:11 +5287.5s]           adyen-usd-tsc-x-tav              6.4% →  20.9% (+14.5pp) · vol      335 · risk   1.48% · Adyen_TotalSecurity
+[15:20:11 +5287.5s]           adyen-usd-tav-na                14.5% →  18.1% ( +3.6pp) · vol      290 · risk   1.47% · Adyen - TotalAV - NA
+[15:20:11 +5287.5s]           adyen-usd-tav-ultimate           5.0% →   7.3% ( +2.3pp) · vol      117 · risk   1.47% · Adyen_TotalAVUltimate
+[15:20:11 +5287.5s]           authorize-usd-tav                1.4% →   6.7% ( +5.3pp) · vol      107 · risk   1.47% · Authorize - Total AV
+[15:20:11 +5287.5s]           adyen-usd-tav-secure             5.7% →   5.1% ( -0.7pp) · vol       81 · risk   1.48% · Adyen_TotalAVSecure
+[15:20:11 +5287.5s]           adyen-usd-tav-pro               21.6% →   4.7% (-16.9pp) · vol       75 · risk   1.47% · Adyen_TotalAVPro
+[15:20:11 +5287.5s]           adyen-usd-tav-prem               4.7% →   2.8% ( -1.9pp) · vol       45 · risk   1.47% · Adyen_TotalAVPremium
+[15:20:11 +5287.5s]           adyen-usd-tav-avonline           4.9% →   2.7% ( -2.2pp) · vol       43 · risk   1.48% · Adyen_TotalAntivirusOnline
+[15:20:11 +5287.5s]           checkout-usd-tav-new             2.4% →   2.7% ( +0.3pp) · vol       43 · risk   1.47% · Checkout - Total AV
+[15:20:11 +5287.5s]           adyen-usd-tav                    6.2% →   0.0% ( -6.2pp) · vol        0 · risk   1.47% · Adyen_TotalAV
+[15:20:11 +5287.5s]           paysafe-usd-tav                  1.8% →   0.0% ( -1.8pp) · vol        0 · risk   1.47% · PaySafe - Total AV
+[15:20:11 +5287.5s]       • usd / 473702 / Monthly Initial  ·  cell_vol=1,600  ·  12 active gateway(s)
+[15:20:11 +5287.5s]           adyen-usd-tsc-x-tav             11.0% →  24.3% (+13.3pp) · vol      389 · risk   2.56% · Adyen_TotalSecurity
+[15:20:11 +5287.5s]           adyen-usd-tav-na                 9.8% →  19.9% (+10.1pp) · vol      319 · risk   2.56% · Adyen - TotalAV - NA
+[15:20:11 +5287.5s]           adyen-usd-tav-ultimate           4.4% →  10.5% ( +6.1pp) · vol      168 · risk   2.56% · Adyen_TotalAVUltimate
+[15:20:11 +5287.5s]           woodforest-usd-tav              12.2% →  10.5% ( -1.7pp) · vol      168 · risk   2.56% · WoodForest - Total AV
+[15:20:11 +5287.5s]           adyen-usd-tav-secure             3.8% →   8.0% ( +4.2pp) · vol      128 · risk   2.56% · Adyen_TotalAVSecure
+[15:20:11 +5287.5s]           authorize-usd-tav                1.3% →   6.0% ( +4.7pp) · vol       96 · risk   2.56% · Authorize - Total AV
+[15:20:11 +5287.5s]           adyen-usd-tav-prem               4.0% →   5.2% ( +1.2pp) · vol       84 · risk   2.56% · Adyen_TotalAVPremium
+[15:20:11 +5287.5s]           adyen-usd-tav-avonline           4.4% →   5.1% ( +0.8pp) · vol       82 · risk   2.57% · Adyen_TotalAntivirusOnline
+[15:20:11 +5287.5s]           adyen-usd-tav-pro                8.6% →   5.1% ( -3.5pp) · vol       82 · risk   2.56% · Adyen_TotalAVPro
+[15:20:11 +5287.5s]           checkout-usd-tav-new             1.9% →   5.1% ( +3.3pp) · vol       82 · risk   2.56% · Checkout - Total AV
+[15:20:11 +5287.5s]           adyen-usd-tav                    5.4% →   0.1% ( -5.3pp) · vol        1 · risk   2.56% · Adyen_TotalAV
+[15:20:11 +5287.5s]           paysafe-usd-tav                  1.9% →   0.1% ( -1.8pp) · vol        1 · risk   2.56% · PaySafe - Total AV
+[15:20:11 +5287.5s]       • cad / 451395 / Monthly Initial  ·  cell_vol=2  ·  4 active gateway(s)
+[15:20:11 +5287.5s]           adyen-cad-tav                    0.0% →  50.7% (+50.7pp) · vol        1 · risk   2.98% · Adyen_TotalAV
+[15:20:11 +5287.5s]           worldpay-cad-tav-nt              0.0% →  29.5% (+29.5pp) · vol        1 · risk   2.98% · WorldPay - Total AV
+[15:20:11 +5287.5s]           braintree-cad-tav                0.0% →  19.8% (+19.8pp) · vol        0 · risk   2.98% · Braintree USA - Total AV
+[15:20:11 +5287.5s]           paysafe-cad-tav                100.0% →   0.0% (-100.0pp) · vol        0 · risk   2.98% · PaySafe - Total AV
+[15:20:11 +5287.5s]       • usd / 401423 / Monthly Initial  ·  cell_vol=2  ·  5 active gateway(s)
+[15:20:11 +5287.5s]           adyen-usd-tav-secure             0.0% →  97.0% (+97.0pp) · vol        2 · risk   2.98% · Adyen_TotalAVSecure
+[15:20:11 +5287.5s]           adyen-usd-tav-na                 0.0% →   1.4% ( +1.4pp) · vol        0 · risk   2.98% · Adyen - TotalAV - NA
+[15:20:11 +5287.6s]           adyen-usd-tav-avonline           0.0% →   1.3% ( +1.3pp) · vol        0 · risk   2.98% · Adyen_TotalAntivirusOnline
+[15:20:11 +5287.6s]           adyen-usd-tsc-x-tav              0.0% →   0.3% ( +0.3pp) · vol        0 · risk   2.98% · Adyen_TotalSecurity
+[15:20:11 +5287.6s]           paysafe-usd-tav                100.0% →   0.0% (-100.0pp) · vol        0 · risk   2.98% · PaySafe - Total AV
+[15:20:11 +5287.6s]       • aud / 405424 / Upgrades  ·  cell_vol=2  ·  4 active gateway(s)
+[15:20:11 +5287.6s]           adyen-aud-tav                    0.0% →  50.8% (+50.8pp) · vol        1 · risk   2.98% · Adyen_TotalAV
+[15:20:11 +5287.6s]           worldpay-aud-tav-nt              0.0% →  29.4% (+29.4pp) · vol        1 · risk   2.98% · WorldPay - Total AV
+[15:20:11 +5287.6s]           braintree-aud-tav                0.0% →  19.7% (+19.7pp) · vol        0 · risk   2.98% · Braintree USA - Total AV
+[15:20:11 +5287.6s]           paysafe-aud-tav                100.0% →   0.0% (-100.0pp) · vol        0 · risk   2.98% · PaySafe - Total AV
+[15:20:25 +5301.7s] 15:20:25     build_cell_problems: 20893/25315 (83%) gateway-cells on the pooled prior (sparse per-cell attempts); 4422 matched, so the join keys ARE aligned — expected at BIN grain, not a mismatch.
+[15:20:27 +5303.4s]    auto-block: 22 bank×gateway flagged as BANK-BLOCKED (≥100 most-recent consecutive failed attempts) → capped to the exploration floor (13 split row(s) capped across dials).
+[15:20:27 +5303.4s]    ✓ ④ Run genetic_fullmatrix engine across the Risk↔Conversion axis — finished in 5221.4s
+[15:20:27 +5303.4s] ▶ ⑤ Pre-calculate impact frames for all variations — started
+[15:20:27 +5303.7s]    ✓ ⑤ Pre-calculate impact frames for all variations — finished in 0.3s
+[15:20:27 +5303.7s] ▶ ⑥ Pre-compute pool-targeted compression for all 1 dial(s) (target <= 200) — started
+[15:22:24 +5421.1s]       dial 0: 197 pools (fidelity 84.8%)
+[15:22:24 +5421.1s]    compression (sequential, 1 dial(s), method=ward/knapsack) finished in 117.4s
+[15:22:24 +5421.2s]    ✓ ⑥ Pre-compute pool-targeted compression for all 1 dial(s) (target <= 200) — finished in 117.4s
+[15:22:24 +5421.2s] ✅ Total run time 5421.2s

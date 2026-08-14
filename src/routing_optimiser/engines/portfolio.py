@@ -58,8 +58,8 @@ class PortfolioEngine(SoftmaxEngine):
     # [FN-423]
     def _ref_param_key(self, p: CellProblem):
         # The CVaR reference depends only on prior_count (plus per-cell risk_n / attempts,
-        # which are immutable on `p`). Temperature / γ / explore caps don't affect it, so
-        # they're dropped from the key — a temperature change won't invalidate this cache.
+        # which are immutable on `p`). Temperature / γ don't affect it, so they're dropped
+        # from the key — a temperature change won't invalidate this cache.
         return (round(float(self.params.get("prior_count", 30.0)), 9),)
 
     # [FN-424]

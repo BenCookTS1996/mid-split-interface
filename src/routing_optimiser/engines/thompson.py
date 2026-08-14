@@ -69,9 +69,8 @@ class ThompsonEngine(SoftmaxEngine):
     # [FN-420]
     def _ref_param_key(self, p: CellProblem):
         # Thompson's reference depends on its Beta prior and — via the γ tilt — temperature and
-        # ref_risk_aversion. The auto-explore caps don't apply (it allocates from its own
-        # posterior), so they're dropped; the prior params are ADDED so a prior change can't
-        # return a stale reference.
+        # ref_risk_aversion (it allocates from its own posterior). The prior params are ADDED so a
+        # prior change can't return a stale reference.
         temperature = getattr(p, "temperature", None)
         if temperature is None:
             temperature = self.params.get("temperature", 0.05)

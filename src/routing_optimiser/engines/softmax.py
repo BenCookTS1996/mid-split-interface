@@ -69,12 +69,11 @@ class SoftmaxEngine(BaseEngine):
         eligible = upper > 0.0
 
         # The exploration floor is ALWAYS a hard minimum below slider=100, so no
-        # eligible gateway can be driven dark even at maximum risk-aversion. It is
-        # applied to PROVEN gateways only — auto-explore (capable-but-untested)
-        # gateways are bounded by the reference's explore cap instead, not floored,
-        # so a flood of unproven gateways can't be force-floored above the cap. Their
-        # lower bound stays 0, so the compliance QP can still raise them ABOVE the cap
-        # if that's the only way to meet the VAMP cap (the override).
+        # eligible PROVEN gateway can be driven dark even at maximum risk-aversion. It is
+        # applied to PROVEN gateways only — auto-explore (capable-but-untested) gateways
+        # are NOT force-floored (their lower bound stays 0), so a flood of unproven
+        # gateways can't be pinned above a minimum; they're scored freely on their rate
+        # and the compliance QP can still raise them if needed to meet the VAMP cap.
         is_explore = np.asarray(getattr(p, "is_explore", np.zeros(p.n(), bool)), dtype=bool)
         proven_eligible = eligible & ~is_explore
         floor = float(getattr(self.soft, "exploration_floor", 0.0) or 0.0)

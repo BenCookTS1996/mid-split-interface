@@ -77,7 +77,9 @@ def render():
         if use_prev:
             # Forecast-outputs folder on the LEFT; Split Go Live date on the RIGHT (the other
             # inputs are hidden in this mode, so it's shown here so it's always available).
-            _pv1, _pv2 = st.columns(2)
+            # Split Go Live keeps its reduced width (0.175 of the row); the folder input is widened
+            # to 0.5 so its long label fits on one line. The trailing column is an empty spacer.
+            _pv1, _pv2, _pv_sp = st.columns([0.5, 0.175, 0.325])
             prev_dir = _pv1.text_input(
                 "Forecast outputs folder (the data/outputs/<MONTH>/<COMPANY>/ folder)", "")
             split_go_live = _pv2.date_input(
@@ -413,11 +415,21 @@ def render():
         st.markdown("""<style>
             .st-key-calc_cache_btn button, .st-key-calc_cache_btn button * { color: #ffffff !important; }
         </style>""", unsafe_allow_html=True)
-        if st.button("Load forecast" if settings_hidden else "Calculate & cache forecast",
-                     type="primary", key="calc_cache_btn",
-                     disabled=not actuals_valid):
-            # Render the run log into the ROW-2 right-column slot when it exists (normal mode);
-            # fall back to full-width in previous-forecast mode where that column is hidden.
+        _load_clicked = st.button(
+            "Load forecast" if settings_hidden else "Calculate & cache forecast",
+            type="primary", key="calc_cache_btn",
+            disabled=not actuals_valid)
+        # Previous-forecast mode hides ROW 2 (and its right-column log slot), so build the side-by-side
+        # layout here instead: baseline pre/post table on the LEFT, forecast run log on the RIGHT. In
+        # normal mode _fc_log_slot is already the ROW-2 right column and the table renders full-width.
+        _pre_table_ctx = None
+        if settings_hidden:
+            _pv_tbl_col, _pv_log_col = st.columns([3, 2], gap="large")
+            _fc_log_slot = _pv_log_col.container()
+            _pre_table_ctx = _pv_tbl_col
+        if _load_clicked:
+            # Render the run log into the ROW-2 right-column slot (normal mode) or the previous-forecast
+            # right column; fall back to full-width only if neither exists.
             _log_ctx = _fc_log_slot if _fc_log_slot is not None else st
             with _log_ctx.status("Calculating & caching forecast...", expanded=True) as status:
                 log_area = st.empty()
@@ -557,19 +569,25 @@ def render():
         # Baseline forecast — VI Txn & VAMP by month × vampMid (PRE months only), shown once a forecast
         # has been calculated/cached/loaded, in the SAME tab-3 table format + conditional formatting
         # (reuses tab_validate's renderer). Reads mid_level.csv from the cached forecast output dir.
-        try:
-            _fc_out = ss.get("pipeline_out_dir")
-            _mid_csv = os.path.join(_fc_out, "mid_level.csv") if _fc_out else None
-            if _mid_csv and os.path.isfile(_mid_csv):
-                from tab_validate import _to_prepost as _tpp, _render_prepost_table as _rpt
-                _pre = _tpp(pd.read_csv(_mid_csv))
-                _pre = _pre[[c for c in _pre.columns if "Post" not in c]]   # PRE months only
-                st.markdown("<div style='height:0.75rem;'></div>", unsafe_allow_html=True)
-                st.markdown("<h5 style='margin-top:0; margin-bottom:0.25rem;'>Baseline forecast — VI Txn &amp; VAMP by month</h5>",
-                            unsafe_allow_html=True)
-                _rpt(_pre, fit_content=True, bold=False)   # hug content; values not bold (tab-1 baseline)
-        except Exception as _e:  # noqa: BLE001
-            st.caption(f"(baseline VI/VAMP table unavailable: {type(_e).__name__}: {_e})")
+        # In previous-forecast mode the table renders into the LEFT column created above (log sits in
+        # the right column); otherwise it renders full-width via a throwaway container.
+        _tbl_ctx = _pre_table_ctx if _pre_table_ctx is not None else st.container()
+        with _tbl_ctx:
+            try:
+                _fc_out = ss.get("pipeline_out_dir")
+                _mid_csv = os.path.join(_fc_out, "mid_level.csv") if _fc_out else None
+                if _mid_csv and os.path.isfile(_mid_csv):
+                    from tab_validate import _to_prepost as _tpp, _render_prepost_table as _rpt
+                    _pre = _tpp(pd.read_csv(_mid_csv))
+                    _pre = _pre[[c for c in _pre.columns if "Post" not in c]]   # PRE months only
+                    # Top margin drops this header ~0.9rem so its text sits level with the "Forecast
+                    # ready…" status label in the right column (the status box's label is inset from
+                    # the box top). Nudge the 0.9rem if it's a touch high/low on your screen.
+                    st.markdown("<h5 style='margin-top:0.9rem; margin-bottom:0.25rem;'>Baseline forecast — VI Txn &amp; VAMP by month</h5>",
+                                unsafe_allow_html=True)
+                    _rpt(_pre, fit_content=True, bold=False)   # hug content; values not bold (tab-1 baseline)
+            except Exception as _e:  # noqa: BLE001
+                st.caption(f"(baseline VI/VAMP table unavailable: {type(_e).__name__}: {_e})")
 
 
     with _vs:
