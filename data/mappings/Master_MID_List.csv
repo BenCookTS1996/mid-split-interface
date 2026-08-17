@@ -244,7 +244,7 @@ paysafe-gbp-1002448994,PaySafe - Total AV - GBP,PaySafe - Total AV,PaySafe - Tot
 paysafe-gbp-tav,PaySafe - Total AV - GBP,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,GBP,ProtectedNet - 458518 - 00102834,ProtectedNet,458518,102834,TRUE,FALSE,FALSE,1
 paysafe-gbp-tvn-ap,PaySafe - Total AV - GBP - AP,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,GBP,,,,,FALSE,FALSE,FALSE,1
 paysafe-usd-1002449004,PaySafe - Total AV - USD,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,USD,ProtectedNet - 458518 - 00102836,ProtectedNet,458518,102836,FALSE,TRUE,TRUE,1
-paysafe-usd-tav,PaySafe - Total AV - USD,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,USD,ProtectedNet - 458518 - 00102836,ProtectedNet,458518,102836,FALSE,TRUE,TRUE,1
+paysafe-usd-tav,PaySafe - Total AV - USD,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,USD,ProtectedNet - 458518 - 00102836,ProtectedNet,458518,102836,TRUE,TRUE,TRUE,1
 paysafe-usd-tvn-ap,PaySafe - Total AV - USD - AP,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,USD,,,,,FALSE,TRUE,TRUE,1
 paysafe-usd-tvn-gp,PaySafe - Total AV - USD - GP,PaySafe - Total AV,PaySafe - Total AV,PaySafe,Total AV,USD,,,,,FALSE,TRUE,TRUE,1
 trustpayments-aud-tav,TrustPayments - Total AV - AUD,TrustPayments - Total AV,TrustPayments - Total AV - AUD,TrustPayments,Total AV,AUD,,,,,FALSE,FALSE,FALSE,1

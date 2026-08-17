@@ -2003,6 +2003,148 @@ def render():
                     except Exception as _e:  # noqa: BLE001
                         log(f"   [Warning] switched-off candidate exclusion skipped: {_e}")
 
+                    # ── MASTER-MID CANDIDATE FILTER (2026-08-17) ───────────────────────────────
+                    # Capability comes from data/mappings/Master_MID_List.csv at gatewayFid grain.
+                    # These guards previously applied ONLY to the auto-explore capable set (see the
+                    # "auto-explore capable set" log above), so a gateway that arrived via ATTEMPTS
+                    # / forecast HISTORY bypassed them entirely and could be routed volume it cannot
+                    # take. Gated here, at the single choke every candidate passes through:
+                    #   • currency=EXCLUDED  — no usable currency in the MID list  → drop  [HARD]
+                    #   • currency mismatch  — fid's designated currency != cell's → drop  [HARD]
+                    #   • brand mismatch     — fid's brand != the run's company    → drop  [HARD]
+                    #   • IsActive=FALSE     — REPORT-ONLY: logs what it WOULD remove and how much
+                    #                          baseline volume rides on it, changes nothing.
+                    #                          Enforce with ROUTING_MIDLIST_ACTIVE=1.     [REPORT]
+                    # processWallet is gated after the sub-cell expansion below (it needs the pmp
+                    # column, so it only bites at sub-cell grain).
+                    # VOLUME IS CONSERVED: a dropped row's volume is redistributed across the
+                    # surviving doors of the SAME cell, never deleted — the demand is real even if
+                    # that particular door cannot serve it. Cells the gates would empty are left
+                    # untouched (an unroutable cell is worse than a bad door).
+                    # Kill-switch: ROUTING_MIDLIST_FILTER=0 disables the whole block.
+                    _mf_wallet = {}
+                    if (os.environ.get("ROUTING_MIDLIST_FILTER", "1") != "0"
+                            and "gateway" in agg_forecast.columns):
+                        try:
+                            from routing_optimiser.forecast_pipeline import _canonical_gateway as _cg_mf
+                            _mf_cur, _mf_brand, _mf_act, _mf_excl = {}, {}, {}, set()
+                            if os.path.exists(mid_list_path):
+                                _mmf = load_mid_list(mid_list_path)
+                                _ccf = _norm_cols(_mmf)
+                                _gf = _ccf.get("gatewayfid")
+                                _cf, _bf = _ccf.get("currency"), _ccf.get("brand")
+                                _af, _wf = _ccf.get("isactive"), _ccf.get("processwallet")
+                                if _gf:
+                                    def _nbf(_x):
+                                        return str(_x).strip().lower().replace(" ", "")
+
+                                    def _truthy(_x):
+                                        return str(_x).strip().lower() in ("true", "1", "yes", "t", "y")
+                                    _gcolf = _mmf[_gf].map(_cg_mf).astype(str).str.strip().str.lower().tolist()
+                                    _cvals = (_mmf[_cf].astype(str).str.strip().str.lower().tolist()
+                                              if _cf else [""] * len(_mmf))
+                                    _bvalsf = _mmf[_bf].tolist() if _bf else None
+                                    _avalsf = _mmf[_af].tolist() if _af else None
+                                    _wvalsf = _mmf[_wf].tolist() if _wf else None
+                                    for _i, _g in enumerate(_gcolf):
+                                        _cv = _cvals[_i]
+                                        if _cv in ("", "excluded", "nan", "none"):
+                                            _mf_excl.add(_g)      # present, but no usable currency
+                                        else:
+                                            _mf_cur.setdefault(_g, set()).add(_cv)
+                                        if _bvalsf is not None and _g not in _mf_brand:
+                                            _mf_brand[_g] = _nbf(_bvalsf[_i])
+                                        if _avalsf is not None:   # OR across duplicate fid rows
+                                            _mf_act[_g] = _mf_act.get(_g, False) or _truthy(_avalsf[_i])
+                                        if _wvalsf is not None:
+                                            _mf_wallet[_g] = _mf_wallet.get(_g, False) or _truthy(_wvalsf[_i])
+                            # a fid with ANY real currency row is no longer "EXCLUDED"
+                            _mf_excl -= set(_mf_cur)
+                            _gl = agg_forecast["gateway"].map(_cg_mf).astype(str).str.strip().str.lower().tolist()
+                            _cl = (agg_forecast["currency"].astype(str).str.strip().str.lower().tolist()
+                                   if "currency" in agg_forecast.columns else [""] * len(agg_forecast))
+                            _volm = pd.to_numeric(
+                                agg_forecast["volume"] if "volume" in agg_forecast.columns else 0.0,
+                                errors="coerce").fillna(0.0) if "volume" in agg_forecast.columns else None
+                            _ix = agg_forecast.index
+                            _d_excl = pd.Series([_g in _mf_excl for _g in _gl], index=_ix)
+                            _d_cur = pd.Series(
+                                [(_g in _mf_cur) and (_c not in _mf_cur[_g]) for _g, _c in zip(_gl, _cl)],
+                                index=_ix) if _mf_cur else pd.Series(False, index=_ix)
+                            _runb = str((ss.get("forecast_settings", {}) or {}).get(
+                                "company", locals().get("sr_company", ""))).strip().lower().replace(" ", "")
+                            _d_brand = (pd.Series([_mf_brand.get(_g, _runb) != _runb for _g in _gl], index=_ix)
+                                        if (_mf_brand and _runb) else pd.Series(False, index=_ix))
+                            _d_act = (pd.Series([not _mf_act.get(_g, True) for _g in _gl], index=_ix)
+                                      if _mf_act else pd.Series(False, index=_ix))
+                            _act_on = os.environ.get("ROUTING_MIDLIST_ACTIVE", "0") == "1"
+                            _hard = _d_excl | _d_cur | _d_brand | (_d_act if _act_on else False)
+                            # ---- never leave a cell with no candidate --------------------------
+                            _ckf = [_c for _c in ["rpgt", "currency", "bank"] if _c in agg_forecast.columns]
+                            if _ckf and bool(_hard.any()):
+                                _t1 = pd.DataFrame({"_k": (~_hard).astype(int).to_numpy()})
+                                for _c in _ckf:
+                                    _t1[_c] = agg_forecast[_c].to_numpy()
+                                _surv1 = _t1.groupby(_ckf)["_k"].transform("sum").to_numpy()
+                                _resc1 = _hard & (_surv1 <= 0)
+                                if bool(_resc1.any()):
+                                    log(f"   [midlist-filter] {int(_resc1.sum()):,} row(s) KEPT despite failing a "
+                                        "gate — they are the ONLY candidates left in their cell, and an "
+                                        "unroutable cell is worse than an unsuitable door.")
+                                    _hard = _hard & ~_resc1
+                            # ---- IsActive: report-only unless explicitly enforced --------------
+                            if bool(_d_act.any()):
+                                _adf = pd.DataFrame({"fid": _gl})
+                                _adf["vol"] = (_volm.to_numpy() if _volm is not None else 0.0)
+                                _ai = (_adf[_d_act.to_numpy()].groupby("fid")["vol"]
+                                       .agg(["sum", "size"]).sort_values("sum", ascending=False))
+                                log(f"   [midlist-filter] IsActive=FALSE in Master_MID_List: {len(_ai)} "
+                                    f"gateway(s) on {int(_d_act.sum()):,} candidate row(s) carrying "
+                                    f"{float(_ai['sum'].sum()):,.0f} of baseline forecast volume — "
+                                    + ("ENFORCED (dropped; ROUTING_MIDLIST_ACTIVE=1)." if _act_on else
+                                       "REPORT-ONLY, nothing removed. Check the list below against reality, "
+                                       "then set ROUTING_MIDLIST_ACTIVE=1 to enforce."))
+                                for _fk, _fr in _ai.head(20).iterrows():
+                                    log(f"      {_fk}: {float(_fr['sum']):,.0f} baseline volume across "
+                                        f"{int(_fr['size']):,} candidate row(s)")
+                            # ---- apply the hard gates, CONSERVING cell volume ------------------
+                            if bool(_hard.any()):
+                                _byf = {}
+                                for _nm, _msk in (("currency=EXCLUDED", _d_excl),
+                                                  ("currency mismatch", _d_cur),
+                                                  ("brand mismatch", _d_brand),
+                                                  ("IsActive=FALSE", _d_act if _act_on else None)):
+                                    if _msk is not None and bool((_msk & _hard).any()):
+                                        _byf[_nm] = int((_msk & _hard).sum())
+                                _nh = int(_hard.sum())
+                                _vlost = float(_volm[_hard].sum()) if _volm is not None else 0.0
+                                if _ckf and _volm is not None:
+                                    # scale survivors so each cell's TOTAL volume is preserved
+                                    _t1v = pd.DataFrame({"_v": _volm.to_numpy(),
+                                                         "_s": np.where(_hard.to_numpy(), 0.0, _volm.to_numpy())})
+                                    for _c in _ckf:
+                                        _t1v[_c] = agg_forecast[_c].to_numpy()
+                                    _tot1 = _t1v.groupby(_ckf)["_v"].transform("sum").to_numpy()
+                                    _sur1 = _t1v.groupby(_ckf)["_s"].transform("sum").to_numpy()
+                                    _scl = np.where(_sur1 > 1e-12, _tot1 / np.where(_sur1 > 1e-12, _sur1, 1.0), 1.0)
+                                    agg_forecast = agg_forecast.assign(
+                                        volume=_volm.to_numpy() * _scl)
+                                agg_forecast = agg_forecast[~_hard.to_numpy()].reset_index(drop=True)
+                                log(f"   [midlist-filter] dropped {_nh:,} candidate row(s) on Master_MID_List "
+                                    "capability: " + " · ".join(f"{_k} {_v:,}" for _k, _v in _byf.items())
+                                    + f". Their {_vlost:,.0f} volume was REDISTRIBUTED across the surviving "
+                                    "doors of the same cell (demand is real even where that door can't serve "
+                                    "it), so no cell total changed. These rows could never ship, so they were "
+                                    "consuming decision variables and share mass the band projector cannot "
+                                    "see. Kill-switch: ROUTING_MIDLIST_FILTER=0.")
+                            else:
+                                log("   [midlist-filter] no candidate row failed a Master_MID_List gate "
+                                    "(currency / brand" + (" / IsActive" if _act_on else "") + ").")
+                        except Exception as _mfe:  # noqa: BLE001
+                            log(f"   [midlist-filter] SKIPPED ({type(_mfe).__name__}: {_mfe}) — candidates "
+                                "are UNFILTERED (previous behaviour); Master-MID capability is not enforced "
+                                "for history-derived gateways this run.")
+
                     _progress(_f_cells, "Assembling cells…")
                     _stage("③ Assemble routing cells from 30D attempts (forecast supplies volume only)")
                     if _opt_subcell:
@@ -2021,6 +2163,71 @@ def render():
                                 "(vamp_t_period_prorata_export.csv) in the outputs dir — not found.")
                         _fr_sc = subcell_vi_fractions(pd.read_csv(_ppf_sc))
                         _agg_sc = expand_forecast_to_subcells(agg_forecast, _fr_sc)
+                        # ── processWallet GATE (Master_MID_List, sub-cell grain) ───────────────
+                        # A fid with processWallet=FALSE cannot serve a GOOGLEPAY / APPLEPAY
+                        # sub-cell. Until now this was only a downstream MASK: the row stayed a
+                        # candidate, the GA spent share on it, and the band projector's emask +
+                        # build_split_exports zeroed it and renormalised afterwards — e.g.
+                        # authorize-usd-tav taking 71.2% of a googlepay sub-cell in
+                        # usd|402347|Addon Sale, all of which delivery threw away. Removing the
+                        # CANDIDATE instead means each sub-cell's simplex only ever contains doors
+                        # that can actually serve it: scored == shippable on this axis, fewer
+                        # decision variables, and share mass the projector can see.
+                        # Volume is conserved (redistributed within the sub-cell) and a sub-cell
+                        # that would be emptied is left alone. Kill-switch: ROUTING_MIDLIST_WALLET=0.
+                        _mf_w = locals().get("_mf_wallet") or {}
+                        if (_mf_w and os.environ.get("ROUTING_MIDLIST_WALLET", "1") != "0"
+                                and "pmp" in _agg_sc.columns and "gateway" in _agg_sc.columns):
+                            try:
+                                from routing_optimiser.forecast_pipeline import _canonical_gateway as _cg_w
+                                _gw2 = _agg_sc["gateway"].map(_cg_w).astype(str).str.strip().str.lower().tolist()
+                                _wal2 = _agg_sc["pmp"].astype(str).str.strip().str.lower().isin(
+                                    ["googlepay", "applepay"]).to_numpy()
+                                _incap2 = np.array([not _mf_w.get(_g, True) for _g in _gw2], dtype=bool)
+                                _dropw = _wal2 & _incap2
+                                _sk2 = [_c for _c in ["rpgt", "currency", "bank", "pmp", "ctry"]
+                                        if _c in _agg_sc.columns]
+                                if _sk2 and bool(_dropw.any()):
+                                    _t2 = pd.DataFrame({"_k": (~_dropw).astype(int)})
+                                    for _c in _sk2:
+                                        _t2[_c] = _agg_sc[_c].to_numpy()
+                                    _sur2 = _t2.groupby(_sk2)["_k"].transform("sum").to_numpy()
+                                    _resc2 = _dropw & (_sur2 <= 0)
+                                    if bool(_resc2.any()):
+                                        log(f"   [midlist-wallet] {int(_resc2.sum()):,} wallet-incapable row(s) "
+                                            "KEPT — sole candidate(s) in their sub-cell; the downstream emask "
+                                            "still zeroes them.")
+                                        _dropw = _dropw & ~_resc2
+                                if bool(_dropw.any()):
+                                    _fw = sorted({_g for _g, _d in zip(_gw2, _dropw) if _d})
+                                    _v2 = (pd.to_numeric(_agg_sc["volume"], errors="coerce").fillna(0.0).to_numpy()
+                                           if "volume" in _agg_sc.columns else None)
+                                    _vw = float(_v2[_dropw].sum()) if _v2 is not None else 0.0
+                                    if _sk2 and _v2 is not None:
+                                        _t2v = pd.DataFrame({"_v": _v2,
+                                                             "_s": np.where(_dropw, 0.0, _v2)})
+                                        for _c in _sk2:
+                                            _t2v[_c] = _agg_sc[_c].to_numpy()
+                                        _tot2 = _t2v.groupby(_sk2)["_v"].transform("sum").to_numpy()
+                                        _st2 = _t2v.groupby(_sk2)["_s"].transform("sum").to_numpy()
+                                        _sc2 = np.where(_st2 > 1e-12,
+                                                        _tot2 / np.where(_st2 > 1e-12, _st2, 1.0), 1.0)
+                                        _agg_sc = _agg_sc.assign(volume=_v2 * _sc2)
+                                    _agg_sc = _agg_sc[~_dropw].reset_index(drop=True)
+                                    log(f"   [midlist-wallet] dropped {int(_dropw.sum()):,} candidate row(s): "
+                                        "processWallet=FALSE fid in a GOOGLEPAY/APPLEPAY sub-cell "
+                                        f"({len(_fw)} fid(s): {', '.join(_fw[:8])}"
+                                        + (" …" if len(_fw) > 8 else "")
+                                        + f"); their {_vw:,.0f} sub-cell volume was REDISTRIBUTED across the "
+                                        "wallet-capable doors of the same sub-cell. Previously these stayed "
+                                        "candidates and were zeroed only AFTER the GA had spent share on them. "
+                                        "Kill-switch: ROUTING_MIDLIST_WALLET=0.")
+                                else:
+                                    log("   [midlist-wallet] no wallet-incapable candidate found in a "
+                                        "GOOGLEPAY/APPLEPAY sub-cell.")
+                            except Exception as _mwe:  # noqa: BLE001
+                                log(f"   [midlist-wallet] SKIPPED ({type(_mwe).__name__}: {_mwe}) — "
+                                    "wallet-incapable doors remain candidates (masked downstream only).")
                         agg_problems = build_subcell_problems(_agg_sc, agg_sr)
                         log(f"   [sub-cell] optimisation grain = Bank×Currency×RPGT×pmp×Country: "
                             f"{len(agg_problems):,} sub-cell problems from {len(agg_forecast):,} "
@@ -2568,16 +2775,99 @@ def render():
                         # Static pipeline-enforcement mask per t0 row: wallet-incapable MID in a
                         # wallet-pmp sub-cell, or USA-only MID in a Non-USA sub-cell. Zeroes that
                         # MID's proposed share there (matches build_split_exports).
+                        #
+                        # (vampMid, CURRENCY) GRAIN (2026-08-17). The scaffold carries no gatewayFid,
+                        # only vampMid — so this mask used to test the vampMid alone, which is only
+                        # well defined when every fid of that vampMid agrees. They do NOT always
+                        # agree: PaySafe - Total AV is wallet-capable on paysafe-usd-tav but not on
+                        # paysafe-eur-tav / -gbp-tav, so a vampMid-only mask barred PaySafe from
+                        # wallet sub-cells in USD as well. Currency IS on the scaffold, and every
+                        # fid is currency-specific, so (vampMid, currency) resolves it exactly.
+                        # Built straight from Master_MID_List.csv + routing_restrictions.json rather
+                        # than from ss["wallet_ctx"], which is written LATER in the run and would
+                        # therefore be the PREVIOUS run's capability — stale the moment the MID list
+                        # is edited. Falls back to the old vampMid-only sets if the files can't be
+                        # read, so the mask never silently disappears.
+                        # A pair counts as incapable only when every ACTIVE fid for it is incapable
+                        # (if any active fid can serve, the vampMid can be served there); with no
+                        # active fid for the pair, all its fids are considered.
                         _wc_es = ss.get("wallet_ctx") or {}
                         _wc_set = {str(x).strip().lower() for x in (_wc_es.get("incapable") or set())}
                         _uo_set = {str(x).strip().lower() for x in (_wc_es.get("usa_only") or set())}
-                        _T0_emask_a = (
-                            (_T0["_pmp"].isin(["googlepay", "applepay"]).to_numpy()
-                             & _T0["_midl"].isin(_wc_set).to_numpy())
-                            | ((~_T0["_ctry"].isin(["usa", "us", "_all_", ""])).to_numpy()
-                               & _T0["_midl"].isin(_uo_set).to_numpy()))
-                        if not (_wc_set or _uo_set):
-                            _T0_emask_a = None
+                        _wc_pairs, _uo_pairs, _pair_src = set(), set(), "none"
+                        try:
+                            from routing_optimiser.forecast_pipeline import _canonical_gateway as _cg_pk
+                            from routing_optimiser.eligibility import load_usa_only as _lu_pk
+                            _cap_w, _cap_a, _vc_of = {}, {}, {}
+                            if os.path.exists(mid_list_path):
+                                # NB: locals here are suffixed _pk — `_mmp` further UP this function
+                                # holds the MID-list PATH and is read much further DOWN by
+                                # process_wallet_incapable(_mmp); binding a DataFrame to it here
+                                # clobbered that read (ValueError: truth value of a DataFrame).
+                                _mm_pk = load_mid_list(mid_list_path)
+                                _cc_pk = _norm_cols(_mm_pk)
+                                _gp_pk, _vp_pk = _cc_pk.get("gatewayfid"), _cc_pk.get("vampmid")
+                                _cp_pk, _ap_pk, _wp_pk = (_cc_pk.get("currency"), _cc_pk.get("isactive"),
+                                                          _cc_pk.get("processwallet"))
+                                if _gp_pk and _vp_pk and _cp_pk:
+                                    def _tp_pk(_x):
+                                        return str(_x).strip().lower() in ("true", "1", "yes", "t", "y")
+                                    _gs_pk = _mm_pk[_gp_pk].map(_cg_pk).astype(str).str.strip().str.lower().tolist()
+                                    _vs_pk = _mm_pk[_vp_pk].astype(str).str.strip().str.lower().tolist()
+                                    _cs_pk = _mm_pk[_cp_pk].astype(str).str.strip().str.lower().tolist()
+                                    _as_pk = _mm_pk[_ap_pk].tolist() if _ap_pk else [True] * len(_mm_pk)
+                                    _ws_pk = _mm_pk[_wp_pk].tolist() if _wp_pk else [True] * len(_mm_pk)
+                                    for _i2 in range(len(_gs_pk)):
+                                        _cu_pk = _cs_pk[_i2]
+                                        if _cu_pk in ("", "excluded", "nan", "none"):
+                                            continue
+                                        _key2 = (_vs_pk[_i2], _cu_pk)
+                                        _act_pk = _tp_pk(_as_pk[_i2])
+                                        _wal_pk = _tp_pk(_ws_pk[_i2])
+                                        _cap_a.setdefault(_key2, []).append(_wal_pk if _act_pk else None)
+                                        _cap_w.setdefault(_key2, []).append(_wal_pk)
+                                        _vc_of.setdefault(_gs_pk[_i2], _key2)
+                                    for _key2 in _cap_w:
+                                        _actv = [_b for _b in _cap_a.get(_key2, []) if _b is not None]
+                                        _use = _actv if _actv else _cap_w[_key2]
+                                        if _use and not any(_use):      # NO fid here can do wallets
+                                            _wc_pairs.add(_key2)
+                            _rrp2 = os.path.join(PROJECT_ROOT, "config", "inputs",
+                                                 "routing_restrictions.json")
+                            for _f2 in _lu_pk(_rrp2):
+                                _k2 = _vc_of.get(str(_cg_pk(_f2)).strip().lower())
+                                if _k2:
+                                    _uo_pairs.add(_k2)
+                            if _wc_pairs or _uo_pairs:
+                                _pair_src = "Master_MID_List + routing_restrictions"
+                        except Exception as _pke:  # noqa: BLE001
+                            _wc_pairs, _uo_pairs, _pair_src = set(), set(), f"FAILED ({type(_pke).__name__})"
+                        if _wc_pairs or _uo_pairs:
+                            _mc_pair = list(zip(_T0["_midl"].tolist(), _T0["_cur"].tolist()))
+                            _wc_hit = np.array([_p in _wc_pairs for _p in _mc_pair], dtype=bool)
+                            _uo_hit = np.array([_p in _uo_pairs for _p in _mc_pair], dtype=bool)
+                            _T0_emask_a = (
+                                (_T0["_pmp"].isin(["googlepay", "applepay"]).to_numpy() & _wc_hit)
+                                | ((~_T0["_ctry"].isin(["usa", "us", "_all_", ""])).to_numpy() & _uo_hit))
+                            log(f"   [emask] capability mask at (vampMid, CURRENCY) grain from "
+                                f"{_pair_src}: {len(_wc_pairs):,} wallet-incapable pair(s), "
+                                f"{len(_uo_pairs):,} USA-only pair(s) → "
+                                f"{int(_T0_emask_a.sum()):,} of {len(_T0):,} scaffold row(s) masked. "
+                                "Replaces the vampMid-only test, which over-blocked sibling fids of "
+                                "a vampMid whose capability varies by currency (e.g. PaySafe - Total "
+                                "AV: wallet-capable in USD, not in EUR/GBP).")
+                        else:
+                            _T0_emask_a = (
+                                (_T0["_pmp"].isin(["googlepay", "applepay"]).to_numpy()
+                                 & _T0["_midl"].isin(_wc_set).to_numpy())
+                                | ((~_T0["_ctry"].isin(["usa", "us", "_all_", ""])).to_numpy()
+                                   & _T0["_midl"].isin(_uo_set).to_numpy()))
+                            if not (_wc_set or _uo_set):
+                                _T0_emask_a = None
+                            else:
+                                log(f"   [emask] ⚠ FELL BACK to the vampMid-only capability mask "
+                                    f"({_pair_src}) — it OVER-BLOCKS any vampMid whose fids differ "
+                                    "in capability by currency. Check Master_MID_List.csv is readable.")
                         _Pc = _P[_P["_midl"].isin(_capped_l)].copy()
                         _Pc["_om"] = _Pc["_per"] - _Pc["_t"]
                         log(f"   per-MID cap projection scaffold: {len(_T0):,} t0 rows, "

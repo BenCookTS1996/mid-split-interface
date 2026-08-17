@@ -40,7 +40,8 @@ def _apply_keep(t0, excluded_mids, kill_eff, month_0):
     t0["_keep"] = np.where(_binary, 0.0, _keep)
     return t0
 
-__build__ = "2026-08-17-count-only-pool-search+subcell-exporter+staged-enforcement"
+__build__ = ("2026-08-17b-count-only-pool-search+subcell-exporter+staged-enforcement"
+             "+projection-mode-no-round+no-lt2-backfill+no-coarse-prop-fallback+fid-grain-capability")
 
 
 # [FN-247]
@@ -1451,15 +1452,22 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
         df["_CTRY"] = np.where(df["ctry"].astype(str).str.strip().str.lower().isin(["usa", "us"]),
                                "USA", "Non-USA")
 
+    # FID-GRAIN capability (2026-08-17). `wallet_incapable` / `usa_only` hold BOTH
+    # gatewayFids and their rolled-up vampMids. Template columns ARE fids, so `g in set`
+    # is already exact; the extra `fid2vamp.get(g) in set` term rolled the vampMid's
+    # capability onto every sibling fid and over-blocked the ones that CAN serve — e.g.
+    # PaySafe - Total AV is wallet-capable on paysafe-usd-tav but not on paysafe-eur-tav /
+    # -gbp-tav, and the roll-up zeroed the USD fid in wallet rows too. Removed. A column
+    # that is a vampMid rather than a fid still matches, since the set holds both.
     # [FN-269]
     def _incap(gw):
         g = gw.strip().lower()
-        return g in wallet_incapable or fid2vamp.get(g, "") in wallet_incapable
+        return g in wallet_incapable
 
     # [FN-270]
     def _is_usa_only(gw):
         g = gw.strip().lower()
-        return g in usa_only or fid2vamp.get(g, "") in usa_only
+        return g in usa_only
 
     # [FN-271]
     def _valid_candidates(cur_l, country, is_wallet):

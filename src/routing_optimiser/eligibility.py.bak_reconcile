@@ -30,7 +30,7 @@ import os
 import numpy as np
 import pandas as pd
 
-__build__ = "2026-08-17-eligibility-ban-mask-cache+population-operator+fid-grain-capability"
+__build__ = "2026-07-29-eligibility-ban-mask-cache+population-operator"
 
 WALLET_VALUES = {"googlepay", "applepay"}
 
@@ -205,14 +205,7 @@ def _capability_blend(df: pd.DataFrame, group_cols: list[str], incapable, frac_m
     (frac = the cell's Non-USA share). `frac_map` is keyed by (currency, bank); `default` is
     used when a cell isn't in the map.
     """
-    # FID-GRAIN capability (2026-08-17). `incapable` carries BOTH gatewayFids and their
-    # rolled-up vampMids, so ALSO testing `_vm` over-blocks every fid of a vampMid whose
-    # capability varies by fid: PaySafe - Total AV is wallet-capable on paysafe-usd-tav but
-    # not on paysafe-eur-tav / -gbp-tav, and the roll-up barred the USD fid from wallets too.
-    # `_gw` alone is exact for BOTH framings — a fid-keyed frame matches its own fid, and a
-    # vampMid-keyed frame matches the vampMid, because the set holds both. The `_vm` term
-    # contributed nothing except the roll-up, so it is removed.
-    incapable_mask = df["_gw"].isin(incapable).to_numpy()
+    incapable_mask = (df["_gw"].isin(incapable) | df["_vm"].isin(incapable)).to_numpy()
     result_share = df["share"].to_numpy(float).copy()
     if not (group_cols and incapable_mask.any()):
         return result_share
@@ -358,11 +351,7 @@ def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, 
         if not incapable:
             return np.zeros(n, dtype=bool)
         _inc = frozenset(incapable)
-        # FID-GRAIN (2026-08-17): `_gw` only — see the note in _capability_blend. Testing
-        # `_vm` too rolled a vampMid's capability onto every one of its fids, barring
-        # sibling fids that CAN serve (PaySafe - Total AV: USD capable, EUR/GBP not).
-        # This operator is the population twin of apply_restrictions, so it must agree.
-        return np.fromiter(((_gw[i] in _inc) for i in range(n)),
+        return np.fromiter(((_gw[i] in _inc) or (_vm[i] in _inc) for i in range(n)),
                            dtype=bool, count=n)
 
     # [FN-066]

@@ -420,7 +420,7 @@ _TAB_FIDS = [
 DEFAULT_GATEWAY_FIDS = "(" + ",".join(f"'{f}'" for f in _TAV_FIDS + _TDR_FIDS + _TAB_FIDS) + ")"
 
 
-APP_BUILD = "2026-07-24l"  # Post Volume now = cell_volume × routed share (same basis as $ Impact/Δ Share) — no more 0s
+APP_BUILD = "2026-08-17a"  # Post Volume now = cell_volume × routed share (same basis as $ Impact/Δ Share) — no more 0s
 
 
 # [FN-243]
