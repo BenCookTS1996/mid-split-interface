@@ -75,7 +75,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band"
+__build__ = "2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -516,49 +516,40 @@ def _adaptive_tol(vamp_viol, tol_lo=0.0, tol_hi=0.01, knee=2.0):
     return tol_lo + (tol_hi - tol_lo) * frac
 
 
-def _rank(vwsr, viol):
-    """Feasibility-first ranking WITH adaptive tolerance. Returns indices
-    ordered best -> worst.
+def _rank(vwsr, viol, band=None):
+    """STRICT LEXICOGRAPHIC ranking, best -> worst.
 
-      1. Feasible (viol <= eps) always beats infeasible.
-      2. Among infeasible: lower violation wins.
-      3. Among feasible: higher VWSR wins, but VWSRs within the adaptive
-         tolerance tie and fall back to LOWER risk-proxy (violation) — this is
-         what makes the search hug the boundary.
+    When `band` (per-candidate EXACT per-MID M5 band breach) is supplied it is the strict PRIMARY
+    key — the compliance metric that defines the run — and nothing below can outrank it:
+
+      1. lower M5 band breach wins (drive it to 0); a breach can never be traded for the terms below;
+      2. among equal-M5 candidates: lower ENGINEERING violation (`viol` = global VAMP cap + max-share)
+         wins;
+      3. among those: higher VWSR (conversion) wins.
+
+    M5 breaches at/under `_FEAS_EPS` snap equal (compliant) so float noise doesn't churn the order.
+    When `band is None` (legacy callers) it degrades to feasibility-first on `viol` then VWSR.
     """
-    n = len(vwsr)
-    feasible = viol <= _FEAS_EPS
-    tol = _adaptive_tol(viol)
-    # snap VWSR to a tolerance grid so near-equal VWSRs compare equal;
-    # guard tol==0 (strict) by using a tiny epsilon grid.
-    grid = np.where(tol > 0, tol, 1e-12)
-    vwsr_bucket = np.round(vwsr / grid).astype(np.int64)
-
-    # Build a sort key. numpy lexsort sorts by LAST key primary; we want:
-    #   primary  : feasible desc
-    #   secondary(feasible)   : vwsr_bucket desc, then viol asc
-    #   secondary(infeasible) : viol asc
-    # Encode into columns then lexsort (all ascending), negating where needed.
-    #   col_feas = 0 for feasible, 1 for infeasible  (asc -> feasible first)
-    col_feas = np.where(feasible, 0, 1)
-    #   for feasible: want high vwsr first -> use -vwsr_bucket; tiebreak low viol
-    #   for infeasible: vwsr irrelevant -> set 0 so viol dominates
-    col_score = np.where(feasible, -vwsr_bucket, 0)
-    col_viol = viol
-    order = np.lexsort((col_viol, col_score, col_feas))
-    return order
+    vwsr = np.asarray(vwsr, dtype=float)
+    viol = np.asarray(viol, dtype=float)
+    band = np.zeros_like(viol) if band is None else np.asarray(band, dtype=float)
+    band_eff = np.where(band <= _FEAS_EPS, 0.0, band)
+    # np.lexsort: the LAST key is primary. Want primary=band asc, then viol asc, then VWSR desc.
+    return np.lexsort((-vwsr, viol, band_eff))
 
 
-def _best_index(vwsr, viol):
-    return _rank(vwsr, viol)[0]
+def _best_index(vwsr, viol, band=None):
+    return _rank(vwsr, viol, band)[0]
 
 
-def _key_of(vwsr, viol):
-    """Comparable feasibility-first key for a SINGLE candidate (higher==better).
-    Used only for the 'never worse than the elite seed' guarantee."""
-    feasible = viol <= _FEAS_EPS
-    # (feasible?, then vwsr if feasible else -viol)
-    return (1 if feasible else 0, vwsr if feasible else -viol)
+def _key_of(vwsr, viol, band=0.0):
+    """Comparable STRICT LEXICOGRAPHIC key for ONE candidate (higher tuple == better).
+
+    Tuple `(-band, -viol, vwsr)` so, compared with `>`: smaller M5 band breach wins first, then
+    smaller engineering violation, then higher VWSR — matching `_rank`. M5 breaches ≤ `_FEAS_EPS`
+    snap to 0 (compliant) so a compliant split always outranks any breaching one."""
+    b = 0.0 if float(band) <= _FEAS_EPS else float(band)
+    return (-b, -float(viol), float(vwsr))
 
 
 # ---------------------------------------------------------------------------
@@ -1063,26 +1054,31 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             _cb["assign"], _cb["cent"], _cb["cconst"], _cb["src"] = _a, _ct, _kc, "kmeans"
 
     def _eval_with_bands(logits):
+        # Returns (vwsr, other_viol, band_breach) as THREE separate arrays so the ranking can treat
+        # the EXACT M5 band breach as the strict primary key (see _rank). `other_viol` is the
+        # engineering violation (global VAMP cap + max-share) from eval_pop; `band_breach` is the
+        # exact per-MID M5 penalty. They are NO LONGER summed — the ranking orders on band first.
         v, x = eval_pop(logits)
+        _band = np.zeros(np.asarray(x).shape[0], dtype=float)
         _need_band = band_penalty_fn is not None
         _need_comp = _compress_on and _cb["cent"] is not None
         if not (_need_band or _need_comp):
-            return v, x
+            return v, x, _band
         _sh = _segment_softmax(logits, p.cell_start, p.cell_len)
         _fd = _deliver_full(_sh)                                  # shared delivery — computed ONCE
         if _need_band:
-            x = x + np.asarray(band_penalty_fn(_fd if _have_full else _sh), dtype=float)
+            _band = np.asarray(band_penalty_fn(_fd if _have_full else _sh), dtype=float)
         if _need_comp:
             _sd = _deliver_kept(_sh, _fd)
             v = v - _clam * np.asarray(
                 _dist_fn(_sd, _cb["assign"], _cb["cent"], _cb["cconst"]), dtype=float)
-        return v, x
+        return v, x, _band
 
-    def _rescore_compress(logits, keep_viol):
-        """Re-score ONLY the compress term of vwsr under the CURRENT codebook, keeping the
-        supplied violation. The band penalty is codebook-independent, so it is NOT recomputed
-        — this is what lets a codebook refresh skip the whole-population band projection.
-        Returns (vwsr, keep_viol), bit-identical to what _eval_with_bands would produce."""
+    def _rescore_compress(logits, keep_other, keep_band):
+        """Re-score ONLY the compress term of vwsr under the CURRENT codebook, keeping the supplied
+        engineering violation AND band breach unchanged (both are codebook-independent, so they are
+        NOT recomputed — this is what lets a codebook refresh skip the whole-population band
+        projection). Returns (vwsr, keep_other, keep_band)."""
         _bv, _ = eval_pop(logits)
         if _compress_on and _cb["cent"] is not None:
             _sh = _segment_softmax(logits, p.cell_start, p.cell_len)
@@ -1090,7 +1086,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             _sd = _deliver_kept(_sh, _fd)
             _bv = _bv - _clam * np.asarray(
                 _dist_fn(_sd, _cb["assign"], _cb["cent"], _cb["cconst"]), dtype=float)
-        return _bv, keep_viol
+        return _bv, keep_other, keep_band
 
     # --- seed logits (reference mapped to sorted order) ---
     if reference_shares is None:
@@ -1102,10 +1098,11 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # remember the elite seed's key for the never-worse guarantee (bands included)
     s0 = _segment_softmax(seed_logits[None, :], p.cell_start, p.cell_len)
     seed_vwsr = _vwsr(s0, p.vol, p.succ, total_vol)[0]
-    seed_viol = _violation(s0, p)[0]
+    seed_other = _violation(s0, p)[0]           # engineering viol (global cap + max-share) — secondary
+    seed_band = 0.0                              # exact M5 band breach — strict primary key
     _fd0 = _deliver_full(s0) if (band_penalty_fn is not None or _compress_on) else None
     if band_penalty_fn is not None:
-        seed_viol = seed_viol + float(np.asarray(
+        seed_band = float(np.asarray(
             band_penalty_fn(_fd0 if _have_full else s0), dtype=float)[0])
     if _compress_on:
         _refresh_codebook(seed_logits)                            # learn the initial codebook from the seed
@@ -1122,10 +1119,23 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             f"({'eligibility-aware' if (_have_full or callable(deliver_fn)) else 'raw — no deliver_fn'}) "
             "— VWSR −= λ·volume-weighted VQ distortion; pushes cells to route ALIKE so the split "
             "compresses into fewer configs; trades a little conversion.")
-    seed_key = _key_of(seed_vwsr, seed_viol)
+    # SEED-AS-GENOME diagnostic. The app measures the seed's breach on the RAW share vector,
+    # then hands it here, where it is re-encoded through _shares_to_logits -> segment-softmax.
+    # That round-trip cannot express an EXACT ZERO (eps=1e-6 floor), and in a sub-cell where a
+    # breached MID is the SOLE VAMP-positive gateway vshare == 1 for ANY share > 0 — so a share
+    # the seed zeroed comes back at 1e-6 and collects that cell's whole moved VAMP pool. When
+    # that happens the never-worse guarantee is void: the GA is anchored on a DEGRADED seed and
+    # can deliver a worse breach than the app printed. Log both so the gap is visible.
+    if band_penalty_fn is not None:
+        log(f"[fullmatrix-ga] seed AS THE GENOME SEES IT: M5 breach={seed_band:.6g} — compare to "
+            "the app's \"[full-matrix] seed = ... exact M5 breach\" line. If the app's value is "
+            "LOWER, the softmax/logit genome cannot represent the seed (eps=1e-6 floor revives "
+            "shares the seed drove to 0, flipping vshare 0 -> 1 in sole-VAMP-positive cells) and "
+            "the never-worse guarantee does NOT hold for this run.")
+    seed_key = _key_of(seed_vwsr, seed_other, seed_band)
     best_logits = seed_logits.copy()
     best_key = seed_key
-    best_vwsr, best_viol = seed_vwsr, seed_viol
+    best_vwsr, best_other, best_band = seed_vwsr, seed_other, seed_band
 
     history = []
     evaluated = 0                              # cumulative candidate splits scored
@@ -1160,7 +1170,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 _pn = min(pop_size * (2 ** _r), pop_size * 4)     # IPOP: grow each restart
             _el = min(elite, max(1, _pn // 8))
             pop = _init_pop(best_logits, _pn, _rng)
-            vwsr, viol = _eval_with_bands(pop)
+            vwsr, other, band = _eval_with_bands(pop)
             evaluated += pop.shape[0]
             stale = 0
             for gen in range(generations):
@@ -1173,24 +1183,25 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 if (_compress_on and int(compress_refresh) > 0 and gen > 0
                         and gen % int(compress_refresh) == 0):
                     _refresh_codebook(best_logits)
-                    vwsr, viol = _rescore_compress(pop, viol)
+                    vwsr, other, band = _rescore_compress(pop, other, band)
                     best_vwsr = float(_rescore_compress(
-                        best_logits[None, :], np.asarray([best_viol]))[0][0])
-                    best_key = _key_of(best_vwsr, best_viol)
-                order = _rank(vwsr, viol)
+                        best_logits[None, :], np.asarray([best_other]), np.asarray([best_band]))[0][0])
+                    best_key = _key_of(best_vwsr, best_other, best_band)
+                order = _rank(vwsr, other, band)
                 top = order[0]
-                top_key = _key_of(vwsr[top], viol[top])
+                top_key = _key_of(vwsr[top], other[top], band[top])
                 if top_key > best_key:
                     best_key = top_key
                     best_logits = pop[top].copy()
-                    best_vwsr, best_viol = vwsr[top], viol[top]
+                    best_vwsr, best_other, best_band = vwsr[top], other[top], band[top]
                     stale = 0
                 else:
                     stale += 1
                 # History x-axis = cumulative generation index across seeds/restarts;
-                # `cands` = cumulative candidates (matches the tab-3 chart layout).
+                # `cands` = cumulative candidates (matches the tab-3 chart layout). The `viol` slot
+                # carries band breach + engineering viol so the chart still reflects total infeasibility.
                 history.append((len(history), float(best_vwsr), float(vwsr[top]),
-                                float(vwsr.mean()), None, float(best_viol), None,
+                                float(vwsr.mean()), None, float(best_band + best_other), None,
                                 int(evaluated)))
                 # LIVE PROGRESS: throttled per-generation heartbeat so a long BIN-grain search isn't
                 # silent for ~an hour (the tilt engine streams via its poller; this engine didn't).
@@ -1224,8 +1235,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     # already convey the score/feasibility, so it isn't printed.
                     log(f"[fullmatrix-ga] progress: ~{evaluated:,} splits · gen {gen} "
                         f"(seed {_s + 1}/{n_seeds} restart {_r + 1}/{restarts}) · "
-                        f"best vwsr {best_vwsr:.5f} · viol {best_viol:,.4f}"
-                        f"{_mid_extra} · {'feasible' if best_viol <= _FEAS_EPS else 'infeasible'} "
+                        f"best vwsr {best_vwsr:.5f} · viol {best_band + best_other:,.4f}"
+                        f"{_mid_extra} · {'feasible' if best_band <= _FEAS_EPS else 'infeasible'} "
                         f"· {_rate:,.0f}/s")
                 if stale >= patience:
                     log(f"[fullmatrix-ga] seed {_s + 1}/{n_seeds} restart {_r + 1}/"
@@ -1234,7 +1245,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 # elitism + local refinement + exploration
                 elites = pop[order[:_el]].copy()
                 elite_vwsr = vwsr[order[:_el]].copy()
-                elite_viol = viol[order[:_el]].copy()
+                elite_other = other[order[:_el]].copy()
+                elite_band = band[order[:_el]].copy()
                 children = np.empty((_pn - _el, R))
                 pool = order[: max(_el, _pn // 2)]
                 _base_rate = min(mutation_rate, max(0.01, 60.0 / max(p.n_cells, 1)))
@@ -1251,11 +1263,12 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                         child = _mutate(child, _base_rate, mutation_strength,
                                         p.cell_start, p.cell_len, _rng)
                     children[c] = child
-                child_vwsr, child_viol = _eval_with_bands(children)
+                child_vwsr, child_other, child_band = _eval_with_bands(children)
                 evaluated += children.shape[0]
                 pop = np.vstack([elites, children])
                 vwsr = np.concatenate([elite_vwsr, child_vwsr])
-                viol = np.concatenate([elite_viol, child_viol])
+                other = np.concatenate([elite_other, child_other])
+                band = np.concatenate([elite_band, child_band])
 
     best_shares_sorted = _segment_softmax(best_logits[None, :], p.cell_start, p.cell_len)[0]
     # restore original row order
@@ -1266,10 +1279,13 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     info = {
         "__build__": __build__,
         "vwsr": float(best_vwsr),
-        "violation": float(best_viol),
-        "feasible": bool(best_viol <= _FEAS_EPS),
+        "violation": float(best_band + best_other),
+        "band_breach": float(best_band),
+        "other_violation": float(best_other),
+        "feasible": bool(best_band <= _FEAS_EPS),
         "seed_vwsr": float(seed_vwsr),
-        "seed_violation": float(seed_viol),
+        "seed_violation": float(seed_band + seed_other),
+        "seed_band_breach": float(seed_band),
         "improved_over_seed": bool(best_key > seed_key),
         "generations_run": len(history),
         "splits_evaluated": int(evaluated),
@@ -1285,8 +1301,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     log(f"[fullmatrix-ga] evaluated {evaluated:,} candidate splits over "
         f"{len(history)} generations ({n_seeds} seed(s) × {restarts} restart(s), "
         f"pop {pop_size}) in {info['seconds']:.1f}s = {info['splits_per_s']:,.0f} splits/s")
-    log(f"[fullmatrix-ga] done vwsr={best_vwsr:.6f} viol={best_viol:.3e} "
-        f"feasible={info['feasible']} improved={info['improved_over_seed']}")
+    log(f"[fullmatrix-ga] done vwsr={best_vwsr:.6f} M5-breach={best_band:.3e} "
+        f"eng-viol={best_other:.3e} feasible={info['feasible']} improved={info['improved_over_seed']}")
     return best_shares, info
 
 

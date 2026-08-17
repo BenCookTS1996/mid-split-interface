@@ -11,7 +11,7 @@ logger = setup_logger(__name__)
 
 # Bump this when data_extractor.py changes; the adapter logs it so a stale
 # .pyc (old code) is immediately obvious in the run log.
-__build__ = "2026-08-12-mastercard-initial"
+__build__ = "2026-08-16-mastercard-initial+cell-level-catchall"
 
 
 class DataExtractor:
@@ -610,6 +610,22 @@ class DataExtractor:
         dedup_cols = ['Brand', 'RPGT', 'Currency', 'BIN', 'paymentMethodProvider', 'Country']
         if 'STICKY' in split_df.columns:
             dedup_cols.append('STICKY')
+
+        # CELL-LEVEL CATCH-ALL: the 'Other'/'All' fallback is a safety net for profiles that have NO
+        # specific rule — it must NOT be injected into a cell that is already explicitly routed.
+        # Drop every Expanded (catch-all) row whose full-grain cell already has >=1 Specific row, so
+        # the catch-all only fires where the profile is genuinely undefined. (Mirrors the same fix in
+        # vamp_pipeline/data_extractor.py — see that build marker.)
+        if 'Rule_Source' in split_df.columns and (split_df['Rule_Source'] == 'Expanded').any():
+            _spec_cells = split_df.loc[split_df['Rule_Source'] == 'Specific', dedup_cols].drop_duplicates()
+            if not _spec_cells.empty:
+                _spec_cells = _spec_cells.assign(_has_specific=1)
+                split_df = split_df.merge(_spec_cells, on=dedup_cols, how='left')
+                _drop_expanded = (split_df['Rule_Source'] == 'Expanded') & (split_df['_has_specific'] == 1)
+                _n_dropped = int(_drop_expanded.sum())
+                split_df = split_df.loc[~_drop_expanded].drop(columns=['_has_specific']).reset_index(drop=True)
+                logger.info("cell-level catch-all: dropped %d Expanded catch-all row(s) in cells that "
+                            "already carry a Specific rule.", _n_dropped)
 
         if not split_df.empty:
             if 'GO LIVE' not in split_df.columns:

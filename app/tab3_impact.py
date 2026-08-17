@@ -17,7 +17,8 @@ from routing_optimiser import load_success_data, run_sql_file
 from impact_calcs import (_c_prepost_granular, _c_read_parquet, _mtime, build_kill_eff,
                           build_split_exports, compute_vamp_post_by_mid, enforced_prop_items,
                           enforced_split_frame, mid_revenue_month_table, mid_table_from_granular,
-                          pool_targeted_compression, rpgt_avg_ticket, rpgt_currency_avg_ticket)
+                          pool_targeted_compression, projection_cache_sig, rpgt_avg_ticket,
+                          rpgt_currency_avg_ticket)
 
 from app_common import (load_mid_list, _norm_cols, _map_to_bank, _renorm_share,
                         _fid2vamp_from)  # memoised MID reader + shared helpers
@@ -726,6 +727,17 @@ def render():
                                                    ss["_split_export_zip"], file_name="split_templates.zip",
                                                    mime="application/zip", key="export_splits_dl",
                                                    use_container_width=True)
+                        # RAW pre-enforcement split (the GA's ideal split BEFORE build_split_exports
+                        # cap / wallet / USA / <2-gateway back-fill). Distinct from Export Templates,
+                        # which is the ENFORCED output. Used to diagnose scored-vs-delivered: this is
+                        # the exact input the GA scored. Always available (no heavy build).
+                        _raw_split = ss.get("split")
+                        if _raw_split is not None and not getattr(_raw_split, "empty", True):
+                            st.download_button(
+                                "⬇ Download raw split (pre-enforcement) CSV",
+                                _raw_split.to_csv(index=False).encode("utf-8"),
+                                file_name="raw_split_pre_enforcement.csv", mime="text/csv",
+                                key="export_raw_split_dl", use_container_width=True)
 
                     if hasattr(st, "fragment"):
                         st.fragment(_export_ui)()
@@ -1246,10 +1258,10 @@ def render():
                         _m0_r = str(date.today().replace(day=1))
 
                     _wc_r = ss.get("wallet_ctx") or {}
-                    _floor_r = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "1") == "0"
+                    _floor_r = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"
                                 else float(ss.get("exploration_floor", 0.0) or 0.0))
                     _gran_r = _c_prepost_granular(
-                        _pp_r, _mtime(_pp_r), _prop_r, _excl_r, _kill_r, _m0_r, _scoped_rpgts,
+                        _pp_r, projection_cache_sig(_pp_r, _prop_r, _floor_r), _prop_r, _excl_r, _kill_r, _m0_r, _scoped_rpgts,
                         frozenset(str(x).strip().lower() for x in (_wc_r.get("incapable") or set())),
                         frozenset(str(x).strip().lower() for x in (_wc_r.get("usa_only") or set())),
                         exploration_floor=_floor_r)
@@ -3170,12 +3182,13 @@ def render():
             if os.path.exists(pp_path):
                 # Reuse the granular projection already computed for the VAMP table above
                 # (identical args) instead of projecting again.
+                _gr_floor3 = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"
+                              else float(ss.get("exploration_floor", 0.0) or 0.0))
                 _gr = _gr_shared if _gr_shared is not None else _c_prepost_granular(
-                    pp_path, _mtime(pp_path), prop_items, excluded_mids, _kill_eff, _m0s, _scoped_rpgts,
+                    pp_path, projection_cache_sig(pp_path, prop_items, _gr_floor3), prop_items, excluded_mids, _kill_eff, _m0s, _scoped_rpgts,
                     frozenset(str(x).strip().lower() for x in ((ss.get("wallet_ctx") or {}).get("incapable") or set())),
                     frozenset(str(x).strip().lower() for x in ((ss.get("wallet_ctx") or {}).get("usa_only") or set())),
-                    exploration_floor=(0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "1") == "0"
-                                       else float(ss.get("exploration_floor", 0.0) or 0.0)))
+                    exploration_floor=_gr_floor3)
                 if _gr is None or getattr(_gr, "empty", True):
                     _ink_caption("No pro-rata rows available.")
                 else:
@@ -4020,10 +4033,12 @@ def render():
                     # Exploration floor for the projection (replicates the engine's per-cell floor so
                     # 0%-rule incumbents keep >= floor). Kill-switch: ROUTING_PROJ_FLOOR=0 disables it
                     # (to compare against the old flat-rule projection). Default = the run's floor.
-                    _proj_floor = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "1") == "0"
+                    _proj_floor = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"
                                    else float(ss.get("exploration_floor", 0.0) or 0.0))
                     if os.path.exists(pp_path):
-                        _gr_shared = _c_prepost_granular(pp_path, _mtime(pp_path), _proj_prop, excluded_mids,
+                        _gr_shared = _c_prepost_granular(pp_path,
+                                                         projection_cache_sig(pp_path, _proj_prop, _proj_floor),
+                                                         _proj_prop, excluded_mids,
                                                          _kill_eff, _m0s, _scoped_rpgts, _wcin, _uonly,
                                                          exploration_floor=_proj_floor)
                         vp = mid_table_from_granular(_gr_shared)

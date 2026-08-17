@@ -56,6 +56,12 @@ class CellProblem:
     # Optional per-cell softmax temperature (confidence-scaled). When None the
     # engine falls back to its global `temperature` param.
     temperature: float | None = None
+    # Sub-cell identity (payment-method × Country) for sub-cell-grain optimisation. Default
+    # "_all_" = CELL grain (unchanged behaviour), so every existing CellProblem construction and
+    # consumer is unaffected; only the sub-cell assembler (`build_subcell_problems`) sets these.
+    # `bank` stays the raw BIN so the band projector's sub-cell scaffold still aligns on bin/pmp/ctry.
+    pmp: str = "_all_"
+    ctry: str = "_all_"
 
     # [FN-401]
     def n(self) -> int:

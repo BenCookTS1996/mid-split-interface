@@ -37,7 +37,7 @@ import pandas as pd
 
 from .schema import TEMPLATE_META_COLUMNS, TEMPLATE_TRAILING_COLUMNS
 
-__build__ = "2026-07-22-backup-blend+rules-to-split"
+__build__ = "2026-07-22-backup-blend+rules-to-split+cell-level-catchall"
 
 # Non-gateway columns in a wide rule sheet (everything else is a gateway weight column).
 # Non-gateway (meta) template columns — single source of truth is schema.py.
@@ -125,31 +125,25 @@ def blend_cell_shares(specific: Dict[str, float], catchall: Dict[str, float]) ->
     ``catchall``  : the backup catch-all for that cell {gatewayFid: pct} on the 0–100
                     scale (from parse_backup_catchall).
 
-    Returns {gatewayFid: effective_share} summing to 1.0. A gateway present in BOTH keeps
-    its SPECIFIC value (Specific overrides Expanded) and is NOT re-added from the catch-all.
+    Returns {gatewayFid: effective_share} summing to 1.0.
+
+    CELL-LEVEL catch-all (2026-08-16): a cell that carries ANY specific positive share is a DEFINED
+    profile, so the catch-all does NOT fire for it — only its specific shares ship (renormalised).
+    This mirrors data_extractor._apply_chronological_deduplication, which drops Expanded catch-all
+    rows in any full-grain cell that already has a Specific rule. The catch-all is injected ONLY when
+    the cell has no specific share at all (a genuinely undefined profile). (Previously the catch-all
+    was injected per-gateway even into routed cells — re-adding a zeroed gateway at ~10% — which is
+    the behaviour that was corrected.)
     """
-    # Keys are preserved AS-IS (vampMid case matters downstream); the override check
-    # (a catch-all gateway already given a positive specific share is NOT re-added) is
-    # done case-insensitively.
     spec = {g: float(v) for g, v in (specific or {}).items() if float(v) > 0}
     _stot = sum(spec.values())
-    if _stot <= 0:
-        # Optimiser gave the cell nothing positive → fall back to the catch-all alone.
-        inj = {g: (float(v) / _PCT_SCALE) for g, v in (catchall or {}).items() if float(v) > 0}
-        t = sum(inj.values())
-        return {g: v / t for g, v in inj.items()} if t > 0 else dict(spec)
-    # Normalise the specific split to sum 1 (its own 100 %), then add the catch-all
-    # gateways it did NOT already assign a positive share, as fractions (pct / 100).
-    spec_n = {g: v / _stot for g, v in spec.items()}
-    _spec_low = {str(g).strip().lower() for g in spec_n}
-    inj = {g: (float(v) / _PCT_SCALE)
-           for g, v in (catchall or {}).items()
-           if float(v) > 0 and str(g).strip().lower() not in _spec_low}
-    total = 1.0 + sum(inj.values())
-    eff = {g: v / total for g, v in spec_n.items()}
-    for g, v in inj.items():
-        eff[g] = v / total
-    return eff
+    if _stot > 0:
+        # Defined profile → catch-all does NOT fire; just renormalise the specific shares to sum 1.
+        return {g: v / _stot for g, v in spec.items()}
+    # No specific share in the cell → undefined profile → fall back to the catch-all alone.
+    inj = {g: (float(v) / _PCT_SCALE) for g, v in (catchall or {}).items() if float(v) > 0}
+    t = sum(inj.values())
+    return {g: v / t for g, v in inj.items()} if t > 0 else dict(spec)
 
 
 # [FN-004]

@@ -213,6 +213,99 @@ def build_cell_problems(
     return problems
 
 
+# [FN-050b]
+def build_subcell_problems(
+    forecast: pd.DataFrame,
+    success_rates: pd.DataFrame,
+    default_risk: float = 0.006,
+) -> list[CellProblem]:
+    """SUB-CELL variant of :func:`build_cell_problems` — one CellProblem per
+    (rpgt × currency × bank × pmp × Country) sub-cell.
+
+    Design (locked): the DECISION grain is the sub-cell, but the SCORING (success-rate) grain
+    stays at CELL — so success rates are joined on the CELL key (rpgt,currency,bank,gateway) and
+    BROADCAST onto each sub-cell (no pmp/Country split of the thin conversion data). `forecast`
+    must already carry `pmp` and `ctry` columns with the volume apportioned to sub-cells (see
+    `routing_optimiser.subcell.expand_forecast_to_subcells`). `bank` is kept as the raw BIN and
+    the sub-cell identity is carried on `CellProblem.pmp` / `.ctry`, so the band projector's
+    sub-cell scaffold (keyed bin/pmp/ctry) still aligns.
+
+    `build_cell_problems` is left byte-identical; this is a separate, gated path.
+    """
+    def _nk(x):
+        return str(x).strip().casefold()
+
+    _srn = success_rates.copy()
+    for _c in ("rpgt", "currency", "bank", "gateway"):
+        if _c in _srn.columns:
+            _srn[_c] = _srn[_c].map(_nk)
+    sr = _srn.set_index(["rpgt", "currency", "bank", "gateway"])
+    if sr.index.has_duplicates:
+        sr = sr[~sr.index.duplicated(keep="first")]
+    if len(sr) and {"success", "attempts"}.issubset(sr.columns) and float(sr["attempts"].sum()) > 0:
+        _global_rate = float(sr["success"].sum() / sr["attempts"].sum())
+    elif len(sr):
+        _global_rate = float(sr["success_rate"].mean())
+    else:
+        _global_rate = 0.85
+    _has_prior = "prior_rate" in sr.columns
+    _has_kappa = "kappa" in sr.columns
+
+    _fc = forecast.copy()
+    if "pmp" not in _fc.columns:
+        _fc["pmp"] = "_all_"
+    if "ctry" not in _fc.columns:
+        _fc["ctry"] = "_all_"
+
+    problems: list[CellProblem] = []
+    _n_gw = _n_pool = 0
+    for (rpgt, currency, bank, pmp, ctry), cell in _fc.groupby(
+            ["rpgt", "currency", "bank", "pmp", "ctry"]):
+        gateways = list(cell["gateway"])
+        vol = float(cell["volume"].sum())
+        base = cell["baseline_share"].to_numpy(float)
+        base = base / base.sum() if base.sum() > 0 else np.full(len(gateways), 1 / len(gateways))
+
+        succ, obs_s, obs_a, is_pool, prior_r, kap = [], [], [], [], [], []
+        for gw in gateways:
+            key = (_nk(rpgt), _nk(currency), _nk(bank), _nk(gw))   # CELL-grain rate (broadcast)
+            _n_gw += 1
+            if key in sr.index:
+                row = sr.loc[key]
+                succ.append(float(row["success_rate"]))
+                obs_s.append(float(row["success"])); obs_a.append(float(row["attempts"]))
+                prior_r.append(float(row["prior_rate"]) if _has_prior else float(row["success_rate"]))
+                kap.append(float(row["kappa"]) if _has_kappa else 0.0)
+                is_pool.append(False)
+            else:
+                _n_pool += 1
+                succ.append(_global_rate); obs_s.append(0.0); obs_a.append(0.0)
+                prior_r.append(_global_rate); kap.append(0.0); is_pool.append(True)
+
+        risk = (cell["risk_rate"].to_numpy(float) if "risk_rate" in cell.columns
+                else np.full(len(gateways), default_risk))
+        if "risk_n" in cell.columns:
+            risk_n = pd.to_numeric(cell["risk_n"], errors="coerce").fillna(0.0).to_numpy(float)
+        elif "volume" in cell.columns:
+            risk_n = pd.to_numeric(cell["volume"], errors="coerce").fillna(0.0).to_numpy(float)
+        else:
+            risk_n = None
+
+        problem = CellProblem(
+            rpgt=str(rpgt), currency=str(currency), bank=str(bank),
+            gateways=gateways, success_rates=np.array(succ, float),
+            risk_rates=np.array(risk, float), volume=vol, baseline_shares=base,
+            obs_success=np.array(obs_s, float), obs_attempts=np.array(obs_a, float),
+            prior_rate=np.array(prior_r, float), kappa=np.array(kap, float), risk_n=risk_n,
+            pmp=str(pmp), ctry=str(ctry))
+        problem.pooled_fallback = np.array(is_pool, bool)  # type: ignore[attr-defined]
+        _expl = (cell["is_explore"].fillna(False).to_numpy(bool)
+                 if "is_explore" in cell.columns else np.zeros(len(gateways), bool))
+        problem.is_explore = _expl  # type: ignore[attr-defined]
+        problems.append(problem)
+    return problems
+
+
 # [FN-052]
 def prepare_inputs(success_source, forecast_path: str | None = None,
                    shrink_strength: float = 12.0):

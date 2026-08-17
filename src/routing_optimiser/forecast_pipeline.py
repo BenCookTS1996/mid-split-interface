@@ -458,30 +458,82 @@ def normalise_pre_from_effective_rate(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # Pipeline output files that carry a usable 'pre' baseline, in preference order.
-PRE_SOURCE_FILES = ["bin_rpgt_impact_export.csv", "effective_rate_impact.csv"]
+# SINGLE SOURCE OF TRUTH: prefer the pro-rata export (the SAME baseline the band-VAMP scorer uses)
+# so volume and VAMP come from one file, then fall back to the legacy bin_rpgt / effective-rate exports.
+PRE_SOURCE_FILES = ["vamp_t_period_prorata_export.csv", "bin_rpgt_impact_export.csv",
+                    "effective_rate_impact.csv"]
+
+
+# [FN-077b]
+def _prorata_to_pre(df: pd.DataFrame) -> pd.DataFrame:
+    """If `df` is the pro-rata export (`vamp_t_period_prorata_export.csv`: `vampCount` / `VI_Txn_Count`
+    at the finer Country×paymentMethodProvider×t grain), aggregate it to the SAME baseline schema
+    `bin_rpgt_impact_export.csv` provides — `VAMP_Pre` / `Txn_Pre` per vampMid×RPGT×BIN×Currency×period
+    — so the engine can baseline off the pro-rata export (one source of truth with the band scorer).
+
+    This is a numerical no-op by construction: the pipeline builds BOTH files from the same `t_data`
+    (see export_manager._generate_prorata_export, which just RENAMES VAMP_Pre→vampCount and
+    VI_Txn_Pre→VI_Txn_Count). Returns `df` unchanged if it isn't the pro-rata export."""
+    cols = set(df.columns)
+    if not ({"vampCount", "VI_Txn_Count"} <= cols):
+        return df
+    keys = [c for c in ["vampMid", "RPGT", "BIN", "Currency", "period"] if c in cols]
+    agg = (df.groupby(keys, as_index=False, observed=True)[["vampCount", "VI_Txn_Count"]].sum()
+             .rename(columns={"vampCount": "VAMP_Pre", "VI_Txn_Count": "Txn_Pre"}))
+    return agg
+
+
+# [FN-077c]
+def _reconcile_pre_against_bin_rpgt(pre: pd.DataFrame, out_dir: str) -> None:
+    """RECONCILIATION GUARD: when the baseline is taken from the pro-rata export, verify it agrees with
+    the legacy bin_rpgt_impact_export.csv (they're built from the same t_data, so they MUST). Logs a
+    prominent WARNING on any material divergence — never silently baselines off a mismatched file."""
+    try:
+        bin_p = os.path.join(out_dir, "bin_rpgt_impact_export.csv")
+        if not os.path.exists(bin_p):
+            return
+        b = pd.read_csv(bin_p)
+        b0 = b[b.get("period", 0) == 0] if "period" in b.columns else b
+        p0 = pre[pre.get("period", 0) == 0] if "period" in pre.columns else pre
+        bt = float(pd.to_numeric(b0.get("Txn_Pre", 0), errors="coerce").fillna(0).sum())
+        pt = float(pd.to_numeric(p0.get("Txn_Pre", 0), errors="coerce").fillna(0).sum())
+        bv = float(pd.to_numeric(b0.get("VAMP_Pre", 0), errors="coerce").fillna(0).sum())
+        pv = float(pd.to_numeric(p0.get("VAMP_Pre", 0), errors="coerce").fillna(0).sum())
+        tol_t = max(1.0, 0.005 * abs(bt)); tol_v = max(1.0, 0.005 * abs(bv))
+        if abs(bt - pt) > tol_t or abs(bv - pv) > tol_v:
+            logger.warning("      ⚠️ baseline reconciliation: pro-rata export vs bin_rpgt DIVERGE "
+                           "(txn %.0f vs %.0f, vamp %.1f vs %.1f) — expected identical; using pro-rata.",
+                           pt, bt, pv, bv)
+        else:
+            logger.info("      ✓ baseline reconciliation: pro-rata export == bin_rpgt "
+                        "(txn %.0f, vamp %.1f) — single source consistent.", pt, pv)
+    except Exception as exc:  # noqa: BLE001 — a cross-check must never break the run
+        logger.info("      (baseline reconciliation skipped: %s: %s)", type(exc).__name__, exc)
 
 
 # [FN-078]
 def load_pre_forecast(path: str) -> pd.DataFrame:
     """
-    Load the pipeline's baseline from its outputs. `path` may be a directory
-    (we try the granular bin_rpgt export first, then effective_rate) or a
-    specific CSV file.
+    Load the pipeline's baseline from its outputs. `path` may be a directory (we prefer the pro-rata
+    export — one source of truth with the band scorer — then the granular bin_rpgt export, then
+    effective_rate) or a specific CSV file.
     """
     if os.path.isdir(path):
         for fname in PRE_SOURCE_FILES:
             fpath = os.path.join(path, fname)
             if os.path.exists(fpath):
-                out = _normalise_pre(pd.read_csv(fpath))
+                out = _normalise_pre(_prorata_to_pre(pd.read_csv(fpath)))
                 logger.info(f"      - baseline from {fname}: {len(out):,} cell-rows")
                 if len(out):
+                    if fname == "vamp_t_period_prorata_export.csv":
+                        _reconcile_pre_against_bin_rpgt(out, path)
                     return out
         raise FileNotFoundError(
             f"No usable baseline export found in {path}. Looked for: "
             + ", ".join(PRE_SOURCE_FILES))
     if not os.path.exists(path):
         raise FileNotFoundError(f"Pipeline 'pre' output not found at {path}.")
-    out = _normalise_pre(pd.read_csv(path))
+    out = _normalise_pre(_prorata_to_pre(pd.read_csv(path)))
     logger.info(f"      - baseline from {os.path.basename(path)}: {len(out):,} cell-rows")
     return out
 

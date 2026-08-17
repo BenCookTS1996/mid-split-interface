@@ -280,13 +280,6 @@ def render():
                              "the seed. OFF: tilt around the revenue-greedy reference (previous behaviour).")
                     if _pre_engine == "genetic_fullmatrix":
                         st.number_input(
-                            "MID-breach fixed penalty (full-matrix)", min_value=0.0, max_value=1.0,
-                            value=0.3, step=0.01, format="%.3f", key="fm_band_fixed",
-                            help="A small FLAT penalty added the INSTANT a per-MID band is breached, on top of "
-                                 "the overshoot² term — priority-weighted (a priority-1 breach costs 8× a "
-                                 "priority-2 one). It nudges the search to satisfy MORE bands rather than only "
-                                 "shrink one big overshoot. 0 = off (overshoot² only). Full-matrix engine only.")
-                        st.number_input(
                             "Compressibility λ (full-matrix)", min_value=0.0, max_value=1.0,
                             value=0.0, step=0.01, format="%.3f", key="fm_compress_lambda",
                             help="Rewards cells COLLAPSING ONTO A SHARED CODEBOOK of shapes so the split "
@@ -490,7 +483,8 @@ def render():
                          "× RPGT: a separate rate per RPGT (more specific, thinner data → noisier).")
                 _opt_grain = _grc2.selectbox(
                     "Optimisation grain",
-                    ["Bank × Currency", "Bank × Currency × RPGT"], index=1, key="eng_opt_grain",
+                    ["Bank × Currency", "Bank × Currency × RPGT",
+                     "Bank × Currency × RPGT × pmp × Country"], index=1, key="eng_opt_grain",
                     help="The cell grain at which the split is MADE and traffic is MOVED to meet risk "
                          "constraints. Bank × Currency: ONE split per bank×currency applied across RPGTs. "
                          "Bank × Currency × RPGT: a separate split per RPGT, with the VAMP cap enforced at "
@@ -581,6 +575,29 @@ def render():
                 floor = _ms2.slider(
                     "Exploration floor (%)", 0.0, 5.0, 1.0, 0.25, key="floor_sld",
                     help="Every eligible gateway keeps at least this share, so none goes dark.") / 100.0
+
+                # --- IMPACT-PROJECTION toggles (affect the tab-3 / tab-4 VAMP projection ONLY, not the
+                # GA search). They flip the kill-switches the projection already reads so you can A/B
+                # whether the backup-blend re-add and the exploration-floor residual are what inflate
+                # tab-3's VAMP above the in-search number (the scored-vs-delivered gap). Defaults = ON
+                # (current behaviour). Set immediately so tab-3 reads the new value on the same rerun.
+                _pj1, _pj2 = st.columns(2)
+                _bb_on = _pj1.checkbox(
+                    "Backup-blend in impact projection", value=True, key="proj_backup_blend",
+                    help="ON (default) = tab-3/impact re-adds the backup catch-all incumbents to gateways "
+                         "the split zeroed (matches what actually ships). OFF = project the RAW split — "
+                         "use to test whether the backup-blend re-add is inflating tab-3's VAMP vs the "
+                         "in-search number.")
+                _fl_on = _pj2.checkbox(
+                    "Exploration floor in impact projection", value=False, key="proj_floor_on",
+                    help="OFF (default) = tab-3/impact projects with NO exploration floor, matching the "
+                         "deployed pipeline (exports show sub-1% gateway shares, so production does NOT "
+                         "force ≥1% per gateway). This keeps the compliance projection deployment-truthful "
+                         "and consistent with the GA (which also decodes floor-free). ON = re-apply the 1% "
+                         "floor in the projection (forces every gateway ≥1%, which re-adds VAMP the routing "
+                         "removed and can make VAMP ceilings look infeasible) — for comparison only.")
+                os.environ["ROUTING_BACKUP_BLEND"] = "1" if _bb_on else "0"
+                os.environ["ROUTING_PROJ_FLOOR"] = "1" if _fl_on else "0"
 
                 # --- Compression shaping (drives the pool compression in tab 3 / configs) ---
                 _cm1, _cm2 = st.columns(2)
@@ -1151,7 +1168,8 @@ def render():
                                    "routing_optimiser.data_loader", "routing_optimiser.sql_runner",
                                    "routing_optimiser.constraints", "routing_optimiser.engines.base",
                                    "routing_optimiser.engines.softmax", "routing_optimiser.engines.thompson",
-                                   "routing_optimiser.genetic_global", "routing_optimiser.engines.portfolio"]:
+                                   "routing_optimiser.genetic_global", "routing_optimiser.engines.portfolio",
+                                   "routing_optimiser.band_projection"]:
                             _diag(f"      {_m.split('.')[-1]:16s} {_bmark(_m)}")
                         # impact_calcs is imported by-name (from impact_calcs import ...), so the module
                         # object isn't in scope — import it explicitly so its build marker is ALWAYS
@@ -1343,7 +1361,10 @@ def render():
                     _all_rpgts = {str(r).strip().lower() for r in _rpgt_opts}
                     _do_rpgt_filter = bool(_sel_rpgts and _sel_rpgts != _all_rpgts)
                     _score_by_rpgt = (_score_grain == "Bank × Currency × RPGT")
-                    _opt_by_rpgt = (_opt_grain == "Bank × Currency × RPGT")
+                    # Sub-cell grain (× pmp × Country) is per-RPGT too, so it's also "by_rpgt".
+                    _opt_subcell = (_opt_grain == "Bank × Currency × RPGT × pmp × Country")
+                    _opt_by_rpgt = (_opt_grain in ("Bank × Currency × RPGT",
+                                                   "Bank × Currency × RPGT × pmp × Country"))
                     # The RPGT filter that narrows attempts/forecast to the SELECTED RPGTs is
                     # applied further down (after the currency / switch-off cleanups) — NOT here.
                     # Why: in Bank×Currency mode the ENGINE SCORE must pool ALL RPGTs for the cell
@@ -1984,7 +2005,28 @@ def render():
 
                     _progress(_f_cells, "Assembling cells…")
                     _stage("③ Assemble routing cells from 30D attempts (forecast supplies volume only)")
-                    agg_problems = build_cell_problems(agg_forecast, agg_sr)
+                    if _opt_subcell:
+                        # SUB-CELL decision grain: apportion each cell's forecast volume across its
+                        # (pmp, Country) sub-cells by the pro-rata export's VI-Txn fractions (volume
+                        # glue), then assemble one problem per sub-cell (success rates BROADCAST from
+                        # cell grain). build_cell_problems is left untouched for the cell-grain path.
+                        from routing_optimiser.subcell import (subcell_vi_fractions,
+                                                               expand_forecast_to_subcells)
+                        from routing_optimiser.data_loader import build_subcell_problems
+                        _ppf_sc = (os.path.join(out_dir, "vamp_t_period_prorata_export.csv")
+                                   if out_dir else None)
+                        if not (_ppf_sc and os.path.exists(_ppf_sc)):
+                            raise RuntimeError(
+                                "sub-cell grain needs the pro-rata export "
+                                "(vamp_t_period_prorata_export.csv) in the outputs dir — not found.")
+                        _fr_sc = subcell_vi_fractions(pd.read_csv(_ppf_sc))
+                        _agg_sc = expand_forecast_to_subcells(agg_forecast, _fr_sc)
+                        agg_problems = build_subcell_problems(_agg_sc, agg_sr)
+                        log(f"   [sub-cell] optimisation grain = Bank×Currency×RPGT×pmp×Country: "
+                            f"{len(agg_problems):,} sub-cell problems from {len(agg_forecast):,} "
+                            f"cell-gateway rows (volume split by pro-rata VI, success rates broadcast).")
+                    else:
+                        agg_problems = build_cell_problems(agg_forecast, agg_sr)
 
                     # ---- CELL / GATEWAY DIAGNOSTICS (verbose) ----------------------------
                     try:
@@ -2174,6 +2216,13 @@ def render():
                                if "rpgt" in _mc.columns else "all_rpgts")
                     _mc["cell"] = (_mc["currency"].astype(str).str.lower() + "|"
                                    + _mc["bank"].astype(str).str.lower() + "|" + _rp_key)
+                    if _opt_subcell:
+                        # SUB-CELL decision grain: extend the cell key with pmp/ctry (carried through
+                        # from optimise_split), so G["_cellk"]/cell_starts give one softmax simplex
+                        # PER SUB-CELL. bank stays the raw BIN (band scaffold aligns on bin/pmp/ctry).
+                        _mc["cell"] = (_mc["cell"] + "|"
+                                       + _mc.get("pmp", "_all_").astype(str).str.strip().str.lower() + "|"
+                                       + _mc.get("ctry", "_all_").astype(str).str.strip().str.lower())
                     _mc["vampMid"] = _mc["gateway"].astype(str).str.strip().str.lower().map(fid2vamp).fillna(_mc["gateway"].astype(str))
                     _ck = _mc["currency"].astype(str).str.strip().str.lower()
                     _pk = _mc["bank"].astype(str).str.strip().str.lower()
@@ -2335,12 +2384,73 @@ def render():
                     # recomputes the prop-dependent parts on this small frame, instead of
                     # re-projecting millions of pro-rata rows.
                     _capped_l = {_row[0] for _row in _mid_month_rules}
+                    # ── CANDIDATE-DOOR COVERAGE SET (replaces the old ROUTING_TXN_FULLCOVER) ──
+                    # WHY: the band scaffold was BASELINE-anchored — a (cell, MID) pair with no
+                    # pro-rata baseline row got no prop-key, so the incidence DROPPED that share
+                    # column and the band projector never saw volume the split routed there.
+                    # Measured on the 2026-08-17 12:12 run: only 29.1% of the 235,164 share columns
+                    # mapped to a prop-key (Σprop_raw 10,038 vs Σshare 23,684 — 58% of routed share
+                    # mass invisible; 22-73% dropped per banded MID). That is the bulk of the
+                    # scored-vs-delivered gap.
+                    # The old fix (ROUTING_TXN_FULLCOVER=1) forced the txn-band MIDs into EVERY
+                    # coarse cell — the OPPOSITE error, since delivery only gives a receiving row
+                    # where the enforced template actually routes (impact_calcs._inject_backfill_
+                    # rows), so scoring over-covered them (adyen-na: scored 27,709 vs delivered
+                    # 15,144). It traded an under-count for an over-count.
+                    # NOW: cover every banded MID exactly where it is a CANDIDATE DOOR — wherever
+                    # its gateway appears in that currency×parent-bank×rpgt cell in `agg_sr`, the
+                    # same universe G (and therefore the incidence) is built from. agg_sr is a
+                    # superset of G's doors, so coverage is complete BY CONSTRUCTION; any extra row
+                    # simply receives 0 share and contributes nothing to VAMP or txn.
+                    # Keys match band_projection._prop_key exactly (rpgt LOWER-CASED).
+                    # Kill-switch: ROUTING_FULL_DOOR_COVER=0 restores the baseline-anchored set.
+                    _door_pairs = None      # DataFrame(_ck, _mid, _midl) — (cell, banded MID) doors
+                    _door_cells = set()     # the _cur|_bin|_rkl cells those doors live in
+                    if _capped_l and os.environ.get("ROUTING_FULL_DOOR_COVER", "1") != "0":
+                        try:
+                            _f2v_l = {str(_k).strip().lower(): str(_v).strip()
+                                      for _k, _v in (fid2vamp or {}).items()}
+                            _dc = agg_sr[["currency", "bank", "rpgt", "gateway"]].drop_duplicates().copy()
+                            _dc["_cur"] = _dc["currency"].astype(str).str.strip().str.lower()
+                            _dc["_pb"] = _dc["bank"].astype(str).str.strip().str.lower()
+                            _dc["_rk"] = _dc["rpgt"].astype(str).str.strip().str.lower()
+                            _dc["_mid"] = _dc["gateway"].astype(str).str.strip().str.lower().map(_f2v_l)
+                            _dc = _dc[_dc["_mid"].notna()].copy()
+                            _dc["_midl"] = _dc["_mid"].astype(str).str.strip().str.lower()
+                            _dc = _dc[_dc["_midl"].isin(_capped_l)]
+                            # parent bank → its BIN-level banks: the SAME replicate the incidence uses.
+                            _ofd = orig_forecast[["currency", "bank", "rpgt"]].drop_duplicates().copy()
+                            _ofd["_cur"] = _ofd["currency"].astype(str).str.strip().str.lower()
+                            _ofd["_bin"] = _ofd["bank"].astype(str).str.strip()
+                            _ofd["_rk"] = _ofd["rpgt"].astype(str).str.strip().str.lower()
+                            _ofd["_pb"] = _ofd["bank"].map(
+                                lambda _b: bin_to_bank.get(_b, bin_to_bank.get(str(_b).strip().lower(), _b))
+                            ).astype(str).str.strip().str.lower()
+                            _dj = _dc[["_cur", "_pb", "_rk", "_mid", "_midl"]].merge(
+                                _ofd[["_cur", "_pb", "_rk", "_bin"]],
+                                on=["_cur", "_pb", "_rk"], how="inner")
+                            if len(_dj):
+                                _dj["_ck"] = _dj["_cur"] + "|" + _dj["_bin"] + "|" + _dj["_rk"]
+                                _door_pairs = _dj[["_ck", "_mid", "_midl"]].drop_duplicates()
+                                _door_cells = set(_door_pairs["_ck"].unique())
+                                log(f"   [door-cover] candidate-door set: {len(_door_pairs):,} "
+                                    f"(cell, banded-MID) pair(s) across {len(_door_cells):,} cell(s) "
+                                    f"for {_dc['_midl'].nunique()} banded MID(s). The scaffold will cover "
+                                    "ALL of these, so the incidence can no longer DROP share the split "
+                                    "routes. Replaces ROUTING_TXN_FULLCOVER. Kill-switch: "
+                                    "ROUTING_FULL_DOOR_COVER=0.")
+                        except Exception as _dce:  # noqa: BLE001
+                            _door_pairs, _door_cells = None, set()
+                            log(f"   [door-cover] candidate-door set FAILED ({type(_dce).__name__}: "
+                                f"{_dce}) — scaffold stays baseline-anchored; expect the incidence "
+                                "self-check to show dropped share mass (scored != delivered).")
                     _T0 = _Pc = None
                     # Precomputed static structures for _project_capped (filled below when the
                     # scaffold is built) so it never re-hashes string keys per call.
                     _T0_pk = _T0_pk_rpgt = _T0_gcodes = _T0_excl_a = _T0_base_a = _T0_ctot_a = None
                     _T0_prr_a = _T0_vi_a = _T0_capidx = _Pc_to_t0 = _Pc_vc_a = _T0_fcp_a = None
                     _Pc_movedvpool_a = _T0_vc_a = _T0_emask_a = None
+                    _pc_prapp_a = None
                     _pc_aggcodes = _pc_agg_labels = _t0cap_aggcodes = _t0cap_agg_labels = None
                     _T0_pk_codes = _T0_pk_uniq_ix = _T0_pkr_codes = _T0_pkr_uniq_ix = None
                     _n_gc = _n_pc_agg = _n_t0cap_agg = 0
@@ -2369,9 +2479,27 @@ def render():
                         _P = _P.groupby(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_mid", "_midl",
                                          "_per", "_t"], as_index=False).agg(
                             _vi=("_vi", "sum"), _vc=("_vc", "sum"), _pr=("_pr", "first"), _fcp=("_fcp", "first"))
-                        _cellk = _P["_cur"] + "|" + _P["_bin"] + "|" + _P["_rpgt"]
+                        # Cell key on the LOWER-CASED rpgt so it matches the prop-key grain
+                        # (band_projection._prop_key lower-cases rpgt) and the candidate-door set.
+                        _P["_rkl"] = _P["_rpgt"].astype(str).str.strip().str.lower()
+                        _cellk = _P["_cur"] + "|" + _P["_bin"] + "|" + _P["_rkl"]
                         _keep = set(_cellk[_P["_midl"].isin(_capped_l)].unique())
+                        _keep_base = len(_keep)
+                        # ALSO keep cells where a banded MID is only a CANDIDATE DOOR (no baseline
+                        # row of its own): without them the cell is dropped from _P entirely, so the
+                        # injection below has no sub-cells to hang a receiving row on and the
+                        # incidence drops that share. Every MID of a kept cell is retained, so
+                        # psum/vpsum stay exact. Kill-switch: ROUTING_DOOR_COVER_CELLS=0.
+                        if _door_cells and os.environ.get("ROUTING_DOOR_COVER_CELLS", "1") != "0":
+                            _keep = _keep | (_door_cells & set(_cellk.unique()))
+                            if len(_keep) != _keep_base:
+                                log(f"   [door-cover] scaffold cells {_keep_base:,} → {len(_keep):,} "
+                                    f"(+{len(_keep) - _keep_base:,} candidate-door-only cell(s)). This is "
+                                    "the COST of full coverage — the per-generation projection scales "
+                                    "with scaffold rows, so expect a slower search. Kill-switch: "
+                                    "ROUTING_DOOR_COVER_CELLS=0.")
                         _P = _P[_cellk.isin(_keep)].copy()
+                        _P = _P.drop(columns=["_rkl"], errors="ignore")   # join-only helper
                         _T0 = _P[_P["_t"] == 0].copy()
                         _T0["_bf"] = 0   # 0 = real baseline row, 1 = injected back-fill row
                         # ---- BACK-FILL sub-cell rows (mirror the tab-3 projection fix) --------
@@ -2386,9 +2514,30 @@ def render():
                         # sub-cell), and injected rows carry _vi=_vc=0 so they receive volume but
                         # hold none and add no VAMP — matching _inject_backfill_rows in tab 3.
                         if len(_T0):
-                            _ck = _T0["_cur"] + "|" + _T0["_bin"] + "|" + _T0["_rpgt"]
+                            _T0["_rkl"] = _T0["_rpgt"].astype(str).str.strip().str.lower()
+                            _ck = _T0["_cur"] + "|" + _T0["_bin"] + "|" + _T0["_rkl"]
                             _mids_in_cell = (_T0.assign(_ck=_ck)[["_ck", "_mid", "_midl"]]
                                              .drop_duplicates())
+                            # Extend each cell's MID set with the CANDIDATE DOORS computed above, so
+                            # the injection below gives every banded MID a zero-baseline t0 row
+                            # (_vi=_vc=0 ⇒ it RECEIVES moved volume, holds none, adds no VAMP) in
+                            # every sub-cell of every cell it can actually be routed to. Symmetric
+                            # twin of tab-3's _inject_backfill_rows; the sub-cell guard below is
+                            # unchanged, so we still never invent a pmp/Country the baseline lacks.
+                            if _door_pairs is not None and len(_door_pairs):
+                                _canon = (_mids_in_cell.drop_duplicates("_midl")
+                                          .set_index("_midl")["_mid"].to_dict())
+                                _add = _door_pairs.copy()
+                                _add["_mid"] = _add["_midl"].map(_canon).fillna(_add["_mid"])
+                                _add = _add[_add["_ck"].isin(set(_ck.unique()))]
+                                _before_p = len(_mids_in_cell)
+                                _mids_in_cell = (pd.concat(
+                                    [_mids_in_cell, _add[["_ck", "_mid", "_midl"]]],
+                                    ignore_index=True).drop_duplicates(["_ck", "_midl"]))
+                                log(f"   [door-cover] (cell, MID) pairs {_before_p:,} → "
+                                    f"{len(_mids_in_cell):,} "
+                                    f"(+{len(_mids_in_cell) - _before_p:,} candidate-door pair(s) with "
+                                    "no baseline row).")
                             _subper = (_T0.assign(_ck=_ck)
                                        .drop_duplicates(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per"])
                                        [["_ck", "_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per", "_pr", "_fcp"]])
@@ -2410,6 +2559,7 @@ def render():
                                                  "_midl", "_per", "_t", "_vi", "_vc", "_pr", "_fcp", "_bf"]]
                                 _T0 = pd.concat([_T0, _newbf], ignore_index=True, sort=False)
                                 log(f"   back-fill sub-cell rows injected into cap scaffold: {len(_newbf):,}")
+                        _T0 = _T0.drop(columns=["_rkl"], errors="ignore")
                         _T0["_excl"] = _T0["_mid"].isin(_excluded_mids)
                         _T0["_ctot"] = _T0.groupby(_grpk)["_vi"].transform("sum")
                         _T0["_av"] = np.where(_T0["_excl"], 0.0, _T0["_vi"])
@@ -2484,19 +2634,42 @@ def render():
                         _t0_pos = _t0_pos[~_t0_pos.index.duplicated(keep="last")]
                         _Pc_to_t0 = _t0_pos.reindex(_pc_join).fillna(-1).to_numpy().astype(np.int64)
                         _Pc_vc_a = _Pc["_vc"].to_numpy(float)
-                        # Moved-VAMP pool per (cur,bin,rpgt,period,t) = Σ over ALL MIDs of
-                        # vampCount × pro_rata × fcp1_frac (all static in the export), for the
-                        # two-cohort VAMP projection. _P holds every MID in the kept cells, so
-                        # the sum is complete; precomputed once (split-independent).
-                        _P["_mvraw"] = _P["_vc"] * _P["_pr"] * _P["_fcp"]
+                        # Moved-VAMP pool per (cur,bin,rpgt,pmp,ctry,period,t), APPEARANCE-MONTH timed
+                        # to match the tab-3 DELIVERED projection (compute_vamp_prepost_granular):
+                        #   pool = pro_rata[APPEARANCE cell (sub,per)] × Σ_MID vampCount × fcp1_frac[ORIGIN
+                        #          cell (sub, per−t)]
+                        # (was Σ vc·pro_rata·fcp1 using each aged row's OWN pro_rata — origination timing).
+                        # go-live pro_rata is applied by the month the VAMP APPEARS, while fcp1_frac (the
+                        # first-attempt reroutable slice) stays at ORIGINATION. _P holds every MID in the
+                        # kept cells, so the sum is complete; split-independent → precomputed once.
+                        # Verified bit-exact vs compute_vamp_prepost_granular (tests/test_band_timing_reconcile).
+                        _P0 = _P[_P["_t"] == 0]
+                        _fcp_orig_map = _P0.set_index(
+                            ["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_midl", "_per"])["_fcp"].to_dict()
+                        _prapp_map = (_P0.drop_duplicates(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per"])
+                                      .set_index(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per"])["_pr"].to_dict())
+                        _P_origin = (_P["_per"] - _P["_t"]).to_numpy()
+                        _fcp_o_P = np.fromiter(
+                            (_fcp_orig_map.get((_c, _b, _r, _pm, _ct, _ml, _o), 0.0)
+                             for _c, _b, _r, _pm, _ct, _ml, _o in
+                             zip(_P["_cur"], _P["_bin"], _P["_rpgt"], _P["_pmp"], _P["_ctry"],
+                                 _P["_midl"], _P_origin)),
+                            dtype=float, count=len(_P))
+                        _P["_mvraw"] = _P["_vc"].to_numpy(float) * _fcp_o_P   # vc × fcp[origin] (no pro_rata yet)
                         _mvp_map = _P.groupby(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per", "_t"],
                                               observed=True)["_mvraw"].sum().to_dict()
+                        # per-_Pc appearance pro_rata (static) — reused by _project_capped's held term.
+                        _pc_prapp_a = np.fromiter(
+                            (_prapp_map.get((_c, _b, _r, _pm, _ct, _p), 0.0)
+                             for _c, _b, _r, _pm, _ct, _p in
+                             zip(_Pc["_cur"], _Pc["_bin"], _Pc["_rpgt"], _Pc["_pmp"], _Pc["_ctry"], _Pc["_per"])),
+                            dtype=float, count=len(_Pc))
                         _Pc_movedvpool_a = np.fromiter(
                             (_mvp_map.get((_c, _b, _r, _pm, _ct, _p, _t), 0.0)
                              for _c, _b, _r, _pm, _ct, _p, _t in
                              zip(_Pc["_cur"], _Pc["_bin"], _Pc["_rpgt"], _Pc["_pmp"], _Pc["_ctry"],
                                  _Pc["_per"], _Pc["_t"])),
-                            dtype=float, count=len(_Pc))
+                            dtype=float, count=len(_Pc)) * _pc_prapp_a
                         # Aggregation group codes + (midl, period) labels — VAMP over _Pc rows,
                         # TXN over capped _T0 rows. Same groups as the old (_midl,_per) group-by.
                         _SEP = ""
@@ -2601,7 +2774,12 @@ def render():
                         _vshare = np.zeros_like(_vprop, dtype=float)
                         np.divide(_vprop, _vpsum, out=_vshare, where=_vpsum > 0)
                         _gi = np.where(_Pc_to_t0 >= 0, _Pc_to_t0, 0)
-                        _move_pc = np.where(_Pc_to_t0 >= 0, _mv[_gi], 0.0)
+                        # APPEARANCE-MONTH timing (matches the pool above + compute_vamp_prepost_granular):
+                        # held move = fcp1_frac[ORIGIN t0 row] × pro_rata[APPEARANCE cell], gated on the
+                        # ORIGIN cell being routed (psum>0). Was _mv[_gi] = pr[origin]·fcp[origin].
+                        _act_o = _psum[_gi] > 0
+                        _heldfac_pc = _T0_fcp_a[_gi] * _pc_prapp_a
+                        _move_pc = np.where((_Pc_to_t0 >= 0) & _act_o, _heldfac_pc, 0.0)
                         _psh_pc = np.where(_Pc_to_t0 >= 0, _vshare[_gi], 0.0)
                         _vp = _Pc_vc_a * (1.0 - _move_pc) + _Pc_movedvpool_a * _psh_pc
                         _out = {}
@@ -3014,7 +3192,8 @@ def render():
                                 return
                             _T0a, _Pca, _poolarr, _bset, _byr = _fr
                             _tb = _time.perf_counter()
-                            _pbp = _PBP(_T0a, _Pca, _poolarr, _bset, by_rpgt=_byr)
+                            _pbp = _PBP(_T0a, _Pca, _poolarr, _bset, by_rpgt=_byr, max_share=float(max_share),
+                                        by_subcell=bool(_opt_subcell))
                             _build_ms = (_time.perf_counter() - _tb) * 1000.0
                             _K = len(_pbp.prop_keys); _B = len(_pbp.band_order)
                             _ncell = int(_pbp._ngc); _nrel = int(len(_pbp._gcode))
@@ -3104,7 +3283,12 @@ def render():
                             return None
                         from routing_optimiser.band_projection import PopulationBandProjector as _PBP
                         _T0a, _Pca, _poolarr, _bset, _byr = _fr
-                        _band_diag_state["pbp"] = _PBP(_T0a, _Pca, _poolarr, _bset, by_rpgt=_byr)
+                        # max_share (0.97) folds the per-sub-cell max-share cap into the fitness
+                        # projection so the GA scores the DELIVERED breach (proven: the cap is the
+                        # entire scored-vs-delivered VAMP residual).
+                        _band_diag_state["pbp"] = _PBP(_T0a, _Pca, _poolarr, _bset, by_rpgt=_byr,
+                                                       max_share=float(max_share),
+                                                       by_subcell=bool(_opt_subcell))
                         return _band_diag_state["pbp"]
 
                     # [FN-329]
@@ -3225,7 +3409,8 @@ def render():
                                 _keep = set(_cum.index[_cum.to_numpy() <= _cov]) | {_cum.index[0]}
                                 _m0 = _t0k.isin(_keep).to_numpy(); _mp = _pck.isin(_keep).to_numpy()
                                 _pp = _PBP(_T0a[_m0].reset_index(drop=True), _Pca[_mp].reset_index(drop=True),
-                                           _poolarr[_mp], _bset, by_rpgt=_byr)
+                                           _poolarr[_mp], _bset, by_rpgt=_byr, max_share=float(max_share),
+                                           by_subcell=bool(_opt_subcell))
                                 _pv, _pt = _pp.project_pop_from_props([_end])
                                 _pms = _timeit(_pp)
                                 _maxe = 0.0
@@ -3418,6 +3603,11 @@ def render():
                         _cur_l = G["currency"].astype(str).str.strip().str.lower().tolist()
                         _pb_l = G["bank"].astype(str).str.strip().str.lower().tolist()
                         _gw_l = G["gateway"].astype(str).str.strip().str.lower().tolist()
+                        # sub-cell identity per G row (always present via optimise_split; "_all_" at cell grain)
+                        _pmp_l = (G["pmp"].astype(str).str.strip().str.lower().tolist()
+                                  if "pmp" in G.columns else ["_all_"] * len(G))
+                        _ctry_l = (G["ctry"].astype(str).str.strip().str.lower().tolist()
+                                   if "ctry" in G.columns else ["_all_"] * len(G))
                         _tick = np.array([_at_map.get((c, b), 25.0) for c, b in zip(_cur_l, _pb_l)], dtype=float)
                         # Revenue basis = 30D cell attempts × SHRUNK gateway SR × avg ticket. Uses
                         # the SAME shrunk success rate the report and softmax trust (gateway_success_
@@ -3745,8 +3935,13 @@ def render():
                                         continue
                                     _vm = str(_vm).strip()
                                     for _bin in _bins_by.get((_cur_l[_j], _pb_l[_j], _rpgt_g[_j]), ()):
-                                        _pk = (f"{_cur_l[_j]}|{_bin}|{_rpgt_g[_j]}|{_vm}" if _byr
-                                               else f"{_cur_l[_j]}|{_bin}|{_vm}")
+                                        if _opt_subcell:   # sub-cell prop-key: cur|bin|rpgt|pmp|ctry|mid
+                                            _pk = (f"{_cur_l[_j]}|{_bin}|{_rpgt_g[_j]}|"
+                                                   f"{_pmp_l[_j]}|{_ctry_l[_j]}|{_vm}")
+                                        elif _byr:
+                                            _pk = f"{_cur_l[_j]}|{_bin}|{_rpgt_g[_j]}|{_vm}"
+                                        else:
+                                            _pk = f"{_cur_l[_j]}|{_bin}|{_vm}"
                                         _i = _kpos.get(_pk)
                                         if _i is not None:
                                             _rows.append(_i); _cols.append(_j)
@@ -4553,7 +4748,40 @@ def render():
                         # frontier blend between the dial-0 and dial-99 endpoints.
                         _warm_dial0 = None
                         _exact_G = None    # optional exact projector-defined seed (successive-LP); see below
+                        _globlp_G = None   # optional global linear-band LP seed (one full-step convex LP); see below
                         _band_mult = 1.0   # band penalty strength fixed at 1.0 (input removed)
+                        # CATCH-ALL ε-FLOOR MASK — NOW OFF BY DEFAULT (obsolete after the cell-level
+                        # catch-all fix). It was built to dodge the OLD per-gateway re-add: back then a
+                        # gateway zeroed by the split was re-added at ~10.6%, so pinning catch-all
+                        # gateways ≥ ε (0.1%) beat 0. Since data_extractor now drops the catch-all in any
+                        # cell that has a specific rule, zeroing a gateway in a routed cell gives a clean
+                        # 0 (no re-add) — so flooring it at 0.1% would only pin unwanted risk share onto
+                        # the very MIDs we want at zero. Default ε=0 ⇒ mask None ⇒ solvers get no floor
+                        # (they minimise the raw breach, which == the deployed breach under cell-level).
+                        # Set ss['fm_catchall_floor'] > 0 only to revive the old dodge (not needed now).
+                        _catchall_row_mask = None
+                        _fm_catch_eps = float(ss.get("fm_catchall_floor", 0.0) or 0.0)
+                        try:
+                            _bc_raw = ss.get("backup_catchall") or {}
+                            if (_bc_raw and _fm_catch_eps > 0
+                                    and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0"):
+                                _cc_fids = {}
+                                for (_cu, _rp, _pm, _ct), _gw in _bc_raw.items():
+                                    _cc_fids.setdefault((str(_cu).strip().lower(),
+                                                         str(_rp).strip().lower()), set()).update(
+                                        str(_f).strip().lower() for _f in _gw)
+                                _gwL = G["gateway"].astype(str).str.strip().str.lower().to_numpy()
+                                _cuL = G["currency"].astype(str).str.strip().str.lower().to_numpy()
+                                _rpL = G["rpgt"].astype(str).str.strip().str.lower().to_numpy()
+                                _catchall_row_mask = np.array(
+                                    [_f in _cc_fids.get((_c, _r), ()) for _f, _c, _r in zip(_gwL, _cuL, _rpL)],
+                                    dtype=bool)
+                                if not _catchall_row_mask.any():
+                                    _catchall_row_mask = None
+                        except Exception as _cme:  # noqa: BLE001
+                            _catchall_row_mask = None
+                            log(f"   [full-matrix] catch-all ε-floor mask skipped "
+                                f"({type(_cme).__name__}: {_cme}); seeds may leave catch-all MIDs at 0.")
                         # #1 DIVERSE SEEDS: hand the risk-min search the revenue-greedy compliant split
                         # PLUS a BAND-AWARE greedy compliant split (the revenue-greedy split nudged so
                         # each MID moves toward its month bands), so the search starts band-feasible-or-
@@ -4624,6 +4852,22 @@ def render():
                                     "(no active month bands → band-aware seed not built).")
                             # keep the legacy name so the cache-key hash below still hashes the 2nd seed
                             _risk_greedy_G = np.asarray(_band_greedy_G, float)
+                            # ε-floor the band-aware seed so it doesn't hand the GA a split with catch-all
+                            # MIDs at 0 (the exact projector / global-LP below re-optimise WITHIN this floor).
+                            if _catchall_row_mask is not None and _fm_catch_eps > 0:
+                                try:
+                                    from routing_optimiser.exact_band_solver import (
+                                        floor_catchall_shares as _fcs_seed)
+                                    _rg_mask = _catchall_row_mask & (np.asarray(ctx["elig"], float) > 0.5)
+                                    _risk_greedy_G = _fcs_seed(
+                                        _risk_greedy_G, _rg_mask, _fm_catch_eps,
+                                        ctx["cell_starts"], ctx["cell_counts"])
+                                    log(f"   [full-matrix] catch-all ε-floor: {int(_rg_mask.sum()):,} "
+                                        f"catch-all gateway-cell(s) pinned ≥ {_fm_catch_eps:.2%} across the "
+                                        "seeds so none is left at 0 — dodges the pipeline re-add and the "
+                                        "solvers optimise the DEPLOYED split (raw==deployed in the floored box).")
+                                except Exception as _fe:  # noqa: BLE001
+                                    log(f"   [full-matrix] seed ε-floor skipped ({type(_fe).__name__}: {_fe}).")
                             _seeds = [np.asarray(_comp_share_G, float), _risk_greedy_G]
                             # OPTIONAL exact projector-defined seed: successive-LP that minimises the TRUE
                             # projector band breach using the analytic Jacobian (exact_band_solver). Default
@@ -4631,28 +4875,68 @@ def render():
                             # seed — feasibility-first ranking means it can only help. 0 breach = a genuine
                             # compliance certificate; a positive floor is a strong (not proof) infeasibility
                             # signal. Local optimum only (fractional-VAMP nonconvexity + fixed active mask).
+                            # Runs for the full-matrix engine too now: it's a WARM-START seed only
+                            # (the GA's never-worse guarantee carries a compliant seed forward) — NOT a
+                            # post-search finishing pass. Opt-in via use_exact_band_solver; ~minutes at
+                            # BIN grain, so only when the user ticks it. `_exact_G` feeds `_fm_cands`.
                             if (bool(ss.get("use_exact_band_solver"))
-                                    and engine_key != "genetic_fullmatrix"   # skip: ~16min at BIN grain, seed discarded
                                     and _ga_bands and ctx.get("exact_bands") is not None
                                     and isinstance(ctx.get("_exact_bands_selfcheck"), dict)
                                     and ctx["_exact_bands_selfcheck"].get("inc") is not None):
                                 try:
                                     from routing_optimiser.exact_band_solver import solve_least_breach as _slb
                                     _inc_x = ctx["_exact_bands_selfcheck"]["inc"]
+                                    # Start the successive-LP from the BAND-AWARE seed (the greedy
+                                    # constrained-projection split, breach ~0.07), NOT the revenue-greedy
+                                    # compliant split (_comp_share_G, breach ~2.4). The projector is a LOCAL
+                                    # solver, so launching it from an almost-feasible point gives it a real
+                                    # chance to close the last bands (the eligible-sibling reallocation the GA
+                                    # can't coordinate); from far away it stalls early in a worse basin. Falls
+                                    # back to _comp_share_G only if the band-aware seed wasn't built.
+                                    _slb_base = np.asarray(locals().get("_risk_greedy_G", _comp_share_G), float)
                                     _exact_G, _xinfo = _slb(
-                                        ctx["exact_bands"], _inc_x, np.asarray(_comp_share_G, float),
+                                        ctx["exact_bands"], _inc_x, _slb_base,
                                         ctx["cell_starts"], ctx["cell_counts"], ctx["elig"],
-                                        max_share=float(ctx.get("max_share", 1.0) or 1.0))
+                                        max_share=float(ctx.get("max_share", 1.0) or 1.0), log_fn=log,
+                                        floor_mask=_catchall_row_mask, share_floor=_fm_catch_eps)
                                     if _xinfo.get("ok"):
                                         _seeds.append(np.asarray(_exact_G, float))
                                         _verd = ("✓ COMPLIANT certificate (a feasible split provably exists)"
                                                  if _xinfo.get("feasible")
                                                  else "local min > 0 → appears INFEASIBLE under this scope (not a proof)")
                                         log("   ── EXACT projector seed (successive-LP on the TRUE band values "
-                                            "+ analytic Jacobian) ──")
+                                            "+ analytic Jacobian; started from the band-aware seed) ──")
                                         log(f"      breach {_xinfo['breach0']:.4g} → {_xinfo['breach']:.4g} "
                                             f"in {_xinfo['outer']} LP step(s); {_xinfo['n_free']} band-feeding "
                                             f"gateways free. Verdict: {_verd}.")
+                                        # PER-MID breakdown at the exact solution: WHICH bands are still
+                                        # breached after the strongest (coordinated) reallocation. Unlike the
+                                        # greedy feasibility check, this list is reliable — a MID here has no
+                                        # sibling headroom left (genuinely infeasible under this scope); a MID
+                                        # NOT here is reachable. (Raw-share view: delivery only removes volume,
+                                        # so a ceiling breach here is a strong signal; a floor may ease slightly.)
+                                        try:
+                                            from routing_optimiser.band_scoring import (
+                                                shares_to_prop_raw as _s2pr_x)
+                                            _pr_x = _s2pr_x(np.asarray(_exact_G, float)[None, :], _inc_x)
+                                            _stuck = []
+                                            for _rr in ctx["exact_bands"].report(_pr_x):
+                                                _nw = float(_rr["now"])
+                                                if _rr["ceil"] is not None and _nw > float(_rr["ceil"]) + 1e-6:
+                                                    _stuck.append(f"{_rr['midl']} {_rr['metric']} "
+                                                                  f"{_nw:,.0f} > ceil {float(_rr['ceil']):,.0f}")
+                                                elif _rr["floor"] is not None and _nw < float(_rr["floor"]) - 1e-6:
+                                                    _stuck.append(f"{_rr['midl']} {_rr['metric']} "
+                                                                  f"{_nw:,.0f} < floor {float(_rr['floor']):,.0f}")
+                                            if _stuck:
+                                                log(f"      STILL BREACHED after exact projection ({len(_stuck)} "
+                                                    "band(s) — genuinely stuck, no sibling headroom): "
+                                                    + " · ".join(_stuck))
+                                            else:
+                                                log("      ALL bands cleared by the exact projection → a fully "
+                                                    "compliant split exists (the GA can reach it from this seed).")
+                                        except Exception as _rxe:  # noqa: BLE001
+                                            log(f"      (per-MID breakdown skipped: {type(_rxe).__name__})")
                                     else:
                                         _exact_G = None
                                         log("   exact projector seed skipped: "
@@ -4660,6 +4944,203 @@ def render():
                                 except Exception as _xe:  # noqa: BLE001
                                     _exact_G = None
                                     log(f"   exact projector seed skipped: {type(_xe).__name__}: {_xe}")
+                                # GLOBAL LINEAR-BAND LP SEED (Option 1): ONE full-step convex LP over ALL
+                                # cells at once, linearised at the band-aware seed using the EXACT projector
+                                # value + analytic Jacobian. Unlike the LOCAL successive-LP above it takes the
+                                # global first-order step with no trust region, so it can jump to a different
+                                # basin. No-regret: it's added to the seed set + _fm_cands but the never-worse
+                                # guarantee means it's only USED if its exact breach beats the other seeds.
+                                try:
+                                    from routing_optimiser.exact_band_solver import (
+                                        solve_global_linear_lp as _glp)
+                                    _glp_base = np.asarray(
+                                        locals().get("_risk_greedy_G", _comp_share_G), float)
+                                    _globlp_G, _ginfo = _glp(
+                                        ctx["exact_bands"], ctx["_exact_bands_selfcheck"]["inc"],
+                                        _glp_base, ctx["cell_starts"], ctx["cell_counts"], ctx["elig"],
+                                        max_share=float(ctx.get("max_share", 1.0) or 1.0),
+                                        weighted=True, log_fn=log,
+                                        floor_mask=_catchall_row_mask, share_floor=_fm_catch_eps)
+                                    if _ginfo.get("ok") and np.isfinite(
+                                            _ginfo.get("breach_true", float("nan"))):
+                                        log("   ── GLOBAL LINEAR-BAND LP seed (minimal-move feasibility "
+                                            "projection over all cells; linearised at the band-aware seed) ──")
+                                        log(f"      exact breach {_ginfo['breach0']:.4g} → "
+                                            f"{_ginfo['breach_true']:.4g} on the re-projected candidate; "
+                                            f"moved {_ginfo.get('moved', float('nan')):.4g} share across "
+                                            f"{_ginfo['n_free']} movable gateways, {_ginfo['n_bands']} band "
+                                            "side(s). Used as a seed only if it beats the band-aware seed.")
+                                        _seeds.append(np.asarray(_globlp_G, float))
+                                    else:
+                                        _globlp_G = None
+                                        log("   global linear-band LP seed skipped: "
+                                            f"{_ginfo.get('reason', 'unavailable')}.")
+                                except Exception as _ge:  # noqa: BLE001
+                                    _globlp_G = None
+                                    log(f"   global linear-band LP seed skipped: "
+                                        f"{type(_ge).__name__}: {_ge}")
+                                # ── TARGETED MOVE-OPERATOR SEED ─────────────────────────────────────
+                                # Directly shed each breached CEILING MID's share onto co-located
+                                # lower-risk eligible siblings (with headroom) until it clears its ceiling
+                                # — sidestepping the softmax search that can't coordinate the moves.
+                                # Starts from the best band-aware seed available; added to _fm_cands, and
+                                # the lexicographic M5-first ranking then guarantees the delivered breach
+                                # ≤ this seed's. Never-worse internally (returns base if it can't improve).
+                                _move_G = None
+                                try:
+                                    from routing_optimiser.exact_band_solver import (
+                                        solve_targeted_moves as _stm)
+                                    _stm_base = np.asarray(
+                                        locals().get("_exact_G") if locals().get("_exact_G") is not None
+                                        else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                    log("   ── TARGETED MOVE-OPERATOR seed (shed breached-ceiling MIDs onto "
+                                        "co-located lower-risk siblings; exact projector = truth) ──")
+                                    _move_G, _minfo = _stm(
+                                        ctx["exact_bands"], ctx["_exact_bands_selfcheck"]["inc"],
+                                        _stm_base, ctx["cell_starts"], ctx["cell_counts"], ctx["elig"],
+                                        mid_id=ctx["mid_id"], risk=ctx["risk"], cell_vol=ctx["cell_vol"],
+                                        mid_names=[str(m) for m in _mids_u],
+                                        max_share=float(ctx.get("max_share", 1.0) or 1.0), log_fn=log)
+                                    if _minfo.get("ok") and _minfo.get("breach", 1.0) < _minfo.get(
+                                            "breach0", 1.0) - 1e-12 and _move_G is not None:
+                                        _seeds.append(np.asarray(_move_G, float))
+                                    else:
+                                        # ok-but-no-improvement (or already compliant) → not a distinct seed
+                                        _move_G = None
+                                except Exception as _me:  # noqa: BLE001
+                                    _move_G = None
+                                    log(f"   targeted move-operator seed skipped: "
+                                        f"{type(_me).__name__}: {_me}")
+                                # ── HELD-vs-MOVABLE DIAGNOSTIC (READ-ONLY) ──────────────────────────
+                                # How much of each breached MID's M5 value the routing decision can MOVE
+                                # (pool redistributed by share) vs HELD (baseline / FCP2+ / pre-go-live).
+                                # held < ceil ⇒ compliance reachable (any stuck solver = search bug);
+                                # held ≥ ceil ⇒ structurally stuck. This is the decisive movability test.
+                                # If 'held' is far larger than expected, mv = pro_rata × fcp1_frac is
+                                # understated upstream. Read-only; never breaks the run.
+                                try:
+                                    from routing_optimiser.exact_band_solver import held_movable_report as _hm
+                                    _hm_split = np.asarray(
+                                        locals().get("_exact_G") if locals().get("_exact_G") is not None
+                                        else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                    for _ln in _hm(_hm_split, ctx["exact_bands"],
+                                                   ctx["_exact_bands_selfcheck"]["inc"]):
+                                        log(_ln)
+                                except Exception as _hme:  # noqa: BLE001 — a diagnostic must never break the run
+                                    log(f"   held-vs-movable check skipped ({type(_hme).__name__}: {_hme}).")
+                                # ── REACHABLE MINIMUM (READ-ONLY) ───────────────────────────────────
+                                # The full-matrix decode is a plain softmax with NO hard share floor, so
+                                # route each breached MID toward 0 wherever an eligible sibling can absorb
+                                # it and read the TRUE reachable minimum. reachable-min ≥ ceil ⇒ structurally
+                                # unreachable (held exceeds the cap); < ceil ⇒ reachable ⇒ a stuck solver is
+                                # the cause. The config exploration_floor is passed only as a clearly-labelled
+                                # "what-if" (it is NOT enforced by this engine). Read-only; never breaks the run.
+                                try:
+                                    from routing_optimiser.exact_band_solver import floor_min_report as _fmin
+                                    _fmin_split = np.asarray(
+                                        locals().get("_exact_G") if locals().get("_exact_G") is not None
+                                        else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                    for _ln in _fmin(_fmin_split, ctx["exact_bands"],
+                                                     ctx["_exact_bands_selfcheck"]["inc"],
+                                                     mid_id=ctx["mid_id"], cell_starts=ctx["cell_starts"],
+                                                     cell_counts=ctx["cell_counts"], elig=ctx["elig"],
+                                                     mid_names=[str(m) for m in _mids_u],
+                                                     whatif_floor=float(ctx.get("floor", 0.0) or 0.0)):
+                                        log(_ln)
+                                except Exception as _fme:  # noqa: BLE001 — a diagnostic must never break the run
+                                    log(f"   reachable-minimum check skipped ({type(_fme).__name__}: {_fme}).")
+                                # ── VAMP-POSITIVE SIBLING (READ-ONLY) ───────────────────────────────
+                                # The cliff test: a breached VAMP MID's share only lowers its VAMP where a
+                                # co-located VAMP-positive (vcpos>0) gateway exists (vshare self-normalises).
+                                # Cells where it's the SOLE VAMP gateway are structurally immovable by the
+                                # softmax engine. Read-only; never breaks the run.
+                                try:
+                                    from routing_optimiser.exact_band_solver import vamp_sibling_report as _vsib
+                                    _vsib_split = np.asarray(
+                                        locals().get("_exact_G") if locals().get("_exact_G") is not None
+                                        else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                    for _ln in _vsib(_vsib_split, ctx["exact_bands"],
+                                                     ctx["_exact_bands_selfcheck"]["inc"]):
+                                        log(_ln)
+                                except Exception as _vse:  # noqa: BLE001 — a diagnostic must never break the run
+                                    log(f"   vamp-positive-sibling check skipped ({type(_vse).__name__}: {_vse}).")
+                                # ── EXTRA ROOT-CAUSE DIAGNOSTICS (READ-ONLY): #1 incidence self-check,
+                                # #3 seed gradient, #4 vpsum, #5 usable-recipient. All one-shot at the seed;
+                                # never break the run.
+                                try:
+                                    from routing_optimiser.exact_band_solver import (
+                                        incidence_selfcheck_report as _isc,
+                                        seed_gradient_report as _sgr,
+                                        vpsum_report as _vpr,
+                                        usable_recipient_report as _urr,
+                                        breach_concentration_report as _bcr,
+                                        scoped_frozen_report as _sfr)
+                                    _dx_split = np.asarray(
+                                        locals().get("_exact_G") if locals().get("_exact_G") is not None
+                                        else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                    _dx_eb = ctx["exact_bands"]; _dx_inc = ctx["_exact_bands_selfcheck"]["inc"]
+                                    _dx_names = [str(m) for m in _mids_u]
+                                    for _ln in _isc(_dx_split, _dx_eb, _dx_inc,
+                                                    mid_id=ctx["mid_id"], mid_names=_dx_names):
+                                        log(_ln)
+                                    for _ln in _sgr(_dx_split, _dx_eb, _dx_inc,
+                                                    mid_id=ctx["mid_id"], mid_names=_dx_names):
+                                        log(_ln)
+                                    for _ln in _vpr(_dx_split, _dx_eb, _dx_inc):
+                                        log(_ln)
+                                    for _ln in _urr(_dx_split, _dx_eb, _dx_inc):
+                                        log(_ln)
+                                    for _ln in _bcr(_dx_split, _dx_eb, _dx_inc):
+                                        log(_ln)
+                                    for _ln in _sfr(_dx_split, _dx_eb, _dx_inc,
+                                                    scoped_rpgts=(locals().get("_sel_rpgts") or set())):
+                                        log(_ln)
+                                except Exception as _dxe:  # noqa: BLE001 — a diagnostic must never break the run
+                                    log(f"   extra root-cause diagnostics skipped ({type(_dxe).__name__}: {_dxe}).")
+                                # ── CO-LOCATION DIAGNOSTIC (READ-ONLY) ──────────────────────────────
+                                # For every breached ceiling MID, at the engine's BIN×currency×RPGT grain:
+                                # in the exact cells where that MID carries share, is a headroom SIBLING
+                                # present as an eligible gateway-row? Answers "search failure vs true
+                                # cell-grain infeasibility". Changes NO share; never breaks the run.
+                                try:
+                                    from routing_optimiser.exact_band_solver import colocation_report as _colo
+                                    _dg_split = np.asarray(
+                                        locals().get("_exact_G") if locals().get("_exact_G") is not None
+                                        else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                    _colcol = lambda _c: (G[_c].astype(str).to_numpy() if _c in G.columns else None)
+                                    for _ln in _colo(
+                                            _dg_split, ctx["exact_bands"],
+                                            ctx["_exact_bands_selfcheck"]["inc"],
+                                            mid_id=ctx["mid_id"], cell_starts=ctx["cell_starts"],
+                                            cell_counts=ctx["cell_counts"], risk=ctx["risk"],
+                                            cell_vol=ctx["cell_vol"], elig=ctx["elig"],
+                                            mid_names=[str(m) for m in _mids_u],
+                                            cell_cur=_colcol("currency"), cell_bank=_colcol("bank"),
+                                            cell_rpgt=_colcol("rpgt")):
+                                        log(_ln)
+                                except Exception as _dge:  # noqa: BLE001 — a diagnostic must never break the run
+                                    log(f"   co-location diagnostic skipped ({type(_dge).__name__}: {_dge}).")
+                                # ── SEED UNMET-BAND SUMMARY (consistent one-line comparison) ──────────
+                                # For every warm-start seed, log how many of the 15 bands it satisfies +
+                                # which it doesn't, in ONE format — so the seeds are directly comparable at
+                                # a glance (which one clears the most MIDs). Read-only; never breaks the run.
+                                try:
+                                    from routing_optimiser.exact_band_solver import unmet_summary as _unmet
+                                    _sinc = ctx["_exact_bands_selfcheck"]["inc"]
+                                    _seed_pairs = [("band-aware", locals().get("_risk_greedy_G")),
+                                                   ("exact-proj", locals().get("_exact_G")),
+                                                   ("global-LP (min-move)", locals().get("_globlp_G")),
+                                                   ("revenue-greedy", locals().get("_comp_share_G"))]
+                                    _seed_pairs = [(_nm, _s) for _nm, _s in _seed_pairs if _s is not None]
+                                    if _seed_pairs:
+                                        log("   ── SEED unmet-band summary (how many of the per-MID bands "
+                                            "each warm-start satisfies) ──")
+                                        for _nm, _s in _seed_pairs:
+                                            _su = _unmet(np.asarray(_s, float), ctx["exact_bands"], _sinc)
+                                            if _su:
+                                                log(f"      {_nm:<22}: {_su}")
+                                except Exception as _use:  # noqa: BLE001 — a diagnostic must never break the run
+                                    log(f"   seed unmet-band summary skipped ({type(_use).__name__}: {_use}).")
                             ctx["warm_shares"] = _seeds
                         except Exception:  # noqa: BLE001
                             _risk_greedy_G = np.asarray(_comp_share_G, float)
@@ -4687,6 +5168,8 @@ def render():
                                           ("band-aware seed", np.asarray(_risk_greedy_G, float))]
                                 if _exact_G is not None:
                                     _cands.append(("exact projector seed", np.asarray(_exact_G, float)))
+                                if _globlp_G is not None:
+                                    _cands.append(("global linear-band LP seed", np.asarray(_globlp_G, float)))
                                 _scored = sorted(
                                     ((float(ctx["exact_bands"].penalty(_s2pr_anc(_c[None, :], _inc_anc))[0]), _nm, _c)
                                      for _nm, _c in _cands), key=lambda x: x[0])
@@ -4725,6 +5208,9 @@ def render():
                             if _exact_G is not None:               # hash the exact seed too (else a stale hit)
                                 _h.update(b"exact_band_seed")
                                 _h.update(np.ascontiguousarray(np.asarray(_exact_G, float)).tobytes())
+                            if _globlp_G is not None:              # hash the global LP seed too
+                                _h.update(b"global_linear_lp_seed")
+                                _h.update(np.ascontiguousarray(np.asarray(_globlp_G, float)).tobytes())
                             _h.update(repr((float(vamp_cap) if vamp_cap is not None else None,
                                             float(ctx.get("max_share", 1.0) or 1.0),
                                             float(ctx.get("floor", 0.0) or 0.0), repr(_mid_month_rules),
@@ -4895,21 +5381,17 @@ def render():
                                 from routing_optimiser.genetic_fullmatrix import (
                                     problem_from_ctx as _fm_prob, run_fullmatrix_ga as _fm_run,
                                     reconstruct_full_split as _fm_recon)
-                                # ---- feed the per-MID BAND constraints into the full-matrix problem ----
-                                # Map each tab-3 rule to its vampMid index and a (metric, lo, hi) band.
-                                # metric: txn->1, vamp(count)->2, vamp_pct(rate)->3. direction sets lo/hi.
-                                # CAVEAT (logged): this is a LINEAR 30-day proxy (Σ cell_vol×share), NOT the
-                                # exact pro-rata month-M5 projection the tilt engine uses — verify the
-                                # logged per-band values against the tilt readout on the first run.
+                                # ---- per-MID BAND constraints for the full-matrix problem ----
+                                # Exact M5 pro-rata band scoring is MANDATORY. The old 30-day linear proxy
+                                # (Σ cell_vol×share compared to lo/hi) has been REMOVED — this loop only maps
+                                # each tab-3 rule to its vampMid + direction for the applied/unmapped LOG; the
+                                # actual scoring is the exact projector wired below.
                                 _fm_name2idx = {str(_m).strip().lower(): _i
                                                 for _i, _m in enumerate(_mids_u)}
-                                _fm_metric_code = {"txn": 1, "vamp": 2, "vamp_pct": 3}
-                                _fm_bands = {}
                                 _fm_applied, _fm_unmapped = [], []
                                 for _rc in (params.get("mid_constraints", []) or []):
                                     _nm = str(_rc.get("vampMid", "")).strip().lower()
                                     _j = _fm_name2idx.get(_nm)
-                                    _mc = _fm_metric_code.get(str(_rc.get("metric", "txn")), 1)
                                     if _j is None:
                                         _fm_unmapped.append(str(_rc.get("vampMid", "")))
                                         continue
@@ -4922,20 +5404,116 @@ def render():
                                         _lo, _hi = _tgt, float("inf")
                                     else:                                  # range ± tol
                                         _lo, _hi = _tgt * (1.0 - _tol), _tgt * (1.0 + _tol)
-                                    _fm_bands[_j] = (_mc, _lo, _hi)
                                     _fm_applied.append(f"{_rc.get('vampMid')}[{_rc.get('metric')}"
                                                        f"/{_dir}] lo={_lo:.0f} hi={_hi:.0f}")
                                 if _fm_unmapped:
                                     log(f"   [full-matrix] ⚠ {len(_fm_unmapped)} band(s) did NOT match a "
                                         f"vampMid and are IGNORED: {', '.join(_fm_unmapped)}")
-                                # EXACT M5 band projector: if the tilt's exact-bands object + incidence
-                                # are on ctx, fold the SAME pro-rata M5 breach the tilt uses into the
-                                # fitness (not the 30-day linear proxy). Else fall back to the proxy.
+                                # EXACT M5 band projector is MANDATORY (the 30-day linear proxy is removed).
+                                # If the tilt's exact-bands object + incidence are on ctx, fold the SAME
+                                # pro-rata M5 breach the tilt uses into the fitness. If bands are configured
+                                # but the exact projector is unavailable, crash loudly — there is no linear
+                                # fallback to silently score an approximation.
                                 _fm_eb = ctx.get("exact_bands")
                                 _fm_sc = ctx.get("_exact_bands_selfcheck")
                                 _fm_inc = _fm_sc.get("inc") if isinstance(_fm_sc, dict) else None
                                 _fm_use_exact = (_fm_eb is not None and _fm_inc is not None)
-                                from routing_optimiser.band_scoring import shares_to_prop_raw as _fm_s2pr
+                                if _fm_applied and not _fm_use_exact:
+                                    raise RuntimeError(
+                                        "[full-matrix] per-MID bands are configured but the EXACT M5 band "
+                                        "projector is unavailable (ctx['exact_bands'] / incidence missing). "
+                                        "The 30-day linear proxy has been removed, so there is no fallback — "
+                                        "fix the exact-bands build upstream. (engine=genetic_fullmatrix)")
+                                from routing_optimiser.band_scoring import shares_to_prop_raw as _fm_s2pr_raw
+                                # ── Backup-blend FOLDED INTO the fitness ───────────────────────────────────
+                                # The deployed pipeline (tab 5) re-adds the backup catch-all incumbents onto any
+                                # gateway the split zeroed (its parser drops Share==0 and the catch-all back-fills),
+                                # then renormalises. The GA previously scored the RAW split, so it happily zeroed
+                                # Braintree/Adyen/WorldPay — not knowing the backup would re-add them. The split
+                                # looked compliant in-search but breached once deployed (the scored-vs-delivered gap
+                                # the tab-2 toggle confirmed). Folding the SAME blend the tab-3 projection uses INTO
+                                # shares_to_prop_raw makes the GA optimise the shares that ACTUALLY ship: it now sees
+                                # that zeroing a catch-all MID doesn't stick, so it must instead give that MID a tiny
+                                # POSITIVE share (which OVERRIDES the catch-all) or route the risk elsewhere. Reuses
+                                # the already-pooled _bpool_rpgt/_bpool_all (same pooling as the tilt path's
+                                # _blend_ga), so scored == deployed by construction. No-op (raw passthrough) when no
+                                # backup is configured or ROUTING_BACKUP_BLEND=0 — identical to prior behaviour.
+                                _fm_blend_pr = None
+                                if (_fm_use_exact and (_bpool_rpgt or _bpool_all)
+                                        and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0"):
+                                    try:
+                                        import scipy.sparse as _spb
+                                        _pk_b = [str(_k) for _k in _fm_eb.projector.prop_keys]
+                                        _Kb = len(_pk_b)
+                                        _cid_b = np.zeros(_Kb, dtype=np.int64)
+                                        _inj_b = np.zeros(_Kb, dtype=float)
+                                        _cmap_b = {}
+                                        for _ii, _kk in enumerate(_pk_b):
+                                            _ps = _kk.split("|")
+                                            _vmk = _ps[-1]
+                                            if len(_ps) >= 4:
+                                                _curk, _rpk = _ps[0], _ps[2]
+                                                _ckk = (_ps[0], _ps[1], _ps[2])
+                                                _cak = _bpool_rpgt.get((_curk, _rpk), {})
+                                            else:
+                                                _curk = _ps[0]
+                                                _ckk = (_ps[0], _ps[1])
+                                                _cak = _bpool_all.get(_curk, {})
+                                            _cc = _cmap_b.get(_ckk)
+                                            if _cc is None:
+                                                _cc = len(_cmap_b); _cmap_b[_ckk] = _cc
+                                            _cid_b[_ii] = _cc
+                                            if _cak:
+                                                _vml = _vmk.strip().lower()
+                                                for _cav, _cap in _cak.items():
+                                                    if str(_cav).strip().lower() == _vml:
+                                                        _inj_b[_ii] = float(_cap) / 100.0
+                                                        break
+                                        _ncb = max(len(_cmap_b), 1)
+                                        _Ab = _spb.csr_matrix(
+                                            (np.ones(_Kb), (_cid_b, np.arange(_Kb))), shape=(_ncb, _Kb))
+                                        _AbT = _Ab.T.tocsr()
+
+                                        def _fm_blend_pr(_pr, _A=_Ab, _AT=_AbT, _injv=_inj_b):
+                                            # CELL-LEVEL twin of backup_blend.blend_cell_shares: a cell with ANY
+                                            # specific mass ships only its specific shares (renormalised to 1) — the
+                                            # catch-all does NOT fire there. The catch-all is injected ONLY into cells
+                                            # with NO specific share (a genuinely undefined profile). Matches the fixed
+                                            # pipeline (data_extractor drops Expanded catch-all rows in routed cells),
+                                            # so scored == deployed.
+                                            _pr = np.ascontiguousarray(_pr, dtype=float)
+                                            _one = _pr.ndim == 1
+                                            if _one:
+                                                _pr = _pr[None, :]
+                                            _pos = _pr > 0.0
+                                            _specpos = np.where(_pos, _pr, 0.0)
+                                            _S = np.asarray((_A @ _specpos.T).T)          # (P,nc) specific mass per cell
+                                            _Sb = np.asarray((_AT @ _S.T).T)              # (P,K) cell specific mass per col
+                                            _empty = _Sb <= 0.0                           # cells with NO specific share
+                                            _injcol = np.where(_empty, _injv[None, :], 0.0)
+                                            _INJ = np.asarray((_A @ _injcol.T).T)         # (P,nc) catch-all mass, empty cells
+                                            _INJb = np.asarray((_AT @ _INJ.T).T)          # (P,K)
+                                            _out = np.where(
+                                                _empty,
+                                                np.where(_INJb > 0.0, _injcol / np.where(_INJb > 0.0, _INJb, 1.0), _pr),
+                                                np.where(_Sb > 0.0, _specpos / np.where(_Sb > 0.0, _Sb, 1.0), 0.0))
+                                            return _out[0] if _one else _out
+                                        log("   [full-matrix] backup catch-all FOLDED INTO the fitness (CELL-LEVEL: "
+                                            f"{int((_inj_b > 0).sum()):,} prop-key(s) eligible, but injected ONLY in "
+                                            "cells with no specific share) — matches the fixed pipeline, so scored == "
+                                            "tab-3/tab-5 delivered.")
+                                    except Exception as _fbe:  # noqa: BLE001
+                                        _fm_blend_pr = None
+                                        log(f"   [full-matrix] backup-blend fold-in DISABLED "
+                                            f"({type(_fbe).__name__}: {_fbe}); fitness scores the RAW split "
+                                            "(may diverge from tab-3).")
+
+                                def _fm_s2pr(_sh, _inc, _raw=_fm_s2pr_raw):
+                                    # shares → prop_raw, THEN fold in the backup catch-all (deployed reality)
+                                    # when configured. All band scoring / seed selection / self-checks below go
+                                    # through this, so the GA and the log breach reflect the shares that ship.
+                                    _pr = _raw(_sh, _inc)
+                                    return _fm_blend_pr(_pr) if _fm_blend_pr is not None else _pr
                                 # SEED SELECTION: start from the LOWEST-breach BAND-AWARE compliant split
                                 # (the band-aware constrained-projection seed / exact-projector seed). The
                                 # band-OBLIVIOUS greedy+LP split (_comp_share_G) is NO LONGER a seed — it's
@@ -4943,8 +5521,10 @@ def render():
                                 # engine always has a valid seed instead of crashing. The never-worse
                                 # guarantee then forces the delivered breach ≤ this seed's breach.
                                 _fm_cands = [(_n, _c) for _n, _c in
-                                             (("band-aware", locals().get("_risk_greedy_G")),
-                                              ("exact-proj", locals().get("_exact_G"))) if _c is not None]
+                                             (("targeted-move", locals().get("_move_G")),
+                                              ("band-aware", locals().get("_risk_greedy_G")),
+                                              ("exact-proj", locals().get("_exact_G")),
+                                              ("global-lp", locals().get("_globlp_G"))) if _c is not None]
                                 if not _fm_cands:
                                     # NO fallback: the full-matrix engine MUST seed from a band-aware split.
                                     # If neither the band-aware constrained-projection nor the exact-projector
@@ -5010,9 +5590,68 @@ def render():
                                         _add = np.where(_has, _recip * _fc / np.where(_has, _rc, 1.0), 0.0)
                                         _outb = np.where(_has, _capd + _add, _X)           # no recipient → unchanged
                                         return _outb[0] if _one else _outb
-                                    # Combined DELIVERY transform: block-floor THEN eligibility (delivery order).
-                                    def _fm_deliv(_farr, _bl=_fm_block, _el=_fm_elig):
-                                        return _el(_bl(_farr))
+                                    # ── MIN-2 LOW-RISK FLOOR, fitness-aware (opt-in, ROUTING_MIN2_FLOOR=1) ──
+                                    # Fold the "keep the 2 lowest-risk NON-VAMP-capped doors per sub-cell >= floor,
+                                    # renormalise" policy INTO the scoring delivery transform, so the GA — and the
+                                    # seed selection, which scores through _fm_deliv — optimise WITH it, not as a
+                                    # post-hoc clean-up. Targets are STATIC (risk-ranked, protected-masked) → the
+                                    # column mask is precomputed ONCE. G aligns to the projector columns (see
+                                    # _fm_block reading G["gateway"]/["bank"]), so risk/vampMid come straight from G
+                                    # — identical selection to the frame-level floor on _comp_gran, keeping scored
+                                    # and shipped consistent. Default OFF ⇒ _fm_deliv byte-identical. The SHIPPED
+                                    # split is still the validated frame floor on _comp_gran, so a mask slip here
+                                    # only perturbs scoring (would surface as Braintree rising in the RECONCILE).
+                                    _fm_min2_on = os.environ.get("ROUTING_MIN2_FLOOR", "0") == "1"
+                                    _fm_min2_flr = float(os.environ.get("ROUTING_MIN2_FLOOR_PCT", "1.0") or 1.0) / 100.0
+                                    _fm_floor_col = None
+                                    if _fm_min2_on:
+                                        try:
+                                            _vcap = set()
+                                            for _sp in (getattr(_fm_eb, "specs", []) if _fm_eb is not None else []):
+                                                # protect ANY constrained MID (vamp OR txn). A txn-capped
+                                                # low-risk door (Authorize/Woodforest/Adyen-NA, risk~0) must NOT
+                                                # be a floor recipient or the floor pumps its txn through its
+                                                # ceiling — only genuinely uncapped doors are valid targets.
+                                                _mid = str(getattr(_sp, "midl", "")).strip().lower()
+                                                if _mid:
+                                                    _vcap.add(_mid)
+                                            _riskcol = pd.to_numeric(
+                                                G.get("gateway_risk_rate", G.get("rate", 0.006)),
+                                                errors="coerce").fillna(9.9).to_numpy()
+                                            _protcol = (G["vampMid"].astype(str).str.strip().str.lower().isin(_vcap).to_numpy()
+                                                        if "vampMid" in G.columns else np.zeros(len(G), bool))
+                                            _fc = np.zeros(len(G), bool)
+                                            for _cs0, _cc0 in zip(_fm_bcs.tolist(), _fm_bcc.tolist()):
+                                                _idx = np.arange(_cs0, _cs0 + _cc0)
+                                                _cand = _idx[~_protcol[_idx]]
+                                                if len(_cand) == 0:
+                                                    continue
+                                                _ordr = _cand[np.argsort(_riskcol[_cand], kind="stable")]
+                                                _fc[_ordr[:2]] = True
+                                            _fm_floor_col = _fc
+                                            log(f"   [min2-floor] FITNESS-AWARE ON: floored {int(_fc.sum())} door(s) "
+                                                "(2 lowest-risk non-CONSTRAINED per sub-cell) INTO the GA scoring "
+                                                "delivery — seeds + candidates optimise WITH the floor (protects "
+                                                f"{len(_vcap)} constrained MID(s): vamp+txn).")
+                                        except Exception as _m2fe:  # noqa: BLE001
+                                            _fm_floor_col = None
+                                            log(f"   [min2-floor] fitness hook skipped ({type(_m2fe).__name__}: {_m2fe}).")
+
+                                    def _fm_min2(_X, _fc=_fm_floor_col, _cs=_fm_bcs, _cc=_fm_bcc, _flr=_fm_min2_flr):
+                                        _X = np.where(_fc[None, :], np.maximum(_X, _flr), _X)
+                                        _seg = np.repeat(np.add.reduceat(_X, _cs, axis=1), _cc, axis=1)
+                                        return np.where(_seg > 1e-12, _X / np.where(_seg > 1e-12, _seg, 1.0), _X)
+
+                                    # Combined DELIVERY transform: block-floor → eligibility → (opt) min-2 floor.
+                                    def _fm_deliv(_farr, _bl=_fm_block, _el=_fm_elig, _m2=_fm_min2, _fc=_fm_floor_col):
+                                        _out = _el(_bl(_farr))
+                                        if _fc is None:
+                                            return _out
+                                        _o = np.asarray(_out, float)
+                                        _one = _o.ndim == 1
+                                        _o = _o[None, :] if _one else _o
+                                        _o = _m2(_o)
+                                        return _o[0] if _one else _o
                                     def _fm_breach(_sv):
                                         return float(_fm_eb.penalty(_fm_s2pr(
                                             _fm_deliv(np.asarray(_sv, float)[None, :]), _fm_inc))[0])
@@ -5025,8 +5664,7 @@ def render():
                                         "(never-worse guarantee: delivered breach ≤ this).")
                                 _fm_p, _fm_meta = _fm_prob(
                                     ctx, soft_cap_mult=1.0,
-                                    seed_full=_fm_seed,
-                                    mid_bands=({} if _fm_use_exact else _fm_bands))
+                                    seed_full=_fm_seed)   # no mid_bands: 30-day linear proxy removed
                                 _fm_bpf = None
                                 _fm_report_fn = None
                                 _fm_deliv_full = None   # shared full-grain delivery (band + compress)
@@ -5078,25 +5716,17 @@ def render():
                                         _d = np.where(_seg > 1e-12, _d / np.where(_seg > 1e-12, _seg, 1.0), _d)
                                         return _d[0] if _one else _d
 
-                                    # FULL-MATRIX-ONLY: a small FIXED penalty per breached MID band, on
-                                    # top of the quadratic overshoot. The specs already carry the PRIORITY
-                                    # weight (prio1=1, prio2=0.125) and band_scoring multiplies the WHOLE
-                                    # penalty (fixed + quadratic) by it — so the fixed cost is priority-
-                                    # weighted automatically. Rebuilt on the SAME projector + specs, so the
-                                    # tilt engine's shared exact_bands (breach_fixed=0) is untouched.
-                                    # ss['fm_band_fixed'] tunes it; 0 disables.
-                                    _fm_bfix = float(ss.get("fm_band_fixed", 0.3) or 0.0)
+                                    # REMOVED 2026-08-17: the full-matrix FIXED per-band breach
+                                    # penalty (ss['fm_band_fixed']). With it > 0 the GA RANKED
+                                    # candidates on breach + fixed while EVERY log line PRINTED the
+                                    # pure breach, so the never-worse guarantee read as violated
+                                    # (seed 0.001712 → delivered 0.00759, 4.4×) when it actually held
+                                    # on the ranked metric. Until GA-fitness reconciles with
+                                    # delivered(enforced) there must be exactly ONE number: the GA now
+                                    # ranks on the same pure exact-M5 breach it reports and that tab-3
+                                    # projects. Do NOT reintroduce a scoring term that is absent from
+                                    # the reported value.
                                     _fm_eb_pen = _fm_eb
-                                    if _fm_bfix > 0:
-                                        from routing_optimiser.band_scoring import ExactBandPenalty as _EBP_fm
-                                        _fm_eb_pen = _EBP_fm(
-                                            _fm_eb.projector, _fm_eb.specs, breach_fixed=_fm_bfix,
-                                            breach_quad=float(getattr(_fm_eb, "breach_quad", 1.0)),
-                                            breach_shape=("exponential" if getattr(
-                                                _fm_eb, "penalty_is_exponential", False) else "quadratic"))
-                                        log(f"   [full-matrix] MID-breach FIXED penalty = {_fm_bfix:g}/band "
-                                            "(priority-weighted, on top of the quadratic overshoot) — favours "
-                                            "satisfying MORE bands, not just shrinking overshoot.")
                                     # NOTE both hooks now receive the engine's SHARED full-grain DELIVERED
                                     # array (blocked-caps + eligibility already applied, once per evaluation),
                                     # so they only roll up to prop-raw + score — no per-hook scatter/deliver.
@@ -5108,16 +5738,19 @@ def render():
                                     # MID-constraint penalty, sorted NAMES of the unmet MIDs) at one split
                                     # — fed to the progress line so the live log shows WHICH bands are stuck.
                                     def _fm_report_fn(_fd, _eb=_fm_eb_pen, _inc=_fm_inc):
+                                        # (#2) per-generation VAMP TRAJECTORY: attach each unmet MID's LIVE
+                                        # M5 value + limit to its name, so the GA progress line shows whether
+                                        # the breached MIDs are actually moving generation-to-generation.
                                         _pr = _fm_s2pr(np.asarray(_fd, float), _inc)
                                         _pen = float(np.asarray(_eb.penalty(_pr))[0])
-                                        _un = set()
+                                        _un = {}
                                         for _rr in _eb.report(_pr):
                                             _nw = float(_rr["now"])
-                                            if ((_rr["ceil"] is not None and _nw > float(_rr["ceil"]) + 1e-6)
-                                                    or (_rr["floor"] is not None
-                                                        and _nw < float(_rr["floor"]) - 1e-6)):
-                                                _un.add(_rr["midl"])
-                                        return len(_un), _pen, sorted(_un)
+                                            if _rr["ceil"] is not None and _nw > float(_rr["ceil"]) + 1e-6:
+                                                _un[str(_rr["midl"])] = f"{_rr['midl']} {_nw:,.0f}>{float(_rr['ceil']):,.0f}"
+                                            elif _rr["floor"] is not None and _nw < float(_rr["floor"]) - 1e-6:
+                                                _un[str(_rr["midl"])] = f"{_rr['midl']} {_nw:,.0f}<{float(_rr['floor']):,.0f}"
+                                        return len(_un), _pen, [_un[_k] for _k in sorted(_un)]
                                     log("   [full-matrix] EXACT M5 band projector wired into the fitness "
                                         "(exact per-generation pro-rata M5 projection — no 30-day linear "
                                         "proxy). Bands: " + " · ".join(_fm_applied))
@@ -5135,7 +5768,14 @@ def render():
                                     # binary search needs config-generation (BigQuery/brand) and can't run per
                                     # generation. Grouping = tab-3's default (rpgt×currency); pmp
                                     # sub-segmentation is a deploy-time refinement, not applied here.
+                                    # Only build/run the compressibility codebook when λ>0. At λ=0 the
+                                    # regularizer is OFF, so NO codebook, distortion, or budget calibration
+                                    # touches the per-generation evaluation (and this misleading setup line
+                                    # is not logged).
+                                    _cb_on = float(ss.get("fm_compress_lambda", 0.0) or 0.0) > 0.0
                                     try:
+                                        if not _cb_on:
+                                            raise RuntimeError("__compress_off__")
                                         _cb_ncells = int(_fm_p.n_cells)
                                         _cb_nmid = int(_fm_p.n_mids)
                                         _cb_rcell = np.repeat(np.arange(_cb_ncells), _fm_p.cell_len)
@@ -5250,14 +5890,16 @@ def render():
                                             f"{int(ss.get('fm_budget_recalib_every', 3) or 3)} refresh(es) — "
                                             "regularizer target IS the tab-3 compressed split.")
                                     except Exception as _cbe:  # noqa: BLE001
-                                        log(f"   [full-matrix] ⚠ exact tab-3 codebook wiring failed "
-                                            f"({type(_cbe).__name__}: {_cbe}) — the engine will use its "
-                                            "internal volume-weighted k-means codebook instead.")
+                                        if str(_cbe) == "__compress_off__":
+                                            log("   [full-matrix] compressibility λ=0 → codebook + regularizer "
+                                                "OFF; no compression work runs during the per-generation search.")
+                                        else:
+                                            log(f"   [full-matrix] ⚠ exact tab-3 codebook wiring failed "
+                                                f"({type(_cbe).__name__}: {_cbe}) — the engine will use its "
+                                                "internal volume-weighted k-means codebook instead.")
                                         _fm_codebook_fn = None
-                                elif _fm_applied:
-                                    log("   [full-matrix] ⚠ exact band projector unavailable — using the "
-                                        "LINEAR 30-day proxy (verify vs the tilt band readout): "
-                                        + " · ".join(_fm_applied))
+                                # (no proxy fallback — exact bands are mandatory; the not-exact case
+                                #  already crashed loudly above when bands are configured.)
                                 # Honour the tab-2 "Generations" setting (was hardcoded 200 and
                                 # early-stopped at ~gen 26 by patience). Scale patience with the
                                 # budget so it doesn't quit prematurely, but can still stop if truly
@@ -5315,6 +5957,51 @@ def render():
                                             "tilt per-MID breakdown above — should be consistent).")
                                     except Exception as _bce:  # noqa: BLE001
                                         log(f"   [full-matrix] band self-check skipped ({type(_bce).__name__}).")
+                                    # ONE-SHOT BAND-TRANSFORM DIAGNOSTIC (post-run, no per-generation cost):
+                                    # for the delivered-breached MIDs, show each band's M5 value at three
+                                    # stages — RAW (search shares) → +blocked-caps → +eligibility — so we can
+                                    # see WHICH delivery transform moves the value, and compare the last
+                                    # column to tab-3's 'Now'. If the last column already matches tab-3, the
+                                    # band hook agrees and the live 4-vs-5 was a throttled-sample artefact; if
+                                    # it doesn't, the residual gap is the _explode/BIN-aggregation grain that
+                                    # the in-search hook doesn't apply.
+                                    try:
+                                        _dg = np.asarray(_fm_full, float)[None, :]
+                                        _rep_raw = {r["midl"]: r for r in _fm_eb.report(_fm_s2pr(_dg, _fm_inc))}
+                                        _rep_blk = {r["midl"]: r
+                                                    for r in _fm_eb.report(_fm_s2pr(_fm_block(_dg), _fm_inc))}
+                                        _rep_del = {r["midl"]: r
+                                                    for r in _fm_eb.report(_fm_s2pr(_fm_deliv(_dg), _fm_inc))}
+                                        _brc_mids = [_m for _m, _r in _rep_del.items()
+                                                     if (_r["ceil"] is not None and _r["now"] > _r["ceil"] + 1e-6)
+                                                     or (_r["floor"] is not None
+                                                         and _r["now"] < _r["floor"] - 1e-6)]
+                                        if _brc_mids:
+                                            log("   [full-matrix] BAND-TRANSFORM DIAGNOSTIC — M5 value "
+                                                "raw → +blocked-caps → +eligibility (RAW-split LOWER BOUND; the "
+                                                "AUTHORITATIVE delivered M5 == tab-3 'Now' is logged below under "
+                                                "'RECONCILED delivered M5'):")
+                                            for _m in sorted(_brc_mids):
+                                                _r = _rep_del[_m]
+                                                _lim = (f"ceil {_r['ceil']:,.0f}" if _r["ceil"] is not None
+                                                        else f"floor {_r['floor']:,.0f}")
+                                                log(f"      {_m} [{_r['metric']}/{_lim}]: "
+                                                    f"{_rep_raw[_m]['now']:,.0f} → {_rep_blk[_m]['now']:,.0f} → "
+                                                    f"{_rep_del[_m]['now']:,.0f}")
+                                    except Exception as _dge:  # noqa: BLE001
+                                        log(f"   [full-matrix] band-transform diagnostic skipped "
+                                            f"({type(_dge).__name__}: {_dge}).")
+                                    # RECONCILIATION: in-search per-RPGT VAMP on the DELIVERED split, to
+                                    # diff against tab-3's VAMP_Post per RPGT and localise the scored-vs-
+                                    # delivered gap. Read-only; never breaks the run.
+                                    try:
+                                        from routing_optimiser.exact_band_solver import (
+                                            insearch_rpgt_breakdown as _irb)
+                                        for _ln in _irb(_fm_deliv(_dg)[0], _fm_eb, _fm_inc):
+                                            log(_ln)
+                                    except Exception as _rce:  # noqa: BLE001
+                                        log(f"   [full-matrix] in-search per-RPGT breakdown skipped "
+                                            f"({type(_rce).__name__}: {_rce}).")
                                 log(f"   [full-matrix] evaluated {_fm_info['splits_evaluated']:,} "
                                     f"candidate splits over {_fm_info['generations_run']} "
                                     f"generations (pop {_fm_info['pop_size']}); "
@@ -5366,6 +6053,299 @@ def render():
                         _comp_gran = _restrict(_ga_gran)         # eligibility only (bans / wallet / USA)
                         log("   Enforcement OFF: delivered split = GA search output + eligibility "
                             "(bans / wallet-incapable / USA-only); no VAMP-cap / per-MID band projection.")
+
+                        # ── MIN-2 LOW-RISK FLOOR (opt-in, ROUTING_MIN2_FLOOR=1) ───────────────────────
+                        # Keep the 2 lowest-RISK non-VAMP-capped doors in every sub-cell at >= a floor
+                        # (default 1%) and renormalise, so every cell already has >=2 real doors. That
+                        # makes deploy's spare-door BACK-FILL redundant (no more dumping onto Authorize),
+                        # and the renormalise routes a sliver AWAY from the breached VAMP MIDs — lowering
+                        # their SHIPPED VAMP. It never floors a VAMP-capped MID, so it can't keep a sliver
+                        # on a breached door (validated offline: WorldPay -55, Braintree -16, Authorize
+                        # under its txn ceiling; nothing pushed up). NOTE: this CHANGES the deployed routing
+                        # (more spread) — it is a policy change, not a reconciliation; scored != delivered
+                        # still holds (the gap is rounding, independent of this). Kill-switch default OFF.
+                        def _min2_lowrisk_floor(_gr, _protected, _flr):
+                            _subk = [c for c in ["currency", "bank", "rpgt", "pmp", "ctry"] if c in _gr.columns]
+                            if "share" not in _gr.columns or "vampMid" not in _gr.columns or not _subk:
+                                return _gr, "missing share/vampMid/sub-keys — skipped"
+                            _g = _gr.copy()
+                            _g["_risk"] = pd.to_numeric(
+                                _g.get("gateway_risk_rate", _g.get("rate", 0.006)), errors="coerce").fillna(9.9)
+                            _g["_sh"] = pd.to_numeric(_g["share"], errors="coerce").fillna(0.0)
+                            _g["_prot"] = _g["vampMid"].astype(str).str.strip().str.lower().isin(_protected)
+                            _nb = _g[~_g["_prot"]].copy()
+                            _nb["_rank"] = _nb.groupby(_subk)["_risk"].rank(method="first")
+                            _g["_fl"] = False
+                            _g.loc[_nb.index[_nb["_rank"] <= 2], "_fl"] = True
+                            _g["_sh"] = np.where(_g["_fl"], np.maximum(_g["_sh"], float(_flr)), _g["_sh"])
+                            _tot = _g.groupby(_subk)["_sh"].transform("sum")
+                            _g["share"] = np.where(_tot > 0, _g["_sh"] / _tot, _g["_sh"])
+                            _nfl = int(_g["_fl"].sum())
+                            return (_g.drop(columns=["_risk", "_sh", "_prot", "_fl"], errors="ignore"),
+                                    f"{_nfl} door(s) floored across {_g[_subk].drop_duplicates().shape[0]} sub-cells")
+                        if os.environ.get("ROUTING_MIN2_FLOOR", "0") == "1":
+                            try:
+                                _m2_prot = set()
+                                _m2_eb = locals().get("_fm_eb")
+                                for _sp in (getattr(_m2_eb, "specs", []) if _m2_eb is not None else []):
+                                    # protect ANY constrained MID (vamp OR txn); a txn-capped low-risk
+                                    # door (Authorize etc.) must not be a floor recipient or its txn
+                                    # ceiling blows (see fitness-aware site above).
+                                    _mid = str(getattr(_sp, "midl", "")).strip().lower()
+                                    if _mid:
+                                        _m2_prot.add(_mid)
+                                _m2_flr = float(os.environ.get("ROUTING_MIN2_FLOOR_PCT", "1.0") or 1.0) / 100.0
+                                _comp_gran, _m2_msg = _min2_lowrisk_floor(_comp_gran, _m2_prot, _m2_flr)
+                                log(f"   [min2-floor] ON: kept 2 lowest-risk non-CONSTRAINED doors >= "
+                                    f"{_m2_flr:.1%} per sub-cell, renormalised — protects {len(_m2_prot)} "
+                                    f"constrained MID(s) (vamp+txn); {_m2_msg}. CHANGES SHIPPED ROUTING "
+                                    "(spare-door back-fill now redundant; floors only uncapped low-risk "
+                                    "doors so it can't pump a txn-capped door). Kill-switch: "
+                                    "ROUTING_MIN2_FLOOR=0.")
+                            except Exception as _m2e:  # noqa: BLE001
+                                log(f"   [min2-floor] skipped ({type(_m2e).__name__}: {_m2e}).")
+
+                        # ── RECONCILE: authoritative delivered M5 (== tab-3 'Now') ────────────────────
+                        # The in-search band readouts above (BAND-TRANSFORM / per-RPGT) project the RAW+
+                        # eligibility split through the fast per-generation scaffold. tab-3 SHIPS the
+                        # ENFORCED split (build_split_exports: cap / wallet / USA / <2-gw back-fill),
+                        # whose per-sub-cell concentration re-adds vshare-weighted VAMP to breached
+                        # sole-pool MIDs (e.g. WorldPay +~120). That raw→enforced delta is structural
+                        # (build_split_exports can't run per-candidate), so it only surfaces here. This
+                        # one-shot runs the EXACT tab-3 pipeline (enforced_prop_items →
+                        # compute_vamp_prepost_granular) on the delivered split, so the reported delivered
+                        # M5 == tab-3. Read-only; fully guarded (never breaks the run). Kill-switch:
+                        # ROUTING_RECONCILE_M5=0 (skips the ~148 MB re-projection).
+                        if os.environ.get("ROUTING_RECONCILE_M5", "1") != "0":
+                            try:
+                                from impact_calcs import (enforced_prop_items as _rec_epi,
+                                                          compute_vamp_prepost_granular as _rec_cvp)
+                                _rec_wc = ss.get("wallet_ctx", {}) or {}
+                                _rec_pp = os.path.join(out_dir, "vamp_t_period_prorata_export.csv")
+                                _rec_mm = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
+                                _rec_brand = str((ss.get("forecast_settings", {}) or {}).get("company", "TotalAV"))
+                                _rec_gl = str(ss.get("split_go_live_date", ""))
+                                _rec_scoped = tuple(locals().get("_sel_rpgts") or ())
+                                _rec_floor = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"
+                                              else float(ss.get("exploration_floor", 0.0) or 0.0))
+                                _rec_ep = _rec_epi(
+                                    _comp_gran, _rec_brand, _rec_gl,
+                                    wallet_incapable=set(_rec_wc.get("incapable", set())),
+                                    fid2vamp=_rec_wc.get("fid2vamp"), mid_list_path=_rec_mm,
+                                    usa_only=set(_rec_wc.get("usa_only", set())),
+                                    country_pres=_rec_wc.get("country_pres", {}),
+                                    max_share=float(_rec_wc.get("max_share", 0.97)))
+                                if _rec_ep and os.path.exists(_rec_pp):
+                                    _rec_g = _rec_cvp(_rec_pp, _rec_ep, scoped_rpgts=_rec_scoped,
+                                                      exploration_floor=_rec_floor)
+                                    _rec_p5 = _rec_g[_rec_g["period"] == 5]
+                                    _rec_vl = {str(k).strip().lower(): float(v) for k, v in
+                                               _rec_p5.groupby("vampMid")["VAMP_Post"].sum().items()}
+                                    _rec_tl = {str(k).strip().lower(): float(v) for k, v in
+                                               _rec_p5.groupby("vampMid")["VI_Txn_Post"].sum().items()}
+                                    _rec_rep = []
+                                    _eb = locals().get("_fm_eb"); _full = locals().get("_fm_full")
+                                    _inc = locals().get("_fm_inc"); _s2pr = locals().get("_fm_s2pr")
+                                    if _eb is not None and _full is not None and _inc is not None and _s2pr is not None:
+                                        try:
+                                            _rec_rep = _eb.report(_s2pr(np.asarray(_full, float)[None, :], _inc))
+                                        except Exception:  # noqa: BLE001
+                                            _rec_rep = []
+                                    # ELIGIBILITY-ADJUSTED (GA-fitness) band value: the SAME delivery transform the
+                                    # fitness scores — _fm_deliv = eligibility(block(raw)) [+min2 floor] — projected
+                                    # through the band scaffold. This is what the GA ACTUALLY optimises; scored(raw)
+                                    # is only a PRE-eligibility lower bound, inflated for txn bands by the USA-only/
+                                    # wallet volume that enforcement zeroes. So GA-fitness is the honest yardstick for
+                                    # the scored-vs-delivered gap and the DELIVERY-ONLY/GENUINE call. Silent fallback.
+                                    _elig_by_midl = {}
+                                    _fm_deliv_fn = locals().get("_fm_deliv")
+                                    if (_fm_deliv_fn is not None and _eb is not None and _full is not None
+                                            and _inc is not None and _s2pr is not None):
+                                        try:
+                                            _full_e = np.asarray(_fm_deliv_fn(np.asarray(_full, float)[None, :]), float)
+                                            for _re in _eb.report(_s2pr(_full_e, _inc)):
+                                                _elig_by_midl[str(_re.get("midl", "")).strip().lower()] = _re.get("now")
+                                        except Exception:  # noqa: BLE001
+                                            _elig_by_midl = {}
+                                    log("   [full-matrix] RECONCILED delivered M5 (AUTHORITATIVE — the "
+                                        "EXACT tab-3 projection on the ENFORCED split; == tab-3 'Now'). "
+                                        "Each breach is SPLIT into the two independent failures it "
+                                        "contains:")
+                                    log("      · SEARCH SHORTFALL = GA-fitness − limit   → the GA SAW this "
+                                        "and did not clear it. Search / scope problem, NOT a "
+                                        "reconciliation failure. NEGATIVE = the GA had headroom.")
+                                    log("      · DELIVERY DRIFT   = delivered − GA-fitness → scored != "
+                                        "delivered. The GA is BLIND to this. THIS is the reconciliation "
+                                        "target.")
+                                    log("      Both are signed so that POSITIVE always means 'further past "
+                                        "the limit', and the two ALWAYS sum exactly to the breach.")
+                                    if _rec_rep:
+                                        _sum_short = 0.0
+                                        _sum_drift = 0.0
+                                        _sum_absdrift = 0.0
+                                        _worst_drift = ("—", 0.0)
+                                        _n_band = 0
+                                        _n_breach = 0
+                                        for _r in _rec_rep:
+                                            _midl = str(_r.get("midl", "")).strip().lower()
+                                            _metric = str(_r.get("metric", "")).strip().lower()
+                                            _dv = (_rec_vl if _metric == "vamp" else _rec_tl).get(_midl)
+                                            if _dv is None:
+                                                continue
+                                            _ceil = _r.get("ceil")
+                                            _floorv = _r.get("floor")
+                                            _rawnow = _r.get("now")
+                                            _elignow = _elig_by_midl.get(_midl)
+                                            # GA's ACTUAL in-fitness value is the eligibility-adjusted
+                                            # one; scored(raw) is only a pre-eligibility lower bound. All
+                                            # the arithmetic below is against GA-fitness.
+                                            _gafit = _elignow if _elignow is not None else _rawnow
+                                            if _gafit is None:
+                                                _gafit = float("nan")
+                                            _gafit = float(_gafit)
+                                            # WHICH limit is delivery actually violating? A `range` band
+                                            # carries BOTH a ceil and a floor, and the old log only ever
+                                            # tested the ceil — so a delivered value UNDER a range band's
+                                            # floor printed as clean (adyen-na 15,144 vs floor 20,000 and
+                                            # WoodForest 13,364 vs floor 16,000 both shipped unflagged).
+                                            _dirn = None
+                                            _lname = None
+                                            _lval = None
+                                            if _ceil is not None and _dv > float(_ceil) + 1e-6:
+                                                _dirn, _lval, _lname = "OVER", float(_ceil), "ceil"
+                                            elif (_floorv is not None and float(_floorv) > 0
+                                                    and _dv < float(_floorv) - 1e-6):
+                                                _dirn, _lval, _lname = "UNDER", float(_floorv), "floor"
+                                            _bandp = []
+                                            if _ceil is not None:
+                                                _bandp.append(f"ceil {float(_ceil):,.0f}")
+                                            if _floorv is not None and float(_floorv) > 0:
+                                                _bandp.append(f"floor {float(_floorv):,.0f}")
+                                            _bandtxt = " / ".join(_bandp) if _bandp else "—"
+                                            _chain = (f"raw {_rawnow:,.0f}" if _rawnow is not None else "raw —")
+                                            _chain += f" → GA-fitness {_gafit:,.0f} → delivered {_dv:,.0f}"
+                                            # RECONCILIATION ERROR is tracked for EVERY band, breached or
+                                            # not: a band that happens to sit inside its limits while
+                                            # scored and delivered disagree by thousands is still broken.
+                                            _n_band += 1
+                                            _absd = abs(_dv - _gafit)
+                                            if _absd == _absd:                       # not NaN
+                                                _sum_absdrift += _absd
+                                                if _absd > _worst_drift[1]:
+                                                    _worst_drift = (str(_r.get("midl")), _absd)
+                                            if _dirn is None:
+                                                log(f"      {_r.get('midl')} [{_metric}]: delivered "
+                                                    f"{_dv:,.0f} WITHIN band ({_bandtxt}) · "
+                                                    f"drift {_dv - _gafit:+,.0f}.   {_chain}")
+                                                continue
+                                            _n_breach += 1
+                                            _tot = abs(_dv - _lval)
+                                            # Signed so a POSITIVE contribution always means "pushes
+                                            # further past the limit", for OVER and UNDER alike. Both
+                                            # signed ⇒ SHORTFALL + DRIFT == the breach, exactly.
+                                            _sgn = 1.0 if _dirn == "OVER" else -1.0
+                                            _short = _sgn * (_gafit - _lval)
+                                            _drift = _sgn * (_dv - _gafit)
+                                            _sum_short += _short
+                                            _sum_drift += _drift
+                                            log(f"      {_r.get('midl')} [{_metric}]: delivered {_dv:,.0f} "
+                                                f"vs {_lname} {_lval:,.0f} → ⚠ {_dirn} by {_tot:,.0f}"
+                                                f"   (band {_bandtxt})")
+                                            log(f"         ├ SEARCH SHORTFALL : {_short:+9,.0f}  — "
+                                                f"GA-fitness {_gafit:,.0f} vs {_lname} {_lval:,.0f}"
+                                                + ("   [GA saw it, did not clear it]" if _short > 1e-6
+                                                   else f"   [GA had {abs(_short):,.0f} of headroom — "
+                                                        "the breach is ENTIRELY delivery drift]"))
+                                            log(f"         └ DELIVERY DRIFT   : {_drift:+9,.0f}  — "
+                                                f"delivered {_dv:,.0f} vs GA-fitness {_gafit:,.0f}"
+                                                + ("   [GA is BLIND to this]" if abs(_drift) > 1e-6
+                                                   else "   [scored == delivered here]"))
+                                            log(f"           (sum {_short + _drift:+,.0f} == the "
+                                                f"{_tot:,.0f} breach)   chain: {_chain}")
+                                        log(f"      ══ RECONCILIATION ERROR (the number to drive to ~0): "
+                                            f"Σ|delivered − GA-fitness| = {_sum_absdrift:,.0f} across "
+                                            f"{_n_band} band(s) · worst = {_worst_drift[0]} "
+                                            f"({_worst_drift[1]:,.0f}). Until this is small, no breach "
+                                            "figure and no feasibility verdict means anything.")
+                                        if _n_breach:
+                                            log(f"      ── of the {_n_breach} breached band(s): SEARCH "
+                                                f"SHORTFALL {_sum_short:+,.0f} · DELIVERY DRIFT "
+                                                f"{_sum_drift:+,.0f} (they sum to the total breach).")
+                                        else:
+                                            log("      all bands WITHIN limits on the delivered split.")
+                                    else:
+                                        for _mid, _val in sorted(_rec_vl.items(), key=lambda kv: -kv[1])[:15]:
+                                            log(f"      {_mid}: delivered M5 VAMP {_val:,.0f}")
+                            except Exception as _rece:  # noqa: BLE001
+                                log(f"   [full-matrix] delivered-M5 reconcile skipped "
+                                    f"({type(_rece).__name__}: {_rece}).")
+                        # ── BREACH ATTRIBUTION: how much each of the 4 tidy-up mechanisms moves the
+                        # scored→delivered wedge (opt-in, ROUTING_BREACH_ATTRIB=1; runs 5 EXACT tab-3
+                        # projections at build stages base→zeroing→backfill→waterfill→final, so it adds
+                        # ~3-4 min — OFF by default). Each Δ is that stage's contribution to a MID's
+                        # delivered M5; the 4 Δs sum to (delivered − base). Read-only, fully guarded.
+                        if os.environ.get("ROUTING_BREACH_ATTRIB", "0") == "1":
+                            try:
+                                from impact_calcs import (enforced_prop_items as _at_epi,
+                                                          compute_vamp_prepost_granular as _at_cvp)
+                                _at_wc = ss.get("wallet_ctx", {}) or {}
+                                _at_pp = os.path.join(out_dir, "vamp_t_period_prorata_export.csv")
+                                _at_mm = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
+                                _at_brand = str((ss.get("forecast_settings", {}) or {}).get("company", "TotalAV"))
+                                _at_gl = str(ss.get("split_go_live_date", ""))
+                                _at_scoped = tuple(locals().get("_sel_rpgts") or ())
+                                _at_floor = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"
+                                             else float(ss.get("exploration_floor", 0.0) or 0.0))
+                                _at_ceil, _at_metric = {}, {}
+                                _eb2 = locals().get("_fm_eb")
+                                for _sp in (getattr(_eb2, "specs", []) if _eb2 is not None else []):
+                                    _ml = str(getattr(_sp, "midl", "")).strip().lower()
+                                    if _ml and getattr(_sp, "ceil", None) is not None:
+                                        _at_ceil[_ml] = float(_sp.ceil)
+                                        _at_metric[_ml] = str(getattr(_sp, "metric", "vamp")).strip().lower()
+                                if os.path.exists(_at_pp) and _at_ceil:
+                                    _stages = ["base", "zeroing", "backfill", "waterfill", "final"]
+                                    _at_m5 = {}
+                                    for _stg in _stages:
+                                        _ep = _at_epi(
+                                            _comp_gran, _at_brand, _at_gl,
+                                            wallet_incapable=set(_at_wc.get("incapable", set())),
+                                            fid2vamp=_at_wc.get("fid2vamp"), mid_list_path=_at_mm,
+                                            usa_only=set(_at_wc.get("usa_only", set())),
+                                            country_pres=_at_wc.get("country_pres", {}),
+                                            max_share=float(_at_wc.get("max_share", 0.97)), _stage=_stg)
+                                        if not _ep:
+                                            _at_m5[_stg] = {"vamp": {}, "txn": {}}
+                                            continue
+                                        _g = _at_cvp(_at_pp, _ep, scoped_rpgts=_at_scoped,
+                                                     exploration_floor=_at_floor)
+                                        _p5 = _g[_g["period"] == 5]
+                                        _at_m5[_stg] = {
+                                            "vamp": {str(k).strip().lower(): float(v) for k, v in
+                                                     _p5.groupby("vampMid")["VAMP_Post"].sum().items()},
+                                            "txn": {str(k).strip().lower(): float(v) for k, v in
+                                                    _p5.groupby("vampMid")["VI_Txn_Post"].sum().items()}}
+                                    log("   ── BREACH ATTRIBUTION (per-MID M5 through the 4 tidy-up mechanisms; "
+                                        "each Δ is that mechanism's share of the scored→delivered wedge; 5 EXACT "
+                                        "tab-3 projections at build stages) ──")
+                                    for _ml, _cl in sorted(_at_ceil.items()):
+                                        _mt = _at_metric.get(_ml, "vamp")
+                                        _seq = [_at_m5.get(_s, {}).get(_mt, {}).get(_ml) for _s in _stages]
+                                        if any(v is None for v in _seq):
+                                            continue
+                                        _base, _z, _b, _w, _f = _seq
+                                        _wedge = _f - _base
+                                        if _f <= _cl + 1e-6 and abs(_wedge) < 1.0:
+                                            continue     # compliant and unmoved → not interesting
+                                        _fl = (f"  ⚠ delivered {_f:,.0f} > ceil {_cl:,.0f}"
+                                               if _f > _cl + 1e-6 else "")
+                                        log(f"      {_ml} [{_mt}] base {_base:,.0f} → delivered {_f:,.0f} "
+                                            f"(total wedge {_wedge:+,.0f}){_fl}")
+                                        log(f"          USA/wallet zero+renorm {_z - _base:+,.0f} · "
+                                            f"<2-gw back-fill {_b - _z:+,.0f} · max-share water-fill "
+                                            f"{_w - _b:+,.0f} · residual-push {_f - _w:+,.0f}")
+                            except Exception as _ate:  # noqa: BLE001
+                                log(f"   [breach-attrib] skipped ({type(_ate).__name__}: {_ate}).")
                         _progress(_f_var, "Building variation…")
                         # SINGLE dial-0 variation = the eligibility-projected GA split (_comp_gran).
                         # No frontier / blend / revenue endpoint — the dial and its multi-position
@@ -5444,6 +6424,12 @@ def render():
                                 log(f"      • {_lbl}  ·  cell_vol={float(_rows['_vol'].sum()):,.0f}  ·  {len(_rows)} active gateway(s)")
                                 for _, _r in _rows.iterrows():
                                     _gw = str(_r.get("gateway", "?"))
+                                    # sub-cell grain: one row per (gateway, pmp, Country) — label the
+                                    # sub-cell so the otherwise-identical gateway rows are distinct.
+                                    _pmpv = str(_r.get("pmp", "") or "").strip().lower()
+                                    _ctryv = str(_r.get("ctry", "") or "").strip().lower()
+                                    if _pmpv and _pmpv not in ("_all_", "nan", ""):
+                                        _gw = f"{_gw} [{_pmpv}/{_ctryv}]"
                                     _b, _p = float(_r["_bs"]) * 100.0, float(_r["_sh"]) * 100.0
                                     _rk = pd.to_numeric(_r.get("gateway_risk_rate", _r.get("rate", None)), errors="coerce")
                                     _rks = f"{float(_rk) * 100:.2f}%" if pd.notna(_rk) else "—"

@@ -40,7 +40,7 @@ def _apply_keep(t0, excluded_mids, kill_eff, month_0):
     t0["_keep"] = np.where(_binary, 0.0, _keep)
     return t0
 
-__build__ = "2026-07-28-count-only-pool-search"
+__build__ = "2026-08-17-count-only-pool-search+subcell-exporter+staged-enforcement"
 
 
 # [FN-247]
@@ -1071,23 +1071,29 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         _t0["_vml"] = _t0["vampMid"].astype(str).str.strip().str.lower()
         t0 = _t0.merge(prop, on=["Currency", "BIN", "_rpgtl", "_pmp", "_ctry", "_vml"], how="left")
         t0["_prop_from_coarse"] = 0.0   # DIAGNOSTIC flag
-        # Fallback for pmp/Country label mismatches: fill unmatched sub-cells from the
-        # pmp/Country-agnostic enforced share so nothing silently drops to zero.
-        # HIERARCHICAL fallback for sub-cells whose exact (pmp, Country) didn't match: keep the
-        # FINEST available grain so a Country/pmp-specific gateway (e.g. WoodForest — USA / non-
-        # GooglePay dominant) keeps its true share instead of a cross-pmp/Country mean that halves
-        # it. Try Country-keep, then pmp-keep, then fully agnostic — finest first.
-        for _fk in (["Currency", "BIN", "_rpgtl", "_ctry", "_vml"],
-                    ["Currency", "BIN", "_rpgtl", "_pmp", "_vml"],
-                    ["Currency", "BIN", "_rpgtl", "_vml"]):
-            if not t0["prop_raw"].isna().any():
-                break
-            _cm = prop.groupby(_fk, as_index=False)["prop_raw"].mean().rename(columns={"prop_raw": "_pc"})
-            t0 = t0.merge(_cm, on=_fk, how="left")
-            _fill = t0["prop_raw"].isna() & t0["_pc"].notna()
-            t0.loc[_fill, "_prop_from_coarse"] = 1.0
-            t0["prop_raw"] = t0["prop_raw"].fillna(t0["_pc"])
-            t0 = t0.drop(columns=["_pc"])
+        # HIERARCHICAL coarse (pmp, Country) MEAN fallback — REMOVED 2026-08-17.
+        # It filled sub-cells whose exact 6-key merge missed with a MEAN of the enforced
+        # share over the surviving sub-cells. A mean is not a routing decision: for a
+        # Country/pmp-concentrated gateway it HALVES the share (WoodForest, named in the
+        # original comment), and it has NO in-search analogue at all — so every row it
+        # touched was pure scored-vs-delivered drift the GA could never model.
+        # An unmatched sub-cell now keeps prop_raw = NaN → 0 just below, so prop_sum = 0
+        # there, _move = 0, and the cell is HELD AT BASELINE — exactly what the band
+        # scaffold does for a cell it cannot represent.
+        # Kill-switch: ROUTING_COARSE_PROP_FALLBACK=1 restores it.
+        if os.environ.get("ROUTING_COARSE_PROP_FALLBACK", "0") == "1":
+            for _fk in (["Currency", "BIN", "_rpgtl", "_ctry", "_vml"],
+                        ["Currency", "BIN", "_rpgtl", "_pmp", "_vml"],
+                        ["Currency", "BIN", "_rpgtl", "_vml"]):
+                if not t0["prop_raw"].isna().any():
+                    break
+                _cm = prop.groupby(_fk, as_index=False)["prop_raw"].mean().rename(
+                    columns={"prop_raw": "_pc"})
+                t0 = t0.merge(_cm, on=_fk, how="left")
+                _fill = t0["prop_raw"].isna() & t0["_pc"].notna()
+                t0.loc[_fill, "_prop_from_coarse"] = 1.0
+                t0["prop_raw"] = t0["prop_raw"].fillna(t0["_pc"])
+                t0 = t0.drop(columns=["_pc"])
         t0 = t0.drop(columns=["_rpgtl", "_vml"])
     elif _by_rpgt:
         _t0 = pp[pp["t"] == 0].copy()
@@ -1327,14 +1333,38 @@ def _c_vamp_post_prorata(pp_path, m, prop_items, excluded_mids, kill_eff=(), mon
                                           month_0, scoped_rpgts)
 
 
+# [FN-266b]
+def projection_cache_sig(pp_path, prop_items, exploration_floor=0.0, extra=""):
+    """Stable cache-key SIGNATURE for the granular projection.
+
+    The projection's `@st.cache_data` key used to lean on the pipeline file's mtime (`m`), which is
+    frozen for a re-used outputs folder, plus Streamlit's implicit hashing of a ~51k-tuple `prop_items`
+    list — unreliable enough that a changed SPLIT could hit a stale entry (tab-3 froze at one value
+    across many engine runs). This returns a compact content hash of the ACTUAL projected split +
+    exploration floor (+ any extra, e.g. blend flag), so the key busts whenever the deployed split or
+    the floor changes, regardless of mtime. Cheap: one blake2b over the tuples (~tens of ms at 51k)."""
+    import hashlib as _hl
+    try:
+        mt = os.path.getmtime(pp_path) if (pp_path and os.path.exists(pp_path)) else 0.0
+    except OSError:
+        mt = 0.0
+    h = _hl.blake2b(digest_size=16)
+    for t in (prop_items or ()):
+        h.update(repr(t).encode("utf-8"))
+    h.update(f"|floor={float(exploration_floor or 0.0):.8g}|{extra}".encode("utf-8"))
+    return f"{mt:.0f}:{len(prop_items or ()):d}:{h.hexdigest()}"
+
+
 # [FN-267]
 @_cache_data(show_spinner=False)
 def _c_prepost_granular(pp_path, m, prop_items, excluded_mids, kill_eff=(), month_0=None,
                         scoped_rpgts=(), wallet_incapable=frozenset(), usa_only=frozenset(),
                         exploration_floor=0.0):
-    # `m` = file mtime; PLAIN (non-underscore) name so it participates in the st.cache_data
-    # key (underscore args are excluded from the hash) — a regenerated pp_path busts this
-    # cache. Unused in the body — cache-key only.
+    # `m` = cache-key SIGNATURE (callers now pass projection_cache_sig(): mtime + a content hash of
+    # the actual split + floor). PLAIN (non-underscore) name so it participates in the st.cache_data
+    # key (underscore args are excluded from the hash) — so the cache busts whenever the deployed
+    # split OR the exploration floor changes, not just when the pipeline file's mtime changes (which
+    # is frozen for a re-used outputs folder). Unused in the body — cache-key only.
     return compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids, kill_eff,
                                          month_0, scoped_rpgts, wallet_incapable, usa_only,
                                          exploration_floor=exploration_floor)
@@ -1343,8 +1373,16 @@ def _c_prepost_granular(pp_path, m, prop_items, excluded_mids, kill_eff=(), mont
 # [FN-268]
 def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid2vamp=None,
                         mid_list_path=None, usa_only=frozenset(), country_pres=None,
-                        max_share=0.97):
+                        max_share=0.97, _stage=None, projection_mode=False):
     """Build the production template (one DataFrame per Brand×RPGT) from a split.
+
+    ``_stage`` (diagnostic only; default None == final/shipped, byte-identical) stops the
+    per-row enforcement pipeline early so a caller can measure how much each mechanism moves
+    the delivered split. Order: "base" (normalised, no enforcement) → "zeroing" (+USA-only/
+    wallet-incapable zero+renorm) → "backfill" (+<2-gateway back-fill) → "waterfill"
+    (+max-share cap) → "final"/None (+2dp round & residual-push == shipped). For non-final
+    stages the 2dp round/push is skipped and the raw stage shares (×100) are emitted, so the
+    projection sees the exact intermediate split.
 
     Wide format matching the uploaded template: one row per (BIN, currency, Country,
     paymentMethodProvider) with gateway weight columns (%), a `Check` column, etc.
@@ -1365,6 +1403,9 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     usa_only = {str(x).strip().lower() for x in (usa_only or set())}
     country_pres = country_pres or {}
     _cap = float(max_share) if max_share else 1.0
+    # Stage gate (diagnostic). >=1 zeroing, >=2 back-fill, >=3 water-fill, >=4 round+push.
+    _slvl = {"base": 0, "zeroing": 1, "backfill": 2, "waterfill": 3,
+             "final": 4}.get(str(_stage).lower(), 4) if _stage is not None else 4
     # Source of truth: read processWallet straight from Master_MID_List so the
     # export enforces it even if the routing run didn't populate the set.
     for _f in process_wallet_incapable(mid_list_path):
@@ -1398,6 +1439,17 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     df["share"] = pd.to_numeric(df["share"], errors="coerce").fillna(0.0)
     gateways = sorted(df["gateway"].unique().tolist())
     _pmps = ["GOOGLEPAY", "APPLEPAY", "non_gp_ap"]
+    # SUB-CELL split: if the incoming split already carries pmp/Country per row (from a sub-cell
+    # grain GA run), the rows ARE the sub-cells — build the template DIRECTLY from them instead of
+    # expanding each cell into country×pmp. Cell-grain splits (no pmp/ctry, or all "_all_") take the
+    # existing expansion path byte-for-byte. Map the split's pmp/ctry to the template's format.
+    _has_subcell = ("pmp" in df.columns and "ctry" in df.columns
+                    and not df["pmp"].astype(str).str.strip().str.lower().isin(["_all_", "", "nan"]).all())
+    if _has_subcell:
+        _pmpmap = {"googlepay": "GOOGLEPAY", "applepay": "APPLEPAY", "non_gp_ap": "non_gp_ap"}
+        df["_PMP"] = (df["pmp"].astype(str).str.strip().str.lower().map(_pmpmap).fillna("non_gp_ap"))
+        df["_CTRY"] = np.where(df["ctry"].astype(str).str.strip().str.lower().isin(["usa", "us"]),
+                               "USA", "Non-USA")
 
     # [FN-269]
     def _incap(gw):
@@ -1479,39 +1531,61 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
               "paymentMethodProvider", "STICKY", "Country", "Check"] + gateways + ["DUP CHECK"])
     out = {}
     for rpgt, g_rpgt in df.groupby("RPGT"):
-        # per-cell normalised base (cells sorted by Currency,BIN — the same order the old
-        # groupby(["Currency","BIN"]) iterated, so BIN-GROUP condition codes match).
-        base = (g_rpgt.groupby(["Currency", "BIN", "gateway"])["share"].sum()
-                .unstack("gateway").reindex(columns=gateways).fillna(0.0))
-        base = base.div(base.sum(1).replace(0, np.nan), axis=0).fillna(0.0)
-        cells = list(base.index)
-        Bm = base.to_numpy(float)
-        # expand rows in the SAME order as before: cell → country → pmp
-        _idx, _cur, _bin, _ctry, _pmp = [], [], [], [], []
-        for _ci, (cur, bin_) in enumerate(cells):
-            for country in _countries_for(cur, bin_):
-                for pmp in _pmps:
-                    _idx.append(_ci); _cur.append(cur); _bin.append(bin_)
-                    _ctry.append(country); _pmp.append(pmp)
-        if not _idx:
-            out[(brand, rpgt)] = pd.DataFrame().reindex(columns=_cols)
-            continue
-        R = Bm[np.array(_idx)]
+        if _has_subcell:
+            # rows ARE the sub-cells: base per (Currency, BIN, pmp, Country), no expansion.
+            base = (g_rpgt.groupby(["Currency", "BIN", "_PMP", "_CTRY", "gateway"])["share"].sum()
+                    .unstack("gateway").reindex(columns=gateways).fillna(0.0))
+            base = base.div(base.sum(1).replace(0, np.nan), axis=0).fillna(0.0)
+            _keys = list(base.index)
+            if not _keys:
+                out[(brand, rpgt)] = pd.DataFrame().reindex(columns=_cols)
+                continue
+            R = base.to_numpy(float)
+            _cur = [k[0] for k in _keys]; _bin = [k[1] for k in _keys]
+            _pmp = [k[2] for k in _keys]; _ctry = [k[3] for k in _keys]
+        else:
+            # per-cell normalised base (cells sorted by Currency,BIN — the same order the old
+            # groupby(["Currency","BIN"]) iterated, so BIN-GROUP condition codes match).
+            base = (g_rpgt.groupby(["Currency", "BIN", "gateway"])["share"].sum()
+                    .unstack("gateway").reindex(columns=gateways).fillna(0.0))
+            base = base.div(base.sum(1).replace(0, np.nan), axis=0).fillna(0.0)
+            cells = list(base.index)
+            Bm = base.to_numpy(float)
+            # expand rows in the SAME order as before: cell → country → pmp
+            _idx, _cur, _bin, _ctry, _pmp = [], [], [], [], []
+            for _ci, (cur, bin_) in enumerate(cells):
+                for country in _countries_for(cur, bin_):
+                    for pmp in _pmps:
+                        _idx.append(_ci); _cur.append(cur); _bin.append(bin_)
+                        _ctry.append(country); _pmp.append(pmp)
+            if not _idx:
+                out[(brand, rpgt)] = pd.DataFrame().reindex(columns=_cols)
+                continue
+            R = Bm[np.array(_idx)]
         ctry = np.array(_ctry); pmp = np.array(_pmp)
-        # Non-USA rows: zero USA-only gateways, renorm
+        # Non-USA rows: zero USA-only gateways, renorm   [stage >=1: zeroing]
         _nonusa = ctry == "Non-USA"
-        if _nonusa.any() and usa_col.any():
+        if _slvl >= 1 and _nonusa.any() and usa_col.any():
             R[np.ix_(_nonusa, usa_col)] = 0.0
             _s = R[_nonusa].sum(1, keepdims=True)
             R[_nonusa] = np.where(_s > 0, R[_nonusa] / np.where(_s > 0, _s, 1.0), R[_nonusa])
-        # Wallet rows (GOOGLEPAY/APPLEPAY): zero wallet-incapable gateways, renorm
+        # Wallet rows (GOOGLEPAY/APPLEPAY): zero wallet-incapable gateways, renorm  [stage >=1]
         _wal = np.isin(pmp, ["GOOGLEPAY", "APPLEPAY"])
-        if _wal.any() and wallet_incapable and incap_col.any():
+        if _slvl >= 1 and _wal.any() and wallet_incapable and incap_col.any():
             R[np.ix_(_wal, incap_col)] = 0.0
             _s = R[_wal].sum(1, keepdims=True)
             R[_wal] = np.where(_s > 0, R[_wal] / np.where(_s > 0, _s, 1.0), R[_wal] * 0.0)
-        # <2-gateway back-fill — only the affected (minority) rows, exact original logic
-        if _fid_cur:
+        # <2-gateway back-fill — REMOVED from the delivered path 2026-08-17.
+        # It CREATED share for gateways the optimiser never assigned: an empty row got
+        # 1/n across every valid candidate, and a single-100% row gave each zero-share
+        # candidate a hard-coded 5% floor (max(1 - have, 0.05)) before renormalising —
+        # with recipients drawn from the GLOBAL template column set, not the cell's own
+        # doors. That is share the GA cannot see at ANY grain, and it is the mechanism
+        # that dumped volume onto Authorize / WoodForest. Rows left with <2 live gateways
+        # are now passed through untouched and flagged by `Check`, the same treatment a
+        # genuinely single-gateway cell already got.
+        # Kill-switch: ROUTING_LT2_BACKFILL=1 restores it.
+        if _slvl >= 2 and _fid_cur and os.environ.get("ROUTING_LT2_BACKFILL", "0") == "1":
             for r in np.where((R > 1e-9).sum(1) < 2)[0]:
                 _cands = _valid_candidates(str(_cur[r]).strip().lower(), _ctry[r],
                                            _pmp[r] in ("GOOGLEPAY", "APPLEPAY"))
@@ -1532,25 +1606,41 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
                 if _ss > 0:
                     for j, g in enumerate(gateways):
                         R[r, j] = sh[g] / _ss
-        R = _cap_rows(R)
-        # 2dp rounding, residual pushed onto the largest UNDER-cap gateway (per row)
-        RND = np.round(R * 100.0, 2)
-        _rsum = np.round(RND.sum(1), 2)
-        _cappct = round(_cap * 100.0, 2)
-        for r in np.where((_rsum > 1e-9) & (np.abs(_rsum - 100.0) > 1e-9))[0]:
-            _row = RND[r]
-            _cand = [j for j in range(ng) if _row[j] > 0 and _row[j] < _cappct - 1e-9]
-            _jmax = max(_cand, key=lambda j: _row[j]) if _cand else max(range(ng), key=lambda j: _row[j])
-            RND[r, _jmax] = round(RND[r, _jmax] + (100.0 - _rsum[r]), 2)
+        if _slvl >= 3:                                   # [stage >=3: max-share water-fill]
+            R = _cap_rows(R)
+        # 2dp rounding + residual-push. Two fixes 2026-08-17:
+        #  (1) the rounding was UN-GATED — it ran at EVERY _stage, so the breach-attribution
+        #      "base" stage was never a true pre-rounding baseline. It is now inside the gate.
+        #  (2) `projection_mode` (set by enforced_prop_items) skips BOTH. They exist to make an
+        #      EXPORTED config file valid (2dp, sums to exactly 100.00) and have no place in a
+        #      value projection: the residual is pushed onto the largest UNDER-cap gateway,
+        #      which systematically moves mass from thin doors to fat incumbents and surfaces
+        #      as scored-vs-delivered drift the GA cannot model. Exported templates are
+        #      UNAFFECTED (projection_mode defaults to False).
+        _do_round = (_slvl >= 4) and not projection_mode
+        RND = np.round(R * 100.0, 2) if _do_round else (R * 100.0)
+        if _do_round:
+            _rsum = np.round(RND.sum(1), 2)
+            _cappct = round(_cap * 100.0, 2)
+            for r in np.where((_rsum > 1e-9) & (np.abs(_rsum - 100.0) > 1e-9))[0]:
+                _row = RND[r]
+                _cand = [j for j in range(ng) if _row[j] > 0 and _row[j] < _cappct - 1e-9]
+                _jmax = max(_cand, key=lambda j: _row[j]) if _cand else max(range(ng), key=lambda j: _row[j])
+                RND[r, _jmax] = round(RND[r, _jmax] + (100.0 - _rsum[r]), 2)
         rdf = pd.DataFrame({"GO LIVE": go_live, "Brand": brand, "RPGT": rpgt,
                             "Currency": _cur, "BIN": _bin, "paymentMethodProvider": _pmp,
                             "STICKY": "Both", "Country": _ctry})
         for j, gw in enumerate(gateways):
             rdf[gw] = RND[:, j]
         rdf["Check"] = np.round(RND.sum(1), 2)
-        _key = rdf[gateways].round(2).astype(str).agg("|".join, axis=1)
-        _codes = {k: f"condition_{i+1}" for i, k in enumerate(dict.fromkeys(_key))}
-        rdf["BIN GROUP"] = _key.map(_codes)
+        if projection_mode:
+            # BIN GROUP condition codes are an EXPORT artefact, and near-unique on unrounded
+            # shares — building them would be pure cost. enforced_prop_items drops the column.
+            rdf["BIN GROUP"] = ""
+        else:
+            _key = rdf[gateways].round(2).astype(str).agg("|".join, axis=1)
+            _codes = {k: f"condition_{i+1}" for i, k in enumerate(dict.fromkeys(_key))}
+            rdf["BIN GROUP"] = _key.map(_codes)
         rdf["DUP CHECK"] = 1
         out[(brand, rpgt)] = rdf.reindex(columns=_cols)
     return out
@@ -1559,7 +1649,7 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
 # [FN-274]
 def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid2vamp=None,
                         mid_list_path=None, usa_only=frozenset(), country_pres=None,
-                        max_share=0.97):
+                        max_share=0.97, _stage=None, projection_mode=True):
     """Proposed shares AFTER the pipeline's enforcement — cap, wallet-incapable zeroing,
     USA/Non-USA split, and <2-gateway BACK-FILL — taken straight from build_split_exports'
     output, at (Currency, BIN, RPGT, pmp, Country, vampMid) grain.
@@ -1590,7 +1680,7 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
     templates = build_split_exports(
         split, brand, go_live, wallet_incapable=wallet_incapable, fid2vamp=fid2vamp,
         mid_list_path=mid_list_path, usa_only=usa_only, country_pres=country_pres,
-        max_share=max_share)
+        max_share=max_share, _stage=_stage, projection_mode=projection_mode)
     _meta = {"GO LIVE", "BIN GROUP", "Brand", "RPGT", "Currency", "BIN",
              "paymentMethodProvider", "STICKY", "Country", "Check", "DUP CHECK"}
     frames = []

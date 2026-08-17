@@ -60,11 +60,17 @@ import numpy as np
 
 try:
     from scipy.optimize import linprog as _linprog
+    import scipy.sparse as _sparse
     _HAVE_SCIPY = True
 except Exception:  # noqa: BLE001
     _HAVE_SCIPY = False
 
-__build__ = "2026-08-11-exact-projector-band-solver-slp"
+__build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+global-linear-lp-seed+minimal-move-projection+colocation-report+held-movable-report+movable-provenance+reachable-minimum-no-floor+vamp-positive-sibling+selfcheck+seedgrad+vpsum+usable-recipient+degenerate-gradient-flag+breach-concentration+scoped-frozen-split+gradient-vpsum-regularisation+insearch-rpgt-breakdown+catchall-eps-floor+targeted-move-headroom"
+
+# Gradient-only vpsum/psum floor used by the SEED SOLVERS (not the diagnostics, not the forward
+# values). Share-scale denominators: real high-VAMP cells sit well above this, near-empty cells
+# (the 1/vpsum blow-up) get their gradient capped at ~1/_VPS_EPS instead of ~1e18. Tunable.
+_VPS_EPS = 1e-3
 
 
 @dataclass
@@ -87,9 +93,16 @@ class ExactBandModel:
     the search scores."""
 
     # [FN-380]
-    def __init__(self, exact_bands, incidence):
+    def __init__(self, exact_bands, incidence, *, vps_eps=0.0):
         pj = exact_bands.projector
         self.pj = pj
+        # GRADIENT-ONLY regularisation: floor the per-cell VAMP/txn denominators (vpsum/psum) at
+        # `vps_eps` INSIDE the analytic Jacobian only. This tames the 1/vpsum blow-up on near-empty
+        # cells (the 1e18 gradients that freeze the seed solvers) WITHOUT changing any forward/breach
+        # value — the reported VAMP, `breach`, `spec_values`, and all diagnostics stay exact. Every
+        # solver that uses this gradient re-validates its candidate on the true (unregularised) breach,
+        # so this only affects search DIRECTION, never a scored number. 0 = off (raw gradient).
+        self.vps_eps = float(vps_eps or 0.0)
         self.incidence = incidence                      # (K × N): prop_raw = incidence @ s
         # --- static per-reduced-row arrays (copied so we never mutate the projector) ---
         self.propidx = np.asarray(pj._propidx, np.int64)
@@ -102,6 +115,9 @@ class ExactBandModel:
         self.emask = np.asarray(pj._emask, bool)
         self.mask = self.excl | self.emask
         self.vcpos = np.asarray(pj._vcpos, float)
+        # movable-fraction factors (mv = pr · fcp), kept separately for diagnostics
+        self.pr = np.asarray(getattr(pj, "_pr", np.ones(self.gcode.shape[0])), float)
+        self.fcp = np.asarray(getattr(pj, "_fcp", np.ones(self.gcode.shape[0])), float)
         self.nR = int(self.gcode.shape[0])
         self.K = int(pj._K)
         # aged (VAMP) rows
@@ -179,6 +195,89 @@ class ExactBandModel:
             out[i] = float((txn if sp.metric == "txn" else vamp)[sp.cols].sum())
         return out
 
+    # [FN-383b]
+    def spec_decomposition(self, prop_raw: np.ndarray):
+        """Per-spec (held, movable) split of the projected metric at this candidate.
+
+        Every band value is  held + movable  where:
+          * HELD    = the baseline / FCP2+ / pre-go-live cohort that does NOT respond to the routing
+                      decision (the `(1 − mv)` share of each cohort, mv = pro_rata × fcp1_frac);
+          * MOVABLE = the pool that IS redistributed by the candidate's per-cell share (responds to
+                      routing).
+        held + movable reproduces `spec_values` to float64. This is the quantity that answers "how much
+        of a breached band can the optimiser actually move?": if HELD alone already exceeds the ceiling,
+        no routing can clear it (structural); if HELD < ceiling, a compliant routing exists.
+
+        Returns (held[S], movable[S]) aligned with self.specs."""
+        vamp, txn, inter = self._forward_pr(np.asarray(prop_raw, float))
+        mv = inter["mv"]; vshare = inter["vshare"]
+        pshare = inter["pshare"]; moved_tot = inter["moved_tot"]
+        held_v = np.zeros(self.B); mov_v = np.zeros(self.B)
+        if len(self.pc_bandcol):
+            o = self.pc_org; ok = o >= 0; oi = np.where(ok, o, 0)
+            move_pc = np.where(ok, mv[oi], 0.0)
+            psh_pc = np.where(ok, vshare[oi], 0.0)
+            np.add.at(held_v, self.pc_bandcol, self.pc_vc * (1.0 - move_pc))
+            np.add.at(mov_v, self.pc_bandcol, self.pc_pool * psh_pc)
+        held_t = np.zeros(self.B); mov_t = np.zeros(self.B)
+        if len(self.t_bandcol):
+            r = self.t_rows
+            keep = ~self.excl[r]
+            hv = np.where(keep, self.ctot[r] * self.base[r] * (1.0 - mv[r]), 0.0)
+            mvv = np.where(keep, self.ctot[r] * moved_tot[r] * pshare[r], 0.0)
+            np.add.at(held_t, self.t_bandcol, hv)
+            np.add.at(mov_t, self.t_bandcol, mvv)
+        held = np.zeros(len(self.specs)); mov = np.zeros(len(self.specs))
+        for i, sp in enumerate(self.specs):
+            if len(sp.cols) == 0:
+                continue
+            hb = held_t if sp.metric == "txn" else held_v
+            mb = mov_t if sp.metric == "txn" else mov_v
+            held[i] = float(hb[sp.cols].sum()); mov[i] = float(mb[sp.cols].sum())
+        return held, mov
+
+    # [FN-383c]
+    def spec_movable_provenance(self):
+        """Per-spec volume-weighted mean pro_rata (pr), fcp1_frac (fcp) and mv = pr·fcp.
+
+        Decomposes the movable fraction into its two factors so a low movable %% can be attributed:
+        a small `pr` ⇒ go-live phasing; a small `fcp` ⇒ the first-attempt reroutable slice (fcp1 &
+        attempt1) is small. VAMP specs are weighted by their aged VAMP (pc_vc) at the banded origin
+        rows; TXN specs by the t0 cap volume (ctot·base). Candidate-independent (uses the static
+        factors). Returns (mean_pr[S], mean_fcp[S], mean_mv[S]); NaN where a spec has no weight."""
+        S = len(self.specs)
+        mean_pr = np.full(S, np.nan); mean_fcp = np.full(S, np.nan); mean_mv = np.full(S, np.nan)
+        # VAMP: aged rows weighted by pc_vc, factors taken at the origin t0 row
+        wv = np.zeros(self.B); prv = np.zeros(self.B); fcv = np.zeros(self.B); mvv = np.zeros(self.B)
+        if len(self.pc_bandcol):
+            o = self.pc_org; ok = o >= 0; oi = np.where(ok, o, 0)
+            w = self.pc_vc * ok
+            np.add.at(wv, self.pc_bandcol, w)
+            np.add.at(prv, self.pc_bandcol, w * np.where(ok, self.pr[oi], 0.0))
+            np.add.at(fcv, self.pc_bandcol, w * np.where(ok, self.fcp[oi], 0.0))
+            np.add.at(mvv, self.pc_bandcol, w * np.where(ok, self.mv_static[oi], 0.0))
+        # TXN: t0 cap rows weighted by ctot·base
+        wt = np.zeros(self.B); prt = np.zeros(self.B); fct = np.zeros(self.B); mvt = np.zeros(self.B)
+        if len(self.t_bandcol):
+            r = self.t_rows
+            w = self.ctot[r] * self.base[r] * (~self.excl[r])
+            np.add.at(wt, self.t_bandcol, w)
+            np.add.at(prt, self.t_bandcol, w * self.pr[r])
+            np.add.at(fct, self.t_bandcol, w * self.fcp[r])
+            np.add.at(mvt, self.t_bandcol, w * self.mv_static[r])
+        for i, sp in enumerate(self.specs):
+            if len(sp.cols) == 0:
+                continue
+            if sp.metric == "txn":
+                ws = wt[sp.cols].sum(); pw = prt; fw = fct; mw = mvt
+            else:
+                ws = wv[sp.cols].sum(); pw = prv; fw = fcv; mw = mvv
+            if ws > 0:
+                mean_pr[i] = pw[sp.cols].sum() / ws
+                mean_fcp[i] = fw[sp.cols].sum() / ws
+                mean_mv[i] = mw[sp.cols].sum() / ws
+        return mean_pr, mean_fcp, mean_mv
+
     # ------------------------------------------------------------------ analytic Jacobian
     # [FN-384]
     def _jac_pr(self, inter) -> tuple:
@@ -187,8 +286,13 @@ class ExactBandModel:
         pshare = inter["pshare"]; moved_tot = inter["moved_tot"]
         vpsum = inter["vpsum"]; vshare = inter["vshare"]
         gcode = self.gcode; ngc = self.ngc; nR = self.nR
-        inv_psum = np.where(psum > 0, 1.0 / np.where(psum > 0, psum, 1.0), 0.0)
-        inv_vpsum = np.where(vpsum > 0, 1.0 / np.where(vpsum > 0, vpsum, 1.0), 0.0)
+        _eps = getattr(self, "vps_eps", 0.0)
+        if _eps > 0:                                    # gradient-only regularisation (see __init__)
+            inv_psum = np.where(psum > 0, 1.0 / np.maximum(psum, _eps), 0.0)
+            inv_vpsum = np.where(vpsum > 0, 1.0 / np.maximum(vpsum, _eps), 0.0)
+        else:
+            inv_psum = np.where(psum > 0, 1.0 / np.where(psum > 0, psum, 1.0), 0.0)
+            inv_vpsum = np.where(vpsum > 0, 1.0 / np.where(vpsum > 0, vpsum, 1.0), 0.0)
 
         Jtxn = np.zeros((self.B, nR))
         if len(self.t_rows):
@@ -280,9 +384,49 @@ def _project_capped_simplex_cells(s, cell_starts, cell_counts, elig, cap, budget
 
 
 # [FN-389]
+# [FN-393b]
+def floor_catchall_shares(shares, floor_mask, share_floor, cell_starts, cell_counts):
+    """DEPLOY-TRUTHFUL floor: bump every masked gateway sitting below ``share_floor`` UP to it, and
+    take the added mass proportionally from the cell's NON-masked gateways, so each cell still sums to
+    its original total.
+
+    WHY: the pipeline re-adds a catch-all incumbent that a split zeroed (~10.6 %), but ANY positive
+    specific share OVERRIDES that re-add. So a solver that drives a catch-all MID to exactly 0 to
+    minimise raw breach is choosing the DEPLOY-PESSIMAL point — deployed, that 0 becomes ~10.6 %.
+    Pinning masked gateways at a tiny ``share_floor`` (e.g. 0.1 %) is what actually ships and stops the
+    solver picking 0. Applied to the base AND to every candidate the solvers evaluate, so the projector
+    breach they minimise EQUALS the deployed breach (no re-add can fire inside the feasible region).
+
+    Non-masked rows donate the mass; masked rows already ≥ floor are left untouched. A cell with no
+    non-masked donor mass to give is left unchanged (can't floor without going negative — rare, floor
+    is tiny). Pure; never raises for finite input. No-op when mask/floor is empty."""
+    s = np.asarray(shares, float).copy()
+    if floor_mask is None or not (float(share_floor) > 0):
+        return s
+    m = np.asarray(floor_mask, bool)
+    if not m.any():
+        return s
+    eps = float(share_floor)
+    cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
+    bump = m & (s < eps)
+    if not bump.any():
+        return s
+    add = np.where(bump, eps - s, 0.0)                                  # mass to add per bumped row
+    cell_add = np.repeat(np.add.reduceat(add, cs), cc)                  # per-cell added mass (broadcast)
+    donor = ~m                                                          # only non-catch-all rows donate
+    donor_mass = np.repeat(np.add.reduceat(np.where(donor, s, 0.0), cs), cc)
+    ok = donor_mass > cell_add + 1e-15                                  # cell-constant: enough to give?
+    scale = np.where(donor_mass > 0, (donor_mass - cell_add) / np.where(donor_mass > 0, donor_mass, 1.0), 1.0)
+    out = np.where(bump, eps, s)                                        # bumped rows → floor
+    out = np.where(donor, s * scale, out)                              # donors scaled down
+    out = np.where(ok, out, s)                                         # infeasible cell → revert wholesale
+    return out
+
+
 def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_counts, elig,
                        *, max_share=1.0, max_outer=40, tol=1e-7, tr_init=0.25, tr_min=1e-4,
-                       weighted=False, verbose=False):
+                       weighted=False, verbose=False, log_fn=None,
+                       floor_mask=None, share_floor=0.0):
     """EXACT successive-LP solve of  min total band breach  s.t. per-cell simplex + max-share.
 
     Uses `ExactBandModel` (true projector value + analytic Jacobian). Each outer step linearises the
@@ -305,12 +449,21 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
         cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
         elig = np.asarray(elig, float)
         cap = float(max_share) if (max_share and float(max_share) > 0) else 1.0
-        model = ExactBandModel(exact_bands, incidence)
+        # Catch-all ε-floor: pin catch-all gateways at ≥ share_floor so the solver can't choose the
+        # deploy-pessimal 0 (which the pipeline re-adds at ~10.6 %). Applied to the base AND to every
+        # accepted candidate below, so the projector breach == the deployed breach in the feasible box.
+        _fmask = ((np.asarray(floor_mask, bool) & (elig > 0.5))
+                  if (floor_mask is not None and float(share_floor) > 0) else None)
+        s = floor_catchall_shares(s, _fmask, share_floor, cs, cc)
+        model = ExactBandModel(exact_bands, incidence, vps_eps=_VPS_EPS)  # gradient-only reg
         b0 = model.breach(s, weighted=weighted)
         info["breach0"] = b0
         if b0 <= tol:
             info.update(ok=True, feasible=True, breach=b0, reason="base already compliant")
             return s, info
+        if log_fn:
+            log_fn(f"      exact projector: gradient regularised (vpsum/psum floored at {_VPS_EPS:g}) — "
+                   "tames the 1/vpsum blow-up so steps are navigable; forward breach stays exact.")
 
         # Which gateways can move any band? (nonzero column in J at the base split.)
         _, J0 = model.spec_jacobian_shares(s)
@@ -325,7 +478,14 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
         cell_of = np.repeat(np.arange(len(cs)), cc)
         best_s = s.copy(); best_b = b0
         tr = float(tr_init)
+        if log_fn:
+            log_fn(f"      exact projector: {info['n_free']:,} band-feeding gateways free of {N:,} "
+                   f"(base breach {b0:.4g}); successive-LP, up to {int(max_outer)} steps. One-time solve — "
+                   "at BIN grain each step is a large sparse LP, so this can take a few minutes.")
         for outer in range(int(max_outer)):
+            if log_fn:
+                log_fn(f"      exact projector: step {outer + 1}/{int(max_outer)} "
+                       f"(best breach {best_b:.4g}, tr={tr:.3g})…")
             vals, J = model.spec_jacobian_shares(best_s)          # exact value + exact gradient
             # LP variables: Δs over ALL N (bounded 0 for non-free), then slacks per active band side.
             # Build only the constraint rows that are ceil/floor for a spec with columns.
@@ -357,16 +517,20 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
                     row[:N] = -gi; row[N + k] = -lim
                     rhs.append(vi - lim)
                 rows.append(row)
-            A_ub = np.array(rows); b_ub = np.array(rhs)
+            # SPARSE LP matrices. At BIN grain nvar≈135k and n_cell≈14k, so a DENSE A_eq would be ~15 GB
+            # (and was rebuilt every step — the hang). A_eq is a cell-membership indicator (exactly one 1
+            # per free column) → ~nvar nonzeros; A_ub is the n_slack dense band-gradient rows. HiGHS solves
+            # the sparse LP directly — identical problem, identical result, just representable at BIN grain.
+            fidx = np.where(free)[0]
+            A_ub = _sparse.csr_matrix(np.asarray(rows, float)) if rows else None
+            b_ub = np.asarray(rhs, float)
             # equality: Σ_free Δs = 0 per cell (keep each cell sum fixed)
             n_cell = len(cs)
-            Aeq = np.zeros((n_cell, nvar))
-            for n in np.where(free)[0]:
-                Aeq[cell_of[n], n] = 1.0
+            Aeq = _sparse.coo_matrix((np.ones(fidx.size), (cell_of[fidx], fidx)),
+                                     shape=(n_cell, nvar)).tocsr()
             beq = np.zeros(n_cell)
             # bounds: Δs box (trust region ∩ feasible-share box) for free vars, 0 for non-free; slack ≥ 0
             lb = np.zeros(nvar); ub = np.zeros(nvar)
-            fidx = np.where(free)[0]
             lb[fidx] = np.maximum(-tr, 0.0 - best_s[fidx])
             ub[fidx] = np.minimum(tr, cap - best_s[fidx])
             ub[N:] = None                                          # slacks unbounded above
@@ -381,6 +545,7 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
             ds = res.x[:N]
             cand = best_s + ds
             cand = _project_capped_simplex_cells(cand, cs, cc, elig, cap, budget=1.0)
+            cand = floor_catchall_shares(cand, _fmask, share_floor, cs, cc)  # keep catch-all ≥ floor
             bc = model.breach(cand, weighted=weighted)
             if bc < best_b - max(1e-12, 1e-4 * best_b):
                 best_s = cand; best_b = bc
@@ -398,4 +563,1238 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
         return best_s, info
     except Exception as exc:  # noqa: BLE001 - a seed must never crash the run
         info["reason"] = f"{type(exc).__name__}: {exc}"
+        return np.asarray(base_shares, float).copy(), info
+
+
+# [FN-391]
+def colocation_report(split, exact_bands, incidence, *, mid_id, cell_starts, cell_counts,
+                      risk, cell_vol, elig, mid_names,
+                      cell_cur=None, cell_bank=None, cell_rpgt=None, top_cells=8):
+    """READ-ONLY diagnostic: for every breached CEILING MID, is a headroom SIBLING co-located?
+
+    At the engine's cell grain (one cell = one contiguous [cell_starts[c], +cell_counts[c]) block of
+    gateway-rows), for each MID whose projected M5 value exceeds its ceiling this walks the cells where
+    that MID actually carries share and checks whether an ELIGIBLE, co-located OTHER MID could absorb the
+    excess WITHOUT breaching its own cap — i.e. a sibling with NO ceiling on that metric (unlimited room)
+    or with positive headroom. It changes NO share; it only builds human-readable log lines.
+
+    Returns a list of strings for the caller to log. Never raises (returns a one-line skip note instead).
+
+    Interpretation: many breaching cells WITH a co-located headroom sibling ⇒ the excess CAN move, so a
+    seed that left the band breached failed to SEARCH (not a real infeasibility). Few/none ⇒ a genuine
+    cell-grain / RPGT-scope block (the headroom exists at MID level but not in the same cells)."""
+    try:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+        s = np.asarray(split, float)
+        report = exact_bands.report(_s2pr(s[None, :], incidence))
+        # (midl, metric) -> (headroom, now, ceil) for every ceiling band
+        ceil_map = {}
+        for rr in report:
+            if rr.get("ceil") is not None:
+                nw = float(rr["now"]); cl = float(rr["ceil"])
+                ceil_map[(str(rr["midl"]).strip().lower(), str(rr["metric"]))] = (cl - nw, nw, cl)
+        breached = [(m, me, h, n, c) for (m, me), (h, n, c) in ceil_map.items() if h < -1e-6]
+        if not breached:
+            return ["   co-location diagnostic: no breached ceiling bands at this split — nothing to check."]
+
+        mid_id = np.asarray(mid_id, int)
+        risk = np.asarray(risk, float)
+        vol = np.asarray(cell_vol, float)
+        el = np.asarray(elig, float) > 0.5
+        cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
+        cell_of = np.repeat(np.arange(len(cs)), cc)
+        nm = [str(m).strip().lower() for m in mid_names]
+        name2i = {n: i for i, n in enumerate(nm)}
+        nrow = mid_id.shape[0]
+
+        def _col(a):
+            return (np.asarray(a).astype(str) if a is not None else np.array([""] * nrow))
+        cur, bank, rpgt = _col(cell_cur), _col(cell_bank), _col(cell_rpgt)
+
+        def _room(sib, metric):
+            return ceil_map.get((sib, metric), (float("inf"), None, None))[0]
+
+        out = ["   ── CO-LOCATION DIAGNOSTIC (read-only): can each stuck band's excess move to a "
+               "co-located, eligible sibling? ──"]
+        for bm, me, h, nw, cl in breached:
+            bmi = name2i.get(bm)
+            if bmi is None:
+                continue
+            rows = np.where((mid_id == bmi) & (s > 1e-9))[0]
+            if rows.size == 0:
+                out.append(f"      • {bm} [{me}]: {nw:,.0f} > ceil {cl:,.0f} (over {-h:,.0f}) — carries "
+                           "NO scoped share (its volume is all in frozen/unscoped RPGTs; not movable here).")
+                continue
+            contrib = {}
+            for r in rows:
+                c = int(cell_of[r])
+                contrib[c] = contrib.get(c, 0.0) + s[r] * vol[r] * (risk[r] if me == "vamp" else 1.0)
+            cells = np.unique(cell_of[rows])
+            nwith = 0; lines = []
+            for c in sorted(cells, key=lambda x: -contrib.get(int(x), 0.0)):
+                lo = int(cs[c]); hi = lo + int(cc[c])
+                sibs = []
+                for r in range(lo, hi):
+                    mi = int(mid_id[r])
+                    if mi == bmi or not el[r]:
+                        continue
+                    sn = nm[mi] if 0 <= mi < len(nm) else str(mi)
+                    room = _room(sn, me)
+                    if room > 1e-6:
+                        sibs.append((sn, room, float(risk[r])))
+                if sibs:
+                    nwith += 1
+                if len(lines) < int(top_cells):
+                    lbl = f"{cur[lo]}|{bank[lo]}|{rpgt[lo]}"
+                    if sibs:
+                        sibs.sort(key=lambda x: (x[2], -x[1]))
+                        txt = ", ".join(
+                            (f"{n}(room {'∞' if np.isinf(rm) else format(rm, ',.0f')}"
+                             + (f", rate {rk:.3f}" if me == "vamp" else "") + ")")
+                            for n, rm, rk in sibs[:4])
+                        lines.append(f"         cell {int(c)} [{lbl}] ~{contrib.get(int(c), 0.0):,.0f} "
+                                     f"{me} · siblings: {txt}")
+                    else:
+                        lines.append(f"         cell {int(c)} [{lbl}] ~{contrib.get(int(c), 0.0):,.0f} "
+                                     f"{me} · NO eligible headroom sibling")
+            out.append(f"      • {bm} [{me}]: {nw:,.0f} > ceil {cl:,.0f} (over {-h:,.0f}); carries scoped "
+                       f"share in {cells.size} cell(s), {nwith} have ≥1 eligible headroom sibling co-located.")
+            out.extend(lines)
+        out.append("      (read-only — no share changed. 'room' = sibling MID's own M5 ceiling − its "
+                   "current projected M5 value; ∞ = sibling has no cap on this metric. Many cells WITH a "
+                   "co-located headroom sibling ⇒ the excess CAN move → a search failure, not true "
+                   "infeasibility. Few/none ⇒ genuine cell-grain / scope block.)")
+        return out
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must never break the run
+        return [f"   co-location diagnostic skipped ({type(exc).__name__}: {exc})."]
+
+
+# [FN-392]
+def unmet_summary(split, exact_bands, incidence, *, max_list=8):
+    """One-line 'meets X/Y bands · N unmet: name metric now vs lim, …' for a split.
+
+    Counts how many of the configured ceiling/floor bands the split's EXACT projected M5 value
+    satisfies, and names the ones it doesn't (a MID over its ceiling or under its floor). Used to
+    compare warm-start seeds at a glance. Never raises — returns '' if it can't be computed."""
+    try:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+        rep = exact_bands.report(_s2pr(np.asarray(split, float)[None, :], incidence))
+        total = 0
+        unmet = []
+        for rr in rep:
+            cl = rr.get("ceil"); fl = rr.get("floor")
+            if cl is None and fl is None:
+                continue
+            total += 1
+            nw = float(rr["now"]); me = str(rr.get("metric"))
+            if cl is not None and float(cl) > 0 and nw > float(cl) + 1e-6:
+                unmet.append(f"{rr['midl']} {me} {nw:,.0f} > {float(cl):,.0f}")
+            elif fl is not None and float(fl) > 0 and nw < float(fl) - 1e-6:
+                unmet.append(f"{rr['midl']} {me} {nw:,.0f} < {float(fl):,.0f}")
+        if total == 0:
+            return ""
+        if not unmet:
+            return f"meets {total}/{total} bands (all constraints satisfied)"
+        shown = "; ".join(unmet[:int(max_list)])
+        if len(unmet) > int(max_list):
+            shown += f"; +{len(unmet) - int(max_list)} more"
+        return f"meets {total - len(unmet)}/{total} bands · {len(unmet)} unmet: {shown}"
+    except Exception:  # noqa: BLE001 — a diagnostic must never break the run
+        return ""
+
+
+# [FN-393]
+def held_movable_report(split, exact_bands, incidence, *, max_list=15):
+    """READ-ONLY: how much of each breached band's M5 value is MOVABLE vs HELD.
+
+    For a split, decomposes every ceiling band into the routing-invariant HELD cohort (baseline /
+    FCP2+ / pre-go-live) and the MOVABLE pool (redistributed by the share). For each BREACHED ceiling
+    it reports the split and a verdict:
+      * HELD < ceiling  ⇒ a compliant routing EXISTS (min achievable ≈ held) → if a solver leaves it
+                          breached that is a SEARCH failure, not infeasibility;
+      * HELD ≥ ceiling  ⇒ STRUCTURALLY STUCK — no routing can clear it under this scope.
+    Returns a list of log-line strings; never raises."""
+    try:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+        model = ExactBandModel(exact_bands, incidence)
+        pr = _s2pr(np.asarray(split, float)[None, :], incidence)[0]
+        held, mov = model.spec_decomposition(pr)
+        mean_pr, mean_fcp, mean_mv = model.spec_movable_provenance()
+        specs = model.specs
+        tot_h = float(held.sum()); tot_m = float(mov.sum()); tot = tot_h + tot_m
+        out = ["   ── HELD-vs-MOVABLE check (in-search M5 projector; movable = pool the routing "
+               "decision redistributes, held = baseline / FCP2+ / pre-go-live cohort) ──"]
+        if tot > 0:
+            out.append(f"      overall banded M5: {tot_m / tot * 100:.0f}% movable / "
+                       f"{tot_h / tot * 100:.0f}% held  (movable {tot_m:,.0f} · held {tot_h:,.0f})")
+        shown = 0
+        for i, sp in enumerate(specs):
+            cl = sp.ceil
+            if cl is None or float(cl) <= 0:
+                continue
+            h = float(held[i]); m = float(mov[i]); t = h + m
+            if t <= float(cl) + 1e-6:            # only breached ceilings
+                continue
+            frac_m = (m / t * 100.0) if t > 0 else 0.0
+            if h < float(cl) - 1e-6:
+                verdict = (f"min achievable ≈ held {h:,.0f} < ceil {float(cl):,.0f} ⇒ MOVABLE "
+                           "(a compliant routing EXISTS)")
+            else:
+                verdict = (f"held {h:,.0f} ≥ ceil {float(cl):,.0f} ⇒ STRUCTURALLY STUCK "
+                           "(routing alone can't clear it)")
+            out.append(f"      • {sp.label} [{sp.metric}]: M5 {t:,.0f} = movable {m:,.0f} "
+                       f"({frac_m:.0f}%) + held {h:,.0f} · ceil {float(cl):,.0f} → {verdict}")
+            _pv = mean_pr[i]; _fv = mean_fcp[i]; _mvv = mean_mv[i]
+            if np.isfinite(_mvv):
+                out.append(f"          movable fraction {_mvv * 100:.0f}% = pro_rata {_pv:.2f} "
+                           f"× fcp1_frac {_fv:.2f}  (fcp1_frac = first-attempt reroutable slice; if this "
+                           "is far below your first-attempt %, the export's fcp1_frac is the bug)")
+            shown += 1
+            if shown >= int(max_list):
+                break
+        if shown == 0:
+            out.append("      (no breached ceiling bands at this split.)")
+        out.append("      (read-only. held < ceil on a breached MID ⇒ compliance is REACHABLE, so a "
+                   "solver stuck on it has a SEARCH bug — not infeasibility. held ≥ ceil ⇒ genuinely "
+                   "stuck under this scope. The movable fraction splits into pro_rata (go-live phasing) "
+                   "× fcp1_frac (first-attempt reroutable slice) — whichever factor is small is the "
+                   "cause; a small fcp1_frac vs your known first-attempt % points at the export.)")
+        return out
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must never break the run
+        return [f"   held-vs-movable check skipped ({type(exc).__name__}: {exc})."]
+
+
+# [FN-394]
+def floor_min_report(split, exact_bands, incidence, *, mid_id, cell_starts, cell_counts, elig,
+                     mid_names, whatif_floor=0.0, max_list=15):
+    """READ-ONLY: the TRUE reachable minimum M5 each breached ceiling MID can reach.
+
+    The full-matrix engine decodes shares with a plain per-cell softmax and applies NO hard min-share
+    floor (the ``exploration_floor`` is honoured by the tilt/softmax engines, NOT by the full-matrix
+    decode or delivery), so a MID can be routed arbitrarily close to 0 wherever an eligible sibling
+    can absorb its share. This pushes each breached MID toward 0 in those cells, re-projects, and reads
+    its resulting M5 — the genuine reachable minimum (≈ the routing-invariant ``held`` cohort):
+      * reachable-min < ceiling ⇒ compliance IS reachable → a stuck solver has a SEARCH bug;
+      * reachable-min ≥ ceiling ⇒ genuinely UNREACHABLE (the held cohort alone exceeds the cap →
+        structural: the lever is the cap / RPGT scope, not the optimiser).
+    Cells where the MID is the ONLY eligible gateway are irreducible (its share can't be reduced) and
+    are counted. ``whatif_floor`` > 0 adds a clearly-labelled hypothetical (min if a hard floor of that
+    size WERE enforced — it is NOT, by this engine). Returns log lines; never raises."""
+    try:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+        model = ExactBandModel(exact_bands, incidence)
+        s = np.asarray(split, float)
+        base_vals = model.spec_values(_s2pr(s[None, :], incidence)[0])
+        specs = model.specs
+        mid_id = np.asarray(mid_id, int)
+        el = np.asarray(elig, float) > 0.5
+        cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
+        ncell = len(cs); cell_id = np.repeat(np.arange(ncell), cc)
+        nm = [str(m).strip().lower() for m in mid_names]
+        name2i = {n: i for i, n in enumerate(nm)}
+
+        def _push_min(mi, fl):
+            """Push MID index `mi` to share `fl` in every cell with an eligible sibling; renormalise;
+            return (its projected M5, #irreducible-cells)."""
+            is_m = (mid_id == mi) & el
+            is_o = (mid_id != mi) & el
+            m_cnt = np.bincount(cell_id[is_m], minlength=ncell)
+            o_cnt = np.bincount(cell_id[is_o], minlength=ncell)
+            osum = np.bincount(cell_id[is_o], weights=s[is_o], minlength=ncell)
+            mfloor = m_cnt * float(fl)
+            act = (m_cnt > 0) & (o_cnt > 0) & (mfloor < 1.0 - 1e-9)
+            act_row = act[cell_id]
+            s_m = s.copy()
+            s_m[is_m & act_row] = float(fl)
+            rem = 1.0 - mfloor
+            scale = np.where(osum > 1e-12, rem / np.where(osum > 1e-12, osum, 1.0), 0.0)
+            eq = np.where(o_cnt > 0, rem / np.where(o_cnt > 0, o_cnt, 1.0), 0.0)
+            o_act = is_o & act_row
+            use_scale = osum[cell_id] > 1e-12
+            s_m[o_act] = np.where(use_scale[o_act], s[o_act] * scale[cell_id[o_act]],
+                                  eq[cell_id[o_act]])
+            val = model.spec_values(_s2pr(s_m[None, :], incidence)[0])[mi_spec_row]
+            n_irr = int(((m_cnt > 0) & (o_cnt == 0)).sum())
+            return val, n_irr
+
+        wf = float(whatif_floor or 0.0)
+        out = ["   ── REACHABLE MINIMUM (route each breached MID toward 0 wherever an eligible sibling "
+               "can absorb it — the full-matrix engine applies NO hard share floor) ──"]
+        shown = 0
+        for i, sp in enumerate(specs):
+            cl = sp.ceil
+            if cl is None or float(cl) <= 0:
+                continue
+            if base_vals[i] <= float(cl) + 1e-6:          # only breached ceilings
+                continue
+            mi = name2i.get(str(sp.label).strip().lower())
+            if mi is None or not ((mid_id == mi) & el).any():
+                continue
+            mi_spec_row = i
+            val0, n_irr = _push_min(mi, 0.0)              # true reachable min (no floor)
+            reach = val0 < float(cl) - 1e-6
+            verdict = ("< ceil ⇒ REACHABLE ⇒ a stuck solver is the cause (SEARCH bug), not infeasibility"
+                       if reach else
+                       "≥ ceil ⇒ genuinely UNREACHABLE (held cohort alone exceeds the cap — structural)")
+            line = (f"      • {sp.label} [{sp.metric}]: now {base_vals[i]:,.0f} · reachable-min "
+                    f"{val0:,.0f} · ceil {float(cl):,.0f} → {verdict}")
+            if n_irr:
+                line += f"  [{n_irr} cell(s) where it's the ONLY eligible gateway — irreducible]"
+            out.append(line)
+            if wf > 0:
+                valf, _ = _push_min(mi, wf)
+                out.append(f"          (what-if only, NOT applied by this engine: with a hard "
+                           f"{wf * 100:.0f}% floor the min would be {valf:,.0f})")
+            shown += 1
+            if shown >= int(max_list):
+                break
+        if shown == 0:
+            out.append("      (no breached ceiling bands at this split.)")
+        out.append("      (read-only. reachable-min routes the MID toward 0 wherever a sibling can "
+                   "absorb it — valid because the full-matrix decode is a plain softmax with no hard "
+                   "floor. reachable-min < ceiling ⇒ reachable, so a stuck solver is the cause; "
+                   "reachable-min ≥ ceiling ⇒ structurally impossible under this scope.)")
+        return out
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must never break the run
+        return [f"   reachable-minimum check skipped ({type(exc).__name__}: {exc})."]
+
+
+# [FN-395]
+def vamp_sibling_report(split, exact_bands, incidence, *, max_list=15):
+    """READ-ONLY: can a breached VAMP MID's SHARE actually pull VAMP off it? (the cliff test)
+
+    VAMP redistributes by ``vshare = pr·vcpos / Σ(pr·vcpos)`` — a MID's share of the VAMP-POSITIVE
+    gateways only. So a breached VAMP MID's received VAMP falls when its share moves ONLY if a
+    co-located VAMP-positive (`vcpos > 0`) sibling absorbs it; moving to a non-VAMP gateway leaves
+    `vshare` (and thus its VAMP) unchanged, and where it is the SOLE VAMP-positive gateway `vshare = 1`
+    for any share > 0 (the softmax engine can only reduce it at EXACTLY 0, which it never reaches).
+
+    For each breached VAMP MID this reports, over the projector cells where it carries VAMP, how many
+    have a co-located VAMP-positive sibling. Few/none ⇒ the VAMP is STRUCTURALLY immovable by this
+    engine (not a solver bug). Works in the projector's own cell grain (`gcode`). Returns log lines;
+    never raises."""
+    try:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+        model = ExactBandModel(exact_bands, incidence)
+        base_vals = model.spec_values(_s2pr(np.asarray(split, float)[None, :], incidence)[0])
+        specs = model.specs
+        pk = list(getattr(model.pj, "prop_keys", []))
+        prop_mid = np.array([str(pk[j]).split("|")[-1].strip().lower() if j < len(pk) else ""
+                             for j in range(max(len(pk), 1))])
+        row_mid = prop_mid[model.propidx] if model.propidx.size else np.array([], dtype=object)
+        gc = model.gcode
+        vpos = (model.vcpos > 0.5) & (~model.mask)            # VAMP-positive & live reduced rows
+        ncell = model.ngc
+        vpos_per_cell = np.bincount(gc[vpos], minlength=ncell) if vpos.any() else np.zeros(ncell, int)
+        out = ["   ── VAMP-POSITIVE SIBLING check (a breached VAMP MID's share only lowers its VAMP "
+               "where a co-located VAMP-positive gateway exists; vshare self-normalises otherwise) ──"]
+        shown = 0
+        for i, sp in enumerate(specs):
+            if sp.metric != "vamp":
+                continue
+            cl = sp.ceil
+            if cl is None or float(cl) <= 0 or base_vals[i] <= float(cl) + 1e-6:
+                continue
+            m = str(sp.label).strip().lower()
+            rows_m = np.where((row_mid == m) & vpos)[0] if row_mid.size else np.array([], int)
+            if rows_m.size == 0:
+                out.append(f"      • {sp.label} [vamp]: {base_vals[i]:,.0f} > {float(cl):,.0f} — no "
+                           "VAMP-positive rows for this MID (its VAMP is entirely aged/pool) — n/a")
+                shown += 1
+                continue
+            cells_m = np.unique(gc[rows_m])
+            m_per_cell = np.bincount(gc[rows_m], minlength=ncell)
+            has_sib = (vpos_per_cell - m_per_cell) > 0            # another VAMP-positive row in the cell
+            n_with = int(has_sib[cells_m].sum()); n_tot = int(cells_m.size)
+            tag = ("reducible by routing" if n_with == n_tot else
+                   "SOLE VAMP gateway in ALL its cells → VAMP immovable by share" if n_with == 0 else
+                   f"immovable in {n_tot - n_with} of {n_tot} cells (sole VAMP gateway there)")
+            out.append(f"      • {sp.label} [vamp]: {base_vals[i]:,.0f} > {float(cl):,.0f} · "
+                       f"{n_with}/{n_tot} of its VAMP cells have a co-located VAMP-positive sibling "
+                       f"→ {tag}")
+            shown += 1
+            if shown >= int(max_list):
+                break
+        if shown == 0:
+            out.append("      (no breached VAMP ceiling bands at this split.)")
+        out.append("      (read-only. Where a breached VAMP MID is the SOLE VAMP-positive gateway in a "
+                   "cell, vshare = 1 for any share > 0, so the softmax engine cannot reduce its VAMP "
+                   "there — a structural limit, not a solver bug. Many such cells ⇒ the fix must add an "
+                   "eligible VAMP-positive recipient or allow zeroing, not more search.)")
+        return out
+    except Exception as exc:  # noqa: BLE001 — a diagnostic must never break the run
+        return [f"   vamp-positive-sibling check skipped ({type(exc).__name__}: {exc})."]
+
+
+# [FN-396]
+def incidence_selfcheck_report(split, exact_bands, incidence, *, mid_id=None, mid_names=None):
+    """READ-ONLY (#1): does the column→prop-key incidence used IN the search cover the split?
+
+    Reports how many of the split's share columns map to a projector prop-key and how much share
+    mass survives the roll-up. <100% coverage of banded gateways, or a large dropped mass, means the
+    split the GA SCORES differs from what the projector sees (a scored-vs-delivered mismatch).
+
+    When `mid_id` (per-column MID index) and `mid_names` (index→name) are supplied, also reports a
+    PER-BANDED-MID breakdown: of each banded MID's routed share mass, how much maps vs is dropped.
+    A txn band whose share sits in no-baseline cells (which the baseline-anchored scaffold can't
+    represent) shows a HIGH dropped% here — localising the scored-vs-delivered under-count to that
+    MID. Returns log lines; never raises."""
+    try:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+        s = np.asarray(split, float); N = int(s.size)
+        try:                                              # sparse
+            _colnnz = np.asarray(incidence.getnnz(axis=0)).ravel()
+            K = int(incidence.shape[0])
+        except Exception:                                 # dense
+            inc = np.asarray(incidence)
+            _colnnz = (np.abs(inc).sum(axis=0) > 0).astype(np.int64); K = int(inc.shape[0])
+        _mapped = _colnnz > 0
+        cov = int(_mapped.sum())
+        pr = _s2pr(s[None, :], incidence)[0]
+        mass_prop = float(pr.sum()); mass_share = float(s.sum())
+        out = ["   ── INCIDENCE SELF-CHECK (does the search's column→prop-key map cover the split?) ──",
+               f"      {cov:,}/{N:,} share columns map to a prop-key ({(cov / max(N, 1)) * 100:.1f}%) · "
+               f"{K:,} prop-keys · Σprop_raw {mass_prop:,.1f} vs Σshare {mass_share:,.1f} "
+               f"(dropped {mass_share - mass_prop:,.1f} of share mass)",
+               "      (columns with no vampMid are dropped by design; but <100% coverage of a BANDED "
+               "gateway, or a large dropped mass, ⇒ the scored split ≠ the delivered/projected one.)"]
+        # PER-BANDED-MID coverage (needs the per-column MID map). Uses ExactBandModel's specs +
+        # labels — the SAME naming seed_gradient_report aligns to mid_names — so it lines up with the
+        # per-column mid_id. metric is cross-referenced from exact_bands.specs (band_scoring BandSpec).
+        if mid_id is not None and mid_names is not None:
+            try:
+                _mid = np.asarray(mid_id, int)
+                if _mid.size == N:
+                    _nm = [str(m).strip().lower() for m in mid_names]
+                    _name2i = {n: i for i, n in enumerate(_nm)}
+                    _met_by_lab = {str(getattr(_sp, "midl", "")).strip().lower():
+                                   str(getattr(_sp, "metric", "")).strip().lower()
+                                   for _sp in getattr(exact_bands, "specs", [])}
+                    model = ExactBandModel(exact_bands, incidence)
+                    rows = []
+                    for sp in model.specs:
+                        _lab = str(getattr(sp, "label", "")).strip().lower()
+                        _mi = _name2i.get(_lab)
+                        if _mi is None:
+                            continue
+                        _cols = _mid == _mi
+                        _tot = float(s[_cols].sum())
+                        if _tot <= 1e-9:
+                            continue
+                        _map = float(s[_cols & _mapped].sum())
+                        _drop = _tot - _map
+                        rows.append((_drop / _tot, _lab, _met_by_lab.get(_lab, "?"), _tot, _map, _drop))
+                    if rows:
+                        out.append("   ── per-MID scaffold coverage (banded MIDs, worst dropped% first; dropped "
+                                    "share = what the projector can't see ⇒ that MID's scored-vs-delivered "
+                                    "under-count) ──")
+                        for _dp, _lab, _met, _tot, _map, _drop in sorted(rows, reverse=True):
+                            out.append(f"      {_lab} [{_met}]: routed share mass {_tot:,.1f} · mapped "
+                                       f"{_map:,.1f} ({(_map / _tot) * 100:.0f}%) · dropped {_drop:,.1f} "
+                                       f"({_dp * 100:.0f}%)")
+            except Exception as _pce:  # noqa: BLE001
+                out.append(f"      (per-MID coverage skipped: {type(_pce).__name__}: {_pce})")
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return [f"   incidence self-check skipped ({type(exc).__name__}: {exc})."]
+
+
+# [FN-397]
+def seed_gradient_report(split, exact_bands, incidence, *, mid_id, mid_names, max_list=15):
+    """READ-ONLY (#3): |∂band/∂share| at the seed for each breached MID.
+
+    A near-zero gradient w.r.t. the MID's OWN shares means reducing its own share barely changes its
+    band value — the quantitative signature of the vshare self-normalisation cliff (and why the exact
+    projector takes 0 steps). Returns log lines; never raises."""
+    try:
+        model = ExactBandModel(exact_bands, incidence)
+        vals, J = model.spec_jacobian_shares(np.asarray(split, float))
+        specs = model.specs
+        mid_id = np.asarray(mid_id, int)
+        nm = [str(m).strip().lower() for m in mid_names]
+        name2i = {n: i for i, n in enumerate(nm)}
+        out = ["   ── SEED GRADIENT (|∂band/∂share| at the seed; ≈0 on the MID's OWN share ⇒ its band "
+               "can't be moved by its own share — the vshare cliff) ──"]
+        shown = 0
+        for i, sp in enumerate(specs):
+            cl = sp.ceil
+            if cl is None or float(cl) <= 0 or vals[i] <= float(cl) + 1e-6:
+                continue
+            mi = name2i.get(str(sp.label).strip().lower())
+            gi = np.abs(J[i])
+            own = gi[mid_id == mi] if mi is not None else np.array([])
+            g_own = float(own.max()) if own.size else 0.0
+            g_all = float(gi.max()) if gi.size else 0.0
+            # A legitimate band gradient is volume-scale (≲ 1e6). Anything ≫ that is the 1/vpsum
+            # blow-up on a near-empty (vpsum≈0) cell — the vshare 0/0 singularity, NOT a usable
+            # movable direction. A near-zero own-gradient is the flat cliff. Only in between is it
+            # a genuinely healthy, navigable gradient.
+            _DEGEN = 1e8
+            if g_own > _DEGEN or g_all > _DEGEN:
+                verdict = ("  → gradient DEGENERATE (~1/vpsum blow-up; the band sits on the vshare 0/0 "
+                           "singularity) — NOT usefully movable by a gradient/softmax step")
+            elif g_own <= 1e-9 or g_own < 1e-6 * max(g_all, 1e-12):
+                verdict = "  → own-gradient ≈ 0 ⇒ CLIFF (own share can't move its band)"
+            else:
+                verdict = "  → own-gradient healthy ⇒ its share CAN move its band"
+            out.append(f"      • {sp.label} [{sp.metric}]: max|∂/∂own-share| {g_own:.3g} · "
+                       f"max|∂/∂any-share| {g_all:.3g}{verdict}")
+            shown += 1
+            if shown >= int(max_list):
+                break
+        if shown == 0:
+            out.append("      (no breached ceiling bands at this split.)")
+        out.append("      (read-only. A gradient ≫ volume-scale (≳1e8) is the 1/vpsum degeneracy — the "
+                   "band is on the vshare 0/0 singularity and not navigable; a near-zero gradient is the "
+                   "flat cliff; both mean the search can't move it, for different reasons.)")
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return [f"   seed-gradient check skipped ({type(exc).__name__}: {exc})."]
+
+
+# [FN-398]
+def vpsum_report(split, exact_bands, incidence, *, near_zero=1e-6, max_list=15):
+    """READ-ONLY (#4): the VAMP denominator (vpsum = Σ pr·vcpos) in each breached VAMP MID's cells.
+
+    A near-zero vpsum is the near-empty cell that makes ∂VAMP/∂share (∝ 1/vpsum) blow up (the 1,822
+    entries the conditioning guard had to zero). Reports the distribution of vpsum across each breached
+    VAMP MID's cells and how many are near-zero. Returns log lines; never raises."""
+    try:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+        model = ExactBandModel(exact_bands, incidence)
+        pr = _s2pr(np.asarray(split, float)[None, :], incidence)[0]
+        base_vals = model.spec_values(pr)
+        _v, _t, inter = model._forward_pr(pr)
+        vpsum_cell = np.zeros(model.ngc); vpsum_cell[model.gcode] = inter["vpsum"]
+        pk = list(getattr(model.pj, "prop_keys", []))
+        prop_mid = np.array([str(pk[j]).split("|")[-1].strip().lower() if j < len(pk) else ""
+                             for j in range(max(len(pk), 1))])
+        row_mid = prop_mid[model.propidx] if model.propidx.size else np.array([], dtype=object)
+        vpos = (model.vcpos > 0.5) & (~model.mask)
+        out = ["   ── VPSUM (VAMP denominator per cell; near-zero ⇒ the 1/vpsum gradient blow-up) ──"]
+        shown = 0
+        for i, sp in enumerate(model.specs):
+            if sp.metric != "vamp":
+                continue
+            cl = sp.ceil
+            if cl is None or float(cl) <= 0 or base_vals[i] <= float(cl) + 1e-6:
+                continue
+            m = str(sp.label).strip().lower()
+            rows_m = np.where((row_mid == m) & vpos)[0] if row_mid.size else np.array([], int)
+            if rows_m.size == 0:
+                continue
+            cells_m = np.unique(model.gcode[rows_m])
+            vp = vpsum_cell[cells_m]
+            n_nz = int((vp < float(near_zero)).sum())
+            out.append(f"      • {sp.label} [vamp]: {cells_m.size:,} cells · vpsum min {vp.min():.3g} "
+                       f"p50 {np.median(vp):.3g} max {vp.max():.3g} · {n_nz:,} below {near_zero:g} "
+                       "(near-empty → gradient blow-up)")
+            shown += 1
+            if shown >= int(max_list):
+                break
+        if shown == 0:
+            out.append("      (no breached VAMP ceiling bands at this split.)")
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return [f"   vpsum check skipped ({type(exc).__name__}: {exc})."]
+
+
+# [FN-399]
+def usable_recipient_report(split, exact_bands, incidence, *, max_list=15):
+    """READ-ONLY (#5): cells with a USABLE VAMP recipient = co-located, VAMP-positive, live, and its
+    own MID has ceiling headroom (or no VAMP cap). This is the single decisive "is there any legal
+    move" count — the intersection of the co-location, VAMP-positive and headroom conditions. Returns
+    log lines; never raises."""
+    try:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+        model = ExactBandModel(exact_bands, incidence)
+        rep = exact_bands.report(_s2pr(np.asarray(split, float)[None, :], incidence)[0])
+        base_vals = model.spec_values(_s2pr(np.asarray(split, float)[None, :], incidence)[0])
+        # per-MID VAMP-ceiling headroom (name -> headroom; absent ⇒ no VAMP cap ⇒ unlimited)
+        head = {}
+        for rr in rep:
+            if rr.get("ceil") is not None and str(rr.get("metric")) == "vamp":
+                head[str(rr["midl"]).strip().lower()] = float(rr["ceil"]) - float(rr["now"])
+
+        def _ok(name):                                    # sibling can absorb VAMP without breaching
+            h = head.get(name)
+            return (h is None) or (h > 1e-6)
+        pk = list(getattr(model.pj, "prop_keys", []))
+        prop_mid = np.array([str(pk[j]).split("|")[-1].strip().lower() if j < len(pk) else ""
+                             for j in range(max(len(pk), 1))])
+        row_mid = prop_mid[model.propidx] if model.propidx.size else np.array([], dtype=object)
+        vpos = (model.vcpos > 0.5) & (~model.mask)
+        sib_ok = np.array([_ok(x) for x in row_mid]) if row_mid.size else np.array([], bool)
+        usable = vpos & sib_ok                            # VAMP-positive + live + headroom-ok row
+        ncell = model.ngc
+        out = ["   ── USABLE RECIPIENT (co-located + VAMP-positive + eligible + headroom — the only "
+               "cells with a LEGAL VAMP move) ──"]
+        shown = 0
+        for i, sp in enumerate(model.specs):
+            if sp.metric != "vamp":
+                continue
+            cl = sp.ceil
+            if cl is None or float(cl) <= 0 or base_vals[i] <= float(cl) + 1e-6:
+                continue
+            m = str(sp.label).strip().lower()
+            rows_m = np.where((row_mid == m) & vpos)[0] if row_mid.size else np.array([], int)
+            if rows_m.size == 0:
+                continue
+            cells_m = np.unique(model.gcode[rows_m])
+            # usable recipients of a DIFFERENT MID (the breached MID itself is not usable)
+            other_usable = usable & (row_mid != m)
+            ouc = (np.bincount(model.gcode[other_usable], minlength=ncell)
+                   if other_usable.any() else np.zeros(ncell, int))
+            has = ouc[cells_m] > 0
+            n_with = int(has.sum())
+            out.append(f"      • {sp.label} [vamp]: {n_with:,}/{cells_m.size:,} of its VAMP cells have a "
+                       f"USABLE recipient (VAMP-positive + eligible + headroom)"
+                       + ("  → NO legal move anywhere (structural)" if n_with == 0 else ""))
+            shown += 1
+            if shown >= int(max_list):
+                break
+        if shown == 0:
+            out.append("      (no breached VAMP ceiling bands at this split.)")
+        out.append("      (read-only. This intersects co-location + VAMP-positive + eligibility + "
+                   "headroom — the count of cells where a compliant reroute is actually legal. 0 ⇒ "
+                   "genuinely structural; >0 ⇒ a legal move exists there.)")
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return [f"   usable-recipient check skipped ({type(exc).__name__}: {exc})."]
+
+
+# [FN-400]
+def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mids=6):
+    """READ-ONLY: WHERE does a breached VAMP MID's excess come from, and do THOSE cells have a move?
+
+    Since most of a breached MID's cells have vpsum≈0 (≈0 VAMP), the breach concentrates in a minority
+    of real-VAMP cells. This ranks the MID's projector cells by their actual VAMP contribution, then —
+    greedily taking the highest-VAMP cells until their cumulative VAMP covers the overshoot — reports
+    how many of those cells have a USABLE recipient (co-located, VAMP-positive, eligible, headroom).
+    Many ⇒ reachable (search failure); few ⇒ the high-VAMP cells are sole-VAMP (structural — a real
+    recipient must be made eligible there). Returns log lines; never raises."""
+    try:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+        model = ExactBandModel(exact_bands, incidence)
+        pr = _s2pr(np.asarray(split, float)[None, :], incidence)[0]
+        v, t, inter = model._forward_pr(pr)
+        specs = model.specs
+        base_vals = np.zeros(len(specs))
+        for i, sp in enumerate(specs):
+            if len(sp.cols):
+                base_vals[i] = float((t if sp.metric == "txn" else v)[sp.cols].sum())
+        # per aged-row VAMP contribution + its origin projector cell
+        mv = inter["mv"]; vshare = inter["vshare"]
+        o = model.pc_org; ok = o >= 0; oi = np.where(ok, o, 0)
+        move = np.where(ok, mv[oi], 0.0); psh = np.where(ok, vshare[oi], 0.0)
+        vp = model.pc_vc * (1.0 - move) + model.pc_pool * psh
+        ocell = np.where(ok, model.gcode[oi], -1)
+        pk = list(getattr(model.pj, "prop_keys", []))
+
+        def _lab(orow):
+            j = int(orow)
+            k = str(pk[model.propidx[j]]) if (model.propidx.size and model.propidx[j] < len(pk)) else ""
+            return "|".join(k.split("|")[:-1])
+        # usable recipient rows (VAMP-positive + live + headroom-ok), per the usable-recipient rule
+        rep = exact_bands.report(pr)
+        head = {}
+        for rr in rep:
+            if rr.get("ceil") is not None and str(rr.get("metric")) == "vamp":
+                head[str(rr["midl"]).strip().lower()] = float(rr["ceil"]) - float(rr["now"])
+        prop_mid = np.array([str(pk[j]).split("|")[-1].strip().lower() if j < len(pk) else ""
+                             for j in range(max(len(pk), 1))])
+        row_mid = prop_mid[model.propidx] if model.propidx.size else np.array([], dtype=object)
+        vpos = (model.vcpos > 0.5) & (~model.mask)
+
+        def _ok(n):
+            h = head.get(n); return (h is None) or (h > 1e-6)
+        sib_ok = np.array([_ok(x) for x in row_mid]) if row_mid.size else np.array([], bool)
+        usable = vpos & sib_ok
+        ncell = model.ngc
+        out = ["   ── BREACH CONCENTRATION (which cells produce the breach VAMP, and do THOSE cells have "
+               "a usable recipient?) ──"]
+        shown = 0
+        for i, sp in enumerate(specs):
+            if sp.metric != "vamp":
+                continue
+            cl = sp.ceil
+            if cl is None or float(cl) <= 0 or base_vals[i] <= float(cl) + 1e-6:
+                continue
+            m = str(sp.label).strip().lower()
+            in_band = np.isin(model.pc_bandcol, sp.cols) if model.pc_bandcol.size else np.zeros(0, bool)
+            if not in_band.any():
+                continue
+            vpm = vp[in_band]; cm = ocell[in_band]; om = oi[in_band]
+            cells, inv = np.unique(cm, return_inverse=True)
+            contrib = np.bincount(inv, weights=vpm)
+            order = np.argsort(-contrib)
+            tot = float(contrib.sum()); over = float(base_vals[i] - float(cl))
+            lab = {}
+            for _c, _or in zip(cm, om):
+                ic = int(_c)
+                if ic not in lab:
+                    lab[ic] = "no-origin (irreducible)" if ic < 0 else _lab(_or)
+            other_usable = usable & (row_mid != m)
+            ouc = (np.bincount(model.gcode[other_usable], minlength=ncell)
+                   if other_usable.any() else np.zeros(ncell, int))
+            # greedily take highest-VAMP cells until cumulative ≥ overshoot
+            cum = 0.0; n_need = 0; n_need_usable = 0
+            for k in order:
+                if cum >= over:
+                    break
+                c = int(cells[k]); cum += float(contrib[k]); n_need += 1
+                if c >= 0 and ouc[c] > 0:
+                    n_need_usable += 1
+            # concentration: #cells holding 90% of VAMP
+            cum90 = 0.0; n90 = 0
+            for k in order:
+                if cum90 >= 0.9 * tot:
+                    break
+                cum90 += float(contrib[k]); n90 += 1
+            out.append(f"      • {sp.label} [vamp]: total {tot:,.0f} · ceil {float(cl):,.0f} · over "
+                       f"{over:,.0f}; 90% of VAMP in {n90} of {cells.size:,} cells; to shed the overshoot "
+                       f"need ~{n_need} top cell(s), {n_need_usable}/{n_need} have a usable recipient")
+            for k in order[:int(top)]:
+                c = int(cells[k]); has = (c >= 0 and ouc[c] > 0)
+                out.append(f"          cell {c} [{lab.get(c, '')}] VAMP {float(contrib[k]):,.1f}"
+                           + ("  · usable recipient ✓" if has else "  · NO usable recipient here"))
+            shown += 1
+            if shown >= int(max_mids):
+                break
+        if shown == 0:
+            out.append("      (no breached VAMP ceiling bands at this split.)")
+        out.append("      (read-only. If the top cells needed to shed the overshoot mostly HAVE a usable "
+                   "recipient ⇒ reachable → a search/decode fix helps; if they're mostly sole-VAMP ⇒ "
+                   "structural — a real VAMP recipient must be made eligible in those specific cells.)")
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return [f"   breach-concentration check skipped ({type(exc).__name__}: {exc})."]
+
+
+# [FN-401]
+def scoped_frozen_report(split, exact_bands, incidence, *, scoped_rpgts, max_mids=6):
+    """READ-ONLY: split each breached VAMP MID's M5 VAMP into what the engine CAN vs CANNOT move.
+
+    Buckets each MID's projected VAMP by the RPGT of its origin cell:
+      * scoped-movable  — scoped-RPGT cells, the POOL part (redistributed by share) → the engine can
+                          route this toward 0 (onto sibling MIDs);
+      * scoped-held     — scoped-RPGT cells, the (1−mv) baseline part → NOT reducible by routing;
+      * frozen          — UNscoped-RPGT cells (held at baseline) → the engine can't touch;
+      * no-origin       — aged rows with no in-window origin → irreducible.
+    True engine-reachable minimum = frozen + no-origin + scoped-held (drive scoped-movable → 0).
+      * reachable-min < ceiling ⇒ the SCOPED movable VAMP is enough to comply → reachable, so a stuck
+        solver/decode is the cause (NOT scope);
+      * reachable-min ≥ ceiling ⇒ the scoped RPGTs alone can't reach the cap → widen scope / change cap.
+    Requires the by-RPGT projector grain (prop-keys cur|bin|rpgt|mid). Returns log lines; never raises."""
+    try:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+        model = ExactBandModel(exact_bands, incidence)
+        pr = _s2pr(np.asarray(split, float)[None, :], incidence)[0]
+        v, t, inter = model._forward_pr(pr)
+        specs = model.specs
+        base_vals = np.zeros(len(specs))
+        for i, sp in enumerate(specs):
+            if len(sp.cols):
+                base_vals[i] = float((t if sp.metric == "txn" else v)[sp.cols].sum())
+        mv = inter["mv"]; vshare = inter["vshare"]
+        o = model.pc_org; ok = o >= 0; oi = np.where(ok, o, 0)
+        move = np.where(ok, mv[oi], 0.0); psh = np.where(ok, vshare[oi], 0.0)
+        held_j = model.pc_vc * (1.0 - move)          # routing-invariant part
+        moved_j = model.pc_pool * psh                # routing-movable part
+        pk = list(getattr(model.pj, "prop_keys", []))
+        # RPGT per prop-key (needs the by-RPGT grain: cur|bin|rpgt|mid). Detect field count.
+        _nf = len(str(pk[0]).split("|")) if pk else 0
+        if _nf < 4:
+            return ["   ── SCOPED vs FROZEN VAMP ── skipped: projector is not at by-RPGT grain "
+                    f"(prop-key has {_nf} fields, need cur|bin|rpgt|mid) — RPGT split unavailable."]
+        # RPGT is field index 2 in BOTH cur|bin|rpgt|mid (by_rpgt) and cur|bin|rpgt|pmp|ctry|mid
+        # (by_subcell); using [-2] wrongly grabbed Country at sub-cell grain.
+        prop_rpgt = np.array([str(pk[j]).split("|")[2].strip().lower()
+                              if (j < len(pk) and len(str(pk[j]).split("|")) >= 4) else ""
+                              for j in range(max(len(pk), 1))])
+        scoped_set = set(str(r).strip().lower() for r in (scoped_rpgts or []))
+        out = ["   ── SCOPED vs FROZEN VAMP (can the SCOPED-RPGT movable VAMP alone cover the "
+               "overshoot?) ──"]
+        shown = 0
+        for i, sp in enumerate(specs):
+            if sp.metric != "vamp":
+                continue
+            cl = sp.ceil
+            if cl is None or float(cl) <= 0 or base_vals[i] <= float(cl) + 1e-6:
+                continue
+            in_band = np.isin(model.pc_bandcol, sp.cols) if model.pc_bandcol.size else np.zeros(0, bool)
+            if not in_band.any():
+                continue
+            idx = np.where(in_band)[0]
+            okx = ok[idx]
+            rp = prop_rpgt[model.propidx[oi[idx]]]          # RPGT of each aged row's origin
+            is_scoped = np.isin(rp, list(scoped_set)) & okx
+            is_frozen = (~np.isin(rp, list(scoped_set))) & okx
+            is_noorig = ~okx
+            h = held_j[idx]; m = moved_j[idx]
+            sc_mov = float(m[is_scoped].sum()); sc_held = float(h[is_scoped].sum())
+            fr = float((h[is_frozen] + m[is_frozen]).sum())
+            noorig = float((h[is_noorig] + m[is_noorig]).sum())
+            total = float(base_vals[i]); over = total - float(cl)
+            reach_min = fr + noorig + sc_held
+            verdict = ("< ceil ⇒ SCOPED movable ALONE can clear it → reachable (a stuck solver/decode is "
+                       "the cause, NOT scope)" if reach_min < float(cl) - 1e-6 else
+                       "≥ ceil ⇒ scoped movable CANNOT clear it → widen RPGT scope or change the cap")
+            out.append(f"      • {sp.label} [vamp]: total {total:,.0f} · ceil {float(cl):,.0f} · over "
+                       f"{over:,.0f}")
+            out.append(f"          scoped-movable {sc_mov:,.0f} · scoped-held {sc_held:,.0f} · "
+                       f"frozen(unscoped) {fr:,.0f} · no-origin {noorig:,.0f}")
+            out.append(f"          engine-reachable min (scoped-movable→0) = {reach_min:,.0f} → {verdict}")
+            shown += 1
+            if shown >= int(max_mids):
+                break
+        if shown == 0:
+            out.append("      (no breached VAMP ceiling bands at this split.)")
+        out.append(f"      (read-only. scoped RPGTs = {sorted(scoped_set)}. scoped-movable is the VAMP the "
+                   "engine CAN reroute onto sibling MIDs; reachable-min = frozen + no-origin + scoped-held. "
+                   "This is the honest, scope-aware version of reachable-min.)")
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return [f"   scoped-vs-frozen check skipped ({type(exc).__name__}: {exc})."]
+
+
+# [FN-402]
+def insearch_rpgt_breakdown(split, exact_bands, incidence, *, max_mids=8):
+    """READ-ONLY: the IN-SEARCH projector's per-RPGT M5 VAMP for each breached VAMP MID.
+
+    Run on the DELIVERED split, this is directly comparable to tab-3's per-RPGT VAMP_Post table.
+    Diffing them RPGT-by-RPGT localises where the in-search projection (what the GA optimises) and the
+    deployed tab-3 projection (what actually ships) disagree — e.g. if in-search 'monthly renewal' is
+    far below tab-3's, that RPGT is where the ~380 gap lives. Requires the by-RPGT projector grain."""
+    try:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+        model = ExactBandModel(exact_bands, incidence)
+        pr = _s2pr(np.asarray(split, float)[None, :], incidence)[0]
+        v, t, inter = model._forward_pr(pr)
+        specs = model.specs
+        base_vals = np.zeros(len(specs))
+        for i, sp in enumerate(specs):
+            if len(sp.cols):
+                base_vals[i] = float((t if sp.metric == "txn" else v)[sp.cols].sum())
+        mv = inter["mv"]; vshare = inter["vshare"]
+        o = model.pc_org; ok = o >= 0; oi = np.where(ok, o, 0)
+        move = np.where(ok, mv[oi], 0.0); psh = np.where(ok, vshare[oi], 0.0)
+        vp = model.pc_vc * (1.0 - move) + model.pc_pool * psh
+        pk = list(getattr(model.pj, "prop_keys", []))
+        _nf = len(str(pk[0]).split("|")) if pk else 0
+        out = ["   ── IN-SEARCH per-RPGT VAMP on the DELIVERED split (diff vs tab-3 VAMP_Post to "
+               "localise the projection gap) ──"]
+        if _nf < 4:
+            out.append("      (projector not at by-RPGT grain — per-RPGT split unavailable)")
+            return out
+        # RPGT is field index 2 in BOTH cur|bin|rpgt|mid (by_rpgt) and cur|bin|rpgt|pmp|ctry|mid
+        # (by_subcell); using [-2] wrongly grabbed Country at sub-cell grain.
+        prop_rpgt = np.array([str(pk[j]).split("|")[2].strip().lower()
+                              if (j < len(pk) and len(str(pk[j]).split("|")) >= 4) else ""
+                              for j in range(max(len(pk), 1))])
+        rp_row = np.where(ok, prop_rpgt[model.propidx[oi]], "no-origin")
+        shown = 0
+        for i, sp in enumerate(specs):
+            if sp.metric != "vamp":
+                continue
+            cl = sp.ceil
+            if cl is None or float(cl) <= 0 or base_vals[i] <= float(cl) + 1e-6:
+                continue
+            in_band = np.isin(model.pc_bandcol, sp.cols) if model.pc_bandcol.size else np.zeros(0, bool)
+            if not in_band.any():
+                continue
+            rpb = rp_row[in_band]; vpb = vp[in_band]
+            labels, inv = np.unique(rpb, return_inverse=True)
+            sums = np.bincount(inv, weights=vpb)
+            order = np.argsort(-sums)
+            parts = "; ".join(f"{labels[k]} {sums[k]:,.0f}" for k in order)
+            out.append(f"      • {sp.label} [vamp] in-search total {float(sums.sum()):,.0f} "
+                       f"(ceil {float(cl):,.0f}): {parts}")
+            shown += 1
+            if shown >= int(max_mids):
+                break
+        if shown == 0:
+            out.append("      (no breached VAMP ceiling bands at this split.)")
+        out.append("      (read-only. Compare each RPGT to tab-3's VAMP_Post for the same MID; the RPGT "
+                   "with the biggest in-search-vs-tab-3 difference is where the two projections diverge — "
+                   "the source of the scored-vs-delivered gap.)")
+        return out
+    except Exception as exc:  # noqa: BLE001
+        return [f"   in-search per-RPGT breakdown skipped ({type(exc).__name__}: {exc})."]
+
+
+# [FN-390]
+def solve_global_linear_lp(exact_bands, incidence, base_shares, cell_starts, cell_counts, elig,
+                           *, max_share=1.0, weighted=True, log_fn=None,
+                           floor_mask=None, share_floor=0.0):
+    """ONE global MINIMAL-MOVE feasibility projection → a warm-start SEED candidate for the GA.
+
+    It linearises every banded spec ONCE at ``base_shares`` (the band-aware seed) using the EXACT
+    projector value + analytic Jacobian (``ExactBandModel``), then solves one convex LP over ALL cells
+    and ALL movable/eligible gateways at once:
+
+        minimise  W_SLACK · Σ slack  +  MU · Σ |Δs|     (W_SLACK ≫ MU)
+        s.t.      per-cell Σ Δs = 0,  0 ≤ base+Δs ≤ max_share,
+                  linearised band caps (slack ≥ 0 absorbs any residual breach)
+
+    Because W_SLACK ≫ MU the caps are satisfied WHENEVER linearly possible (slack → 0), and among all
+    cap-satisfying splits it picks the one that MOVES THE LEAST share from the seed — the "nearest
+    feasible split". This shaves each breached MID onto whatever eligible siblings have room in each
+    cell, derived purely from the constraint system (no bespoke "move-to-sibling" operator). Keeping
+    the move minimal also keeps the linearisation valid near the seed, so the re-projected TRUE breach
+    tracks the linear one (unlike the earlier "minimise breach, unbounded move" objective, whose full
+    step overshot into a region where the linear model was wrong).
+
+    Returned UNCONDITIONALLY as a SEED CANDIDATE — the never-worse guarantee downstream re-scores it on
+    the TRUE projector and keeps it only if its exact breach beats the other seeds. Never raises.
+
+    Returns (shares[N], info) with info['breach0'] (exact breach at base), info['breach_true'] (exact
+    breach of the returned candidate), and info['moved'] (total |Δs| = share reallocated). ``weighted``
+    is retained for API compatibility but no longer affects the objective (the projection is
+    move-minimising, not breach-weighted).
+    """
+    info = {"ok": False, "build": __build__, "reason": "", "n_free": 0, "n_bands": 0,
+            "breach0": float("nan"), "breach_true": float("nan")}
+    try:
+        if not _HAVE_SCIPY:
+            info["reason"] = "scipy unavailable"
+            return np.asarray(base_shares, float).copy(), info
+        s0 = np.asarray(base_shares, float).copy()
+        N = s0.shape[0]
+        cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
+        elig = np.asarray(elig, float)
+        cap = float(max_share) if (max_share and float(max_share) > 0) else 1.0
+        # Catch-all ε-floor (see solve_least_breach / floor_catchall_shares): pin catch-all gateways
+        # ≥ share_floor on the base and on the re-projected candidate, so the exact breach the LP
+        # optimises against is the DEPLOYED breach (no re-add can fire inside the floored region).
+        _fmask = ((np.asarray(floor_mask, bool) & (elig > 0.5))
+                  if (floor_mask is not None and float(share_floor) > 0) else None)
+        s0 = floor_catchall_shares(s0, _fmask, share_floor, cs, cc)
+        model = ExactBandModel(exact_bands, incidence, vps_eps=_VPS_EPS)  # gradient-only reg
+        # Report the UNWEIGHTED breach (Σ(now/ceil−1)₊ + (1−now/floor)₊): feasibility is
+        # weight-independent and this stays finite even if a band weight is NaN (e.g. a MID with
+        # zero baseline volume). The `weighted` flag still steers the LP OBJECTIVE below.
+        b0 = model.breach(s0, weighted=False)
+        info["breach0"] = b0
+        if b0 <= 1e-12:
+            info.update(ok=True, breach_true=b0, reason="base already compliant")
+            return s0, info
+
+        # Exact value + gradient at the base split (single linearisation).
+        vals, J = model.spec_jacobian_shares(s0)
+        # HiGHS rejects a model outright ("Model error") if ANY coefficient is non-finite. The
+        # linear-FRACTIONAL VAMP Jacobian can produce NaN/Inf on a degenerate cell (e.g. vpsum≈0),
+        # so scrub them to 0 (a non-finite sensitivity means "this gateway can't reliably move this
+        # band" → treat it as immovable for this band). Same for the band values feeding the RHS.
+        _nfJ = int((~np.isfinite(J)).sum())
+        _nfv = int((~np.isfinite(vals)).sum())
+        if _nfJ or _nfv:
+            info["nonfinite_jac"] = _nfJ
+            info["nonfinite_vals"] = _nfv
+            J = np.nan_to_num(J, nan=0.0, posinf=0.0, neginf=0.0)
+            vals = np.nan_to_num(vals, nan=0.0, posinf=0.0, neginf=0.0)
+        # DEGENERATE-SENSITIVITY GUARD: the linear-FRACTIONAL VAMP gradient is ∝ 1/vpsum, so on a
+        # cell whose VAMP-positive volume is ~0 it can be astronomically large but FINITE (e.g. 1e19
+        # — "shift 1e-19 of share to swing the whole band"). Such a direction is a vanishing-
+        # denominator artifact, not a usable move, and any coefficient above ~1e15 makes HiGHS reject
+        # the model ("Model error"). Legitimate band gradients are volume-scale (≲ 1e6), so we zero
+        # entries beyond a safe threshold: that gateway is simply treated as immovable for that band
+        # (well-conditioned gateways in the same cells still provide the reallocation).
+        _JCLIP = 1e9
+        _big = np.abs(J) > _JCLIP
+        _nbig = int(_big.sum())
+        if _nbig:
+            info["jac_clipped"] = _nbig
+            J = np.where(_big, 0.0, J)
+        # A cell is "band-feeding" if ANY of its gateways has a nonzero band gradient at the seed.
+        # We free EVERY eligible gateway in those cells — not just the band-feeders — because
+        # reallocating a band-feeder's share REQUIRES a same-cell sibling to absorb it, and the
+        # per-cell equality (Σ Δs = 0) would otherwise pin a lone free gateway to zero movement.
+        # (At a corner seed a band-feeder's OWN gradient can vanish — ∂/∂s = 0 when a sibling sits
+        # at 0 — so a nonzero-gradient-only free set can miss the feeder entirely.) Cells with no
+        # band involvement stay fixed (Δs = 0), keeping the step minimal.
+        cell_id = np.repeat(np.arange(len(cs)), cc)
+        feed = np.abs(J).sum(axis=0) > 0
+        feed_cells = np.unique(cell_id[feed]) if feed.any() else np.zeros(0, np.int64)
+        free = np.isin(cell_id, feed_cells) & (elig > 0.5)
+        info["n_free"] = int(free.sum())
+        if not free.any():
+            info.update(reason="no band-feeding gateways are eligible/movable", breach_true=b0)
+            return s0, info
+
+        # Enumerate the active ceiling/floor sides (one linearised band constraint each).
+        rows_meta = []
+        for i, sp in enumerate(model.specs):
+            if len(sp.cols) == 0:
+                continue
+            if sp.ceil is not None and sp.ceil > 0:
+                rows_meta.append(("ceil", i, sp.ceil, vals[i], J[i]))
+            if sp.floor is not None and sp.floor > 0:
+                rows_meta.append(("floor", i, sp.floor, vals[i], J[i]))
+        n_slack = len(rows_meta)
+        info["n_bands"] = n_slack
+        if n_slack == 0:
+            info.update(ok=True, breach_true=b0, reason="no active bands")
+            return s0, info
+        fidx = np.where(free)[0]
+        F = int(fidx.size)
+        if log_fn:
+            log_fn(f"      global LP: MINIMAL-MOVE feasibility projection — linearising {n_slack} band "
+                   f"side(s) at the seed (exact breach {b0:.4g}) and minimising total share MOVED subject "
+                   f"to the caps, over {F:,} movable gateways of {N:,}…")
+            if info.get("jac_clipped") or info.get("nonfinite_jac"):
+                log_fn(f"      global LP: conditioning guard — zeroed {info.get('jac_clipped', 0)} "
+                       f"degenerate (|∂band/∂share|>{_JCLIP:.0g}) and {info.get('nonfinite_jac', 0)} "
+                       "non-finite gradient entries (near-empty-cell artifacts; those gateways held "
+                       "for those bands).")
+
+        # ── LP variables: [ Δs (N) | slack (n_slack) | t (F) ] ──────────────────────────────────
+        # slack_k ≥ 0 absorbs any residual breach of band k (so the LP is ALWAYS feasible — no brittle
+        # hard-cap infeasibility); t_a ≥ |Δs_fidx[a]| linearises the L1 move size. The objective is
+        #     minimise  W_SLACK · Σ slack  +  MU · Σ t          (W_SLACK ≫ MU)
+        # so the caps are satisfied WHENEVER linearly possible (slack driven to 0), and among ALL
+        # cap-satisfying splits the one with the SMALLEST TOTAL MOVE from the seed is chosen. Keeping
+        # the move minimal also keeps the linearisation valid near the seed, so the re-projected TRUE
+        # breach tracks the linear one — the fix for the earlier "minimise breach, unbounded move"
+        # objective, whose full step overshot into a region where the linear model was wrong.
+        W_SLACK = 1e7
+        MU = 1.0
+        nvar = N + n_slack + F
+        c_obj = np.zeros(nvar)
+        c_obj[N:N + n_slack] = W_SLACK
+        c_obj[N + n_slack:] = MU
+        # A_ub triplets: band rows (0..n_slack-1) then two L1 rows per free var.
+        _ui, _uj, _ud, _b = [], [], [], []
+        for k, (side, i, lim, vi, gi) in enumerate(rows_meta):
+            nz = np.nonzero(gi)[0]
+            sgn = 1.0 if side == "ceil" else -1.0          # ceil: gi·Δs − lim·slack ≤ lim − vi
+            for j in nz:                                    # floor: −gi·Δs − lim·slack ≤ vi − lim
+                _ui.append(k); _uj.append(int(j)); _ud.append(sgn * float(gi[j]))
+            _ui.append(k); _uj.append(N + k); _ud.append(-float(lim))
+            _b.append(float(lim - vi) if side == "ceil" else float(vi - lim))
+        # L1 rows (vectorised):  Δs_j − t_a ≤ 0   and   −Δs_j − t_a ≤ 0   ⇒   t_a ≥ |Δs_j|
+        _a = np.arange(F)
+        _tcol = N + n_slack + _a
+        _rpos = n_slack + 2 * _a
+        _rneg = n_slack + 2 * _a + 1
+        _ui = np.concatenate([np.asarray(_ui, np.int64), _rpos, _rpos, _rneg, _rneg])
+        _uj = np.concatenate([np.asarray(_uj, np.int64), fidx, _tcol, fidx, _tcol])
+        _ud = np.concatenate([np.asarray(_ud, float),
+                              np.ones(F), -np.ones(F), -np.ones(F), -np.ones(F)])
+        n_ub = n_slack + 2 * F
+        A_ub = _sparse.coo_matrix((_ud, (_ui, _uj)), shape=(n_ub, nvar)).tocsr()
+        A_ub.data = np.nan_to_num(A_ub.data, nan=0.0, posinf=0.0, neginf=0.0)
+        b_ub = np.nan_to_num(np.concatenate([np.asarray(_b, float), np.zeros(2 * F)]),
+                             nan=0.0, posinf=0.0, neginf=0.0)
+        c_obj = np.nan_to_num(c_obj, nan=1.0, posinf=0.0, neginf=0.0)
+        # equality: Σ_free Δs = 0 per cell (each cell stays summed to its reference total)
+        n_cell = len(cs)
+        Aeq = _sparse.coo_matrix((np.ones(F), (cell_id[fidx], fidx)),
+                                 shape=(n_cell, nvar)).tocsr()
+        beq = np.zeros(n_cell)
+        # bounds: Δs box for free (0 for pinned rows); slack ≥ 0; t ≥ 0. Guard lb ≤ ub & finiteness.
+        lb = np.zeros(nvar); ub = np.zeros(nvar)
+        lb[fidx] = -s0[fidx]
+        ub[fidx] = np.maximum(cap - s0[fidx], -s0[fidx])
+        lb[:N] = np.nan_to_num(lb[:N], nan=0.0, posinf=0.0, neginf=0.0)
+        ub[:N] = np.nan_to_num(ub[:N], nan=0.0, posinf=0.0, neginf=0.0)
+        bounds = [((lb[j], ub[j]) if j < N else (0.0, None)) for j in range(nvar)]
+        res = _linprog(c_obj, A_ub=A_ub, b_ub=b_ub, A_eq=Aeq, b_eq=beq,
+                       bounds=bounds, method="highs")
+        if not res.success:
+            # Precise diagnostics so a HiGHS 'Model error' points at the offending piece.
+            _diag = (f"c_obj[nonfinite={int((~np.isfinite(c_obj)).sum())}, "
+                     f"max={float(np.nanmax(np.abs(c_obj))):.3g}] "
+                     f"A_ub[nnz={A_ub.nnz}, nonfinite={int((~np.isfinite(A_ub.data)).sum())}, "
+                     f"max={float(np.nanmax(np.abs(A_ub.data)) if A_ub.nnz else 0):.3g}] "
+                     f"b_ub[nonfinite={int((~np.isfinite(b_ub)).sum())}] "
+                     f"bounds[lb>ub={int((lb[:N] > ub[:N]).sum())}] "
+                     f"jac_scrubbed={info.get('nonfinite_jac', 0)}, "
+                     f"jac_clipped={info.get('jac_clipped', 0)}")
+            info["reason"] = f"LP failed: {getattr(res, 'message', '')}; {_diag}"
+            info["breach_true"] = b0
+            return s0, info
+        ds = res.x[:N]
+        info["moved"] = float(np.abs(ds).sum())
+        cand = _project_capped_simplex_cells(s0 + ds, cs, cc, elig, cap, budget=1.0)
+        cand = floor_catchall_shares(cand, _fmask, share_floor, cs, cc)  # keep catch-all ≥ floor
+        bt = model.breach(cand, weighted=False)
+        info.update(ok=True, breach_true=bt)
+        if log_fn:
+            log_fn(f"      global LP: solved · exact breach {b0:.4g} → {bt:.4g} on the re-projected "
+                   f"candidate; total share moved {info['moved']:.4g} (minimal). Kept as a seed only "
+                   "if it beats the other seeds.")
+        return cand, info
+    except Exception as exc:  # noqa: BLE001 - a seed must never crash the run
+        info["reason"] = f"{type(exc).__name__}: {exc}"
+        return np.asarray(base_shares, float).copy(), info
+
+
+# [FN-396]
+def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_counts, elig,
+                         *, mid_id, risk, cell_vol, mid_names, max_share=1.0,
+                         max_passes=4, movable_frac=0.8, log_fn=None):
+    """TARGETED move operator → a WARM-START SEED that directly clears breached CEILINGS.
+
+    For every breached ceiling MID it sheds that MID's share, cell by cell (highest VAMP-contribution
+    first), onto co-located ELIGIBLE sibling gateways — but ONLY onto MIDs that have genuine VAMP
+    HEADROOM under their OWN ceiling, preferring the MIDs with the MOST slack (a MID with no VAMP
+    ceiling — e.g. the txn-only WoodForest/Authorize/Adyen-NA — counts as infinite headroom). A
+    running per-recipient VAMP budget stops it from over-filling any one sibling MID into a NEW breach
+    (the whack-a-mole that made the earlier version relocate breaches instead of removing them).
+
+    Each MID's batch of moves is then LINE-SEARCHED against the EXACT projector (factors 1→0.2) and
+    only KEPT if the exact TOTAL breach strictly drops — so a move that merely relocates VAMP onto
+    another capped MID is rejected outright. Repeats for up to `max_passes` (recipient headroom is
+    re-projected each pass). NEVER-WORSE overall: returns base unchanged if it can't strictly improve.
+
+    If it stalls with ceilings still over, that is rigorous evidence the caps are JOINTLY infeasible by
+    routing (the low-VAMP recipient pool lacks the collective headroom). Ceilings only. Never raises.
+
+    Inputs mirror the co-location diagnostic: `mid_id` (per-row MID index into `mid_names`), `risk`
+    (per-row VAMP rate), `cell_vol` (per-cell forecast volume), `elig` (per-row eligibility).
+    `movable_frac` converts a share increment to an approximate VAMP increment (share×vol×risk×frac)
+    for the running recipient budget — approximate on purpose; the exact line-search is the guard."""
+    info = {"ok": False, "build": __build__, "reason": "", "breach0": float("nan"),
+            "breach": float("nan"), "moved": 0.0, "n_moves": 0, "passes": 0, "mids": []}
+    try:
+        from .band_scoring import shares_to_prop_raw as _s2pr
+        s = np.asarray(base_shares, float).copy()
+        cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
+        elig = np.asarray(elig, float); mid_id = np.asarray(mid_id)
+        risk = np.asarray(risk, float); cell_vol = np.asarray(cell_vol, float)
+        cell_of = np.repeat(np.arange(len(cs)), cc)
+        n_mid = len(mid_names)
+        name2idx = {str(n).strip().lower(): i for i, n in enumerate(mid_names)}
+
+        def _rep(_s):
+            return {str(r["midl"]).strip().lower(): r
+                    for r in exact_bands.report(_s2pr(_s, incidence))}
+
+        def _breach(_s):
+            return float(exact_bands.penalty(_s2pr(_s, incidence))[0])
+
+        # per-MID ceiling (inf where the MID has NO VAMP ceiling → unlimited headroom recipient)
+        ceil_by_mid = np.full(n_mid, np.inf)
+        for sp in exact_bands.specs:
+            if sp.ceil is not None:
+                _i = name2idx.get(str(sp.midl).strip().lower())
+                if _i is not None:
+                    ceil_by_mid[_i] = float(sp.ceil)
+
+        def _now_by_mid(rep):
+            out = np.zeros(n_mid)
+            for _nm, _r in rep.items():
+                _i = name2idx.get(_nm)
+                if _i is not None:
+                    out[_i] = float(_r.get("now", 0.0))
+            return out
+
+        b0 = _breach(s); info["breach0"] = b0; b_cur = b0
+        rep0 = _rep(s)
+        now0_by_mid = _now_by_mid(rep0)
+        # which ceiling MIDs are breached at the start (for the before/after log)
+        start_breached = {i for i in range(n_mid)
+                          if np.isfinite(ceil_by_mid[i]) and now0_by_mid[i] > ceil_by_mid[i] + 1e-6}
+        if not start_breached:
+            info.update(ok=True, breach=b0, reason="base already ceiling-compliant")
+            return s, info
+        if log_fn:
+            log_fn(f"      targeted-move seed: {len(start_breached)} breached ceiling MID(s) — shedding "
+                   "onto co-located siblings that have VAMP HEADROOM (most-slack first; whack-a-mole "
+                   "guarded by a per-recipient budget + exact-projector line-search; never-worse).")
+        total_moves = 0; moved_share = 0.0; passes = 0
+        for _pass in range(int(max_passes)):
+            rep = _rep(s)
+            now_by_mid = _now_by_mid(rep)
+            headroom = ceil_by_mid - now_by_mid                     # +inf for no-ceiling MIDs
+            breached = [i for i in range(n_mid)
+                        if np.isfinite(ceil_by_mid[i]) and now_by_mid[i] > ceil_by_mid[i] + 1e-6]
+            if not breached:
+                break
+            breached.sort(key=lambda i: -(now_by_mid[i] - ceil_by_mid[i]))   # worst overshoot first
+            progress = False
+            passes += 1
+            for m_idx in breached:
+                # refresh headroom from a fresh projection (earlier MIDs' accepted moves changed it)
+                rep = _rep(s); now_by_mid = _now_by_mid(rep); headroom = ceil_by_mid - now_by_mid
+                if now_by_mid[m_idx] <= ceil_by_mid[m_idx] + 1e-6:
+                    continue
+                m_rows = np.where((mid_id == m_idx) & (s > 1e-12) & (elig > 0.5))[0]
+                if m_rows.size == 0:
+                    continue
+                contrib = s[m_rows] * np.maximum(cell_vol[cell_of[m_rows]], 0.0) * np.maximum(risk[m_rows], 1e-9)
+                m_rows = m_rows[np.argsort(-contrib)]
+                delta = np.zeros_like(s)
+                hbud = headroom.copy()                              # running VAMP budget per recipient MID
+                for r in m_rows:
+                    c = int(cell_of[r]); a = int(cs[c]); n = int(cc[c])
+                    seg = np.arange(a, a + n)
+                    smid = mid_id[seg]
+                    ok_sib = (elig[seg] > 0.5) & (smid != m_idx) & (hbud[smid] > 1e-6)
+                    sib = seg[ok_sib]
+                    if sib.size == 0:
+                        continue
+                    # recipients with the MOST headroom first (inf = no VAMP ceiling), then lowest risk
+                    sib = sib[np.lexsort((risk[sib], -hbud[mid_id[sib]]))]
+                    mv = float(s[r])
+                    for b_ in sib:
+                        if mv <= 1e-12:
+                            break
+                        smid_b = int(mid_id[b_])
+                        room = float(max_share) - float(s[b_] + delta[b_])
+                        if room <= 1e-9:
+                            continue
+                        dens = float(cell_vol[c]) * max(float(risk[b_]), 1e-9) * float(movable_frac)
+                        vbud_share = (hbud[smid_b] / dens) if (np.isfinite(hbud[smid_b]) and dens > 0) else np.inf
+                        take = min(mv, room, vbud_share)
+                        if take <= 1e-12:
+                            continue
+                        delta[b_] += take; delta[r] -= take; mv -= take
+                        if np.isfinite(hbud[smid_b]):
+                            hbud[smid_b] -= take * dens
+                if not np.any(np.abs(delta) > 1e-12):
+                    continue
+                # line-search the batch against the TRUE projector; keep the best strictly-improving step
+                best_f, best_b = 0.0, b_cur
+                for f in (1.0, 0.66, 0.4, 0.2):
+                    bt = _breach(s + f * delta)
+                    if bt < best_b - 1e-12:
+                        best_f, best_b = f, bt
+                if best_f > 0.0:
+                    s = s + best_f * delta
+                    _mv = float(np.abs(best_f * delta).sum()) / 2.0    # share relocated (÷2: +/- counted once)
+                    moved_share += _mv; total_moves += int((np.abs(delta) > 1e-12).sum() // 2)
+                    b_cur = best_b; progress = True
+            if not progress:
+                break
+        info["passes"] = passes
+        rep1 = _rep(s); now1_by_mid = _now_by_mid(rep1)
+        for i in sorted(start_breached, key=lambda i: -(now0_by_mid[i] - ceil_by_mid[i])):
+            nm = mid_names[i]; n0 = now0_by_mid[i]; n1 = now1_by_mid[i]; cl = ceil_by_mid[i]
+            info["mids"].append({"midl": str(nm), "ceil": float(cl), "now0": float(n0), "now1": float(n1)})
+            if log_fn:
+                _v = "✓ under ceiling" if n1 <= cl + 1e-6 else "still over (no recipient headroom left)"
+                log_fn(f"         • {nm}: {n0:,.0f} → {n1:,.0f} (ceil {cl:,.0f}) · {_v}")
+        b1 = _breach(s); info["moved"] = moved_share; info["n_moves"] = total_moves
+        if b1 < b0 - 1e-12:
+            info.update(ok=True, breach=b1)
+            if log_fn:
+                _cleared = all(now1_by_mid[i] <= ceil_by_mid[i] + 1e-6 for i in start_breached)
+                log_fn(f"      targeted-move seed: exact breach {b0:.4g} → {b1:.4g} in {passes} pass(es) "
+                       f"({total_moves:,} cell-moves, {moved_share:.3g} share). "
+                       + ("ALL ceilings cleared — a compliant split exists." if _cleared
+                          else "Some ceilings remain — recipient headroom exhausted (evidence of JOINT "
+                               "infeasibility by routing). Kept as a seed anyway (it's strictly better)."))
+            return s, info
+        info.update(ok=False, breach=b0, reason="no exact-breach improvement (breach only relocates)")
+        if log_fn:
+            log_fn(f"      targeted-move seed: no exact-breach improvement (stayed {b0:.4g}) — every "
+                   "reroute only RELOCATES VAMP onto another capped MID ⇒ the caps appear JOINTLY "
+                   "infeasible by routing. Returning base (never-worse).")
+        return np.asarray(base_shares, float).copy(), info
+    except Exception as exc:  # noqa: BLE001 — a seed must never crash the run
+        info["reason"] = f"{type(exc).__name__}: {exc}"
+        if log_fn:
+            log_fn(f"      targeted-move seed skipped: {type(exc).__name__}: {exc}")
         return np.asarray(base_shares, float).copy(), info

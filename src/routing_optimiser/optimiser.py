@@ -461,6 +461,7 @@ def optimise_split(problems: list[CellProblem],
     # same column order), but pandas builds a frame from dict-of-lists far faster than by
     # inferring schema across one dict per row.
     _c_rpgt, _c_cur, _c_bank, _c_gw = [], [], [], []
+    _c_pmp, _c_ctry = [], []                      # sub-cell identity (default "_all_" = cell grain)
     _c_share, _c_vol, _c_cvol = [], [], []
     _c_gsr, _c_grr, _c_ces, _c_cer, _c_bshare = [], [], [], [], []
     _c_feas, _c_note = [], []
@@ -472,6 +473,7 @@ def optimise_split(problems: list[CellProblem],
             if share < 1e-9:
                 continue
             _c_rpgt.append(p.rpgt); _c_cur.append(p.currency); _c_bank.append(p.bank)
+            _c_pmp.append(getattr(p, "pmp", "_all_")); _c_ctry.append(getattr(p, "ctry", "_all_"))
             _c_gw.append(gw)
             _c_share.append(share)
             _c_vol.append(p.volume * share)
@@ -487,6 +489,7 @@ def optimise_split(problems: list[CellProblem],
         return pd.DataFrame([])   # preserve the old empty-frame (0×0) shape when nothing routes
     return pd.DataFrame({
         "rpgt": _c_rpgt, "currency": _c_cur, "bank": _c_bank,
+        "pmp": _c_pmp, "ctry": _c_ctry,          # sub-cell identity (carried through for sub-cell grain)
         "gateway": _c_gw,
         "share": _c_share,
         "volume": _c_vol,
