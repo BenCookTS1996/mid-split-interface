@@ -41,7 +41,7 @@ def _apply_keep(t0, excluded_mids, kill_eff, month_0):
     return t0
 
 __build__ = ("2026-08-17b-count-only-pool-search+subcell-exporter+staged-enforcement"
-             "+projection-mode-no-round+no-lt2-backfill+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash")
+             "+projection-mode-no-round+no-lt2-backfill+no-coarse-prop-fallback+fid-grain-capability")
 
 
 # [FN-247]
@@ -1181,64 +1181,6 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     t0["_moved_tot"] = t0.groupby(grp)["_bm"].transform("sum")
     t0["post_txn"] = t0["cell_tot"] * (t0["base_share"] * (1 - t0["_move"])
                                        + t0["_moved_tot"] * t0["prop_share"])
-
-    # ── TXN TERM STASH (read-only) ────────────────────────────────────────────────
-    # post = cell_tot·(base_share·(1−move) + moved_tot·prop_share). These columns exist only
-    # inside this function and are dropped on return, so the reconcile can never compare terms
-    # with the in-search projector. Stash the per-(vampMid, period) sums here — nothing is
-    # modified and nothing downstream reads this global.
-    try:
-        _tt_ct = pd.to_numeric(t0["cell_tot"], errors="coerce").fillna(0.0)
-        _tt_bs = pd.to_numeric(t0["base_share"], errors="coerce").fillna(0.0)
-        _tt_mv = pd.to_numeric(t0["_move"], errors="coerce").fillna(0.0)
-        _tt_mt = pd.to_numeric(t0["_moved_tot"], errors="coerce").fillna(0.0)
-        _tt_ps = pd.to_numeric(t0["prop_share"], errors="coerce").fillna(0.0)
-        # ── DENOMINATOR STASH (read-only, opt-in) ──────────────────────────────────
-        # prop_share = prop_raw / prop_sum, and the residual is now known to live here.
-        # Stash the per-row numerator and the per-cell denominator so the reconcile can
-        # compare them against the in-search prop_raw / psum on the SAME prop vector.
-        # Gated on _RECON_MIDS (a set of lower-cased vampMids the reconcile sets just
-        # before this call) and restricted to the cells those MIDs actually occupy, so
-        # a normal run computes nothing and stores nothing.
-        _rmD = globals().get("_RECON_MIDS")
-        if _rmD:
-            try:
-                _ckD = (t0["Currency"].astype(str).str.strip().str.lower() + "|"
-                        + t0["BIN"].astype(str).str.strip() + "|"
-                        + t0["RPGT"].astype(str).str.strip().str.lower() + "|"
-                        + t0["_pmp"].astype(str).str.strip().str.lower() + "|"
-                        + t0["_ctry"].astype(str).str.strip().str.lower())
-                _mlD = t0["vampMid"].astype(str).str.strip().str.lower()
-                _perD = pd.to_numeric(t0["period"], errors="coerce").fillna(-1).astype(int)
-                _cpkD = _ckD + "|" + _perD.astype(str)
-                _wantD = _mlD.isin({str(x).strip().lower() for x in _rmD}) & (
-                    (_tt_ps > 0) | (_tt_bs > 0))
-                _selD = _cpkD.isin(set(_cpkD[_wantD].unique().tolist()))
-                _keepD = (pd.to_numeric(t0["_keep"], errors="coerce").fillna(1.0)
-                          if "_keep" in t0.columns else pd.Series(1.0, index=t0.index))
-                _bfD = (pd.to_numeric(t0["_bf_inj"], errors="coerce").fillna(0.0)
-                        if "_bf_inj" in t0.columns else pd.Series(0.0, index=t0.index))
-                globals()["_LAST_TXN_DENOM"] = pd.DataFrame({
-                    "ck": _ckD[_selD], "per": _perD[_selD], "midl": _mlD[_selD],
-                    "praw": pd.to_numeric(t0["prop_raw"], errors="coerce").fillna(0.0)[_selD],
-                    "psum": pd.to_numeric(t0["prop_sum"], errors="coerce").fillna(0.0)[_selD],
-                    "pshare": _tt_ps[_selD], "base": _tt_bs[_selD], "ctot": _tt_ct[_selD],
-                    "mvt": _tt_mt[_selD], "mv": _tt_mv[_selD],
-                    "keep": _keepD[_selD], "bf": _bfD[_selD],
-                }).reset_index(drop=True)
-            except Exception:  # noqa: BLE001
-                globals()["_LAST_TXN_DENOM"] = None
-        globals()["_LAST_TXN_TERMS"] = pd.DataFrame({
-            "midl": t0["vampMid"].astype(str).str.strip().str.lower(),
-            "per": pd.to_numeric(t0["period"], errors="coerce").fillna(-1).astype(int),
-            "pre": _tt_ct * _tt_bs,
-            "held": _tt_ct * _tt_bs * (1.0 - _tt_mv),
-            "out": _tt_ct * _tt_bs * _tt_mv,
-            "inn": _tt_ct * _tt_mt * _tt_ps,
-            "pool": _tt_ct * _tt_mt,
-        }).groupby(["midl", "per"], as_index=False).sum()
-    except Exception:  # noqa: BLE001 — a diagnostic must never break the projection
-        globals()["_LAST_TXN_TERMS"] = None
 
     _sub = ["Currency", "BIN", "RPGT", "_pmp", "_ctry"]
     # #2 GO-LIVE TIMING: the pipeline applies the go-live weight by the APPEARANCE month
