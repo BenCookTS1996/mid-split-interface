@@ -332,7 +332,7 @@ def _physical_cpu_count(default=4):
 
 
 # [FN-242]
-def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None):
+def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_keys=None):
     """Cap the share of any BANK-BLOCKED (bank, gateway) to the exploration floor and redistribute
     the freed share to the OTHER (non-blocked) gateways in the same cell, proportionally. Cells with
     no non-blocked recipient are left unchanged (nowhere to move the volume). Matches on
@@ -360,7 +360,14 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None):
         _isb = np.array([(_b, _g) in blocked_pairs for _b, _g in zip(_bk, _gw)])
     if not _isb.any():
         return d, 0
-    _key = [c for c in ("rpgt", "currency", "bank", "pmp") if c in d.columns] or ["bank"]
+    # REDISTRIBUTION GROUP. The default omits `ctry`, so freed share from a bank-blocked row is
+    # spread across the USA and Non-USA sub-cells of a (rpgt, currency, BIN, pmp) group TOGETHER.
+    # The in-search twin (tab2_engine._fm_block) redistributes within the search's own sub-cell
+    # segments, which DO include ctry — so the GA scores a redistribution it does not ship. See the
+    # [block-why] probe. `group_keys=None` keeps the historical tuple byte-identical; pass an
+    # explicit tuple to align the grain with a caller's own cell definition.
+    _key = ([c for c in group_keys if c in d.columns] if group_keys
+            else [c for c in ("rpgt", "currency", "bank", "pmp") if c in d.columns]) or ["bank"]
     _sh = pd.to_numeric(d["share"], errors="coerce").fillna(0.0).to_numpy()
     _cap = np.where(_isb, np.minimum(_sh, float(floor)), _sh)          # blocked -> <= floor
     d["_freed"] = _sh - _cap                                            # >= 0, only blocked rows
@@ -420,7 +427,7 @@ _TAB_FIDS = [
 DEFAULT_GATEWAY_FIDS = "(" + ",".join(f"'{f}'" for f in _TAV_FIDS + _TDR_FIDS + _TAB_FIDS) + ")"
 
 
-APP_BUILD = "2026-08-18g"  # denom probe v4: offenders sorted BY MASS (v3 sampled the near-zero tail)
+APP_BUILD = "2026-08-19b"  # [ca-ladder]: is Option 2 "add cells to the split" or "add a banded door"?
 
 
 # [FN-243]

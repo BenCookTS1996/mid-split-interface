@@ -5775,13 +5775,34 @@ def render():
                                         for _ii, _kk in enumerate(_pk_b):
                                             _ps = _kk.split("|")
                                             _vmk = _ps[-1]
+                                            # RENORMALISATION CELL = the prop-key MINUS the MID.
+                                            # Until 2026-08-18l this hard-coded 3 parts
+                                            # (cur|bin|rpgt) in the >=4 branch, which is correct
+                                            # for the 4-part key it was written for but WRONG for
+                                            # the 6-part sub-cell prop-key band_projection now
+                                            # emits (cur|bin|rpgt|pmp|ctry|mid). It therefore
+                                            # divided by the COARSE cell's specific mass, pooling
+                                            # every (pmp, ctry) sub-cell of a cur|bin|rpgt triple:
+                                            # per-cell prop budgets came out at 1/n for n sub-cells
+                                            # (measured p05 0.333 / p50 0.500 / p95 1.000, 47.9% of
+                                            # cells — the singletons — at exactly 1.0) and total
+                                            # prop mass fell 14,813 -> 10,603 (-28%), against a
+                                            # DELIVERED blend that holds 100% of cells at exactly
+                                            # 1.0. pshare divides by the cell sum, so a NON-uniform
+                                            # budget change moves every pshare in the touched cells
+                                            # — chain step 1, ~19 of the remaining 40.
+                                            # `_ps[:-1]` is backward-compatible by construction:
+                                            #   3-part -> (cur, bin)              == old else branch
+                                            #   4-part -> (cur, bin, rpgt)        == old if branch
+                                            #   6-part -> (cur, bin, rpgt, pmp, ctry)  == sub-cell
+                                            # The catch-all POOL lookup below is a different key at
+                                            # a different grain and is deliberately unchanged.
+                                            _ckk = tuple(_ps[:-1])
                                             if len(_ps) >= 4:
                                                 _curk, _rpk = _ps[0], _ps[2]
-                                                _ckk = (_ps[0], _ps[1], _ps[2])
                                                 _cak = _bpool_rpgt.get((_curk, _rpk), {})
                                             else:
                                                 _curk = _ps[0]
-                                                _ckk = (_ps[0], _ps[1])
                                                 _cak = _bpool_all.get(_curk, {})
                                             _cc = _cmap_b.get(_ckk)
                                             if _cc is None:
@@ -5826,6 +5847,12 @@ def render():
                                             f"{int((_inj_b > 0).sum()):,} prop-key(s) eligible, but injected ONLY in "
                                             "cells with no specific share) — matches the fixed pipeline, so scored == "
                                             "tab-3/tab-5 delivered.")
+                                        log(f"   [full-matrix] blend renormalisation cell = the prop-key minus the "
+                                            f"MID: {len(str(_pk_b[0]).split('|')) - 1 if _pk_b else 0}-part key over "
+                                            f"{_ncb:,} cell(s) for {_Kb:,} prop-key(s). Pre-2026-08-18l this was "
+                                            "hard-coded to 3 parts (cur|bin|rpgt), which pooled every (pmp, ctry) "
+                                            "sub-cell and cut per-cell prop budgets to 1/n. Cross-check against the "
+                                            "[step1] budget distribution below: every cell must read exactly 1.000.")
                                     except Exception as _fbe:  # noqa: BLE001
                                         _fm_blend_pr = None
                                         log(f"   [full-matrix] backup-blend fold-in DISABLED "
@@ -6372,11 +6399,258 @@ def render():
                         _deliver_G = _safe_endpoint_G
                         _ga_gran = _explode(_endpoint_agg(_deliver_G))
                         if _blk_pairs_pre:                       # floor dead (bank-blocked) gateways
+                            # keep the PRE-block frame so [block-why] can ask the counterfactual
+                            _bwPre = (_ga_gran.copy()
+                                      if os.environ.get("ROUTING_BLOCK_WHY", "1") != "0" else None)
+                            # REDISTRIBUTION GRAIN — opt-in, ROUTING_BLOCK_CTRY=1. [block-why]
+                            # confirmed that _apply_blocked_caps' default group tuple omits `ctry`
+                            # while the in-search `_fm_block` includes it, so a bank-blocked row's
+                            # freed share is pooled across USA/Non-USA at delivery and kept
+                            # in-country in-search (72 rows, Σ|Δshare| 1.6761, all on BIN 414398 —
+                            # the same BIN [step2]'s worst keys sit on). Aligning it CHANGES THE
+                            # DEPLOYED ROUTING, so it defaults OFF.
+                            _bwGK = None
+                            if os.environ.get("ROUTING_BLOCK_CTRY", "0") == "1":
+                                _bwGK = tuple(c for c in ("rpgt", "currency", "bank", "pmp", "ctry")
+                                              if c in _ga_gran.columns)
+                                log(f"   [block-ctry] ROUTING_BLOCK_CTRY=1 — blocked-caps "
+                                    f"redistribution now groups by {_bwGK}, matching the search's "
+                                    "sub-cell grain. THIS CHANGES THE DEPLOYED SPLIT: a blocked "
+                                    "row's freed share stays inside its own country sub-cell "
+                                    "instead of spreading across USA/Non-USA. Unset the var to "
+                                    "revert.")
                             _ga_gran, _ = _apply_blocked_caps(_ga_gran, _blk_pairs_pre, float(floor),
-                                                              bin_to_bank=bin_to_bank)
+                                                              bin_to_bank=bin_to_bank,
+                                                              group_keys=_bwGK)
+                            # ── [block-why] IS THE BLOCKED-CAPS REDISTRIBUTION GRAIN THE SPLIT? ──
+                            # [split-why] killed the eligibility-grain hypothesis (0 of 143,407
+                            # rows, Σ|Δshare| 0.0000), and BAND-TRANSFORM agrees: raw →
+                            # +blocked-caps moves the M5 value, +eligibility does not. min2 is OFF.
+                            # By elimination the SPLIT step is THIS stage, and the two sides differ
+                            # on one tuple:
+                            #   delivery  _apply_blocked_caps groups by
+                            #             (rpgt, currency, bank, pmp)   — `ctry` ABSENT
+                            #   in-search _fm_block uses ctx["cell_starts"], the search's sub-cell
+                            #             segments cur|bin|rpgt|pmp|ctry — `ctry` PRESENT
+                            # So delivery pools USA + Non-USA when redistributing a blocked row's
+                            # freed share; the GA keeps them apart. Every [step2] worst key is
+                            # `usd|414398|monthly initial|non_gp_ap|NON-USA`, which is exactly the
+                            # dimension that differs.
+                            # MEASUREMENT ONLY — `_bwSub` is computed, compared and discarded.
+                            if _bwPre is not None:
+                                try:
+                                    _bwCols = set(_bwPre.columns)
+                                    _bwDel = [c for c in ("rpgt", "currency", "bank", "pmp")
+                                              if c in _bwCols]
+                                    _bwSubK = _bwDel + (["ctry"] if "ctry" in _bwCols else [])
+                                    _bwNd = (int(_bwPre.groupby(_bwDel).ngroups) if _bwDel else 0)
+                                    _bwNs = (int(_bwPre.groupby(_bwSubK).ngroups) if _bwSubK else 0)
+                                    log(f"   [block-why] blocked-caps REDISTRIBUTION GRAIN — "
+                                        f"delivery groups by {tuple(_bwDel)} → {_bwNd:,} group(s); "
+                                        f"the in-search `_fm_block` groups by the search sub-cell "
+                                        f"{tuple(_bwSubK)} → {_bwNs:,} group(s)."
+                                        + ("  ✓ SAME grain — cannot be the SPLIT cause."
+                                           if _bwNs == _bwNd else
+                                           f"  ⚠ delivery is COARSER by {_bwNs - _bwNd:,} group(s): "
+                                           "`ctry` is missing from its group tuple, so a blocked "
+                                           "row's freed share is pooled across USA and Non-USA."))
+                                    if _bwSubK != _bwDel:
+                                        _bwSub, _bwNc = _apply_blocked_caps(
+                                            _bwPre, _blk_pairs_pre, float(floor),
+                                            bin_to_bank=bin_to_bank,
+                                            group_keys=tuple(_bwSubK))
+                                        _bwA = pd.to_numeric(_ga_gran["share"],
+                                                             errors="coerce").fillna(0.0).to_numpy()
+                                        _bwB = pd.to_numeric(_bwSub["share"],
+                                                             errors="coerce").fillna(0.0).to_numpy()
+                                        if len(_bwA) == len(_bwB):
+                                            _bwD = _bwB - _bwA
+                                            _bwN = int(np.count_nonzero(np.abs(_bwD) > 1e-12))
+                                            log(f"   [block-why] SHIPPED (no ctry) vs the SAME "
+                                                f"function WITH ctry: {_bwN:,} of {len(_bwD):,} "
+                                                f"row(s) differ · Σ|Δshare| "
+                                                f"{np.abs(_bwD).sum():,.4f} · Σsigned "
+                                                f"{_bwD.sum():+,.6f} · rows capped "
+                                                f"{int(_bwNc):,}")
+                                            if _bwGK is not None:
+                                                log("   [block-why]   MODE: ROUTING_BLOCK_CTRY=1, "
+                                                    "so the shipped split ALREADY groups by the "
+                                                    "search grain and this diff is expected to be "
+                                                    "0.0000. Here a ZERO means THE FIX LANDED — it "
+                                                    "does NOT mean the hypothesis died. The "
+                                                    "confirming measurement is the 17:16 baseline "
+                                                    "(72 rows / Σ|Δshare| 1.6761 / BIN 414398 "
+                                                    "only), taken with the flag OFF.")
+                                            else:
+                                                log("   [block-why]   MODE: ROUTING_BLOCK_CTRY unset "
+                                                    "(default) — the shipped split pools "
+                                                    "USA/Non-USA, so this diff measures what "
+                                                    "aligning the grain WOULD change. COMPARE "
+                                                    "against [step2] below (62 keys / Σ|Δprop| "
+                                                    "0.224 / Σsigned +0.000): a MATCH means this "
+                                                    "tuple IS the SPLIT divergence; a near-ZERO "
+                                                    "means the hypothesis is DEAD, as [split-why]'s "
+                                                    "0.0000 already was for eligibility. Do NOT "
+                                                    "read a match into a mismatch.")
+                                            if _bwN:
+                                                _bwIx = np.argsort(-np.abs(_bwD))[:6]
+                                                _bwKc = [c for c in ("currency", "bank", "rpgt",
+                                                                     "pmp", "ctry", "vampMid")
+                                                         if c in _bwCols]
+                                                _bwKs = (_bwPre[_bwKc].astype(str)
+                                                         .agg("|".join, axis=1).to_numpy()
+                                                         if _bwKc
+                                                         else np.arange(len(_bwD)).astype(str))
+                                                log("   [block-why]   worst rows (with-ctry − "
+                                                    "shipped): "
+                                                    + " · ".join(
+                                                        f"{str(_bwKs[int(_i)])[:52]} "
+                                                        f"{float(_bwD[int(_i)]):+.4f}"
+                                                        for _i in _bwIx))
+                                                _bwAg = {}
+                                                for _i in np.nonzero(np.abs(_bwD) > 1e-12)[0]:
+                                                    _bwM = (str(_bwPre["vampMid"].iat[int(_i)])
+                                                            if "vampMid" in _bwCols else "?")
+                                                    _bwAg[_bwM] = _bwAg.get(_bwM, 0.0) + abs(
+                                                        float(_bwD[int(_i)]))
+                                                log("   [block-why]   by MID (Σ|Δshare|): "
+                                                    + " · ".join(
+                                                        f"{_m[:22]} {_v:.4f}" for _m, _v in
+                                                        sorted(_bwAg.items(),
+                                                               key=lambda kv: -kv[1])[:5]))
+                                                _bwBins = sorted({
+                                                    str(_bwPre["bank"].iat[int(_i)])
+                                                    for _i in np.nonzero(np.abs(_bwD) > 1e-12)[0]
+                                                }) if "bank" in _bwCols else []
+                                                log(f"   [block-why]   distinct BIN(s) affected: "
+                                                    f"{len(_bwBins):,}"
+                                                    + (f" — {', '.join(_bwBins[:8])}"
+                                                       if _bwBins else "")
+                                                    + ". [step2]'s worst keys are all BIN 414398; "
+                                                    "if 414398 is in this list the two probes are "
+                                                    "pointing at the same rows.")
+                                        else:
+                                            log(f"   [block-why] row counts differ ({len(_bwA):,} "
+                                                f"vs {len(_bwB):,}) — comparison SKIPPED rather "
+                                                "than aligned on a guess.")
+                                    else:
+                                        log("   [block-why] no `ctry` column on the granular "
+                                            "split — cell grain, where delivery's group tuple "
+                                            "already matches the search cell. Nothing to test.")
+                                except Exception as _bwE:  # noqa: BLE001
+                                    log(f"   [block-why] skipped "
+                                        f"({type(_bwE).__name__}: {_bwE})")
                         _comp_gran = _restrict(_ga_gran)         # eligibility only (bans / wallet / USA)
                         log("   Enforcement OFF: delivered split = GA search output + eligibility "
                             "(bans / wallet-incapable / USA-only); no VAMP-cap / per-MID band projection.")
+                        # ── [split-why] IS THE RENORM/BLEND GROUP GRAIN THE SPLIT DIVERGENCE? ────────
+                        # [step2] localised the SPLIT step to 62 of 208,718 prop-keys, Σ|Δprop| 0.224,
+                        # Σsigned +0.000, on BIN usd|414398 with WoodForest dominant. Reading both
+                        # implementations, one structural divergence survives:
+                        #   delivery  apply_restrictions(..., group_keys=("rpgt","currency","bank"))
+                        #             — the DEFAULT, which `_restrict` never overrides. So every
+                        #             (pmp, ctry) SUB-CELL of a (rpgt, currency, BIN) group is POOLED
+                        #             into one renormalise / capability-blend group.
+                        #   in-search apply_elig_pop renormalises within `cell_starts`, i.e. ONE GROUP
+                        #             PER SUB-CELL at sub-cell grain.
+                        # build_elig_operator's docstring states the requirement this breaks: "The cell
+                        # segments this derives must equal the (rpgt, currency, bank) groups
+                        # apply_restrictions renormalises within." Σsigned +0.000 with non-zero Σ|Δ| is
+                        # the signature: share is conserved but lands on different keys.
+                        # NOTE the "[elig-grain] EXACT 0/1 capability" line above reads
+                        # _elig_op["w_exact"]/["u_exact"], which build_elig_operator does NOT return —
+                        # it prints 0/0 unconditionally and its "0% ⇒ cell grain, nothing changed" text
+                        # is wrong at sub-cell grain. Do not trust that line; trust this block.
+                        # MEASUREMENT ONLY — `_comp_sub` is computed, compared and discarded.
+                        if os.environ.get("ROUTING_SPLIT_WHY", "1") != "0":
+                            try:
+                                _swCols = set(_ga_gran.columns)
+                                _swDel = [c for c in ("rpgt", "currency", "bank") if c in _swCols]
+                                _swSub = _swDel + [c for c in ("pmp", "ctry") if c in _swCols]
+                                _swNd = int(_ga_gran.groupby(_swDel).ngroups) if _swDel else 0
+                                _swNs = int(_ga_gran.groupby(_swSub).ngroups) if _swSub else 0
+                                log(f"   [split-why] renorm/blend GROUP GRAIN — delivery groups by "
+                                    f"{tuple(_swDel)} → {_swNd:,} group(s); the GA's operator groups "
+                                    f"by the search cell (sub-cell) → {_swNs:,} group(s)."
+                                    + ("  ✓ SAME grain, so this cannot be the SPLIT cause."
+                                       if _swNs == _swNd else
+                                       f"  ⚠ delivery is COARSER by {_swNs - _swNd:,} group(s): it "
+                                       "pools every (pmp, ctry) sub-cell of a (rpgt, currency, BIN) "
+                                       "group, so freed share lands on different keys than the GA "
+                                       "scored."))
+                                if _swSub != _swDel and "share" in _swCols:
+                                    # THE DECISIVE TEST: same function, same frame, only the group
+                                    # grain widened to the search's. If the grain is the cause this
+                                    # reproduces [step2]'s population.
+                                    _comp_sub = apply_restrictions(
+                                        _ga_gran, _elig_rules, _fid2vamp_l,
+                                        wallet_incapable=frozenset(_wallet_incapable),
+                                        wallet_frac=_wallet_frac, wallet_default=_wallet_default,
+                                        usa_only=frozenset(_usa_only), nonusa_frac=_nonusa_frac,
+                                        nonusa_default=_nonusa_default,
+                                        group_keys=tuple(_swSub))
+                                    _swA = pd.to_numeric(_comp_gran["share"],
+                                                         errors="coerce").fillna(0.0).to_numpy()
+                                    _swB = pd.to_numeric(_comp_sub["share"],
+                                                         errors="coerce").fillna(0.0).to_numpy()
+                                    if len(_swA) == len(_swB):
+                                        _swD = _swB - _swA
+                                        _swN = int(np.count_nonzero(np.abs(_swD) > 1e-12))
+                                        log(f"   [split-why] SHIPPED (coarse grain) vs the SAME "
+                                            f"function at the SEARCH's sub-cell grain: {_swN:,} of "
+                                            f"{len(_swD):,} row(s) differ · Σ|Δshare| "
+                                            f"{np.abs(_swD).sum():,.4f} · Σsigned "
+                                            f"{_swD.sum():+,.6f}")
+                                        log("   [split-why]   COMPARE against [step2] below "
+                                            "(62 keys / Σ|Δprop| 0.224 / Σsigned +0.000). A MATCH "
+                                            "means the group grain IS the SPLIT divergence and the "
+                                            "fix is one argument: pass group_keys=the search grain "
+                                            "to apply_restrictions. A near-ZERO here means the grain "
+                                            "is NOT the cause and this hypothesis is DEAD — do not "
+                                            "read a match into a mismatch.")
+                                        if _swN:
+                                            _swIx = np.argsort(-np.abs(_swD))[:6]
+                                            _swKc = [c for c in ("currency", "bank", "rpgt", "pmp",
+                                                                 "ctry", "vampMid")
+                                                     if c in _swCols]
+                                            _swKs = (_ga_gran[_swKc].astype(str)
+                                                     .agg("|".join, axis=1).to_numpy()
+                                                     if _swKc else
+                                                     np.arange(len(_swD)).astype(str))
+                                            log("   [split-why]   worst rows (sub-cell grain − "
+                                                "shipped): "
+                                                + " · ".join(f"{str(_swKs[int(_i)])[:52]} "
+                                                             f"{float(_swD[int(_i)]):+.4f}"
+                                                             for _i in _swIx))
+                                            _swAg = {}
+                                            for _i in np.nonzero(np.abs(_swD) > 1e-12)[0]:
+                                                _swM = (str(_ga_gran["vampMid"].iat[int(_i)])
+                                                        if "vampMid" in _swCols else "?")
+                                                _swAg[_swM] = _swAg.get(_swM, 0.0) + abs(
+                                                    float(_swD[int(_i)]))
+                                            log("   [split-why]   by MID (Σ|Δshare|): "
+                                                + " · ".join(
+                                                    f"{_m[:22]} {_v:.4f}" for _m, _v in
+                                                    sorted(_swAg.items(),
+                                                           key=lambda kv: -kv[1])[:5]))
+                                            _swMulti = int((_ga_gran.groupby(_swDel)[_swSub[-1]]
+                                                            .nunique() > 1).sum()) if _swDel else 0
+                                            log(f"   [split-why]   coarse groups holding >1 sub-cell "
+                                                f"value on `{_swSub[-1]}`: {_swMulti:,} of {_swNd:,}"
+                                                " — pooling can only bite where this is >0, so a "
+                                                "large count here with a near-zero Σ|Δshare| above "
+                                                "would mean the pooling is harmless in practice.")
+                                    else:
+                                        log(f"   [split-why] row counts differ "
+                                            f"({len(_swA):,} vs {len(_swB):,}) — apply_restrictions "
+                                            "reordered or reindexed; comparison SKIPPED rather than "
+                                            "aligned on a guess.")
+                                else:
+                                    log("   [split-why] no pmp/ctry columns on the granular split — "
+                                        "cell grain, where delivery's default group_keys already "
+                                        "match the search cell. Nothing to test.")
+                            except Exception as _swE:  # noqa: BLE001
+                                log(f"   [split-why] skipped ({type(_swE).__name__}: {_swE})")
 
                         # ── MIN-2 LOW-RISK FLOOR (opt-in, ROUTING_MIN2_FLOOR=1) ───────────────────────
                         # Keep the 2 lowest-RISK non-VAMP-capped doors in every sub-cell at >= a floor
@@ -6469,6 +6743,214 @@ def render():
                                 # real scored-vs-delivered gap. The GA fitness DOES fold the catch-all
                                 # in (see "backup catch-all FOLDED INTO the fitness"), so the omission
                                 # was one-sided. Both are now applied, and the log states which.
+                                # ── [ca-reach] WHICH CELLS CAN THE DELIVERED CATCH-ALL NOT REACH? ──
+                                # blend_prop_items iterates prop_items ONLY, and
+                                # enforced_prop_items drops every all-zero cell at
+                                # `allm[allm["prop_raw"] > 0]`. So a scoped sub-cell that carries
+                                # volume but whose gateways all land on zero never reaches
+                                # blend_cell_shares, and its catch-all cannot fire — while the
+                                # in-search twin injects into 145 such cells. Measured offline on
+                                # this run's own export: of 14,983 SCOPED sub-cells, 176 have no
+                                # enforced prop, carrying 2,598 volume (0.2%). The UNSCOPED RPGTs
+                                # (16,592 cells, 2.3M volume, 67%) are held at baseline by design
+                                # and must NOT be touched — sourcing the universe from the volume
+                                # frame unfiltered would reroute two thirds of all volume.
+                                # This block decides the fix: (a) the split HAS an all-zero row
+                                # there → keep a zero-prop placeholder in enforced_prop_items, one
+                                # change that every caller shares; (b) the split has NO row →
+                                # a cell universe must be threaded into blend_prop_items at each
+                                # call site instead. MEASUREMENT ONLY.
+                                if os.environ.get("ROUTING_CA_REACH", "1") != "0":
+                                    try:
+                                        _crS = {str(_r).strip().lower()
+                                                for _r in (locals().get("_sel_rpgts") or ())}
+                                        _crG = _comp_gran
+                                        # `Index or []` raises "truth value of a Index is ambiguous".
+                                        # I fixed exactly this for `_vcols` in 2026-08-18n and then
+                                        # reintroduced it here in the same session — the 10:07 run
+                                        # skipped this whole block on it. Guard with an explicit
+                                        # None test, never truthiness, on any pandas object.
+                                        _crC0 = getattr(_crG, "columns", None)
+                                        _crC = set(_crC0) if _crC0 is not None else set()
+                                        _crK = [c for c in ("currency", "bank", "rpgt", "pmp",
+                                                            "ctry") if c in _crC]
+                                        if len(_crK) == 5 and "share" in _crC:
+                                            _crD = _crG[_crK + ["share"]].copy()
+                                            _crD["rpgt"] = (_crD["rpgt"].astype(str)
+                                                            .str.strip().str.lower())
+                                            _crD["currency"] = (_crD["currency"].astype(str)
+                                                                .str.strip().str.lower())
+                                            _crD["bank"] = _crD["bank"].astype(str).str.strip()
+                                            _crD["pmp"] = (_crD["pmp"].astype(str)
+                                                           .str.strip().str.lower())
+                                            _crD["ctry"] = (_crD["ctry"].astype(str)
+                                                            .str.strip().str.lower())
+                                            if _crS:
+                                                _crD = _crD[_crD["rpgt"].isin(_crS)]
+                                            _crD["share"] = pd.to_numeric(
+                                                _crD["share"], errors="coerce").fillna(0.0)
+                                            _crA = _crD.groupby(_crK, as_index=False)["share"].sum()
+                                            _crH = set()
+                                            for _t in (_rec_ep or ()):
+                                                _crH.add((str(_t[0]).strip().lower(),
+                                                          str(_t[1]).strip(),
+                                                          str(_t[2]).strip().lower(),
+                                                          str(_t[3]).strip().lower(),
+                                                          str(_t[4]).strip().lower()))
+                                            _crHas = [tuple(_r) in _crH
+                                                      for _r in _crA[_crK].astype(str).to_numpy()]
+                                            _crA["_has"] = _crHas
+                                            # ── [ca-ladder] THE UNIVERSE LADDER ──────────────────
+                                            # My [ca-reach] line called this "sub-cells in the
+                                            # delivered split", and the run's own arithmetic says
+                                            # that reading is probably wrong: 23,791 sub-cell
+                                            # problems − 8,978 dropped share mass = 14,813 Σprop_raw
+                                            # = the exact integer [ca-reach] printed. All round, so
+                                            # whole sub-cells map or don't. That points to 14,813
+                                            # being the split ∩ the projector's vampMid'd columns,
+                                            # NOT the split itself. Which side is true decides
+                                            # whether Option 2 means "add cells to the split" or
+                                            # "give existing cells a banded door" — a much smaller
+                                            # change. Measure it rather than assume it.
+                                            try:
+                                                _clV = None
+                                                if "vampMid" in _crC:
+                                                    _clV = (_crG["vampMid"].astype(str)
+                                                            .str.strip().str.lower())
+                                                elif "gateway" in _crC:
+                                                    _clV = (_crG["gateway"].astype(str)
+                                                            .str.strip().str.lower()
+                                                            .map(_fid2vamp_l))
+                                                _clD = _crG[[c for c in _crK if c in _crC]].copy()
+                                                for _c in _crK:
+                                                    _clD[_c] = (_clD[_c].astype(str).str.strip()
+                                                                .str.lower() if _c != "bank"
+                                                                else _clD[_c].astype(str).str.strip())
+                                                _clD["_banded"] = (_clV.notna() & (_clV.astype(str)
+                                                                   .str.len() > 0)
+                                                                   & (_clV.astype(str) != "nan")
+                                                                   ) if _clV is not None else False
+                                                _clD["_sh"] = pd.to_numeric(
+                                                    _crG["share"], errors="coerce").fillna(0.0)
+                                                if _crS:
+                                                    _clD = _clD[_clD["rpgt"].isin(_crS)]
+                                                _clG = _clD.groupby(_crK, as_index=False).agg(
+                                                    _nb=("_banded", "sum"), _sh=("_sh", "sum"))
+                                                _r1 = len(_clG)
+                                                _r2 = int((_clG["_nb"] > 0).sum())
+                                                _r3 = int(_crA["_has"].sum()) if "_has" in _crA.columns else -1
+                                                log(f"   [ca-ladder] rung 1 — SCOPED sub-cells in the "
+                                                    f"delivered split: {_r1:,}")
+                                                log(f"   [ca-ladder] rung 2 — of those, with ≥1 BANDED "
+                                                    f"(vampMid-carrying) door: {_r2:,}"
+                                                    f"  ·  WITHOUT any banded door: {_r1 - _r2:,}")
+                                                log(f"   [ca-ladder] rung 3 — of rung 2, present in the "
+                                                    f"enforced prop items: "
+                                                    + (f"{_r3:,}" if _r3 >= 0 else "n/a"))
+                                                _clNo = _clG[_clG["_nb"] <= 0]
+                                                log(f"   [ca-ladder]   cells lost between rung 1 and 2 "
+                                                    f"carry Σshare {_clNo['_sh'].sum():,.1f} across "
+                                                    f"{len(_clNo):,} cell(s) — these route ONLY to "
+                                                    "gateways with no vampMid, so the banded projector "
+                                                    "cannot see them at all.")
+                                                if _r1 - _r2 > 100:
+                                                    log("   [ca-ladder] ⇒ READING: the profiles ARE in "
+                                                        "the split; what they lack is a BANDED door. "
+                                                        "Option 2 is therefore NOT 'change how the "
+                                                        "split's profile list is built' — it is 'give "
+                                                        "these cells an eligible banded door', which "
+                                                        "belongs in the candidate-door / incidence "
+                                                        "path ([door-cover]) and is a much smaller "
+                                                        "change. Compare rung 1 against the 23,791 "
+                                                        "sub-cell problems and rung 2 against the "
+                                                        "14,813 Σprop_raw.")
+                                                else:
+                                                    log("   [ca-ladder] ⇒ READING: rung 1 is already at "
+                                                        "the prop-key count, so the split genuinely "
+                                                        "holds fewer profiles than the search does. "
+                                                        "Option 2 stands as described: the split's "
+                                                        "profile list is the thing to extend. My "
+                                                        "23,791−8,978 hypothesis is then WRONG — say "
+                                                        "so rather than reading the ladder to fit it.")
+                                            except Exception as _clE:  # noqa: BLE001
+                                                log(f"   [ca-ladder] skipped "
+                                                    f"({type(_clE).__name__}: {_clE})")
+                                            # cells the ENFORCED prop actually covers
+                                            _crM = _crA[~_crA["_has"]]
+                                            _crPos = int((_crM["share"] > 1e-12).sum())
+                                            _crZero = int((_crM["share"] <= 1e-12).sum())
+                                            log(f"   [ca-reach] SCOPED sub-cells in the delivered "
+                                                f"split: {len(_crA):,} · covered by enforced prop "
+                                                f"{int(_crA['_has'].sum()):,} · NOT covered "
+                                                f"{len(_crM):,}. (Offline on this run's export the "
+                                                "same figure was 176 of 14,983 — a large "
+                                                "disagreement here means the two universes are not "
+                                                "the same object and this block is unreliable.)")
+                                            log(f"   [ca-reach]   of the uncovered: {_crZero:,} "
+                                                f"carry an ALL-ZERO share row (CASE A — the split "
+                                                f"HAS the cell and enforced_prop_items drops it at "
+                                                f"`prop_raw > 0`; fix belongs in "
+                                                f"enforced_prop_items, one change all callers "
+                                                f"share) · {_crPos:,} carry POSITIVE share that "
+                                                "still produced no prop (CASE B — the loss is "
+                                                "inside build_split_exports / the vampMid map, and "
+                                                "keeping zero rows would NOT help).")
+                                            log("   [ca-reach]   UNSCOPED RPGTs are excluded here "
+                                                "ON PURPOSE: they are held at baseline "
+                                                "(hold_unselected_at_baseline), and the same "
+                                                "measurement over ALL RPGTs reads 16,768 uncovered "
+                                                "cells / 67% of t0 volume. Any fix that sources its "
+                                                "cell universe without this filter reroutes two "
+                                                "thirds of the book.")
+                                        else:
+                                            log("   [ca-reach] skipped — the granular split lacks "
+                                                f"the sub-cell key columns (have {sorted(_crC)[:8]}).")
+                                    except Exception as _crE:  # noqa: BLE001
+                                        log(f"   [ca-reach] skipped ({type(_crE).__name__}: {_crE})")
+                                # ── [ca-zerocell] SURFACE THE SAFETY RAIL IN THIS LOG ────────────
+                                # impact_calcs has no logger, so the Case A guard used print(),
+                                # which goes to the terminal and NOT into the run log — the one
+                                # artefact that actually gets read. A guard nobody sees is not a
+                                # guard. enforced_prop_items now stashes the count + RPGT breakdown
+                                # in a module global; re-emit it through log() here.
+                                try:
+                                    import impact_calcs as _icmod
+                                    _caz = getattr(_icmod, "_LAST_CA_ZEROCELL", None)
+                                    if _caz:
+                                        _cazN = int(_caz.get("n", 0) or 0)
+                                        _cazB = _caz.get("by_rpgt") or {}
+                                        log(f"   [ca-zerocell] {_cazN:,} zero-share sub-cell(s) kept "
+                                            "as placeholders so the backup catch-all can fire in "
+                                            "profiles with NO specific rule (previously dropped at "
+                                            "`prop_raw > 0`, so it never reached them)"
+                                            + ((" · by RPGT: "
+                                                + " · ".join(f"{_k} {int(_v):,}" for _k, _v
+                                                             in sorted(_cazB.items(),
+                                                                       key=lambda kv: -kv[1])))
+                                               if _cazB else ""))
+                                        _cazU = [_k for _k in _cazB
+                                                 if str(_k).strip().lower() not in
+                                                 {str(_r).strip().lower()
+                                                  for _r in (locals().get("_sel_rpgts") or ())}]
+                                        if _cazN > 2000 or _cazU:
+                                            log("   [ca-zerocell] ⚠ STOP — placeholders reached "
+                                                f"{_cazN:,} cell(s)"
+                                                + (f" and include UNSCOPED RPGT(s) {_cazU}" if _cazU
+                                                   else "")
+                                                + ". Unscoped RPGTs are held at baseline; measured "
+                                                "offline they are 16,592 cells / 67% of t0 volume "
+                                                "against 176 / 0.2% for the scoped set. The "
+                                                "catch-all must NOT reroute frozen baseline volume "
+                                                "— set ROUTING_CA_ZEROCELL=0 and treat every "
+                                                "delivered number in this run as suspect.")
+                                    elif _caz is not None:
+                                        log("   [ca-zerocell] 0 placeholders — no sub-cell in this "
+                                            "split has zero share everywhere, so Case A has nothing "
+                                            "to add here. At CELL grain that is expected; the 176 "
+                                            "were measured at SUB-CELL grain.")
+                                except Exception as _cazE:  # noqa: BLE001
+                                    log(f"   [ca-zerocell] stash unavailable "
+                                        f"({type(_cazE).__name__})")
                                 _rec_notes = []
                                 _rec_bc = ss.get("backup_catchall") or {}
                                 if _rec_bc and _rec_ep and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
@@ -6584,7 +7066,11 @@ def render():
                                             for _re in _eb.report(_s2pr(_full_e, _inc)):
                                                 _elig_by_midl[str(_re.get("midl", "")).strip().lower()] = _re.get("now")
                                             try:
-                                                for _rnb in _eb.report(_fm_s2pr_raw(_full_e, _inc)):
+                                                # Store it: this is chain step 1's endpoint vector,
+                                                # and the SPLIT diff below needs the same object
+                                                # rather than a recomputation that could drift.
+                                                _pr_raw_v = np.asarray(_fm_s2pr_raw(_full_e, _inc), float)
+                                                for _rnb in _eb.report(_pr_raw_v):
                                                     _noblend_by_midl[
                                                         str(_rnb.get("midl", "")).strip().lower()] = _rnb.get("now")
                                             except Exception:  # noqa: BLE001
@@ -6676,6 +7162,11 @@ def render():
                                                         _re5n.get("now")
                                             except Exception:  # noqa: BLE001
                                                 _ship_nb_by_midl = {}
+                                            # Retain the PRE-blend shipped vector: the in-search
+                                            # blend's row-level effect is (_pr_ship - _pr_ship_nb),
+                                            # and comparing that against the DELIVERED blend's
+                                            # effect (_pr_enf - _pr_nb) is what isolates step 1.
+                                            _pr_ship_nb = np.array(_pr_ship, dtype=float, copy=True)
                                             if _blend_fn is not None:
                                                 _pr_ship = np.asarray(_blend_fn(_pr_ship), float)
                                             for _re5 in _eb.report(_pr_ship):
@@ -7100,7 +7591,12 @@ def render():
                                                     log(f"      [terms]     MOVED-IN capped "
                                                         f"{_ai[2]:>12,.0f} (Δ {_dn - _ai[2]:+,.0f})  ·  "
                                                         f"UNCAPPED {_ai[4]:,.0f} (Δ {_dn - _ai[4]:+,.0f})"
-                                                        + ("   ⇒ CAP IS THE CAUSE: uncapped matches "
+                                                        + ("   ⇒ both terms are ~0 — MOVED-IN already "
+                                                           "agrees, so the cap probe is NOT informative "
+                                                           "here (it only discriminates when there is a "
+                                                           "gap to explain)."
+                                                           if max(_rc7, _rn7) < 0.5
+                                                           else "   ⇒ CAP IS THE CAUSE: uncapped matches "
                                                            "delivered, so the 0.97 max-share is applied "
                                                            "TWICE (raw shares in build_split_exports, "
                                                            "then pshare in band_projection)."
@@ -7431,6 +7927,326 @@ def render():
                                                 "arrays unavailable (needs impact_calcs 2026-08-18a+).")
                                     except Exception as _te7:  # noqa: BLE001
                                         log(f"      [terms] skipped ({type(_te7).__name__}: {_te7})")
+                                    # ── STEP 2 (SPLIT) and STEP 1 (BLEND) AT KEY LEVEL ───────────
+                                    # The last two surviving chain steps. Both are vector diffs on the
+                                    # projector's own prop-keys, so they can be attributed to named
+                                    # (sub-cell, MID) keys with no aggregation and no extra projection.
+                                    try:
+                                        _pkS = list(getattr(locals().get("_eb"), "prop_keys", []) or [])
+                                        if not _pkS:
+                                            _pjS = getattr(locals().get("_eb"), "projector", None)
+                                            _pkS = list(getattr(_pjS, "prop_keys", []) or [])
+                                        _rawS = locals().get("_pr_raw_v")
+                                        _shnbS = locals().get("_pr_ship_nb")
+                                        _shbS = locals().get("_pr_ship")
+                                        _enfS = locals().get("_pr_enf")
+                                        _nbS = locals().get("_pr_nb")
+
+                                        def _flatS(_x):
+                                            if _x is None:
+                                                return None
+                                            _a = np.asarray(_x, float)
+                                            return _a[0] if _a.ndim > 1 else _a
+
+                                        def _topS(_d, _n=6):
+                                            _ix = np.argsort(-np.abs(_d))[:_n]
+                                            return [(str(_pkS[int(_i)]) if int(_i) < len(_pkS) else str(_i),
+                                                     float(_d[int(_i)])) for _i in _ix
+                                                    if abs(float(_d[int(_i)])) > 1e-12]
+
+                                        def _permidS(_d):
+                                            _agg = {}
+                                            for _i in np.nonzero(np.abs(_d) > 1e-12)[0]:
+                                                _k = str(_pkS[int(_i)]) if int(_i) < len(_pkS) else ""
+                                                _m = _k.rsplit("|", 1)[-1] if "|" in _k else _k
+                                                _agg[_m] = _agg.get(_m, 0.0) + abs(float(_d[int(_i)]))
+                                            return sorted(_agg.items(), key=lambda kv: -kv[1])[:5]
+
+                                        _rawF, _shnbF = _flatS(_rawS), _flatS(_shnbS)
+                                        _shbF, _enfF, _nbF = _flatS(_shbS), _flatS(_enfS), _flatS(_nbS)
+
+                                        # ---- BLOCK A: SPLIT = scored raw vector vs shipped vector ----
+                                        if (_rawF is not None and _shnbF is not None
+                                                and len(_rawF) == len(_shnbF)):
+                                            _dS = _shnbF - _rawF
+                                            _nzS = int(np.count_nonzero(np.abs(_dS) > 1e-12))
+                                            log(f"   [step2] SPLIT at KEY level — the GA scores "
+                                                f"`_fm_deliv(raw)` and ships `_restrict`: {_nzS:,} of "
+                                                f"{len(_dS):,} prop-keys differ · Σ|Δprop| "
+                                                f"{np.abs(_dS).sum():,.3f} · Σsigned "
+                                                f"{_dS.sum():+,.3f}")
+                                            if _nzS:
+                                                log("   [step2]   worst keys (shipped − scored): "
+                                                    + " · ".join(f"{_k[:44]} {_v:+.4f}"
+                                                                 for _k, _v in _topS(_dS)))
+                                                log("   [step2]   by MID (Σ|Δprop|): "
+                                                    + " · ".join(f"{_m[:20]} {_v:.3f}"
+                                                                 for _m, _v in _permidS(_dS)))
+                                            # SELF-CHECK: does this diff reproduce chain step 2?
+                                            try:
+                                                _s2chk = {}
+                                                for _r2 in _eb.report(_shnbF[None, :]):
+                                                    _s2chk[str(_r2.get("midl", "")).strip().lower()] = \
+                                                        float(_r2.get("now") or 0.0)
+                                                _s2ref = locals().get("_ship_nb_by_midl") or {}
+                                                _s2d = max((abs(_s2chk.get(_k, 0.0) - float(_s2ref.get(_k) or 0.0))
+                                                            for _k in _s2ref), default=0.0)
+                                                log(f"   [step2]   self-check vs the chain's own step-2 "
+                                                    f"endpoint: worst per-MID |Δ| {_s2d:,.3f}"
+                                                    + ("  ✓ same object." if _s2d < 1.0 else
+                                                       "  ⚠ MISMATCH — this diff is NOT chain step 2; "
+                                                       "treat the keys above as unattributed."))
+                                            except Exception as _e2c:  # noqa: BLE001
+                                                log(f"   [step2]   self-check unavailable "
+                                                    f"({type(_e2c).__name__})")
+                                        else:
+                                            log("   [step2] skipped — the raw or pre-blend shipped vector "
+                                                "is unavailable this run.")
+
+                                        # ---- BLOCK B: the TWO BLENDS, effect vs effect ----
+                                        if (_shbF is not None and _shnbF is not None
+                                                and _enfF is not None and _nbF is not None
+                                                and len(_shbF) == len(_nbF)):
+                                            # SCALE FIRST. Until 2026-08-18j this block diffed the raw
+                                            # effect vectors, and its "disagreement" was a CONVENTION
+                                            # artefact, not a blend disagreement:
+                                            #   _pr_nb  comes from _m_before = enforced_prop_items()
+                                            #           BEFORE blend_prop_items -> 0-100 per sub-cell
+                                            #           (the parity line's own Sprop_raw 1,481,300).
+                                            #   _pr_enf comes from _rec_ep AFTER blend_prop_items,
+                                            #           which renormalises -> 0-1 per sub-cell
+                                            #           (measured on the run's dumped enforced-prop
+                                            #           CSV: Sprop_raw 14,807, per-sub-cell p50 1.0).
+                                            # 1,481,300 / 14,807 = 100.04, so the delivered "effect"
+                                            # was ~100x the in-search one and the reported
+                                            # S|disagreement| 1,462,277 was byte-identical to the
+                                            # parity line's S|Dprop_raw| -- i.e. it re-measured the
+                                            # rescale. The 64,318-vs-332 asymmetry was contaminated
+                                            # the same way.
+                                            # Both blends redistribute share WITHIN a cell, so
+                                            # per-cell normalisation is the scale-free form of the
+                                            # object this block claims to compare, and it removes the
+                                            # delivered blend's renormalisation component (not a
+                                            # routing disagreement). BOTH sides go through the SAME
+                                            # normaliser, so nothing here assumes which scale either
+                                            # vector is on.
+                                            _cposS, _cidS = {}, np.empty(len(_shbF), dtype=np.int64)
+                                            for _iC, _kC in enumerate(_pkS):
+                                                _cC = str(_kC).rsplit("|", 1)[0]
+                                                _jC = _cposS.get(_cC)
+                                                if _jC is None:
+                                                    _jC = len(_cposS); _cposS[_cC] = _jC
+                                                _cidS[_iC] = _jC
+
+                                            def _cnormS(_v):
+                                                """Scale each cell to sum 1. Returns (normalised,
+                                                p50 budget, budget vector per cell)."""
+                                                _s = np.bincount(_cidS, weights=_v,
+                                                                 minlength=len(_cposS))
+                                                _nzc = _s[np.abs(_s) > 1e-9]
+                                                _p50 = float(np.median(_nzc)) if _nzc.size else 0.0
+                                                _den = _s[_cidS]
+                                                _okd = np.abs(_den) > 1e-9
+                                                return (np.where(_okd, _v / np.where(_okd, _den, 1.0),
+                                                                 0.0), _p50, _s)
+
+                                            def _budS(_s):
+                                                """Describe a per-cell budget vector: is it ONE
+                                                value everywhere, or a spread? A single p50 cannot
+                                                tell a 50/50 injection RULE from a scattered
+                                                effect, and that distinction decides whether the
+                                                fix is a rule change or a per-cell one."""
+                                                _nz = _s[np.abs(_s) > 1e-9]
+                                                if not _nz.size:
+                                                    return "no non-empty cells"
+                                                _q = np.percentile(_nz, [5, 50, 95])
+                                                _at1 = float(np.mean(np.abs(_nz - 1.0) <= 1e-6))
+                                                return (f"p05 {_q[0]:,.3f} / p50 {_q[1]:,.3f} / "
+                                                        f"p95 {_q[2]:,.3f} · {100.0 * _at1:.1f}% of "
+                                                        f"cells at exactly 1.0 · {_nz.size:,} cells")
+
+                                            _shbN, _bud1, _bv1 = _cnormS(_shbF)
+                                            _shnbN, _bud2, _bv2 = _cnormS(_shnbF)
+                                            _enfN, _bud3, _bv3 = _cnormS(_enfF)
+                                            _nbN, _bud4, _bv4 = _cnormS(_nbF)
+                                            log("   [step1] per-cell prop BUDGET, distribution "
+                                                "(pshare = prop_raw / Σ_cell prop_raw is what the "
+                                                "txn formula consumes, so the BUDGET is the object "
+                                                "— not a unit convention):")
+                                            for _bl, _bvv in (("shipped +blend  ", _bv1),
+                                                              ("shipped −blend  ", _bv2),
+                                                              ("enforced +blend ", _bv3),
+                                                              ("enforced −blend ", _bv4)):
+                                                log(f"   [step1]   {_bl} {_budS(_bvv)}")
+                                            log(f"   [step1] per-cell prop budget BEFORE normalising "
+                                                f"(p50) — shipped+blend {_bud1:,.3f} · shipped−blend "
+                                                f"{_bud2:,.3f} · enforced+blend {_bud3:,.3f} · "
+                                                f"enforced−blend {_bud4:,.3f}. These are NOT on one "
+                                                "scale: enforced_prop_items emits 0–100 per sub-cell "
+                                                "and blend_prop_items renormalises to 1, so the raw "
+                                                "delivered effect is ~100× the in-search one. All "
+                                                "four are normalised to per-cell sum 1 before the "
+                                                "diff below.")
+                                            # NO-OP CHECK on the in-search side: its vectors are
+                                            # already per-cell-normalised, so normalisation must
+                                            # barely move them. If it does, the premise is wrong.
+                                            _noop1 = float(np.abs(_shbN - _shbF).sum())
+                                            _noop2 = float(np.abs(_shnbN - _shnbF).sum())
+                                            log(f"   [step1]   normalisation moved the IN-SEARCH "
+                                                f"vectors by Σ|normalised − raw| {_noop1:,.3f} "
+                                                f"(+blend) / {_noop2:,.3f} (−blend) on Σ "
+                                                f"{np.abs(_shbF).sum():,.1f}"
+                                                + ("  ✓ both in-search vectors were already "
+                                                   "per-cell normalised, so any rescale is "
+                                                   "entirely on the delivered side."
+                                                   if max(_noop1, _noop2) < 0.01 * max(
+                                                       float(np.abs(_shbF).sum()), 1e-9)
+                                                   else "  ⚠ the +blend vector is NOT normalised "
+                                                        "while −blend IS: the IN-SEARCH BLEND "
+                                                        "CHANGES THE PER-CELL BUDGET. That is not "
+                                                        "a reason to distrust the diff below — "
+                                                        "pshare divides by the cell sum, so a "
+                                                        "budget change moves EVERY pshare in the "
+                                                        "cells it touches. It IS the mechanism. "
+                                                        "Read it against the budget distribution "
+                                                        "above and chain step 1."))
+                                            _eIS = _shbN - _shnbN          # in-search blend's effect
+                                            _eDL = _enfN - _nbN            # delivered blend's effect
+                                            _dB = _eIS - _eDL
+                                            _nzB = int(np.count_nonzero(np.abs(_dB) > 1e-12))
+                                            _onlyIS_B = int(np.count_nonzero((np.abs(_eIS) > 1e-12)
+                                                                             & (np.abs(_eDL) <= 1e-12)))
+                                            _onlyDL_B = int(np.count_nonzero((np.abs(_eDL) > 1e-12)
+                                                                             & (np.abs(_eIS) <= 1e-12)))
+                                            log(f"   [step1] THE TWO BACKUP BLENDS, effect vs effect, "
+                                                f"BOTH NORMALISED to per-cell sum 1 — in-search Σ|Δ| "
+                                                f"{np.abs(_eIS).sum():,.3f} · delivered Σ|Δ| "
+                                                f"{np.abs(_eDL).sum():,.3f} · they DISAGREE on "
+                                                f"{_nzB:,} of {len(_dB):,} keys (Σ|disagreement| "
+                                                f"{np.abs(_dB).sum():,.3f}) · Σsigned "
+                                                f"{_dB.sum():+,.3f}")
+                                            log(f"   [step1]   scale sanity: both Σ|Δ| are now share "
+                                                f"units on a Σprop of {np.abs(_shbN).sum():,.0f} "
+                                                f"(≈ one unit per cell). Compare against [step2]'s "
+                                                f"Σ|Δprop| directly — the two are finally in the "
+                                                "same units.")
+                                            log(f"   [step1]   keys the IN-SEARCH blend touches and the "
+                                                f"DELIVERED one does not: {_onlyIS_B:,} · vice versa: "
+                                                f"{_onlyDL_B:,}  ⇒ a large asymmetry here is a GRAIN or "
+                                                "ELIGIBILITY difference in the injection rule, not a "
+                                                "value difference. (Pre-2026-08-18j this read 332 vs "
+                                                "64,318, which was the 0–100 vs 0–1 rescale making "
+                                                "every delivered key look 'touched' — not a real "
+                                                "asymmetry.)")
+                                            if _nzB:
+                                                log("   [step1]   worst keys (in-search − delivered "
+                                                    "blend effect): "
+                                                    + " · ".join(f"{_k[:44]} {_v:+.4f}"
+                                                                 for _k, _v in _topS(_dB)))
+                                                log("   [step1]   by MID (Σ|disagreement|): "
+                                                    + " · ".join(f"{_m[:20]} {_v:.3f}"
+                                                                 for _m, _v in _permidS(_dB)))
+                                                # ---- BLOCK C: the cells the IN-SEARCH blend INVENTS ----
+                                                # `_fm_blend_pr` injects the catch-all into every cell
+                                                # with NO specific share and renormalises it to 1. The
+                                                # delivered side cannot: the parity line reports "0 new
+                                                # key(s)" — blend_prop_items only rescales keys
+                                                # enforced_prop_items already emitted. So the in-search
+                                                # blend creates prop in sub-cells the delivered frame
+                                                # has no rows for, and the cell counts above show it
+                                                # exactly: 14,958 − 14,813 = 145 = Σ|disagreement|, one
+                                                # unit of budget per invented cell.
+                                                # THE CHECK EVERY OTHER RUNG HAS AND THIS ONE DID NOT:
+                                                # a cell with cell_tot ≈ 0 contributes NOTHING to
+                                                # post = cell_tot·(…) no matter what its prop says. So
+                                                # zero the injection in exactly those cells, re-project,
+                                                # and see whether the M5 change reproduces chain step 1.
+                                                try:
+                                                    _sB = np.bincount(_cidS, weights=_shbF,
+                                                                      minlength=len(_cposS))
+                                                    _sN = np.bincount(_cidS, weights=_shnbF,
+                                                                      minlength=len(_cposS))
+                                                    _invC = (np.abs(_sB) > 1e-12) & (np.abs(_sN) <= 1e-12)
+                                                    _invK = _invC[_cidS]
+                                                    log(f"   [blend-cells] the in-search blend INVENTS "
+                                                        f"{int(_invC.sum()):,} cell(s) that carry no "
+                                                        f"specific shipped share, across "
+                                                        f"{int(_invK.sum()):,} prop-key(s). Identity "
+                                                        f"check: cells(+blend) − cells(−blend) = "
+                                                        f"{int((np.abs(_sB) > 1e-12).sum()) - int((np.abs(_sN) > 1e-12).sum()):,}"
+                                                        f" vs Σ|disagreement| {np.abs(_dB).sum():,.3f}"
+                                                        + ("  ✓ same population."
+                                                           if abs(int(_invC.sum()) - float(np.abs(_dB).sum())) < 1.0
+                                                           else "  ⚠ these should match; they do not, so "
+                                                                "the invented-cell set is NOT what the "
+                                                                "disagreement measures."))
+                                                    if int(_invC.sum()):
+                                                        _mAg = {}
+                                                        for _i in np.nonzero(_invK & (np.abs(_shbF) > 1e-12))[0]:
+                                                            _k = str(_pkS[int(_i)]) if int(_i) < len(_pkS) else ""
+                                                            _m = _k.rsplit("|", 1)[-1]
+                                                            _mAg[_m] = _mAg.get(_m, 0.0) + float(_shbF[int(_i)])
+                                                        log("   [blend-cells]   catch-all recipients "
+                                                            "(Σ injected prop): "
+                                                            + " · ".join(f"{_m[:22]} {_v:.3f}" for _m, _v
+                                                                         in sorted(_mAg.items(),
+                                                                                   key=lambda kv: -kv[1])[:6]))
+                                                        # THE COUNTERFACTUAL — one report() call.
+                                                        _shbZ = np.array(_shbF, dtype=float, copy=True)
+                                                        _shbZ[_invK] = 0.0
+                                                        _zBy = {}
+                                                        for _rz in _eb.report(_shbZ[None, :]):
+                                                            _zBy[str(_rz.get("midl", "")).strip().lower()] = \
+                                                                float(_rz.get("now") or 0.0)
+                                                        _fBy = locals().get("_elig_by_midl") or {}
+                                                        _nBy = locals().get("_noblend_by_midl") or {}
+                                                        _rows = []
+                                                        for _m in sorted(set(_fBy) | set(_zBy)):
+                                                            _eff = float(_fBy.get(_m) or 0.0) - _zBy.get(_m, 0.0)
+                                                            _s1 = (float(_fBy.get(_m) or 0.0)
+                                                                   - float(_nBy.get(_m) or 0.0)) if _nBy else None
+                                                            if abs(_eff) > 0.5 or (_s1 is not None and abs(_s1) > 0.5):
+                                                                _rows.append((_m, _eff, _s1))
+                                                        _tEff = sum(abs(_r[1]) for _rk, _r in
+                                                                    [(0, _r) for _r in _rows])
+                                                        _tS1 = sum(abs(_r[2]) for _r in _rows
+                                                                   if _r[2] is not None)
+                                                        log(f"   [blend-cells]   COUNTERFACTUAL — zeroing "
+                                                            f"the injection in those cells moves M5 by "
+                                                            f"Σ|Δ| {_tEff:,.0f} across {len(_rows):,} "
+                                                            f"MID(s); chain step 1 totals Σ|Δ| "
+                                                            f"{_tS1:,.0f}."
+                                                            + ("  ✓ CONFIRMED — the invented cells ARE "
+                                                               "chain step 1. Fix: stop injecting where "
+                                                               "the delivered frame has no rows, or make "
+                                                               "enforced_prop_items emit them."
+                                                               if _tS1 > 0.5 and abs(_tEff - _tS1) <= max(0.35 * _tS1, 1.0)
+                                                               else ("  ⚠ these cells carry (near) NO "
+                                                                     "volume — cell_tot ≈ 0, so the prop "
+                                                                     "there cannot move M5. The 145 is "
+                                                                     "BOOKKEEPING and chain step 1 is "
+                                                                     "STILL UNMEASURED; do not read this "
+                                                                     "block as an explanation."
+                                                                     if _tEff <= 0.5 else
+                                                                     "  ⚠ PARTIAL — the invented cells "
+                                                                     "move M5 but do not account for "
+                                                                     "step 1. Something else carries the "
+                                                                     "rest; treat this as one term, not "
+                                                                     "the mechanism.")))
+                                                        for _m, _eff, _s1 in sorted(_rows,
+                                                                                    key=lambda r: -abs(r[1]))[:6]:
+                                                            log(f"   [blend-cells]     {_m[:26]:<26} "
+                                                                f"invented-cell effect {_eff:>+8,.0f}"
+                                                                + (f" · chain step 1 {_s1:>+8,.0f}"
+                                                                   if _s1 is not None else ""))
+                                                except Exception as _bcE:  # noqa: BLE001
+                                                    log(f"   [blend-cells] skipped "
+                                                        f"({type(_bcE).__name__}: {_bcE})")
+                                        else:
+                                            log("   [step1] skipped — one of the four blend vectors "
+                                                "(shipped ±blend, enforced ±blend) is unavailable.")
+                                    except Exception as _eS:  # noqa: BLE001
+                                        log(f"   [step1/2] skipped ({type(_eS).__name__}: {_eS})")
                                     log("   [full-matrix] RECONCILED delivered M5 (AUTHORITATIVE — the "
                                         "EXACT tab-3 projection on the ENFORCED split; == tab-3 'Now'). "
                                         "Each breach is SPLIT into the two independent failures it "
@@ -7645,10 +8461,12 @@ def render():
                                                     f"(Σ|Δ| {_c6[6][1]:,.0f} across the five steps)")
                                             if _lad4:
                                                 _pfrac = float(locals().get("_presence_frac") or 0.0)
-                                                log("      [rung] steps 1 and 3 (the two backup blends) are "
-                                                    "EXACT — both sides are compared on the projector's own "
-                                                    "keys with no aggregation. Their near-zero values rule "
-                                                    "the blends out as the cause.")
+                                                log("      [rung] steps 1 and 3 are measured on the "
+                                                    "projector's own keys with no aggregation, so they are "
+                                                    "EXACT. NOTE: step 1 was 8% of the total at 251 and is "
+                                                    "~half of it at 40 — the two backup blends are now a "
+                                                    "LEADING term, not a ruled-out one. See the [step1] "
+                                                    "block for the key-level disagreement between them.")
                                                 if _pfrac > 0.05:
                                                     log(f"      [rung] ⚠ steps 2 and 4 are NOT separately "
                                                         f"attributable this run. {100.0 * _pfrac:.1f}% of "
@@ -8021,9 +8839,27 @@ def render():
                             ss["blocked_pairs"] = _bpairs
                             if _bpairs:
                                 _tot_cap = 0
+                                # SAME grain choice as the delivered `_ga_gran` site — if these two
+                                # ever disagree, the tabs show a split the reconcile never scored.
+                                _vgk = None
+                                if os.environ.get("ROUTING_BLOCK_CTRY", "0") == "1":
+                                    # NOT `getattr(...) or []` — a pandas Index has no truth value,
+                                    # and `Index or []` raises "The truth value of a Index is
+                                    # ambiguous". That is exactly what the 19:46 run hit: the whole
+                                    # auto-block application was skipped with
+                                    # "[Warning] auto-block detection skipped (ValueError: …)", so the
+                                    # tab variations shipped WITHOUT blocked caps. Introduced by me in
+                                    # 2026-08-18l and only reachable with ROUTING_BLOCK_CTRY=1, which
+                                    # is why the three runs before it were clean.
+                                    _v0 = variations[0].get("split") if variations else None
+                                    _vc0 = getattr(_v0, "columns", None)
+                                    _vcols = set(_vc0) if _vc0 is not None else set()
+                                    _vgk = tuple(c for c in ("rpgt", "currency", "bank", "pmp",
+                                                             "ctry") if c in _vcols) or None
                                 for v in variations:
                                     v["split"], _nc = _apply_blocked_caps(v["split"], _bpairs, float(floor),
-                                                                          bin_to_bank=bin_to_bank)
+                                                                          bin_to_bank=bin_to_bank,
+                                                                          group_keys=_vgk)
                                     _tot_cap += _nc
                                 ss["blocked_capped"] = int(_tot_cap)
                                 log(f"   auto-block: {len(_bpairs)} bank×gateway flagged as BANK-BLOCKED "

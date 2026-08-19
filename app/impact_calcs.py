@@ -41,7 +41,7 @@ def _apply_keep(t0, excluded_mids, kill_eff, month_0):
     return t0
 
 __build__ = ("2026-08-17b-count-only-pool-search+subcell-exporter+staged-enforcement"
-             "+projection-mode-no-round+no-lt2-backfill+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash")
+             "+projection-mode-no-round+no-lt2-backfill+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zerocell")
 
 
 # [FN-247]
@@ -975,8 +975,19 @@ def _inject_backfill_rows(pp, prop):
     b = pp.copy()
     b["_rpgtl"] = b["RPGT"].astype(str).str.strip().str.lower()
     b["_vml"] = b["vampMid"].astype(str).str.strip().str.lower()
-    present = set(map(tuple, b[subk + ["_vml"]].drop_duplicates().to_numpy()))
-    valid_sub = set(map(tuple, b[subk].drop_duplicates().to_numpy()))
+    # PRESENCE IS JUDGED ON THE t == 0 SLICE — the frame the caller's LEFT merge actually
+    # consumes (`_t0 = pp[pp["t"] == 0]`). Judging it over ALL t (as this did until
+    # 2026-08-18h) made a MID with an AGED row but no t0 row read as "present": back-fill
+    # skipped it, then the t0 merge found nothing and its enforced share was dropped and
+    # renormalised onto the survivors. Measured on the Aug baseline: 3,170 enforced items
+    # (156.92 of 14,807 prop mass) vanished across 1,280 sub-cells, and in the worst cases
+    # the ENTIRE sub-cell's routing decision was discarded (ghost 1.0000, surviving 0.0000).
+    # `valid_sub` moves with it so we still never invent a (pmp, Country) the t0 baseline
+    # lacks — injecting into a t>0-only sub-cell would create a t0 cell with cell_tot = 0
+    # that contributes nothing but rows.
+    _b0 = b[pd.to_numeric(b["t"], errors="coerce").fillna(0).astype(int) == 0]
+    present = set(map(tuple, _b0[subk + ["_vml"]].drop_duplicates().to_numpy()))
+    valid_sub = set(map(tuple, _b0[subk].drop_duplicates().to_numpy()))
     # Global _vml -> proper-case vampMid, so a MID that exists elsewhere in the export keeps its
     # display name and merges cleanly (no lower-case twin) on the final collapse.
     name_map = b.drop_duplicates("_vml").set_index("_vml")["vampMid"].to_dict()
@@ -1762,7 +1773,9 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
         return tuple()
     allm = pd.concat(frames, ignore_index=True)
     allm["prop_raw"] = pd.to_numeric(allm["prop_raw"], errors="coerce").fillna(0.0)
-    allm = allm[allm["prop_raw"] > 0].copy()
+    # Key normalisation moved ABOVE the positive filter (2026-08-18p) so an all-zero sub-cell can
+    # still be identified at sub-cell grain before it is discarded. Order of operations only —
+    # the normalisation itself is unchanged.
     allm["Currency"] = allm["Currency"].astype(str).str.strip().str.lower()
     allm["BIN"] = allm["BIN"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
     allm["_pmp"] = (allm["paymentMethodProvider"].astype(str).str.strip().str.lower()
@@ -1771,6 +1784,72 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
                      if "Country" in allm.columns else "_all_")
     allm["vampMid"] = (allm["_gw"].astype(str).str.strip().str.lower().map(fid2vamp)
                        .fillna(allm["_gw"].astype(str).str.strip()))
+    _subk = ["Currency", "BIN", "RPGT", "_pmp", "_ctry"]
+    _pos = allm[allm["prop_raw"] > 0].copy()
+    # ── CASE A: ZERO-CELL PLACEHOLDERS ────────────────────────────────────────────────────
+    # A sub-cell whose gateways ALL land on zero used to be dropped outright here, so it never
+    # reached prop_items — and `blend_prop_items` only loops over the cells prop_items contains.
+    # `blend_cell_shares` therefore never ran for exactly the cells its own docstring is about
+    # ("No specific share in the cell → undefined profile → fall back to the catch-all alone"),
+    # which is why the tab-3 parity line reports "0 new key(s)" while the in-search twin injects
+    # the catch-all into 145 such cells. That asymmetry is 20 of the 27 remaining reconciliation
+    # units, confirmed per-MID by the [blend-cells] counterfactual.
+    # Keeping ONE zero-prop row per such sub-cell is enough for the blend to see the cell:
+    # blend_cell_shares filters `> 0`, gets an empty `spec`, and takes the catch-all branch. With
+    # no catch-all configured it returns dict(spec) == {} and the cell emits nothing, i.e. exactly
+    # today's behaviour; and with no blend at all a prop_raw of 0.0 adds nothing to any per-sub-cell
+    # sum and moves no volume. Kill-switch: ROUTING_CA_ZEROCELL=0.
+    _ph_n = 0
+    if os.environ.get("ROUTING_CA_ZEROCELL", "1") != "0":
+        try:
+            _allc = allm[_subk].drop_duplicates()
+            _posc = _pos[_subk].drop_duplicates()
+            _zc = _allc.merge(_posc.assign(_p=1), on=_subk, how="left")
+            _zc = _zc[_zc["_p"].isna()][_subk]
+            if len(_zc):
+                _ph = (allm.merge(_zc, on=_subk, how="inner")
+                       .drop_duplicates(_subk).copy())
+                _ph["prop_raw"] = 0.0
+                _ph_n = len(_ph)
+                _pos = pd.concat([_pos, _ph], ignore_index=True)
+        except Exception:  # noqa: BLE001 — never break the projection over a diagnostic aid
+            _ph_n = 0
+    if _ph_n:
+        # SAFETY RAIL. The whole fix depends on `split` already being scope-restricted. Measured
+        # offline on the Aug baseline: 176 uncovered sub-cells among the SCOPED RPGTs (0.2% of t0
+        # volume) versus 16,592 among the UNSCOPED ones (67%), which are frozen by design
+        # (hold_unselected_at_baseline). If unscoped RPGTs ever reach here the placeholder count
+        # explodes and the catch-all would reroute two thirds of the book — so say so loudly
+        # rather than let it pass as a routine number.
+        try:
+            _rb = (_ph.groupby("RPGT").size().sort_values(ascending=False)
+                   if "RPGT" in _ph.columns else None)
+            _msg = (f"[ca-zerocell] {_ph_n:,} zero-share sub-cell(s) kept as placeholders so the "
+                    f"backup catch-all can fire in profiles with NO specific rule "
+                    f"(was: dropped at `prop_raw > 0`, so the catch-all never reached them)")
+            if _rb is not None:
+                _msg += " · by RPGT: " + " · ".join(f"{_k} {int(_v):,}" for _k, _v in _rb.items())
+            if _ph_n > 2000:
+                _msg += ("   ⚠ FAR more than the ~176 measured on the scoped Aug baseline — this "
+                         "looks like UNSCOPED (baseline-frozen) RPGTs leaking into the split. "
+                         "Those must NOT receive catch-all traffic; set ROUTING_CA_ZEROCELL=0 and "
+                         "check the RPGT scope before trusting any delivered number from this run.")
+            print("   " + _msg)
+        except Exception:  # noqa: BLE001
+            pass
+    # STASH for the caller to LOG. print() lands in the terminal, not in the run log — and the run
+    # log is the artefact that actually gets read, so a guard that only prints is not a guard.
+    # tab2_engine re-emits this through log() as [ca-zerocell], including the unscoped-RPGT check.
+    try:
+        globals()["_LAST_CA_ZEROCELL"] = {
+            "n": int(_ph_n),
+            "by_rpgt": ({str(_k): int(_v) for _k, _v in
+                         _ph.groupby("RPGT").size().items()}
+                        if _ph_n and "RPGT" in getattr(_ph, "columns", []) else {}),
+        }
+    except Exception:  # noqa: BLE001
+        globals()["_LAST_CA_ZEROCELL"] = {"n": int(_ph_n), "by_rpgt": {}}
+    allm = _pos
     agg = allm.groupby(["Currency", "BIN", "RPGT", "_pmp", "_ctry", "vampMid"],
                        as_index=False)["prop_raw"].sum()
     return tuple(agg.itertuples(index=False, name=None))
