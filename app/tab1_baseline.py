@@ -26,7 +26,7 @@ from app_common import (ss, PROJECT_ROOT, INPUTS_DIR, GCP_PROJECT,
 
 # [FN-293]
 def render():
-    _bb, _vs = st.tabs(["Build Baseline", "Validate Split"])
+    _bb, _vs, _cv = st.tabs(["Build Baseline", "Validate Split", "Config Validation"])
     with _bb:
         # --- Highly targeted CSS: applies card shadow ONLY to the 6 section containers ---
         # --- Also aggressively squashes vertical margins specifically inside these cards ---
@@ -73,19 +73,31 @@ def render():
             help="Load a finished VAMP forecast from disk instead of running the "
                  "pipeline. Give the folder the outputs were saved to; if valid, the "
                  "other inputs are hidden and the forecast is loaded for tab 2.")
+        # The 'Forecast ready…' run log renders into this slot — assigned to the spacer column to the
+        # RIGHT of the 'Split Go Live date' input below (previously-created-forecast mode only).
+        _prev_log_slot = None
         settings_hidden = False
         if use_prev:
             # Forecast-outputs folder on the LEFT; Split Go Live date on the RIGHT (the other
             # inputs are hidden in this mode, so it's shown here so it's always available).
             # Split Go Live keeps its reduced width (0.175 of the row); the folder input is widened
             # to 0.5 so its long label fits on one line. The trailing column is an empty spacer.
-            _pv1, _pv2, _pv_sp = st.columns([0.5, 0.175, 0.325])
+            # folder + Split-Go-Live combined width ≈ 0.5 of the row, matching the "Month 0" +
+            # "Future Anchor Date" pair (which fill one half of an st.columns(2) split). Ratio kept
+            # ~folder:date = 0.37:0.13 (≈ the original 0.5:0.175).
+            _pv1, _pv2, _pv_sp = st.columns([0.37, 0.13, 0.5])
             prev_dir = _pv1.text_input(
-                "Forecast outputs folder (the data/outputs/<MONTH>/<COMPANY>/ folder)", "")
+                "data/outputs/<MONTH>/<COMPANY>/<SCHEME>/ ", "")
             split_go_live = _pv2.date_input(
                 "Split Go Live date", value=ss.get("split_go_live_date", m0_date), key="sgl_hidden",
                 help="Date the proposed split goes live. Drives the mid-month pro-rata "
                      "element in the forecast export and the tab-4 VAMP Post projection.")
+            # Run log renders into the trailing spacer column — to the RIGHT of 'Split Go Live date',
+            # at that reduced (~0.5) width, instead of full-width above it.
+            # Fixed-height scroll box: opening/expanding the run log scrolls WITHIN this box instead of
+            # growing the row, so it never reflows the folder / Split-Go-Live column (or the content
+            # below) to its left. Tune the px if you want a taller/shorter log.
+            _prev_log_slot = _pv_sp.container(height=200)
             ss["split_go_live_date"] = split_go_live
             if prev_dir:
                 need_all = ["mid_level.csv", "vamp_t_period_export.csv"]
@@ -98,15 +110,59 @@ def render():
                     run_live, load_baseline, use_cached_inputs = False, True, True
                     cached_inputs_path = prev_dir
                     parts = [p for p in os.path.normpath(prev_dir).split(os.sep) if p]
-                    if len(parts) >= 2:
+                    # ── IDENTIFY BY CONTENT, NOT POSITION (2026-08-19h) ──────────────────
+                    # This used to read `company, month_var = parts[-1], parts[-2]`, i.e. it
+                    # assumed the layout `.../<MONTH>/<COMPANY>/`. When the outputs gained a
+                    # per-scheme subfolder the path became `.../AUG/TotalAV/visa/`, so the
+                    # SCHEME was read as the company and the COMPANY as the month. tab 2 then
+                    # queried BigQuery with COMPANY='visa', got 0 rows, and the run died at
+                    # "RPGT scope removed all rows". The month parse below raises ValueError on
+                    # 'Totalav' and is swallowed, so nothing pointed at the real cause, and this
+                    # branch hides the Company selectbox so there was no way to correct it.
+                    # Match each component on what it IS instead. Scan forward and keep the LAST
+                    # match, so the deepest directory wins and a stray 'May' or a company-shaped
+                    # folder higher up an absolute path cannot outrank the real one.
+                    _pp_sch = _pp_co = None
+                    _pp_mo = None                      # (MONTH_LABEL, month_number)
+                    if os.environ.get("ROUTING_TAB1_PATHPARSE", "1") != "0":
+                        _pp_known = {str(_c).replace(" ", "").lower(): str(_c) for _c in COMPANIES}
+                        for _pp in parts:
+                            _ppl = str(_pp).strip().lower()
+                            if _ppl in ("visa", "mastercard"):
+                                _pp_sch = _ppl
+                            _ppk = _ppl.replace(" ", "")
+                            if _ppk in _pp_known:
+                                _pp_co = _pp_known[_ppk]
+                            try:
+                                _pp_mo = (str(_pp).upper(),
+                                          datetime.datetime.strptime(
+                                              str(_pp).capitalize(), "%b").month)
+                            except ValueError:
+                                pass
+                    if _pp_co is not None and _pp_mo is not None:
+                        company, month_var = _pp_co, _pp_mo[0]
+                        m0_date = m0_date.replace(month=_pp_mo[1])
+                        if _pp_sch is not None:
+                            # The old parser never read the scheme, so a mastercard forecast
+                            # silently inherited the 'visa' default — and with it the WRONG
+                            # MID list and BIN prefix. Take it from the folder that names it.
+                            scheme = _pp_sch
+                    elif len(parts) >= 2:
+                        # Not positively identified ⇒ fall through to the ORIGINAL positional
+                        # behaviour rather than refusing to load a non-standard folder.
                         company, month_var = parts[-1], parts[-2]
                         try:
                             m_int = datetime.datetime.strptime(month_var.capitalize(), "%b").month
                             m0_date = m0_date.replace(month=m_int)
                         except ValueError:
                             pass
-                    st.success(f"Valid forecast found — {company} ({month_var}). Other "
-                               f"inputs hidden. Click **Load forecast**, then open tab 2.")
+                    # 12px to match the widget-label text size (e.g. the 'Forecast outputs folder'
+                    # label), instead of the larger default st.success alert.
+                    st.markdown(
+                        f"<div style='font-size:12px; color:#1D9E75; font-weight:600; margin:2px 0;'>"
+                        f"✓ Valid forecast found — {company} ({month_var}). Other inputs hidden. "
+                        f"Click <b>Load forecast</b>, then open tab 2.</div>",
+                        unsafe_allow_html=True)
                 else:
                     st.error("Missing/invalid outputs: "
                              + (", ".join(miss) if miss else "not a folder")
@@ -114,8 +170,11 @@ def render():
 
         _fc_log_slot = None   # forecast run-log slot (assigned in ROW 2 right column)
 
-        if not settings_hidden:
+        if not use_prev:
             # --- ROW 1: Run Identity & Data Sources ---
+            # Hidden as soon as 'Use a previously created forecast' is ticked (not only once a valid
+            # folder is found) — forecast_settings below uses the pre-initialised defaults / the folder
+            # parse, so skipping these widgets is safe.
             r1_c1, r1_c2 = st.columns(2, gap="large")
         
             with r1_c1:
@@ -247,7 +306,7 @@ def render():
                     # button until the next fetch (an error shows red). Always renders exactly one
                     # element in the status column so the layout tree stays stable across reruns.
                     _fb1, _fb2 = st.columns([1, 1.5], vertical_alignment="center")
-                    _fb1.button("Fetch projected M0 from BigQuery", key="fetch_m0_btn",
+                    _fb1.button("Fetch M0 Weightings", key="fetch_m0_btn",
                                 on_click=_fetch_m0, args=(company, scheme),
                                 help=f"Query last month's projected {str(scheme).title()} transactions "
                                      f"per RPGT for {company} and fill the weightings below.")
@@ -403,30 +462,29 @@ def render():
         # its own forecast via the pipeline using these settings.
         ss["forecast_settings"] = forecast_settings
 
-        if not settings_hidden:
+        # White label text on this green primary button (default primary text is ink).
+        st.markdown("""<style>
+            .st-key-calc_cache_btn button, .st-key-calc_cache_btn button * { color: #ffffff !important; }
+        </style>""", unsafe_allow_html=True)
+        _load_clicked = st.button(
+            "Load forecast" if use_prev else "Calculate Forecast",
+            type="primary", key="calc_cache_btn",
+            disabled=(not settings_hidden) if use_prev else (not actuals_valid))
+        # Preview the assembled settings.yaml — build mode only (hidden when loading a previous
+        # forecast). Rendered BELOW the Calculate Forecast button.
+        if not use_prev:
             with st.expander("Preview assembled settings.yaml (VAMP pipeline schema)"):
                 pipeline_config = build_pipeline_config(forecast_settings)
                 st.code(yaml.safe_dump(pipeline_config, sort_keys=False), language="yaml")
                 st.download_button("Download settings.yaml",
                                    yaml.safe_dump(pipeline_config, sort_keys=False),
                                    file_name="settings.yaml", mime="text/yaml")
-
-        # White label text on this green primary button (default primary text is ink).
-        st.markdown("""<style>
-            .st-key-calc_cache_btn button, .st-key-calc_cache_btn button * { color: #ffffff !important; }
-        </style>""", unsafe_allow_html=True)
-        _load_clicked = st.button(
-            "Load forecast" if settings_hidden else "Calculate & cache forecast",
-            type="primary", key="calc_cache_btn",
-            disabled=not actuals_valid)
-        # Previous-forecast mode hides ROW 2 (and its right-column log slot), so build the side-by-side
-        # layout here instead: baseline pre/post table on the LEFT, forecast run log on the RIGHT. In
-        # normal mode _fc_log_slot is already the ROW-2 right column and the table renders full-width.
+        # Previous-forecast mode hides ROW 2 (and its right-column log slot). Route the run log to the
+        # reserved TOP slot beside the 'Use a previously created forecast' checkbox so it sits
+        # vertically in-line with the checkbox; the baseline pre/post table renders full-width below.
         _pre_table_ctx = None
         if settings_hidden:
-            _pv_tbl_col, _pv_log_col = st.columns([3, 2], gap="large")
-            _fc_log_slot = _pv_log_col.container()
-            _pre_table_ctx = _pv_tbl_col
+            _fc_log_slot = _prev_log_slot
         if _load_clicked:
             # Render the run log into the ROW-2 right-column slot (normal mode) or the previous-forecast
             # right column; fall back to full-width only if neither exists.
@@ -580,11 +638,6 @@ def render():
                     from tab_validate import _to_prepost as _tpp, _render_prepost_table as _rpt
                     _pre = _tpp(pd.read_csv(_mid_csv))
                     _pre = _pre[[c for c in _pre.columns if "Post" not in c]]   # PRE months only
-                    # Top margin drops this header ~0.9rem so its text sits level with the "Forecast
-                    # ready…" status label in the right column (the status box's label is inset from
-                    # the box top). Nudge the 0.9rem if it's a touch high/low on your screen.
-                    st.markdown("<h5 style='margin-top:0.9rem; margin-bottom:0.25rem;'>Baseline forecast — VI Txn &amp; VAMP by month</h5>",
-                                unsafe_allow_html=True)
                     _rpt(_pre, fit_content=True, bold=False)   # hug content; values not bold (tab-1 baseline)
             except Exception as _e:  # noqa: BLE001
                 st.caption(f"(baseline VI/VAMP table unavailable: {type(_e).__name__}: {_e})")
@@ -593,3 +646,7 @@ def render():
     with _vs:
         import tab_validate
         tab_validate.render(ss, PROJECT_ROOT, GCP_PROJECT)
+
+    with _cv:
+        import tab_config_validation
+        tab_config_validation.render(ss, PROJECT_ROOT)

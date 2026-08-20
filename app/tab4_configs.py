@@ -13,10 +13,40 @@ per-tab split."""
 from __future__ import annotations
 
 import os
-from datetime import date
+import re
+from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
+
+
+# [FN-cfg-golive]
+def _rule_go_live(df, path):
+    """Best-effort go-live date for one exported rule sheet.
+
+    Prefers the sheet's ``GO LIVE`` column (emitted by build_split_exports, constant within a
+    file); falls back to a ``DD_MM_YYYY`` date embedded in the filename (e.g.
+    ``..._visa_01_07_2026.xlsx``). Returns a ``date`` or ``None`` — ``None`` means the go-live
+    couldn't be determined, so the caller keeps the file rather than silently dropping it."""
+    try:
+        for _c in df.columns:
+            if str(_c).strip().lower().replace(" ", "").replace("_", "") in ("golive", "golivedate"):
+                _v = df[_c].dropna()
+                if len(_v):
+                    _d = pd.to_datetime(_v.iloc[0], errors="coerce")
+                    if pd.notna(_d):
+                        return _d.date()
+                break
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _m = re.search(r"(\d{2})_(\d{2})_(\d{4})", os.path.basename(str(path)))
+        if _m:
+            _dd, _mm, _yy = (int(_x) for _x in _m.groups())
+            return date(_yy, _mm, _dd)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 from impact_calcs import build_split_exports
 
@@ -24,7 +54,7 @@ __build__ = "2026-07-29-cfg-json-viewer-bin-filter+single-variation-dial-guard"
 
 
 # [FN-386]
-def render(ss, PROJECT_ROOT):
+def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
     """Render the config-generation tab.
 
     Flow: if no split has been computed yet, show a placeholder. Otherwise pick the split
@@ -32,12 +62,12 @@ def render(ss, PROJECT_ROOT):
     target, build the per-Brand×RPGT templates, run the ConnectorPool generator, and offer the
     results as a zip plus a per-config search/download. `ss` is Streamlit's session_state.
     """
-    _variations = ss.get("variations")
-    if not _variations:
-        from app_common import _locked_panel
-        _locked_panel("Head to <b>2 · Routing engine</b> and click <b>Compute split "
-                      "variations</b> — you can generate connector configs here once a split exists.")
-    else:
+    _kp = key_prefix   # widget/result-key prefix so this generator can render in >1 place (tab 4 AND
+                       # the Config Validation sub-tab) without Streamlit duplicate-key clashes.
+    _variations = ss.get("variations") or []
+    # Never locked: configs are generated from the exported-rules FOLDER below, so a computed split is
+    # NOT required. The dial is only shown when variations exist. (`if True:` keeps the body indent.)
+    if True:
         from routing_optimiser.connector_pool_configs import (
             BRANDS as _POOL_BRANDS, company_to_brand_key as _co2brand,
             generate_configs as _gen_cfgs, scheme_code as _scheme_code)
@@ -51,7 +81,7 @@ def render(ss, PROJECT_ROOT):
         # Rules folder defaults to that scheme's subfolder (data/exported_rules/<scheme>). FIRST-RUN
         # default only (setdefault): a programmatic session_state write on every rerun would make the
         # top-level st.tabs lose the active tab. If you switch scheme later, just edit the folder path.
-        ss.setdefault("cfg_rules_folder", os.path.join("data", "exported_rules", _active_scheme))
+        ss.setdefault((_kp + "cfg_rules_folder"), os.path.join("data", "exported_rules", _active_scheme))
         _company_c = str(_fs_c.get("company", "TotalAV"))
         _def_brand = _co2brand(_company_c)
         _gl_c = ss.get("split_go_live_date", date.today())
@@ -78,33 +108,46 @@ def render(ss, PROJECT_ROOT):
         #     NOT re-run the tab — they apply only when the green 'Generate JSON configs' submit is
         #     clicked. (The Download button and the live-search Find panel can't sit in a form, so
         #     they render below it.) ---
-        _prev_wc = ss.get("cfg_variation_sld", ss.get("selected_variation_weight"))
-        _def_wc = _prev_wc if _prev_wc in _weights_c else _weights_c[len(_weights_c) // 2]
-        with st.form("cfg_gen_form", border=False):
+        _prev_wc = ss.get((_kp + "cfg_variation_sld"), ss.get("selected_variation_weight"))
+        _def_wc = (_prev_wc if _prev_wc in _weights_c
+                   else (_weights_c[len(_weights_c) // 2] if _weights_c else None))
+        with st.form((_kp + "cfg_gen_form"), border=False):
             # Dial (narrow, top-left).
             _sldc, _sldsp = st.columns([0.9, 5.1])
             if len(_weights_c) > 1:
                 picked_w_cfg = _sldc.select_slider(
                     "**Risk  ↔  Conversion**", options=_weights_c, value=_def_wc,
-                    format_func=lambda w: f"{int(round(w * 100))}", key="cfg_variation_sld",
+                    format_func=lambda w: f"{int(round(w * 100))}", key=(_kp + "cfg_variation_sld"),
                     help="Dial: safer routing ↔ more revenue.")
-            else:
+            elif _weights_c:
                 # Single variation: a select_slider over ONE option throws a RangeError.
                 picked_w_cfg = _weights_c[0]
+            else:
+                # No computed split — folder-based generation ignores the dial.
+                picked_w_cfg = None
             # Configs are ALWAYS generated directly from the exported rules folder (reads the rule
             # sheets as-is so per-provider / per-country splits are preserved). The toggle for this
             # was removed — it was always on.
             _from_folder = True
             # Folder input. Width ≈ the Generate button (1.5 of 6.0 ≈ 25%).
-            _erfc, _erfsp = st.columns([1.5, 4.5])
-            _cfg_folder = _erfc.text_input(
-                "Exported rules folder", key="cfg_rules_folder",
+            _erfc, _erdc, _erfsp = st.columns([1.5, 1.5, 3.0])
+            # .strip() the path: a stray leading/trailing space (common from copy-paste) makes glob
+            # look in a folder that doesn't exist and silently returns "No rule files found".
+            _cfg_folder = (_erfc.text_input(
+                "Exported rules folder", key=(_kp + "cfg_rules_folder"),
                 help="Folder of exported rule sheets (.xlsx / .csv), the same ones used in Validate "
-                     "Split. Defaults to data/exported_rules/<scheme>.")
+                     "Split. Defaults to data/exported_rules/<scheme>.") or "").strip()
+            # Go-live cut-off, to the RIGHT of the folder input: only generate configs for rule
+            # files whose GO LIVE date is on or after this. Default = yesterday (skip retired rules).
+            _cfg_min_golive = _erdc.date_input(
+                "Min go-live date", value=(date.today() - timedelta(days=1)), key=(_kp + "cfg_min_golive"),
+                help="Only generate configs for rule files whose GO LIVE date is on or after this "
+                     "date. Defaults to yesterday, so already-retired rules are skipped. Files whose "
+                     "go-live can't be determined are always kept.")
             # Extra priority boost (18% width).
             _pbc, _pbsp = st.columns([1.1, 4.9])
             extra_priority = _pbc.number_input(
-                "Extra priority boost", 0, 2_000_000, 0, step=50000, key="cfg_extra_priority",
+                "Extra priority boost", 0, 2_000_000, 0, step=50000, key=(_kp + "cfg_extra_priority"),
                 help="Added to every pool's priority (script's EXTRA_PRIORITY_AMOUNT).")
             # Green submit — applies all the settings above (width ≈ 25%).
             _gbc, _gbsp = st.columns([1.5, 4.5])
@@ -136,13 +179,48 @@ def render(ss, PROJECT_ROOT):
                         st.error(f"No rule files (.xlsx/.csv) found in: {_cfg_folder or '(empty)'}")
                     else:
                         _frames = []
+                        _skipped_gl = []   # rule files skipped: GO LIVE before the cut-off
+                        _min_gl = _cfg_min_golive if isinstance(_cfg_min_golive, date) else None
                         for _f in _files:
                             try:
-                                _frames.append(pd.read_excel(_f) if _f.lower().endswith((".xlsx", ".xls"))
-                                               else pd.read_csv(_f))
+                                _df_f = (pd.read_excel(_f) if _f.lower().endswith((".xlsx", ".xls"))
+                                         else pd.read_csv(_f))
                             except Exception:  # noqa: BLE001
                                 continue
+                            if _min_gl is not None:
+                                _gd = _rule_go_live(_df_f, _f)
+                                if _gd is not None and _gd < _min_gl:
+                                    _skipped_gl.append((os.path.basename(_f), _gd))
+                                    continue
+                            _frames.append(_df_f)
+                        if _skipped_gl:
+                            st.caption(f"⏭️ Go-live filter (≥ {_min_gl:%Y-%m-%d}): skipped "
+                                       f"{len(_skipped_gl)} of {len(_files)} rule file(s) with an earlier "
+                                       "GO LIVE date.")
+                        if _files and not _frames and _min_gl is not None:
+                            st.warning(f"No rule files with a GO LIVE date on or after "
+                                       f"{_min_gl:%Y-%m-%d} in: {_cfg_folder}. Lower the Min go-live "
+                                       "date to include older rules.")
                         _all = pd.concat(_frames, ignore_index=True) if _frames else pd.DataFrame()
+                        # Brand FOLLOWS the folder you point at (exactly like scheme does). The exported
+                        # sheets carry their own Brand, and generate_configs filters rows by the
+                        # brand_key's name — so a 'Total Drive' folder MUST generate as 'tdr' even when
+                        # the active forecast brand is different. Without this, brand_key stayed as the
+                        # forecast brand, rows_from_dataframe matched nothing, and you got a silent
+                        # "No pools generated". Reverse-map the file's Brand (else the folder's brand
+                        # segment) to a pool brand_key; keep the forecast brand if nothing matches.
+                        _name2key = {str(v.get("name", "")).strip().lower(): k
+                                     for k, v in _POOL_BRANDS.items()}
+                        _folder_brand = os.path.basename(
+                            os.path.dirname(os.path.normpath(str(_cfg_folder or ""))))
+                        _brand_signal = ""
+                        if "Brand" in _all.columns and _all["Brand"].notna().any():
+                            _brand_signal = str(_all["Brand"].dropna().iloc[0]).strip()
+                        _bk = (_name2key.get(_brand_signal.lower())
+                               or _name2key.get(_folder_brand.strip().lower()))
+                        if _bk and _bk != brand_key:
+                            brand_key = _bk
+                            _brand_name = _POOL_BRANDS[brand_key]["name"]
                         _exports_c = {}
                         if "RPGT" in _all.columns:
                             for _rp, _sub in _all.groupby("RPGT"):
@@ -189,9 +267,9 @@ def render(ss, PROJECT_ROOT):
                     _pools, _counts = _gen_cfgs(
                         _exports_c, brand_key, date_tag, scheme=_cfg_scheme, mode=_gen_mode,
                         extra_priority_amount=int(extra_priority), emit_generic=bool(emit_generic))
-                    ss["configs"] = _pools
-                    ss["configs_counts"] = _counts
-                    ss["configs_meta"] = {"brand_key": brand_key, "date": date_tag,
+                    ss[(_kp + "configs")] = _pools
+                    ss[(_kp + "configs_counts")] = _counts
+                    ss[(_kp + "configs_meta")] = {"brand_key": brand_key, "date": date_tag,
                                           "pool_dir": _counts.get("pool_dir", ""),
                                           "rules_source": _src_lbl, "variation": _dial_lbl,
                                           "scheme": _gen_scheme_name, "scheme_filter": _cfg_scheme}
@@ -222,10 +300,10 @@ def render(ss, PROJECT_ROOT):
                 with st.expander("Traceback"):
                     st.code(_ctb.format_exc())
 
-        if ss.get("configs"):
-            _pools = ss["configs"]
-            _counts = ss.get("configs_counts", {})
-            _meta = ss.get("configs_meta", {})
+        if ss.get((_kp + "configs")):
+            _pools = ss[(_kp + "configs")]
+            _counts = ss.get((_kp + "configs_counts"), {})
+            _meta = ss.get((_kp + "configs_meta"), {})
             _pr = _counts.get("per_rpgt", {})
             # Download configs (.zip) — outside the form (download buttons can't live in a form).
             import io as _io2
@@ -242,7 +320,7 @@ def render(ss, PROJECT_ROOT):
             _dbc.download_button(
                 "⬇ Download configs (.zip)", _buf,
                 file_name=f"ConnectorPool_configs_{_meta.get('brand_key', 'tav')}_{_meta.get('date', '')}.zip",
-                mime="application/zip", type="primary", key="dl_configs_btn", use_container_width=True)
+                mime="application/zip", type="primary", key=(_kp + "dl_configs_btn"), use_container_width=True)
             # RPGT Pools table (just below the Download button).
             if _pr:
                 _rows_html, _tot = [], 0
@@ -269,10 +347,16 @@ def render(ss, PROJECT_ROOT):
                     '</tr>' + "".join(_rows_html) + '</table></div>')
                 st.markdown(_tbl_html, unsafe_allow_html=True)
 
+            # Scatter charts: BINs matched per config + filename length per config.
+            from app_common import render_config_profile_charts as _rcpc
+            _rcpc([(f"{_n}.json", _pool) for _n, _pool in _pools.items()])
+
         # ---- Find & download a single config (outside the form so its BIN / name filters update
         #      live as you type). Rendered into the slot just below the form (reserved above). ----
+        if not show_find:
+            return   # find panel is the last block in render(); callers can suppress it
         with _find_slot:
-            _pools_f = ss.get("configs") or {}
+            _pools_f = ss.get((_kp + "configs")) or {}
             _, _hc = st.columns([3, 3])   # header aligned with the "BIN contains" column (right half)
             _hc.markdown("**Find & download a config**")
 
@@ -297,10 +381,10 @@ def render(ss, PROJECT_ROOT):
 
             # Inputs at half width, pushed to the RIGHT: a 3-unit leading spacer + three 1-unit columns.
             _, _f1, _f2, _f3 = st.columns([3, 1, 1, 1])
-            _bin_q = _f1.text_input("BIN contains", key="cfg_bin_filter",
+            _bin_q = _f1.text_input("BIN contains", key=(_kp + "cfg_bin_filter"),
                                     help="Show only configs whose card.bin matching rule includes this BIN "
                                          "(partial match, e.g. '470793' or just '4707').")
-            _name_q = _f2.text_input("Name contains", key="cfg_name_filter",
+            _name_q = _f2.text_input("Name contains", key=(_kp + "cfg_name_filter"),
                                      help="Filter by config file name (RPGT / currency / provider are in the name).")
             if _pools_f:
                 _bq = _bin_q.strip()
@@ -316,7 +400,7 @@ def render(ss, PROJECT_ROOT):
                 _mc.caption(f"{len(_matches)} of {len(_pools_f)} configs match.")
                 if _matches:
                     # Dropdown sits in the third column, to the right of "Name contains".
-                    _sel = _f3.selectbox("Config file", _matches, key="cfg_json_sel")
+                    _sel = _f3.selectbox("Config file", _matches, key=(_kp + "cfg_json_sel"))
                     _pool_sel = _pools_f[_sel]
                     _bins_sel = sorted(_pool_bins(_pool_sel), key=lambda x: (len(x), x))
                     if _bins_sel:
@@ -328,7 +412,7 @@ def render(ss, PROJECT_ROOT):
                     # Download button aligned with the "BIN contains" column (right half).
                     _, _dc = st.columns([3, 3])
                     _dc.download_button("⬇ Download this config (.json)", _one, file_name=f"{_sel}.json",
-                                        mime="application/json", type="primary", key="cfg_dl_one")
+                                        mime="application/json", type="primary", key=(_kp + "cfg_dl_one"))
                     # JSON at half width, pushed to the RIGHT (left half is a spacer).
                     _, _jc = st.columns([1, 1])
                     _jc.json(_pool_sel)

@@ -53,17 +53,24 @@ Cell (`grpk`) = (cur,bin,rpgt,pmp,ctry,per); `ctot` = cell total VI at t0.
 """
 from __future__ import annotations
 
+import os
+
 import numpy as np
 import pandas as pd
 
 # Bumped when the projection signature/behaviour changes so stale bytecode is obvious in the run log.
-__build__ = "2026-08-16-appearance-month-timing+maxshare-cap+subcell-propkey"
+__build__ = ("2026-08-16-appearance-month-timing+maxshare-cap+subcell-propkey"
+              "+candidate-parallel-kernel")
 
 try:                                   # numba is optional — pure-NumPy path used if absent
-    from numba import njit as _njit
+    from numba import njit as _njit, prange as _prange, get_num_threads as _nthreads
     _HAVE_NUMBA = True
 except Exception:                      # noqa: BLE001
     _HAVE_NUMBA = False
+    _prange = range                    # so the kernel body is valid Python without numba
+
+    def _nthreads():
+        return 1
 
     # [FN-008]
     def _njit(*_a, **_k):
@@ -76,10 +83,11 @@ _GRPK = ["cur", "bin", "rpgt", "pmp", "ctry", "per"]
 
 
 # [FN-010]
-@_njit(cache=True)
-def _pop_band_kernel(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, ctot,
-                     pc_org, pc_vc, pc_pool, pc_band, pc_heldfac, cap_row, cap_band, ncell, nband,
-                     cap, vamp, txn, psum, vpsum, moved, pr, pshare, vshare, mvrow, nzc, exc, rsum):
+def _pop_band_kernel_impl(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, ctot,
+                          pc_org, pc_vc, pc_pool, pc_band, pc_heldfac, cap_row, cap_band,
+                          ncell, nband, cap, nlane,
+                          vamp, txn, psum, vpsum, moved, pr, pshare, vshare, mvrow, nzc, exc,
+                          rsum):
     """Bit-identical numba equivalent of PopulationBandProjector.project_pop: flat passes over
     the reduced scaffold with per-cell scratch (ncell), no dense (P × nR) arrays. ~7× faster on
     the real scaffold. cap_row is pre-filtered to non-excl rows (excl txn contributions are 0).
@@ -90,88 +98,168 @@ def _pop_band_kernel(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, ctot,
 
     All working arrays are passed IN and REUSED across calls (no per-generation allocation). Only
     accumulators need resetting: vamp/txn zeroed here; psum/moved/vpsum(=VAMP denom)/nzc/exc/rsum
-    zeroed per candidate; pr/pshare/vshare/mvrow fully overwritten. Byte-identical to fresh alloc."""
+    zeroed per candidate; pr/pshare/vshare/mvrow fully overwritten. Byte-identical to fresh alloc.
+
+    CANDIDATE-PARALLEL (2026-08-19y). The scratch arrays are LANED: shape (nlane, ...) instead of
+    (...,). Candidate p uses lane `q`, so with nlane == P every prange iteration owns its scratch
+    outright and the loop is race-free BY CONSTRUCTION rather than by argument. Nothing about the
+    arithmetic changes: candidate p reads only prop_raw[p] and accumulates only into vamp[p]/txn[p]
+    (no cross-candidate accumulation exists to reorder), and within a candidate every loop and every
+    `+=` keeps its original order. Bit-identical, asserted with np.array_equal at the real shapes.
+
+    nlane == 1 collapses every candidate onto lane 0. That is ONLY valid when this body is compiled
+    with parallel=False, where numba lowers `prange` as plain `range` so the candidates run in
+    sequence and reusing one lane is exactly the pre-2026-08-19y behaviour. `project_pop_numba`
+    owns that pairing (nlane == 1 <=> the serial compile); do not call the parallel compile with
+    nlane == 1.
+
+    Measured on the real scaffold (nR=1,275,348, P=4, cap=0.97): 750 ms serial -> 353 ms on 2
+    cores (2.13x). The shipped kernel took a flat ~198 ms per candidate at P=1, 2 AND 4, so the
+    ceiling is min(P, cores)x."""
     P = prop_raw.shape[0]; nR = propidx.shape[0]
     nA = pc_org.shape[0]; nC = cap_row.shape[0]
     vamp[:, :] = 0.0; txn[:, :] = 0.0
-    for p in range(P):
+    # LANE INDEX, as integer arithmetic hoisted OUT of the parallel loop. The obvious form
+    # `q = p if nlane > 1 else 0` does NOT survive numba's parfor pass: it unifies the ternary to
+    # float64 and the parallel compile dies with
+    #   "No implementation of function getitem found for signature getitem(array(float64, 2d, C),
+    #    float64) ... Unsupported array index type float64"
+    # which is a hard TypingError at first call, not a silent wrong answer. `lane_stride` is a
+    # plain int computed before the loop, so `p * lane_stride` is unambiguously int64.
+    # stride 1 => lane q == p  (parallel path, nlane == P: every iteration owns its scratch)
+    # stride 0 => lane q == 0  (serial path,   nlane == 1: candidates run in sequence, reuse it)
+    # nlane must be exactly 1 or exactly P. Anything in between would alias lanes across
+    # concurrent iterations — which is why this is a stride and not `p % nlane`, a form that
+    # would quietly accept the racy middle ground.
+    lane_stride = 1 if nlane > 1 else 0
+    for p in _prange(P):
+        q = p * lane_stride
+        _psum = psum[q]; _vpsum = vpsum[q]; _moved = moved[q]
+        _pr = pr[q]; _pshare = pshare[q]; _vshare = vshare[q]; _mvrow = mvrow[q]
+        _nzc = nzc[q]; _exc = exc[q]; _rsum = rsum[q]
         for c in range(ncell):
-            psum[c] = 0.0; moved[c] = 0.0
+            _psum[c] = 0.0; _moved[c] = 0.0
         for r in range(nR):
             v = 0.0 if masked[r] else prop_raw[p, propidx[r]]
-            pr[r] = v
-            psum[gcode[r]] += v
+            _pr[r] = v
+            _psum[gcode[r]] += v
         for r in range(nR):
             c = gcode[r]
-            if psum[c] > 0.0:
-                moved[c] += base[r] * mv_s[r]
+            if _psum[c] > 0.0:
+                _moved[c] += base[r] * mv_s[r]
         for r in range(nR):
-            c = gcode[r]; ps = psum[c]
+            c = gcode[r]; ps = _psum[c]
             if ps > 0.0:
-                pshare[r] = pr[r] / ps; mvrow[r] = mv_s[r]
+                _pshare[r] = _pr[r] / ps; _mvrow[r] = mv_s[r]
             else:
-                pshare[r] = base[r]; mvrow[r] = 0.0
+                _pshare[r] = base[r]; _mvrow[r] = 0.0
         # ---- per-sub-cell max-share water-fill (only cells with >=2 routed gateways) ----
         if cap < 1.0:
             for c in range(ncell):
-                nzc[c] = 0.0
+                _nzc[c] = 0.0
             for r in range(nR):
                 c = gcode[r]
-                if psum[c] > 0.0 and pshare[r] > 1e-12:
-                    nzc[c] += 1.0
+                if _psum[c] > 0.0 and _pshare[r] > 1e-12:
+                    _nzc[c] += 1.0
             for _sw in range(50):
                 for c in range(ncell):
-                    exc[c] = 0.0
+                    _exc[c] = 0.0
                 any_over = False
                 for r in range(nR):
                     c = gcode[r]
-                    if psum[c] > 0.0 and nzc[c] >= 2.0 and pshare[r] > cap + 1e-12:
-                        exc[c] += pshare[r] - cap; any_over = True
+                    if _psum[c] > 0.0 and _nzc[c] >= 2.0 and _pshare[r] > cap + 1e-12:
+                        _exc[c] += _pshare[r] - cap; any_over = True
                 if not any_over:
                     break
                 for r in range(nR):
                     c = gcode[r]
-                    if psum[c] > 0.0 and nzc[c] >= 2.0 and pshare[r] > cap + 1e-12:
-                        pshare[r] = cap
+                    if _psum[c] > 0.0 and _nzc[c] >= 2.0 and _pshare[r] > cap + 1e-12:
+                        _pshare[r] = cap
                 for c in range(ncell):
-                    rsum[c] = 0.0
+                    _rsum[c] = 0.0
                 for r in range(nR):
                     c = gcode[r]
-                    if psum[c] > 0.0 and nzc[c] >= 2.0 and pshare[r] > 1e-12 and pshare[r] < cap - 1e-12:
-                        rsum[c] += cap - pshare[r]
+                    if _psum[c] > 0.0 and _nzc[c] >= 2.0 and _pshare[r] > 1e-12 and _pshare[r] < cap - 1e-12:
+                        _rsum[c] += cap - _pshare[r]
                 for r in range(nR):
                     c = gcode[r]
-                    if (psum[c] > 0.0 and nzc[c] >= 2.0 and pshare[r] > 1e-12
-                            and pshare[r] < cap - 1e-12 and rsum[c] > 1e-12):
-                        pshare[r] += (cap - pshare[r]) / rsum[c] * exc[c]
+                    if (_psum[c] > 0.0 and _nzc[c] >= 2.0 and _pshare[r] > 1e-12
+                            and _pshare[r] < cap - 1e-12 and _rsum[c] > 1e-12):
+                        _pshare[r] += (cap - _pshare[r]) / _rsum[c] * _exc[c]
         # ---- vshare from the (capped) ROUTED share (0 in inactive cells) ----
         for c in range(ncell):
-            vpsum[c] = 0.0
+            _vpsum[c] = 0.0
         for r in range(nR):
             c = gcode[r]
-            if psum[c] > 0.0 and vcpos[r] > 0.5:
-                vpsum[c] += pshare[r]
+            if _psum[c] > 0.0 and vcpos[r] > 0.5:
+                _vpsum[c] += _pshare[r]
         for r in range(nR):
             c = gcode[r]
-            if psum[c] > 0.0 and vcpos[r] > 0.5 and vpsum[c] > 0.0:
-                vshare[r] = pshare[r] / vpsum[c]
+            if _psum[c] > 0.0 and vcpos[r] > 0.5 and _vpsum[c] > 0.0:
+                _vshare[r] = _pshare[r] / _vpsum[c]
             else:
-                vshare[r] = 0.0
+                _vshare[r] = 0.0
         for j in range(nC):
             r = cap_row[j]; c = gcode[r]
-            txn[p, cap_band[j]] += ctot[r] * (base[r] * (1.0 - mvrow[r]) + moved[c] * pshare[r])
+            txn[p, cap_band[j]] += ctot[r] * (base[r] * (1.0 - _mvrow[r]) + _moved[c] * _pshare[r])
         for j in range(nA):
             o = pc_org[j]
             # APPEARANCE-MONTH timing: held move = fcp[origin]·pro_rata[appearance] (pc_heldfac),
             # gated on the ORIGIN cell being routed (psum>0). Pool is pre-built appearance-timed.
             if o >= 0:
-                mpc = pc_heldfac[j] if psum[gcode[o]] > 0.0 else 0.0
-                psh = vshare[o]
+                mpc = pc_heldfac[j] if _psum[gcode[o]] > 0.0 else 0.0
+                psh = _vshare[o]
             else:
                 mpc = 0.0
                 psh = 0.0
             vamp[p, pc_band[j]] += pc_vc[j] * (1.0 - mpc) + pc_pool[j] * psh
     return vamp, txn
+
+
+# ONE BODY, TWO COMPILES. numba lowers `prange` as `range` under parallel=False, so the serial
+# compile IS the pre-2026-08-19y kernel and there is no duplicated body to drift apart.
+# `_pop_band_kernel` keeps its name so any external caller/test still resolves — but its signature
+# gained `nlane` and its scratch is now laned, so a caller building its own buffers must pass
+# (1, ...)-shaped scratch with nlane=1. `_nb_buffers` is the only in-repo producer (checked).
+_pop_band_kernel = _njit(cache=True)(_pop_band_kernel_impl)
+# cache=FALSE on the parallel compile, deliberately. Both dispatchers wrap the SAME py_func, so
+# numba derives the same on-disk cache identity for both (observed: one shared
+# `band_projection._pop_band_kernel_impl-NN.*.nbi/.nbc` pair, holding a single overload). Results
+# agreed in every compile ORDER tested, but the failure mode if that ever stopped holding is the
+# worst kind available here: the PARALLEL overload served to a nlane=1 call, i.e. every candidate
+# sharing lane 0 — a genuine race whose output is silently wrong (test_proj_parallel.py's
+# sensitivity check measures exactly that divergence). A stale cache already produced one wrong
+# answer while this was being built, so the ambiguity is not hypothetical. One JIT compile per
+# process (a few seconds, against a ~700 s run) buys the ambiguity away outright. The serial
+# compile keeps cache=True: it is the unchanged pre-19y kernel and the revert path.
+_pop_band_kernel_par = _njit(cache=False, parallel=True)(_pop_band_kernel_impl)
+
+# Lane cap. Per-lane scratch is 4 x (nR,) float64 per lane — 40.8 MB per lane at nR=1,275,348 — so
+# the parallel path is only taken for a SMALL population. The full-matrix engine runs pop 4 (P=3
+# children per generation, P=4 at each restart init), well inside this. The GLOBAL GA shares
+# `ExactBandPenalty` and can run pop ~60, where P lanes would be ~2.4 GB: those calls take the
+# serial path and the projector says so in the log rather than quietly allocating.
+_PROJ_LANE_CAP = max(1, int(os.environ.get("ROUTING_PROJ_LANES", "8") or 8))
+_PROJ_PAR_ON = os.environ.get("ROUTING_PROJ_PARALLEL", "1") != "0"
+_PROJ_PAR_SAID = {}
+
+# WHY A NOTE LIST AND NOT JUST print(). tab2_engine's `log()` is a CLOSURE defined inside the
+# render function (tab2_engine.py:1064) — a library module cannot reach it — and nothing in the app
+# redirects stdout (checked: no redirect_stdout / no sys.stdout reassignment), so a bare print()
+# lands on the terminal and NEVER in runs/<ts>/log.txt. That matters here: the run log is the only
+# instrument for these decisions, and a projection that silently declined to go parallel would read
+# as "parallel is no faster" rather than "parallel never ran". So every note is BOTH printed and
+# appended here, and tab2 drains this list into the run log after the search. Bounded so a
+# pathological caller cannot grow it without limit.
+_PROJ_PAR_NOTES = []
+
+
+# [FN-010b]
+def _pnote(msg):
+    """Record a projection-parallelism note for the run log, and echo it to stdout."""
+    if len(_PROJ_PAR_NOTES) < 64:
+        _PROJ_PAR_NOTES.append(str(msg))
+    print(f"[band_projection] {msg}")
 
 
 # [FN-011]
@@ -575,7 +663,7 @@ class PopulationBandProjector:
         return self._nbcache
 
     # [FN-022]
-    def _nb_buffers(self, P):
+    def _nb_buffers(self, P, lanes=1):
         """Pre-allocated working buffers for the numba kernel, cached & REUSED across calls
         (removes tens of MB of per-generation alloc/free). The big scratch (psum/vpsum/moved
         sized ncell; pr/pshare/vshare/mvrow sized nR) is P-INDEPENDENT so it's allocated ONCE;
@@ -592,13 +680,22 @@ class PopulationBandProjector:
         # size threshold (~1 MB), so the small per-cell scratch (psum/vpsum/moved, sized ncell)
         # can stay writeable while the large per-row scratch (pr/pshare/vshare/mvrow, sized nR)
         # is memmapped read-only — checking fixed[0] alone would miss that and the kernel fails.
+        # LANED as of 2026-08-19y: first axis is the parallel lane, so the candidate loop can be
+        # a prange. `lanes` is 1 on the serial path (every candidate reuses lane 0, which is only
+        # correct because the serial compile lowers prange as range) and P on the parallel path.
+        # Cached per lane-count: switching paths mid-run reallocates instead of silently indexing
+        # a too-small first axis.
+        lanes = max(1, int(lanes))
         fixed = getattr(self, "_nbbuf_fixed", None)
-        if fixed is None or not all(b.flags.writeable for b in fixed):
+        if (fixed is None or getattr(self, "_nbbuf_lanes", None) != lanes
+                or not all(b.flags.writeable for b in fixed)):
             nR = len(self._gcode); ncell = int(self._ngc)
-            fixed = (np.zeros(ncell), np.zeros(ncell), np.zeros(ncell),     # psum, vpsum, moved
-                     np.zeros(nR), np.zeros(nR), np.zeros(nR), np.zeros(nR),  # pr, pshare, vshare, mvrow
-                     np.zeros(ncell), np.zeros(ncell), np.zeros(ncell))     # nzc, exc, rsum (cap water-fill)
+            fixed = (np.zeros((lanes, ncell)), np.zeros((lanes, ncell)), np.zeros((lanes, ncell)),
+                     np.zeros((lanes, nR)), np.zeros((lanes, nR)),          # pr, pshare
+                     np.zeros((lanes, nR)), np.zeros((lanes, nR)),          # vshare, mvrow
+                     np.zeros((lanes, ncell)), np.zeros((lanes, ncell)), np.zeros((lanes, ncell)))
             self._nbbuf_fixed = fixed
+            self._nbbuf_lanes = lanes
         vt = getattr(self, "_nbbuf_vt", None)
         if vt is None or vt[0] != int(P) or not (vt[1].flags.writeable and vt[2].flags.writeable):
             B = int(self._B)
@@ -614,9 +711,105 @@ class PopulationBandProjector:
         prop_raw = np.ascontiguousarray(prop_raw, dtype=np.float64)
         if not _HAVE_NUMBA or not len(self._gcode):
             return self.project_pop(prop_raw)
+        P = int(prop_raw.shape[0])
+        # CANDIDATE-PARALLEL decision (2026-08-19y). All four conditions are load-bearing:
+        #   _PROJ_PAR_ON       ROUTING_PROJ_PARALLEL=0 reverts to the serial compile of the SAME
+        #                      body — the revert path, asserted bit-identical by the test.
+        #   P > 1              a 1-candidate prange is pure thread-pool overhead (measured 187 vs
+        #                      180 ms), so score_of/report calls stay serial.
+        #   nthr > 1           the self-correcting gate. joblib's inner_max_num_threads=1 sets
+        #                      NUMBA_NUM_THREADS=1 inside loky workers (verified), so the GLOBAL
+        #                      GA's per-seed workers see 1 thread here, take the serial path, and
+        #                      never oversubscribe or allocate extra lanes. Asking "can we use
+        #                      more than one thread" is more robust than sniffing process names.
+        #   P <= cap           bounds the scratch: 40.8 MB per lane at nR=1,275,348.
+        nthr = int(_nthreads() or 1)
+        par = bool(_PROJ_PAR_ON and P > 1 and nthr > 1 and P <= _PROJ_LANE_CAP)
+        if _PROJ_PAR_ON and P > 1 and nthr > 1 and not par:
+            # Never decline SILENTLY — a run that quietly fell back reads as "parallel is no
+            # faster" when it simply never ran.
+            _k = ("cap", P)
+            if _k not in _PROJ_PAR_SAID:
+                _PROJ_PAR_SAID[_k] = True
+                _pnote(f"candidate-parallel projection DECLINED: P={P} exceeds "
+                       f"ROUTING_PROJ_LANES={_PROJ_LANE_CAP} (per-lane scratch is "
+                       f"{len(self._gcode) * 4 * 8 / 1e6:.1f} MB, so P lanes would be "
+                       f"{len(self._gcode) * 4 * 8 * P / 1e6:,.0f} MB). Running serial. Raise the "
+                       "cap only if that much RAM is actually spare.")
         a = self._nb_arrays()
-        buf = self._nb_buffers(prop_raw.shape[0])
-        return _pop_band_kernel(prop_raw, *a, int(self._ngc), int(self._B), float(self._cap), *buf)
+        buf = self._nb_buffers(P, P if par else 1)
+        nlane = P if par else 1
+        _k2 = ("on", par, nthr, P)
+        if _k2 not in _PROJ_PAR_SAID:
+            _PROJ_PAR_SAID[_k2] = True
+            # Name the ACTUAL reason it is off. The first version of this line always blamed
+            # ROUTING_PROJ_PARALLEL, so a P=1 call or a lane-cap decline printed "OFF ...
+            # ROUTING_PROJ_PARALLEL=0 forces serial" while that var was untouched — a log that
+            # misstates its own configuration is how a wrong conclusion gets drawn from a right
+            # number.
+            if par:
+                _why = "ON"
+            elif not _PROJ_PAR_ON:
+                _why = "OFF — ROUTING_PROJ_PARALLEL=0"
+            elif P <= 1:
+                _why = ("OFF — single candidate, so a 1-iteration prange would be pure "
+                        "thread-pool overhead (measured 187 vs 180 ms)")
+            elif nthr <= 1:
+                _why = ("OFF — numba sees 1 thread. Expected inside a joblib/loky worker, where "
+                        "inner_max_num_threads=1 sets NUMBA_NUM_THREADS=1; outside one it means "
+                        "the machine or NUMBA_NUM_THREADS is limiting us to a single core")
+            else:
+                _why = f"OFF — P={P} exceeds the lane cap ROUTING_PROJ_LANES={_PROJ_LANE_CAP}"
+            _pnote(f"candidate-parallel projection {_why} (P={P}, numba threads={nthr}, "
+                   f"lanes={nlane}, scaffold nR={len(self._gcode):,}). Bit-identical either way — "
+                   "the parallel kernel is verified against the serial one on the live scaffold "
+                   "on its first call.")
+        if par and not _PROJ_PAR_SAID.get("verified"):
+            # IN-RUN SELF-CHECK, once per process, on the REAL data. Everything asserting
+            # bit-identity so far was measured in a container on synthetic arrays; this proves it
+            # on the actual scaffold, in the actual run, before any result is used. It is the same
+            # discipline the retired [vterms] test recorded the hard way: a re-implementation of a
+            # kernel is only trustworthy if it is diffed against the kernel's own output on the
+            # SAME inputs in the SAME run, never against a remembered figure.
+            # Cost: one extra serial projection per run (~0.2 s of a ~700 s run). On mismatch it
+            # disables the parallel path for the rest of the process and says so — it does not
+            # raise, because a slower correct run beats a failed one, and it does not continue
+            # quietly, because that is how a wrong number reaches the log looking right.
+            _PROJ_PAR_SAID["verified"] = True
+            try:
+                _nR = len(self._gcode); _nc = int(self._ngc); _B = int(self._B)
+                _vb = ((np.zeros((P, _B)), np.zeros((P, _B)))
+                       + tuple(np.zeros((1, _nc)) for _ in range(3))
+                       + tuple(np.zeros((1, _nR)) for _ in range(4))
+                       + tuple(np.zeros((1, _nc)) for _ in range(3)))
+                _vv, _vt = _pop_band_kernel(prop_raw, *a, _nc, _B, float(self._cap), 1, *_vb)
+                _vv, _vt = _vv.copy(), _vt.copy()
+                _pv, _pt = _pop_band_kernel_par(prop_raw, *a, _nc, _B, float(self._cap), P, *buf)
+                _match = np.array_equal(_vv, _pv) and np.array_equal(_vt, _pt)
+                del _vb
+                if _match:
+                    _pnote("candidate-parallel SELF-CHECK PASSED on the live scaffold: "
+                           f"serial and parallel kernels bit-identical at P={P} (np.array_equal "
+                           "on both vamp and txn, not allclose).")
+                    return _pv, _pt
+                globals()["_PROJ_PAR_ON"] = False
+                _pnote("*** candidate-parallel SELF-CHECK FAILED — "
+                       f"max|Δvamp|={float(np.abs(_vv - _pv).max()):.6e} "
+                       f"max|Δtxn|={float(np.abs(_vt - _pt).max()):.6e}. The parallel kernel is "
+                       "DISABLED for the rest of this process and the serial result is being used, "
+                       "so this run's numbers are the pre-2026-08-19y numbers. Report this: it "
+                       "means the lane isolation is not holding on this machine.")
+                return _vv, _vt
+            except Exception as _pce:              # noqa: BLE001
+                globals()["_PROJ_PAR_ON"] = False
+                _pnote(f"candidate-parallel self-check could not run "
+                       f"({type(_pce).__name__}: {_pce}) — falling back to the SERIAL kernel for "
+                       "this process rather than trusting an unverified parallel path.")
+                par = False
+                buf = self._nb_buffers(P, 1)
+                nlane = 1
+        _kern = _pop_band_kernel_par if par else _pop_band_kernel
+        return _kern(prop_raw, *a, int(self._ngc), int(self._B), float(self._cap), nlane, *buf)
 
     # [FN-024]
     def _cellsum(self, x):

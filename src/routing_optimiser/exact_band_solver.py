@@ -56,6 +56,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+import os as _os
 import numpy as np
 
 try:
@@ -956,8 +957,14 @@ def incidence_selfcheck_report(split, exact_bands, incidence, *, mid_id=None, mi
                f"      {cov:,}/{N:,} share columns map to a prop-key ({(cov / max(N, 1)) * 100:.1f}%) · "
                f"{K:,} prop-keys · Σprop_raw {mass_prop:,.1f} vs Σshare {mass_share:,.1f} "
                f"(dropped {mass_share - mass_prop:,.1f} of share mass)",
-               "      (columns with no vampMid are dropped by design; but <100% coverage of a BANDED "
-               "gateway, or a large dropped mass, ⇒ the scored split ≠ the delivered/projected one.)"]
+               "      (DO NOT read the dropped mass as 'columns with no vampMid, dropped by "
+               "design'. That was this note until 2026-08-19m and the 2026-08-20 11:46 run measured "
+               "it FALSE: [drop-measure] reported 245,409 of 245,409 split rows carrying a vampMid, "
+               "and ALL 97,465 rows the delivered `_explode` discards carrying one too — including "
+               "banded MIDs (Adyen_TotalAV, Checkout, WorldPay, Braintree USA). On that run "
+               "N − cov = 245,409 − 147,944 equalled those discarded rows EXACTLY. So this is a "
+               "COVERAGE loss of unproven cause, not a by-design filter: read [drop-measure] and "
+               "the per-banded-MID lines below for how much banded share is inside it.)"]
         # PER-BANDED-MID coverage (needs the per-column MID map). Uses ExactBandModel's specs +
         # labels — the SAME naming seed_gradient_report aligns to mid_names — so it lines up with the
         # per-column mid_id. metric is cross-referenced from exact_bands.specs (band_scoring BandSpec).
@@ -1633,7 +1640,7 @@ def solve_global_linear_lp(exact_bands, incidence, base_shares, cell_starts, cel
 # [FN-396]
 def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_counts, elig,
                          *, mid_id, risk, cell_vol, mid_names, max_share=1.0,
-                         max_passes=4, movable_frac=0.8, log_fn=None):
+                         movable_frac=0.8, log_fn=None):
     """TARGETED move operator → a WARM-START SEED that directly clears breached CEILINGS.
 
     For every breached ceiling MID it sheds that MID's share, cell by cell (highest VAMP-contribution
@@ -1645,8 +1652,10 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
 
     Each MID's batch of moves is then LINE-SEARCHED against the EXACT projector (factors 1→0.2) and
     only KEPT if the exact TOTAL breach strictly drops — so a move that merely relocates VAMP onto
-    another capped MID is rejected outright. Repeats for up to `max_passes` (recipient headroom is
-    re-projected each pass). NEVER-WORSE overall: returns base unchanged if it can't strictly improve.
+    another capped MID is rejected outright. Repeats UNTIL A PASS FINDS NO IMPROVING MOVE — there is
+    no pass cap (there was a hardcoded 4 until 2026-08-19v, and it was stopping the loop mid-
+    improvement while the log claimed exhausted headroom). Recipient headroom is re-projected each
+    pass. NEVER-WORSE overall: returns base unchanged if it can't strictly improve.
 
     If it stalls with ceilings still over, that is rigorous evidence the caps are JOINTLY infeasible by
     routing (the low-VAMP recipient pool lacks the collective headroom). Ceilings only. Never raises.
@@ -1667,12 +1676,26 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
         n_mid = len(mid_names)
         name2idx = {str(n).strip().lower(): i for i, n in enumerate(mid_names)}
 
+        # Projection counters, so "is this efficient?" is answerable with a number. `_nmv` counts
+        # SPARSE MATVECS (the dominant cost); `_npen`/`_nrep` count the cheap elementwise passes.
+        _cost = {"mv": 0, "pen": 0, "rep": 0}
+
+        def _pr(_s):
+            _cost["mv"] += 1
+            return _s2pr(_s, incidence)
+
         def _rep(_s):
+            _cost["rep"] += 1
             return {str(r["midl"]).strip().lower(): r
-                    for r in exact_bands.report(_s2pr(_s, incidence))}
+                    for r in exact_bands.report(_pr(_s))}
+
+        def _breach_pr(_prop):
+            """Breach from an ALREADY-PROJECTED prop_raw — no matvec."""
+            _cost["pen"] += 1
+            return float(exact_bands.penalty(_prop)[0])
 
         def _breach(_s):
-            return float(exact_bands.penalty(_s2pr(_s, incidence))[0])
+            return _breach_pr(_pr(_s))
 
         # per-MID ceiling (inf where the MID has NO VAMP ceiling → unlimited headroom recipient)
         ceil_by_mid = np.full(n_mid, np.inf)
@@ -1690,6 +1713,9 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                     out[_i] = float(_r.get("now", 0.0))
             return out
 
+        _FASTLS = _os.environ.get("ROUTING_TMOVE_FASTLS", "1") != "0"
+        _FASTLS_VERIFY = _os.environ.get("ROUTING_TMOVE_FASTLS_VERIFY", "0") == "1"
+        _pr_s = None                      # carried s2pr(s) for the linear line search
         b0 = _breach(s); info["breach0"] = b0; b_cur = b0
         rep0 = _rep(s)
         now0_by_mid = _now_by_mid(rep0)
@@ -1703,21 +1729,50 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
             log_fn(f"      targeted-move seed: {len(start_breached)} breached ceiling MID(s) — shedding "
                    "onto co-located siblings that have VAMP HEADROOM (most-slack first; whack-a-mole "
                    "guarded by a per-recipient budget + exact-projector line-search; never-worse).")
+        # NO PASS CAP (2026-08-19v). It was a hardcoded 4, and the 2026-08-20 22:22 run used
+        # 4 of 4 without hitting `if not progress: break` — still improving when the cap stopped
+        # it, while the summary claimed 'recipient headroom exhausted'. The loop now runs until a
+        # pass finds no improving move, which is safe because the operator is monotone: every
+        # batch is line-searched against the TRUE projector and kept only if strictly improving.
+        # REL_FLOOR is not a cap in disguise: the line search accepts improvements > 1e-12, and a
+        # 1e-6 RELATIVE floor at a breach of ~0.0094 is ~1e-11 — an order of magnitude above that
+        # threshold, so no move the operator considers real is ever discarded by it.
+        # RUNAWAY exists only so a pathological case cannot hang a run, and it SHOUTS if hit.
+        _REL_FLOOR = 1e-6
+        try:
+            _RUNAWAY = max(1, int(_os.environ.get('ROUTING_TMOVE_MAXPASS', '5000') or 5000))
+        except Exception:  # noqa: BLE001
+            _RUNAWAY = 5000
         total_moves = 0; moved_share = 0.0; passes = 0
-        for _pass in range(int(max_passes)):
+        stop_reason = 'no-improving-move'   # 'cleared'|'no-improving-move'|'converged'|'runaway'
+        _pass = -1
+        while True:
+            _pass += 1
+            if _pass >= _RUNAWAY:
+                stop_reason = 'runaway'
+                break
+            _b_pass_start = b_cur
             rep = _rep(s)
             now_by_mid = _now_by_mid(rep)
             headroom = ceil_by_mid - now_by_mid                     # +inf for no-ceiling MIDs
             breached = [i for i in range(n_mid)
                         if np.isfinite(ceil_by_mid[i]) and now_by_mid[i] > ceil_by_mid[i] + 1e-6]
             if not breached:
+                stop_reason = 'cleared'
                 break
             breached.sort(key=lambda i: -(now_by_mid[i] - ceil_by_mid[i]))   # worst overshoot first
             progress = False
             passes += 1
+            _dirty = False          # has `s` changed since the top-of-pass _rep(s)?
             for m_idx in breached:
-                # refresh headroom from a fresh projection (earlier MIDs' accepted moves changed it)
-                rep = _rep(s); now_by_mid = _now_by_mid(rep); headroom = ceil_by_mid - now_by_mid
+                # Refresh headroom ONLY if an earlier MID in this pass actually moved. On the
+                # first MID, and after any MID that accepted nothing, `s` is unchanged and this
+                # projection returned identical values — one wasted full projection per pass,
+                # minimum. Skipping it is bit-identical.
+                if _dirty:
+                    rep = _rep(s); now_by_mid = _now_by_mid(rep)
+                    headroom = ceil_by_mid - now_by_mid
+                    _dirty = False
                 if now_by_mid[m_idx] <= ceil_by_mid[m_idx] + 1e-6:
                     continue
                 m_rows = np.where((mid_id == m_idx) & (s > 1e-12) & (elig > 0.5))[0]
@@ -1755,18 +1810,56 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                             hbud[smid_b] -= take * dens
                 if not np.any(np.abs(delta) > 1e-12):
                     continue
-                # line-search the batch against the TRUE projector; keep the best strictly-improving step
+                # LINE-SEARCH the batch against the TRUE projector; keep the best strictly
+                # improving step. prop_raw = incidence @ shares is LINEAR (band_scoring
+                # .shares_to_prop_raw, no renormalisation), so exactly:
+                #     s2pr(s + f*delta) == s2pr(s) + f * s2pr(delta)
+                # which turns FOUR matvecs per MID into ONE (for delta) — `_pr_s` carries
+                # s2pr(s) and is updated incrementally when a step is accepted. Exact in real
+                # arithmetic; ~1e-16 relative in floating point, against a 1e-12 accept
+                # threshold. ROUTING_TMOVE_FASTLS_VERIFY=1 recomputes the direct value and logs
+                # any disagreement; ROUTING_TMOVE_FASTLS=0 restores the direct path.
                 best_f, best_b = 0.0, b_cur
-                for f in (1.0, 0.66, 0.4, 0.2):
-                    bt = _breach(s + f * delta)
-                    if bt < best_b - 1e-12:
-                        best_f, best_b = f, bt
+                if _FASTLS:
+                    if _pr_s is None:
+                        _pr_s = _pr(s)
+                    _pr_d = _pr(delta)
+                    for f in (1.0, 0.66, 0.4, 0.2):
+                        bt = _breach_pr(_pr_s + f * _pr_d)
+                        if _FASTLS_VERIFY:
+                            _bt_direct = _breach(s + f * delta)
+                            if abs(bt - _bt_direct) > 1e-9 * max(abs(_bt_direct), 1.0):
+                                _vmsg = (f"      targeted-move: ⚠ FAST LINE-SEARCH DISAGREES with "
+                                         f"the direct projection (f={f}: {bt:.12g} vs "
+                                         f"{_bt_direct:.12g}). The linearity identity does not hold "
+                                         f"here — set ROUTING_TMOVE_FASTLS=0 and re-run.")
+                                if log_fn:
+                                    log_fn(_vmsg)
+                                info["fastls_mismatch"] = True
+                        if bt < best_b - 1e-12:
+                            best_f, best_b = f, bt
+                else:
+                    _pr_d = None
+                    for f in (1.0, 0.66, 0.4, 0.2):
+                        bt = _breach(s + f * delta)
+                        if bt < best_b - 1e-12:
+                            best_f, best_b = f, bt
                 if best_f > 0.0:
                     s = s + best_f * delta
+                    if _FASTLS and _pr_d is not None:
+                        _pr_s = _pr_s + best_f * _pr_d      # keep s2pr(s) in step with s
+                    _dirty = True
                     _mv = float(np.abs(best_f * delta).sum()) / 2.0    # share relocated (÷2: +/- counted once)
                     moved_share += _mv; total_moves += int((np.abs(delta) > 1e-12).sum() // 2)
                     b_cur = best_b; progress = True
             if not progress:
+                stop_reason = 'no-improving-move'
+                break
+            if (_b_pass_start - b_cur) < _REL_FLOOR * max(abs(_b_pass_start), 1e-30):
+                # Still technically improving, but by less than one part in a million of the
+                # current breach. Recorded as its own reason so it is never confused with either
+                # a genuine dead end or a cap.
+                stop_reason = 'converged'
                 break
         info["passes"] = passes
         rep1 = _rep(s); now1_by_mid = _now_by_mid(rep1)
@@ -1774,7 +1867,15 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
             nm = mid_names[i]; n0 = now0_by_mid[i]; n1 = now1_by_mid[i]; cl = ceil_by_mid[i]
             info["mids"].append({"midl": str(nm), "ceil": float(cl), "now0": float(n0), "now1": float(n1)})
             if log_fn:
-                _v = "✓ under ceiling" if n1 <= cl + 1e-6 else "still over (no recipient headroom left)"
+                _v = ("✓ under ceiling" if n1 <= cl + 1e-6 else
+                      ("still over — NO IMPROVING MOVE FOUND (a pass found nothing; headroom "
+                       "genuinely exhausted for this operator)"
+                       if stop_reason == "no-improving-move" else
+                       ("still over — CONVERGED (the last pass moved the breach by <1e-6 of "
+                        "itself; not a cap, and not unexplored headroom)"
+                        if stop_reason == "converged" else
+                        f"still over — ⚠ RUNAWAY BACKSTOP ({_RUNAWAY:,} passes) hit while STILL "
+                        f"improving; cause NOT established, raise ROUTING_TMOVE_MAXPASS")))
                 log_fn(f"         • {nm}: {n0:,.0f} → {n1:,.0f} (ceil {cl:,.0f}) · {_v}")
         b1 = _breach(s); info["moved"] = moved_share; info["n_moves"] = total_moves
         if b1 < b0 - 1e-12:
@@ -1784,8 +1885,24 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                 log_fn(f"      targeted-move seed: exact breach {b0:.4g} → {b1:.4g} in {passes} pass(es) "
                        f"({total_moves:,} cell-moves, {moved_share:.3g} share). "
                        + ("ALL ceilings cleared — a compliant split exists." if _cleared
-                          else "Some ceilings remain — recipient headroom exhausted (evidence of JOINT "
-                               "infeasibility by routing). Kept as a seed anyway (it's strictly better)."))
+                          else ("Some ceilings remain and a pass found NO improving move ⇒ this "
+                                "operator is exhausted (evidence of joint infeasibility BY THIS "
+                                "OPERATOR, not proof of infeasibility). Kept — strictly better."
+                                if stop_reason == "no-improving-move" else
+                                ("Some ceilings remain; the last pass improved the breach by less "
+                                 "than one part in a million, so this is CONVERGED, not capped. "
+                                 "Kept — strictly better."
+                                 if stop_reason == "converged" else
+                                 f"⚠ Some ceilings remain and the loop hit its RUNAWAY BACKSTOP at "
+                                 f"{_RUNAWAY:,} passes while STILL IMPROVING. This is NOT "
+                                 f"convergence and NOT exhausted headroom — it is a pathological "
+                                 f"case. Raise ROUTING_TMOVE_MAXPASS. Kept — strictly better."))))
+            if log_fn:
+                log_fn(f"      targeted-move seed: stopped because '{stop_reason}' after "
+                       f"{passes:,} pass(es) · projection cost {_cost['mv']:,} sparse matvec(s), "
+                       f"{_cost['pen']:,} penalty + {_cost['rep']:,} report pass(es)"
+                       + ("  (fast line-search ON — 1 matvec per MID instead of 4)"
+                          if _FASTLS else "  (fast line-search OFF — 4 matvecs per MID)"))
             return s, info
         info.update(ok=False, breach=b0, reason="no exact-breach improvement (breach only relocates)")
         if log_fn:

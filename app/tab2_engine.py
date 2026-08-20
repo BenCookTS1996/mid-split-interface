@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+import re          # [seed-basis] threshold parsing (2026-08-19w)
 from datetime import date
 
 import numpy as np
@@ -280,20 +281,6 @@ def render():
                              "the seed. OFF: tilt around the revenue-greedy reference (previous behaviour).")
                     if _pre_engine == "genetic_fullmatrix":
                         st.number_input(
-                            "Compressibility λ (full-matrix)", min_value=0.0, max_value=1.0,
-                            value=0.0, step=0.01, format="%.3f", key="fm_compress_lambda",
-                            help="Rewards cells COLLAPSING ONTO A SHARED CODEBOOK of shapes so the split "
-                                 "compresses into far fewer deployable configs — higher fidelity at your pool "
-                                 "target. It learns ≈(pool-target) centroid shapes by volume-weighted k-means "
-                                 "over the current best split's DELIVERED per-vampMid cell shapes (the same kind "
-                                 "of clustering tab-3 uses, refit as the search improves) and subtracts λ × each "
-                                 "candidate's volume-weighted distance to its nearest centroid from the "
-                                 "conversion score. It is NOT a 'fewer-gateways' reward — two cells with the SAME "
-                                 "shape cost nothing however spread; a cell routing DIFFERENTLY from its centroid "
-                                 "pays. Scored on delivered shares, so Country / paymentMethodProvider capability "
-                                 "is respected. Trades a little conversion. 0 = off; try 0.02–0.1 and watch tab-3 "
-                                 "fidelity vs vwsr. Full-matrix engine only.")
-                        st.number_input(
                             "Feasibility-check starts (full-matrix)", min_value=1, max_value=16,
                             value=4, step=1, format="%d", key="fm_feas_starts",
                             help="How many independent starts the pre-search feasibility projection runs (base "
@@ -455,25 +442,6 @@ def render():
                 # violation and made every run infeasible. 0 injects a fallback gateway into every
                 # single-gateway cell, so the search stays feasible.
                 ss["explore_min_cell_vol"] = 0
-                # ANY-BIN ELIGIBILITY toggle (default ON): inject the currency/company/wallet-eligible
-                # gateway set into EVERY matching cell, not just cells that would otherwise be single-
-                # gateway. Matches the business rule that eligibility is NOT BIN-restricted, so the
-                # optimiser gets far more sinks to satisfy tight per-MID VAMP bands (can turn an
-                # 'infeasible' set feasible). Applies to ALL engines (shared cell assembly). Injected
-                # gateways are 'explore' (untested) but are no longer share-capped — they're scored like
-                # proven ones (the cell's real per-BIN risk + an empirical-Bayes prior for conversion), so
-                # the optimiser can load an eligible gateway as far as its rate justifies.
-                st.checkbox(
-                    "Eligibility: any-BIN routing (inject eligible gateways into every cell)",
-                    value=True, key="explore_all_cells",
-                    help="ON (default): a gateway that is currency/company/wallet-eligible and not banned "
-                         "becomes a candidate in EVERY matching cell — even BINs where it has no attempts — "
-                         "so the optimiser can use the full 'any-BIN' eligibility, not only BINs a gateway "
-                         "has already processed. Many more sinks for tight VAMP bands. OFF: only inject into "
-                         "cells that would otherwise be single-gateway (previous behaviour). Untested-but-"
-                         "eligible gateways are scored like proven ones (no share cap), so the optimiser can "
-                         "load them as far as their rate justifies. Applies to ALL engines. Bigger candidate "
-                         "matrix ⇒ slower, heavier search.")
                 _grc1, _grc2 = st.columns(2)
                 _score_grain = _grc1.selectbox(
                     "Engine Score grain",
@@ -581,23 +549,18 @@ def render():
                 # whether the backup-blend re-add and the exploration-floor residual are what inflate
                 # tab-3's VAMP above the in-search number (the scored-vs-delivered gap). Defaults = ON
                 # (current behaviour). Set immediately so tab-3 reads the new value on the same rerun.
-                _pj1, _pj2 = st.columns(2)
-                _bb_on = _pj1.checkbox(
-                    "Backup-blend in impact projection", value=True, key="proj_backup_blend",
-                    help="ON (default) = tab-3/impact re-adds the backup catch-all incumbents to gateways "
-                         "the split zeroed (matches what actually ships). OFF = project the RAW split — "
-                         "use to test whether the backup-blend re-add is inflating tab-3's VAMP vs the "
-                         "in-search number.")
-                _fl_on = _pj2.checkbox(
-                    "Exploration floor in impact projection", value=False, key="proj_floor_on",
-                    help="OFF (default) = tab-3/impact projects with NO exploration floor, matching the "
-                         "deployed pipeline (exports show sub-1% gateway shares, so production does NOT "
-                         "force ≥1% per gateway). This keeps the compliance projection deployment-truthful "
-                         "and consistent with the GA (which also decodes floor-free). ON = re-apply the 1% "
-                         "floor in the projection (forces every gateway ≥1%, which re-adds VAMP the routing "
-                         "removed and can make VAMP ceilings look infeasible) — for comparison only.")
-                os.environ["ROUTING_BACKUP_BLEND"] = "1" if _bb_on else "0"
-                os.environ["ROUTING_PROJ_FLOOR"] = "1" if _fl_on else "0"
+                # FIXED as of 2026-08-19p — the "Backup-blend in impact projection" and
+                # "Exploration floor in impact projection" checkboxes were removed.
+                # Backup blend ON: it is what actually ships, so the projection must always
+                # re-add it. Exploration floor OFF: the deployed pipeline does NOT force a
+                # >=1% per-gateway share (exports show sub-1% shares) and the GA decodes
+                # floor-free, so applying one in the projection re-adds VAMP the routing
+                # removed and can make ceilings look infeasible.
+                # setdefault, not assignment: every consumer already defaults to these, and
+                # this keeps the shell override (ROUTING_BACKUP_BLEND=0) that the
+                # scored-vs-delivered A/B still uses.
+                os.environ.setdefault("ROUTING_BACKUP_BLEND", "1")
+                os.environ.setdefault("ROUTING_PROJ_FLOOR", "0")
 
                 # --- Compression shaping (drives the pool compression in tab 3 / configs) ---
                 _cm1, _cm2 = st.columns(2)
@@ -735,7 +698,9 @@ def render():
                 _base_totals = {}
                 mids = []
                 if os.path.exists(mid_path):
-                    mid_data = pd.read_csv(mid_path)
+                    # via load_mid_list, not pd.read_csv: this is the SAME Master_MID_List and a
+                    # macOS-Excel (Mac Roman) save makes a bare read_csv raise UnicodeDecodeError.
+                    mid_data = load_mid_list(mid_path)
                     if "vampMid" in mid_data.columns:
                         mid_data = mid_data[mid_data["vampMid"].astype(str).str.upper() != "TOTAL"]
                         mids = sorted([str(m) for m in mid_data["vampMid"].dropna().unique() if str(m).strip() != ""])
@@ -866,10 +831,12 @@ def render():
                 # (that stays gated on 'Compute split variations' only). So you can iterate on the
                 # constraints and re-check the budget as many times as you like before running.
                 st.form_submit_button("Run Constraints Check", type="primary")
-                st.caption("Edit the constraints, then click **Run Constraints Check** to refresh the "
-                           "moveable-M5-txn budget + feasibility flags above (does not run the engine). "
-                           "The budget counter only reflects **M5** Txn constraints; constraints at other "
-                           "months are still enforced by the engine but aren't shown in the counter.")
+                # The explanatory st.caption under this button was removed on request
+                # (2026-08-19q). The button label says what it does; the caveat it carried — that
+                # the moveable-budget counter above reflects M5 Txn constraints only, while
+                # constraints at other months are still enforced by the engine and simply are not
+                # counted — remains TRUE of the counter. It is recorded here so removing the text
+                # does not lose the fact.
 
                 _metric_key = {"Txn": "txn", "VAMP": "vamp", "VAMP %": "vamp_pct"}
                 clean_records = []
@@ -1223,6 +1190,28 @@ def render():
                         for _label, _p in [("outputs dir", _gv("out_dir")), ("MID list", _mid_p)]:
                             if isinstance(_p, str):
                                 _diag(f"      {_label}: {_finfo(_p)}")
+                        # Surface a non-UTF-8 MID list. app_common now falls back rather than
+                        # raising (see _read_mid_csv) but it has no logger, so without this the
+                        # fallback would be invisible — and an invisible encoding failure is
+                        # exactly how five call sites came to silently skip the Master-MID
+                        # capability filter on the 11:53 run while only the sixth crashed.
+                        try:
+                            import app_common as _acE
+                            _encE = str(getattr(_acE, "LAST_MID_LIST_ENCODING", "") or "")
+                            if not _encE:                      # not read yet this process
+                                try:
+                                    load_mid_list(_mid_p)
+                                    _encE = str(getattr(_acE, "LAST_MID_LIST_ENCODING", "") or "")
+                                except Exception:  # noqa: BLE001
+                                    _encE = ""
+                            _ntE = str(getattr(_acE, "LAST_MID_LIST_NOTE", "") or "")
+                            if _encE:
+                                _diag(f"      MID list encoding: {_encE}"
+                                      + ("" if not _ntE else "   ⚠ NOT UTF-8"))
+                            if _ntE:
+                                _diag(f"      ⚠ {_ntE}")
+                        except Exception:  # noqa: BLE001
+                            pass
                         _diag("════════════════════════════════════════════════════════════════════")
                     except Exception as _e:  # noqa: BLE001
                         _diag(f"   [diagnostics header partial/failed: {_e}]")
@@ -1710,11 +1699,18 @@ def render():
                             # ONLY cells that would otherwise be single-gateway (fewer than _MIN_GW
                             # eligible), so well-populated cells aren't bloated. The explore share cap
                             # keeps the injected fallbacks to ≤10% combined so the primary stays dominant.
-                            # ANY-BIN ELIGIBILITY (toggle 'explore_all_cells', default ON): a huge _MIN_GW
+                            # ANY-BIN ELIGIBILITY (ALWAYS ON; the toggle was removed in
+                            # 2026-08-19p): a huge _MIN_GW
                             # makes the "cell already has ≥ _MIN_GW gateways" skip below never fire, so the
                             # eligible-but-untested gateways are injected into EVERY currency-matched cell
                             # (not just single-gateway ones) — the full business eligibility footprint.
-                            _explore_all = bool(ss.get("explore_all_cells", True))
+                            # ALWAYS ON as of 2026-08-19p — the "Eligibility: any-BIN
+                            # routing" checkbox was removed. Any-BIN eligibility IS the
+                            # business rule (eligibility is not BIN-restricted), and
+                            # turning it off starved the per-MID VAMP bands of sinks.
+                            # Pinned, not left on the ss.get default, so this does not
+                            # read as still-configurable.
+                            _explore_all = True
                             _MIN_GW = (10 ** 9) if _explore_all else 2
                             _cellkey_cols = _gk + ["bank"]
                             _af_keys = list(zip(*[agg_forecast[c].astype(str).str.strip().str.lower()
@@ -2313,6 +2309,14 @@ def render():
                     mapping_df = mapping_df.rename(columns={"rpgt": "orig_rpgt", "bank": "orig_bank"})
 
                     # [FN-313]
+                    # [explode-keep] logs once (_explode has 6 callers). THE SCOPE IS STASHED
+                    # HERE, in render()'s own scope, because `_sel_rpgts` is a CLOSURE variable as
+                    # seen from inside `_explode` — a closure cell only exists if the name is
+                    # referenced syntactically, so locals()/globals() there return NOTHING. That
+                    # made the entire keep block fail closed and silently no-op on the 23:32 run,
+                    # and the unit test missed it because its harness injected the name as a
+                    # module global (which globals() DOES see) instead of a closure variable.
+                    _EXKEEP = {"said": False, "scope": set(locals().get("_sel_rpgts") or ())}
                     def _explode(agg_split):
                         # Per-RPGT optimisation: cells already carry the real RPGT — the split IS
                         # the exploded split, so map parent_bank back to the BIN-level bank(s) but
@@ -2328,6 +2332,151 @@ def render():
                             _mp = _mp.rename(columns={"rpgt": "_orig_rpgt", "bank": "_orig_bank"}).drop(columns=["rpgt"], errors="ignore")
                             ex = _mp.merge(sc.drop(columns=["rpgt"], errors="ignore"),
                                            on=["currency", "parent_bank", "_rk"], how="inner")
+                            # ── KEEP PROFILES THAT CARRY TRAFFIC (2026-08-19g) ──────────────
+                            # This INNER merge is the only place the delivered split loses rows
+                            # (_endpoint_agg above it is a verified passthrough). It drops every
+                            # GA profile whose (currency, parent_bank, rpgt) is absent from
+                            # orig_forecast. SUPERSEDED FIGURES: this read "8,611 of 23,791 ...
+                            # 8,435 phantom / 176 real / 145 blend-invented" from an offline
+                            # sample. [drop-measure] measured it on 2026-08-20: 97,465 row(s)
+                            # across 8,978 sub-cell key(s) = 23,791 − 14,813 exactly, and ALL of
+                            # them carry a vampMid (the split has no vampMid-less rows at all), so
+                            # the "phantom, correctly dropped" split does not exist as described.
+                            # 145 of the real ones are exactly the cells the in-search backup blend invents,
+                            # worth Σ|Δ| 19 of reconciliation error and the whole of DELIVERY
+                            # DRIFT. They are live profiles with no specific rule, so keep them
+                            # and let the split carry the GA's OWN shares — then both sides
+                            # normalise the same vector and neither needs the catch-all there.
+                            # THE VOLUME AND SCOPE TESTS ARE THE WHOLE SAFETY STORY: without
+                            # cell_volume > 0 this admits the 8,435 phantoms; without the RPGT
+                            # scope filter it reaches baseline-frozen RPGTs (16,768 cells / 67% of
+                            # t0 volume).
+                            # DEFAULT OFF as of 2026-08-19j. Shipped default-on in 19g/19i on the
+                            # premise that `cell_volume > 0` isolated ~145 profiles. The 00:01 run
+                            # measured the real population: 97,465 rows / ~8,978 profiles, ALL with
+                            # cell_volume > 0 and ALL scoped — both guards biting, neither selective.
+                            # `cell_volume` in the GA frame is forecast volume APPORTIONED to the
+                            # sub-cell by pro-rata VI, so it is positive almost everywhere; it is NOT
+                            # the same object as "the export has a VI_Txn_Count row for this profile",
+                            # which is what the 8,435-phantom measurement used. And [ca-reach] shows
+                            # the kept rows land in CASE B — positive share, still no prop — so they
+                            # do not even reach the delivered projection: Σshare mapped fell to 62.3%.
+                            # The opt-in branch (ROUTING_EXPLODE_KEEP=1) was DELETED on 2026-08-19t
+                            # — it was default-off, measured harmful, and its premise was falsified.
+                            # This comment is kept as the record of WHY the inner merge is left alone;
+                            # [drop-measure] below is the live measurement of what it discards.
+                            # ── MEASUREMENT ONLY (2026-08-19k) ──────────────────────────────
+                            # Establish the keep population by KEY before any keep is written
+                            # again. `cell_volume > 0` was the 19g/19i scope and it admitted
+                            # 97,465 rows / ~8,978 profiles, because in the GA frame that column
+                            # is forecast volume apportioned by pro-rata VI and so is positive
+                            # almost everywhere. Stash the dropped rows' keys here and let the
+                            # [blend-cells] block — which owns the 145 invented cells, derived
+                            # from the blend's own +blend/-blend vectors rather than a volume
+                            # proxy — do the intersection. NOTHING about the split changes.
+                            # ARMED for ONE call (the delivered explode). `_explode` has six
+                            # callers and five of them are probe / reference paths whose frames are
+                            # NOT the delivered split, so measuring there would report the wrong
+                            # population. Until 2026-08-19p there was also a PER-GA-CANDIDATE
+                            # caller inside `_fm_codebook_fn`, where an unarmed anti-join would
+                            # have been paid thousands of times per run; that caller went with the
+                            # compressibility λ removal, so the cost argument no longer applies —
+                            # but the wrong-frame argument does, and it is the reason for the arm.
+                            if (_EXKEEP.get("arm")
+                                    and os.environ.get("ROUTING_DROP_MEASURE", "1") != "0"):
+                                try:
+                                    _dmk = (_mp[["currency", "parent_bank", "_rk"]]
+                                            .drop_duplicates().assign(_dmm=1))
+                                    _dchk = sc.merge(_dmk, on=["currency", "parent_bank", "_rk"],
+                                                     how="left")
+                                    _dmiss = _dchk[_dchk["_dmm"].isna()]
+                                    _dkc = [c for c in ("currency", "parent_bank", "_rk",
+                                                        "pmp", "ctry") if c in _dmiss.columns]
+                                    _EXKEEP["drop_rows"] = int(len(_dmiss))
+                                    _EXKEEP["split_rows"] = int(len(sc))
+                                    _EXKEEP["drop_keys"] = list(_dkc)
+                                    if _dkc:
+                                        _dn = _dmiss[_dkc].astype(str)
+                                        for _c in _dkc:
+                                            _dn[_c] = _dn[_c].str.strip().str.lower()
+                                        _dcnt = {}
+                                        for _t in _dn.itertuples(index=False, name=None):
+                                            _dcnt[_t] = _dcnt.get(_t, 0) + 1
+                                    else:
+                                        _dcnt = {}
+                                    _EXKEEP["dropped"] = set(_dcnt)
+                                    _EXKEEP["drop_cnt"] = _dcnt
+                                    _EXKEEP["drop_cells"] = len(_dcnt)
+                                    # BIN vs PARENT_BANK is the one grain question the
+                                    # [blend-cells] side cannot settle alone, so hand it BOTH
+                                    # vocabularies and let it count the overlap. Reading the
+                                    # prop-key comment and assuming is how six mechanisms got
+                                    # asserted wrong today.
+                                    _EXKEEP["pb_vals"] = (
+                                        set(sc["parent_bank"].astype(str).str.strip().str.lower())
+                                        if "parent_bank" in sc.columns else set())
+                                    _EXKEEP["bin_vals"] = (
+                                        set(_mp["_orig_bank"].astype(str).str.strip().str.lower())
+                                        if "_orig_bank" in _mp.columns else set())
+                                    _EXKEEP["sample"] = ["|".join(_t) for _t in
+                                                         sorted(_dcnt)[:4]]
+                                    # IS THE DROP BY DESIGN? On the 07:45 run
+                                    # 245,409 − 97,465 = 147,944, byte-identical to the incidence
+                                    # self-check's "share columns that map to a prop-key", and the
+                                    # 8,978 distinct dropped keys equal 23,791 − 14,813 exactly.
+                                    # Two readings with OPPOSITE conclusions follow from that:
+                                    #   · every dropped row has NO vampMid ⇒ the band projector
+                                    #     could never see them, the drop is BY DESIGN and Option 3
+                                    #     is aimed at nothing.
+                                    #   · dropped rows DO carry banded vampMids ⇒ the merge is
+                                    #     discarding banded share the GA spent.
+                                    # One count settles it, so count it rather than argue it.
+                                    try:
+                                        _f2v = {str(_k).strip().lower(): str(_v).strip()
+                                                for _k, _v in (fid2vamp or {}).items()}
+                                        if "gateway" in _dmiss.columns and _f2v:
+                                            _dhit = (_dmiss["gateway"].astype(str).str.strip()
+                                                     .str.lower().map(_f2v))
+                                            _khit = (sc["gateway"].astype(str).str.strip()
+                                                     .str.lower().map(_f2v))
+                                            _nvm = int(_dhit.notna().sum())
+                                            _EXKEEP["drop_vamp"] = (_nvm, int(len(_dmiss) - _nvm),
+                                                                    int(_khit.notna().sum()))
+                                            _dtop = dict(_dhit.dropna().value_counts().head(5))
+                                            log(f"   [drop-measure]   OF THE DROPPED ROWS: "
+                                                f"{_nvm:,} carry a vampMid · "
+                                                f"{len(_dmiss) - _nvm:,} carry NONE. Whole split: "
+                                                f"{int(_khit.notna().sum()):,} of {len(sc):,} rows "
+                                                f"have a vampMid.")
+                                            log(f"   [drop-measure]   ⇒ READING: NONE ≈ the whole "
+                                                f"drop would mean the merge only discarded rows the "
+                                                f"band projector cannot see (BY DESIGN). ANSWERED "
+                                                f"2026-08-20 (11:46 and 12:42, identically): NONE "
+                                                f"was 0 and ALL 97,465 dropped rows carried a "
+                                                f"vampMid, including banded ones — so the merge IS "
+                                                f"discarding banded share and the 'by design' "
+                                                f"reading is FALSE on this data. [profiles] PART A "
+                                                f"then found 8,978 of 8,978 dropped profiles carry "
+                                                f"real 30D attempts. dropped vampMids (top 5): "
+                                                f"{_dtop or '(none)'}")
+                                        else:
+                                            log("   [drop-measure]   vampMid split skipped — no "
+                                                "gateway column on the split, or fid2vamp is empty.")
+                                    except Exception as _dvE:  # noqa: BLE001
+                                        log(f"   [drop-measure]   vampMid split unavailable "
+                                            f"({type(_dvE).__name__}: {_dvE}) — the by-design "
+                                            "question stays open.")
+                                    log(f"   [drop-measure] delivered explode: split has "
+                                        f"{len(sc):,} row(s); the INNER merge against "
+                                        f"orig_forecast drops {len(_dmiss):,} of them across "
+                                        f"{len(_dcnt):,} distinct {tuple(_dkc)} key(s). Stashed "
+                                        f"for the [blend-cells] intersection — the split is "
+                                        f"UNCHANGED by this block.")
+                                except Exception as _dmE:  # noqa: BLE001
+                                    _EXKEEP["dropped"] = None
+                                    log(f"   [drop-measure] skipped "
+                                        f"({type(_dmE).__name__}: {_dmE}) — the [blend-cells] "
+                                        "intersection will say it has no stash.")
                             return ex.rename(columns={"_orig_rpgt": "rpgt", "_orig_bank": "bank"}).drop(
                                 columns=["parent_bank", "_rk"], errors="ignore")
                         sc = agg_split.copy()
@@ -2356,8 +2505,16 @@ def render():
                         from routing_optimiser.precluster import run_midtilt_ga_preclustered as _run_midtilt_ga
                         log("   pre-clustering ON → GA runs on rule-safe pre-clustered cells "
                             "(near-lossless; expand-back before enforcement).")
-                    log(f"   optimiser build: {getattr(_optmod, '__build__', 'UNKNOWN — stale bytecode?')} "
-                        "(expect 2026-07-16-vamp-frontier-lp — if not, clear __pycache__).")
+                    # The parenthetical used to read "(expect 2026-07-16-vamp-frontier-lp — if not,
+                    # clear __pycache__)". The shipped module is 2026-07-29-…, i.e. NEWER than the
+                    # literal, so that line told the operator to clear __pycache__ on every single
+                    # run and trained everyone to ignore a real staleness warning. A pinned literal
+                    # cannot track the module, so report the build and only warn when the marker is
+                    # genuinely ABSENT — which is the actual stale-bytecode signature.
+                    _ob = getattr(_optmod, "__build__", None)
+                    log(f"   optimiser build: {_ob or 'UNKNOWN'}"
+                        + ("" if _ob else "  ⚠ no __build__ marker — this IS the stale-bytecode "
+                                         "signature; clear __pycache__ and re-run."))
                     # Softmax and Thompson are per-cell engines: the reference IS their
                     # slider=100 split, and the shared risk layer below (reference→compliant
                     # blend + hard-enforce) does the rest. For the genetic engine the
@@ -4323,40 +4480,6 @@ def render():
                                 f"cell×gateway rows, {_n_mid} vampMids → genome D = {_ga_D}. "
                                 f"CMA-ES per-generation cost ∝ D² (covariance update) and ∝ D³ (eigen-refresh); "
                                 f"D is the dimension k-means pre-clustering would reduce.")
-                        # ── Compressibility probe (READ-ONLY; changes nothing) — the k-means ceiling ──
-                        # The 48-knob genome decodes each cell's shares from its gateways' (vampMid,
-                        # reference share, risk) alone, so two cells whose eligible gateways carry the SAME
-                        # signature decode IDENTICALLY under EVERY genome and could share one representative
-                        # (carrying their summed volume) at ~no loss. Counting DISTINCT signatures gives the
-                        # rough CEILING on how far pre-clustering could shrink the 58,745-row hot loop. This
-                        # ONLY measures. Optimistic (a truly lossless merge also needs matching success /
-                        # ticket rates); a real clusterer trades a controllable error for more compression.
-                        try:
-                            _mid_a = np.asarray(ctx["mid_id"])
-                            _ref_a = np.asarray(ctx["ref_share"], float)
-                            _risk_a = np.asarray(ctx["risk"], float)
-                            _elig_a = np.asarray(ctx["elig"], float) > 0.5
-                            _sig_all = set()
-                            _single = 0
-                            for _ci in range(len(_counts)):
-                                _s0 = int(_cell_starts[_ci]); _s1 = _s0 + int(_counts[_ci])
-                                if (_s1 - _s0) <= 1:
-                                    _single += 1
-                                _sig_all.add(tuple(sorted(
-                                    (int(_mid_a[g]), round(float(_ref_a[g]), 5), round(float(_risk_a[g]), 6))
-                                    for g in range(_s0, _s1) if _elig_a[g])))
-                            _distinct = max(1, len(_sig_all))
-                            _ratio = _n_cells / _distinct
-                            # The probe describes the TILT genome + k-means pre-clustering (which the
-                            # full-matrix engine doesn't use), so don't print it for full-matrix.
-                            if engine_key != "genetic_fullmatrix":
-                                log(f"   Compressibility probe: {_n_cells} cells → ~{_distinct} distinct "
-                                    f"decode-signatures (≈{_ratio:.1f}× cell-reduction CEILING); {_single} "
-                                    f"single-gateway cells are genome-invariant. Upper bound on what k-means "
-                                    f"pre-clustering could trim from the {int(len(G))}-row hot loop — optimistic "
-                                    f"(true lossless merge also needs matching success/ticket rates).")
-                        except Exception as _e:  # noqa: BLE001 — a read-only probe must never break a run
-                            log(f"   [Warning] compressibility probe skipped ({type(_e).__name__}: {_e}).")
                         _pop_ovr = int(ss.get("ga_pop_override", 0) or 0)   # 0 = auto-size
                         _ga_pop = _pop_ovr if _pop_ovr > 0 else int(np.clip(round(4 * _n_mid), 30, 80))
                         _ga_gen = int(ss.get("ga_generations", 80) or 80)
@@ -5072,7 +5195,6 @@ def render():
                         # frontier blend between the dial-0 and dial-99 endpoints.
                         _warm_dial0 = None
                         _exact_G = None    # optional exact projector-defined seed (successive-LP); see below
-                        _globlp_G = None   # optional global linear-band LP seed (one full-step convex LP); see below
                         _band_mult = 1.0   # band penalty strength fixed at 1.0 (input removed)
                         # CATCH-ALL ε-FLOOR MASK — NOW OFF BY DEFAULT (obsolete after the cell-level
                         # catch-all fix). It was built to dodge the OLD per-gateway re-add: back then a
@@ -5268,41 +5390,6 @@ def render():
                                 except Exception as _xe:  # noqa: BLE001
                                     _exact_G = None
                                     log(f"   exact projector seed skipped: {type(_xe).__name__}: {_xe}")
-                                # GLOBAL LINEAR-BAND LP SEED (Option 1): ONE full-step convex LP over ALL
-                                # cells at once, linearised at the band-aware seed using the EXACT projector
-                                # value + analytic Jacobian. Unlike the LOCAL successive-LP above it takes the
-                                # global first-order step with no trust region, so it can jump to a different
-                                # basin. No-regret: it's added to the seed set + _fm_cands but the never-worse
-                                # guarantee means it's only USED if its exact breach beats the other seeds.
-                                try:
-                                    from routing_optimiser.exact_band_solver import (
-                                        solve_global_linear_lp as _glp)
-                                    _glp_base = np.asarray(
-                                        locals().get("_risk_greedy_G", _comp_share_G), float)
-                                    _globlp_G, _ginfo = _glp(
-                                        ctx["exact_bands"], ctx["_exact_bands_selfcheck"]["inc"],
-                                        _glp_base, ctx["cell_starts"], ctx["cell_counts"], ctx["elig"],
-                                        max_share=float(ctx.get("max_share", 1.0) or 1.0),
-                                        weighted=True, log_fn=log,
-                                        floor_mask=_catchall_row_mask, share_floor=_fm_catch_eps)
-                                    if _ginfo.get("ok") and np.isfinite(
-                                            _ginfo.get("breach_true", float("nan"))):
-                                        log("   ── GLOBAL LINEAR-BAND LP seed (minimal-move feasibility "
-                                            "projection over all cells; linearised at the band-aware seed) ──")
-                                        log(f"      exact breach {_ginfo['breach0']:.4g} → "
-                                            f"{_ginfo['breach_true']:.4g} on the re-projected candidate; "
-                                            f"moved {_ginfo.get('moved', float('nan')):.4g} share across "
-                                            f"{_ginfo['n_free']} movable gateways, {_ginfo['n_bands']} band "
-                                            "side(s). Used as a seed only if it beats the band-aware seed.")
-                                        _seeds.append(np.asarray(_globlp_G, float))
-                                    else:
-                                        _globlp_G = None
-                                        log("   global linear-band LP seed skipped: "
-                                            f"{_ginfo.get('reason', 'unavailable')}.")
-                                except Exception as _ge:  # noqa: BLE001
-                                    _globlp_G = None
-                                    log(f"   global linear-band LP seed skipped: "
-                                        f"{type(_ge).__name__}: {_ge}")
                                 # ── TARGETED MOVE-OPERATOR SEED ─────────────────────────────────────
                                 # Directly shed each breached CEILING MID's share onto co-located
                                 # lower-risk eligible siblings (with headroom) until it clears its ceiling
@@ -5453,12 +5540,20 @@ def render():
                                     _sinc = ctx["_exact_bands_selfcheck"]["inc"]
                                     _seed_pairs = [("band-aware", locals().get("_risk_greedy_G")),
                                                    ("exact-proj", locals().get("_exact_G")),
-                                                   ("global-LP (min-move)", locals().get("_globlp_G")),
                                                    ("revenue-greedy", locals().get("_comp_share_G"))]
                                     _seed_pairs = [(_nm, _s) for _nm, _s in _seed_pairs if _s is not None]
                                     if _seed_pairs:
-                                        log("   ── SEED unmet-band summary (how many of the per-MID bands "
-                                            "each warm-start satisfies) ──")
+                                        log("   ── SEED unmet-band summary — RAW BASIS (how many of "
+                                            "the per-MID bands each warm-start satisfies) ──")
+                                        log("      ⚠ BASIS: these numbers score the seed's RAW shares. "
+                                            "`unmet_summary(seed, exact_bands, inc)` is called with no "
+                                            "delivery transform, so blocked-caps and eligibility are NOT "
+                                            "applied — unlike the seed SELECTION below, which scores "
+                                            "through `_fm_deliv`. A band can therefore look met here and "
+                                            "breach once delivered (measured 2026-08-20: woodforest raw "
+                                            "23,967 → +blocked-caps 24,082, i.e. +115 on a ceiling of "
+                                            "24,000, and no seed was listed as unmet on it). The "
+                                            "[seed-basis] block below prints BOTH bases.")
                                         for _nm, _s in _seed_pairs:
                                             _su = _unmet(np.asarray(_s, float), ctx["exact_bands"], _sinc)
                                             if _su:
@@ -5492,8 +5587,6 @@ def render():
                                           ("band-aware seed", np.asarray(_risk_greedy_G, float))]
                                 if _exact_G is not None:
                                     _cands.append(("exact projector seed", np.asarray(_exact_G, float)))
-                                if _globlp_G is not None:
-                                    _cands.append(("global linear-band LP seed", np.asarray(_globlp_G, float)))
                                 _scored = sorted(
                                     ((float(ctx["exact_bands"].penalty(_s2pr_anc(_c[None, :], _inc_anc))[0]), _nm, _c)
                                      for _nm, _c in _cands), key=lambda x: x[0])
@@ -5532,9 +5625,6 @@ def render():
                             if _exact_G is not None:               # hash the exact seed too (else a stale hit)
                                 _h.update(b"exact_band_seed")
                                 _h.update(np.ascontiguousarray(np.asarray(_exact_G, float)).tobytes())
-                            if _globlp_G is not None:              # hash the global LP seed too
-                                _h.update(b"global_linear_lp_seed")
-                                _h.update(np.ascontiguousarray(np.asarray(_globlp_G, float)).tobytes())
                             _h.update(repr((float(vamp_cap) if vamp_cap is not None else None,
                                             float(ctx.get("max_share", 1.0) or 1.0),
                                             float(ctx.get("floor", 0.0) or 0.0), repr(_mid_month_rules),
@@ -5875,7 +5965,7 @@ def render():
                                              (("targeted-move", locals().get("_move_G")),
                                               ("band-aware", locals().get("_risk_greedy_G")),
                                               ("exact-proj", locals().get("_exact_G")),
-                                              ("global-lp", locals().get("_globlp_G"))) if _c is not None]
+                                              ) if _c is not None]
                                 if not _fm_cands:
                                     # NO fallback: the full-matrix engine MUST seed from a band-aware split.
                                     # If neither the band-aware constrained-projection nor the exact-projector
@@ -5941,68 +6031,14 @@ def render():
                                         _add = np.where(_has, _recip * _fc / np.where(_has, _rc, 1.0), 0.0)
                                         _outb = np.where(_has, _capd + _add, _X)           # no recipient → unchanged
                                         return _outb[0] if _one else _outb
-                                    # ── MIN-2 LOW-RISK FLOOR, fitness-aware (opt-in, ROUTING_MIN2_FLOOR=1) ──
-                                    # Fold the "keep the 2 lowest-risk NON-VAMP-capped doors per sub-cell >= floor,
-                                    # renormalise" policy INTO the scoring delivery transform, so the GA — and the
-                                    # seed selection, which scores through _fm_deliv — optimise WITH it, not as a
-                                    # post-hoc clean-up. Targets are STATIC (risk-ranked, protected-masked) → the
-                                    # column mask is precomputed ONCE. G aligns to the projector columns (see
-                                    # _fm_block reading G["gateway"]/["bank"]), so risk/vampMid come straight from G
-                                    # — identical selection to the frame-level floor on _comp_gran, keeping scored
-                                    # and shipped consistent. Default OFF ⇒ _fm_deliv byte-identical. The SHIPPED
-                                    # split is still the validated frame floor on _comp_gran, so a mask slip here
-                                    # only perturbs scoring (would surface as Braintree rising in the RECONCILE).
-                                    _fm_min2_on = os.environ.get("ROUTING_MIN2_FLOOR", "0") == "1"
-                                    _fm_min2_flr = float(os.environ.get("ROUTING_MIN2_FLOOR_PCT", "1.0") or 1.0) / 100.0
-                                    _fm_floor_col = None
-                                    if _fm_min2_on:
-                                        try:
-                                            _vcap = set()
-                                            for _sp in (getattr(_fm_eb, "specs", []) if _fm_eb is not None else []):
-                                                # protect ANY constrained MID (vamp OR txn). A txn-capped
-                                                # low-risk door (Authorize/Woodforest/Adyen-NA, risk~0) must NOT
-                                                # be a floor recipient or the floor pumps its txn through its
-                                                # ceiling — only genuinely uncapped doors are valid targets.
-                                                _mid = str(getattr(_sp, "midl", "")).strip().lower()
-                                                if _mid:
-                                                    _vcap.add(_mid)
-                                            _riskcol = pd.to_numeric(
-                                                G.get("gateway_risk_rate", G.get("rate", 0.006)),
-                                                errors="coerce").fillna(9.9).to_numpy()
-                                            _protcol = (G["vampMid"].astype(str).str.strip().str.lower().isin(_vcap).to_numpy()
-                                                        if "vampMid" in G.columns else np.zeros(len(G), bool))
-                                            _fc = np.zeros(len(G), bool)
-                                            for _cs0, _cc0 in zip(_fm_bcs.tolist(), _fm_bcc.tolist()):
-                                                _idx = np.arange(_cs0, _cs0 + _cc0)
-                                                _cand = _idx[~_protcol[_idx]]
-                                                if len(_cand) == 0:
-                                                    continue
-                                                _ordr = _cand[np.argsort(_riskcol[_cand], kind="stable")]
-                                                _fc[_ordr[:2]] = True
-                                            _fm_floor_col = _fc
-                                            log(f"   [min2-floor] FITNESS-AWARE ON: floored {int(_fc.sum())} door(s) "
-                                                "(2 lowest-risk non-CONSTRAINED per sub-cell) INTO the GA scoring "
-                                                "delivery — seeds + candidates optimise WITH the floor (protects "
-                                                f"{len(_vcap)} constrained MID(s): vamp+txn).")
-                                        except Exception as _m2fe:  # noqa: BLE001
-                                            _fm_floor_col = None
-                                            log(f"   [min2-floor] fitness hook skipped ({type(_m2fe).__name__}: {_m2fe}).")
 
-                                    def _fm_min2(_X, _fc=_fm_floor_col, _cs=_fm_bcs, _cc=_fm_bcc, _flr=_fm_min2_flr):
-                                        _X = np.where(_fc[None, :], np.maximum(_X, _flr), _X)
-                                        _seg = np.repeat(np.add.reduceat(_X, _cs, axis=1), _cc, axis=1)
-                                        return np.where(_seg > 1e-12, _X / np.where(_seg > 1e-12, _seg, 1.0), _X)
-
-                                    # Combined DELIVERY transform: block-floor → eligibility → (opt) min-2 floor.
-                                    def _fm_deliv(_farr, _bl=_fm_block, _el=_fm_elig, _m2=_fm_min2, _fc=_fm_floor_col):
-                                        _out = _el(_bl(_farr))
-                                        if _fc is None:
-                                            return _out
-                                        _o = np.asarray(_out, float)
-                                        _one = _o.ndim == 1
-                                        _o = _o[None, :] if _one else _o
-                                        _o = _m2(_o)
-                                        return _o[0] if _one else _o
+                                    # DELIVERY transform: block-floor → eligibility. The optional
+                                    # min-2 floor branch was DELETED 2026-08-19x — it was default-OFF
+                                    # (ROUTING_MIN2_FLOOR), duplicated by a second pandas
+                                    # implementation, and its `_fc is None` test made every GA
+                                    # evaluation pay a branch that was never taken.
+                                    def _fm_deliv(_farr, _bl=_fm_block, _el=_fm_elig):
+                                        return _el(_bl(_farr))
                                     def _fm_breach(_sv):
                                         return float(_fm_eb.penalty(_fm_s2pr(
                                             _fm_deliv(np.asarray(_sv, float)[None, :]), _fm_inc))[0])
@@ -6011,8 +6047,135 @@ def render():
                                         _cb = _fm_breach(_cand)
                                         if _cb < _fm_seed_b:
                                             _fm_seed, _fm_seed_b, _fm_sname = np.asarray(_cand, float), _cb, _cnm
-                                    log(f"   [full-matrix] seed = '{_fm_sname}', exact M5 breach = {_fm_seed_b:.4g} "
-                                        "(never-worse guarantee: delivered breach ≤ this).")
+                                    log(f"   [full-matrix] seed = '{_fm_sname}', exact M5 breach = "
+                                        f"{_fm_seed_b:.4g} (never-worse guarantee: delivered breach ≤ "
+                                        "this).")
+                                    # ── ONE SEED, THREE STAGES (2026-08-19u) ──────────────────────
+                                    # These are NOT competing candidates — they are a CHAIN, and the
+                                    # global-LP branch that WAS a competitor is deleted (it cost ~71s
+                                    # and its own log read 0.3532 → 0.3566, i.e. worse than the seed
+                                    # it linearised at; it never won selection).
+                                    #   band-aware   (~33s)  constrained projection, per-cell simplex
+                                    #        ↓                + max-share QP
+                                    #   exact-proj   (~105s) successive-LP on the TRUE band values,
+                                    #        ↓                STARTS FROM band-aware
+                                    #   targeted-move (~8s)  sheds breached ceilings onto co-located
+                                    #                        siblings, STARTS FROM the best above
+                                    # The comparison below is kept as a NEVER-WORSE GUARD, not a
+                                    # contest: if a later stage regresses, the earlier one is used.
+                                    if os.environ.get("ROUTING_SEED_CHAIN", "1") != "0":
+                                        try:
+                                            # ORDER MATTERS. `_fm_cands` is in PREFERENCE order
+                                            # (targeted-move first, because it is normally best);
+                                            # the CHAIN runs band-aware → exact-proj →
+                                            # targeted-move. Printing the preference order made the
+                                            # "vs previous stage" deltas compare the wrong pair and
+                                            # fired a false "a later stage REGRESSED" warning on the
+                                            # 2026-08-20 23:03 run. Sort into build order.
+                                            _CHAIN_ORDER = ("band-aware", "exact-proj",
+                                                            "targeted-move")
+                                            _chain = sorted(
+                                                ((_n, _fm_breach(np.asarray(_c, float)))
+                                                 for _n, _c in _fm_cands),
+                                                key=lambda t: (_CHAIN_ORDER.index(t[0])
+                                                               if t[0] in _CHAIN_ORDER else 99))
+                                            _cbest = min(_b for _, _b in _chain)
+                                            log("   [seed-chain] ONE seed built in stages (delivered "
+                                                "basis) — global-LP deleted 2026-08-19u:")
+                                            _prev = None
+                                            for _n, _b in _chain:
+                                                _d = ("" if _prev is None
+                                                      else f"  ({_b - _prev:+.5g} vs previous stage)")
+                                                log(f"   [seed-chain]   {_n:<14} {_b:.5g}{_d}"
+                                                    + ("   ← USED" if abs(_b - _cbest) < 1e-15 else ""))
+                                                _prev = _b
+                                            if _chain and abs(_chain[-1][1] - _cbest) > 1e-15:
+                                                log("   [seed-chain]   ⚠ the LAST stage is not the best "
+                                                    "— a later stage REGRESSED and the never-worse "
+                                                    "guard picked an earlier one. That is the guard "
+                                                    "working, and it is also a bug worth chasing.")
+                                        except Exception as _scE:  # noqa: BLE001
+                                            log(f"   [seed-chain] skipped "
+                                                f"({type(_scE).__name__}: {_scE})")
+                                    # ── [seed-basis] DOES THE SEED SUMMARY RECONCILE? ─────────
+                                    # MEASUREMENT ONLY. The RAW-basis summary above and the
+                                    # DELIVERED-basis selection here are two different objects, and
+                                    # until now nothing printed them side by side — so a seed could
+                                    # be judged on numbers the engine does not select with. `_fm_deliv`
+                                    # applies the SAME blocked-caps + eligibility transform delivery
+                                    # uses, and it does not exist yet where the summary is emitted,
+                                    # which is why this is a second block rather than a fix in place.
+                                    if os.environ.get("ROUTING_SEED_BASIS", "1") != "0":
+                                        try:
+                                            from routing_optimiser.exact_band_solver import (
+                                                unmet_summary as _sb_unmet)
+                                            log("   [seed-basis] each candidate seed on BOTH bases — "
+                                                "RAW (what the summary above scores) vs DELIVERED "
+                                                "(blocked-caps + eligibility, what the engine selects "
+                                                "on and what actually ships):")
+                                            for _sbn, _sbc in _fm_cands:
+                                                _sbv = np.asarray(_sbc, float)
+                                                _sbR = float(_fm_eb.penalty(
+                                                    _fm_s2pr(_sbv[None, :], _fm_inc))[0])
+                                                _sbD = _fm_breach(_sbv)
+                                                _uR = _sb_unmet(_sbv, ctx["exact_bands"], _fm_inc)
+                                                _uD = _sb_unmet(_fm_deliv(_sbv[None, :])[0],
+                                                                ctx["exact_bands"], _fm_inc)
+                                                log(f"   [seed-basis]   {_sbn:<14} breach RAW "
+                                                    f"{_sbR:.5g} → DELIVERED {_sbD:.5g} "
+                                                    f"(Δ {_sbD - _sbR:+.5g})")
+                                                log(f"   [seed-basis]       RAW      : {_uR or 'all bands met'}")
+                                                log(f"   [seed-basis]       DELIVERED: {_uD or 'all bands met'}")
+                                                # THRESHOLDED (2026-08-19w). Until now this fired on
+                                                # any text difference, which on the 22:22 and 23:03
+                                                # runs meant a 1-2 unit difference on a 1,300 ceiling
+                                                # — technically a disagreement, useless as a signal.
+                                                # Flag when a band CHANGES SIDE (met ↔ unmet) or a
+                                                # value moves by >0.25% of its own limit. 0.25% is
+                                                # NOT arbitrary: the observed NOISE is <=0.16% (2
+                                                # units on braintree's 1,300; 8 on authorize's
+                                                # 15,000) while the one move that mattered — the
+                                                # woodforest blocked-caps jump 23,967 -> 24,082 —
+                                                # is 0.48% of its 24,000 ceiling. A 0.5% threshold
+                                                # (my first choice) suppressed exactly that signal.
+                                                _sbT = 0.0025
+                                                _nR = len(re.findall(r"\d[\d,]*\s*[<>]", str(_uR)))
+                                                _nD = len(re.findall(r"\d[\d,]*\s*[<>]", str(_uD)))
+                                                _matR = re.findall(r"([\d,]+)\s*[<>]\s*([\d,]+)",
+                                                                   str(_uR))
+                                                _matD = re.findall(r"([\d,]+)\s*[<>]\s*([\d,]+)",
+                                                                   str(_uD))
+                                                _big = False
+                                                for (_v1, _l1), (_v2, _l2) in zip(_matR, _matD):
+                                                    try:
+                                                        _f1 = float(_v1.replace(",", ""))
+                                                        _f2 = float(_v2.replace(",", ""))
+                                                        _lm = max(float(_l1.replace(",", "")), 1.0)
+                                                        if abs(_f2 - _f1) > _sbT * _lm:
+                                                            _big = True
+                                                    except Exception:  # noqa: BLE001
+                                                        _big = True
+                                                if _nR != _nD:
+                                                    log(f"   [seed-basis]       ⚠ THE TWO BASES DISAGREE "
+                                                        f"ON WHICH BANDS ARE MET ({_nR} vs {_nD} unmet) "
+                                                        f"— the RAW summary is not a safe guide to what "
+                                                        f"ships.")
+                                                elif _big:
+                                                    log(f"   [seed-basis]       ⚠ a band value moves by "
+                                                        f">{_sbT:.1%} of its own limit between bases.")
+                                                elif str(_uR) != str(_uD):
+                                                    log("   [seed-basis]       (bases agree on which "
+                                                        "bands are met; values differ by <0.5% of "
+                                                        "limit — immaterial)")
+                                            log("   [seed-basis]   ⇒ if DELIVERED is consistently worse "
+                                                "than RAW, every seed is being built and judged against "
+                                                "a target that is easier than reality, and the transform "
+                                                "(not the seed construction) is where the breach enters. "
+                                                "Kill-switch ROUTING_SEED_BASIS=0.")
+                                        except Exception as _sbE:  # noqa: BLE001
+                                            log(f"   [seed-basis] skipped "
+                                                f"({type(_sbE).__name__}: {_sbE}) — the RAW-vs-DELIVERED "
+                                                "question stays open for this run.")
                                 _fm_p, _fm_meta = _fm_prob(
                                     ctx, soft_cap_mult=1.0,
                                     seed_full=_fm_seed)   # no mid_bands: 30-day linear proxy removed
@@ -6020,7 +6183,6 @@ def render():
                                 _fm_report_fn = None
                                 _fm_deliv_full = None   # shared full-grain delivery (band + compress)
                                 _fm_gather = None       # full-grain → kept-grain gather (compress distortion)
-                                _fm_codebook_fn = None  # exact tab-3 ward/knapsack codebook (set below)
                                 if _fm_use_exact:
                                     _fm_colmap = np.asarray(_fm_meta["keep_idx"])[_fm_p.order]
                                     _fm_nrow = int(ctx["n_row"])
@@ -6105,150 +6267,6 @@ def render():
                                     log("   [full-matrix] EXACT M5 band projector wired into the fitness "
                                         "(exact per-generation pro-rata M5 projection — no 30-day linear "
                                         "proxy). Bands: " + " · ".join(_fm_applied))
-                                    # EXACT tab-3 CODEBOOK for the compressibility regularizer: drive it with
-                                    # the SAME ward/knapsack allocator tab-3/5 uses (kmeans_compress), not our
-                                    # own k-means. Each refresh the engine hands us the current best's DELIVERED
-                                    # shares (GA-sorted); we reconstruct a per-cell split at the GA grain (one
-                                    # compressor cell per GA cell via a unique bank key; gateway column = global
-                                    # vampMid id so centroid columns ARE mids), run the exact ward/knapsack
-                                    # clustering to the pool budget, and return each cell's cluster CENTROID as
-                                    # its regularizer target (assign=identity, cent=(n_cells,n_mid)) — so the
-                                    # regularizer pulls the split toward the shape tab-3 would actually ship.
-                                    # We call the deterministic allocator (_build_compress_context +
-                                    # _compress_with_context) directly — NOT compress_to_pool_budget, whose
-                                    # binary search needs config-generation (BigQuery/brand) and can't run per
-                                    # generation. Grouping = tab-3's default (rpgt×currency); pmp
-                                    # sub-segmentation is a deploy-time refinement, not applied here.
-                                    # Only build/run the compressibility codebook when λ>0. At λ=0 the
-                                    # regularizer is OFF, so NO codebook, distortion, or budget calibration
-                                    # touches the per-generation evaluation (and this misleading setup line
-                                    # is not logged).
-                                    _cb_on = float(ss.get("fm_compress_lambda", 0.0) or 0.0) > 0.0
-                                    try:
-                                        if not _cb_on:
-                                            raise RuntimeError("__compress_off__")
-                                        _cb_ncells = int(_fm_p.n_cells)
-                                        _cb_nmid = int(_fm_p.n_mids)
-                                        _cb_rcell = np.repeat(np.arange(_cb_ncells), _fm_p.cell_len)
-                                        _cb_rbank = _cb_rcell.astype(str)                       # bank = cell id
-                                        _cb_rgw = np.asarray(_fm_p.mid_id, np.intp).astype(str)  # gateway = mid id
-                                        _cb_rvol = np.asarray(_fm_p.vol, float)
-                                        _first_full = np.asarray(_fm_colmap)[np.asarray(_fm_p.cell_start, np.intp)]
-                                        _cur_col = "currency" if "currency" in G.columns else None
-                                        _rpg_col = next((c for c in ("rpgt", "_rpgt") if c in G.columns), None)
-                                        _cell_cur = (G[_cur_col].astype(str).to_numpy()[_first_full]
-                                                     if _cur_col else np.array(["all"] * _cb_ncells))
-                                        _cell_rpg = (G[_rpg_col].astype(str).to_numpy()[_first_full]
-                                                     if _rpg_col else np.array(["all"] * _cb_ncells))
-                                        _cb_rcur = _cell_cur[_cb_rcell]   # broadcast per-cell key to its rows
-                                        _cb_rrpg = _cell_rpg[_cb_rcell]   # (keeps one pivot row per GA cell)
-                                        _cb_cap = float(locals().get("max_share", 0.97) or 0.97)
-                                        # Config-gen context for the periodic BUDGET calibration (same
-                                        # sources tab-3's pool_targeted_core uses — see tab-2 ⑥ block).
-                                        _cb_wc = ss.get("wallet_ctx") or {}
-                                        _cb_gl = ss.get("split_go_live_date", date.today())
-                                        _cb_company = str((ss.get("forecast_settings", {}) or {}).get(
-                                            "company", "TotalAV"))
-                                        try:
-                                            from routing_optimiser.connector_pool_configs import (
-                                                BRANDS as _CB_BRANDS, company_to_brand_key as _cb_c2b)
-                                            _cb_bk = _cb_c2b(_cb_company)
-                                            _cb_bn = _CB_BRANDS.get(_cb_bk, {}).get("name", _cb_company)
-                                        except Exception:  # noqa: BLE001
-                                            _cb_bk, _cb_bn = "tav", _cb_company
-                                        _cb_mlp = os.path.join(PROJECT_ROOT, "data", "mappings",
-                                                               "Master_MID_List.csv")
-                                        _cb_blk = _blk_pairs_pre
-                                        _cb_floor = float(floor)
-                                        _cb_bud = {"B": None, "n": 0}   # calibrated cell-budget cache
-
-                                        def _fm_codebook_fn(_sd_row, _nc=_cb_ncells, _nm=_cb_nmid,
-                                                            _bank=_cb_rbank, _gw=_cb_rgw, _vol=_cb_rvol,
-                                                            _cur=_cb_rcur, _rpg=_cb_rrpg, _cap=_cb_cap,
-                                                            _wc=_cb_wc, _gl=_cb_gl, _bn=_cb_bn, _bk=_cb_bk,
-                                                            _mlp=_cb_mlp, _blk=_cb_blk, _flr=_cb_floor,
-                                                            _bud=_cb_bud):
-                                            from routing_optimiser import kmeans_compress as _kmc
-                                            _sh = np.asarray(_sd_row, float)
-                                            _pools = int(ss.get("max_configs", 0) or 0) or 200
-                                            _meth = str(ss.get("compress_method", "ward"))
-                                            _alloc = str(ss.get("compress_allocation", "knapsack"))
-                                            # (A) BUDGET CALIBRATION — occasionally run the REAL pool-targeted
-                                            # compression (WITH config generation) on the reconstructed split to
-                                            # find the CELL budget that yields <= target GENERATED pools, then
-                                            # reuse that budget for the cheap per-refresh clustering. Config-gen
-                                            # can't run every generation, so recalibrate every
-                                            # ss['fm_budget_recalib_every'] codebook calls (default 3); the
-                                            # cells->pools relationship is stable enough between refits. Any
-                                            # failure keeps the last good budget (or the raw pool target on the
-                                            # first call), logged — never crashes the search.
-                                            _bud["n"] += 1
-                                            _recal = int(ss.get("fm_budget_recalib_every", 3) or 3)
-                                            if _bud["B"] is None or (_recal > 0 and (_bud["n"] - 1) % _recal == 0):
-                                                try:
-                                                    from impact_calcs import pool_targeted_core as _ptc
-                                                    _full = np.zeros(_fm_nrow, float)
-                                                    _full[_fm_colmap] = _sh
-                                                    try:
-                                                        _rs = _explode(_endpoint_agg(_full))
-                                                    except Exception:  # noqa: BLE001 - un-exploded G grain
-                                                        _rs = _endpoint_agg(_full)
-                                                    if _blk:
-                                                        try:
-                                                            _rs, _ = _apply_blocked_caps(_rs, _blk, float(_flr))
-                                                        except Exception:  # noqa: BLE001
-                                                            pass
-                                                    _cl_r, _st_r = _ptc(
-                                                        _rs, target_pools=int(_pools), wallet_ctx=_wc,
-                                                        brand_name=_bn, brand_key=_bk, go_live=str(_gl),
-                                                        mid_list_path=_mlp, mode="sales",
-                                                        method=_meth, allocation=_alloc)
-                                                    _bud["B"] = max(1, int(_st_r.get("cells", _pools) or _pools))
-                                                    log("   [full-matrix] budget calibration (real config-gen): "
-                                                        f"{int(_st_r.get('pools', 0) or 0)} pools at {_bud['B']} "
-                                                        f"cells (target {_pools}, "
-                                                        f"feasible={bool(_st_r.get('feasible', True))}) — reusing "
-                                                        f"this {_bud['B']}-cell budget for the next {_recal} "
-                                                        "refresh(es).")
-                                                except Exception as _be:  # noqa: BLE001
-                                                    if _bud["B"] is None:
-                                                        _bud["B"] = int(_pools)
-                                                    log("   [full-matrix] ⚠ budget calibration failed "
-                                                        f"({type(_be).__name__}: {_be}); using cell "
-                                                        f"budget={_bud['B']}.")
-                                            _budget = int(_bud["B"] or _pools)
-                                            # (B) cheap per-refresh clustering at the CALIBRATED budget
-                                            _df = pd.DataFrame({"rpgt": _rpg, "currency": _cur, "bank": _bank,
-                                                                "gateway": _gw, "share": _sh,
-                                                                "cell_volume": _vol})
-                                            _ctx = _kmc._build_compress_context(
-                                                _df, ("rpgt", "currency"), _cap, 60, 42,
-                                                method=_meth, allocation=_alloc)
-                                            _cl, _st, _kcur = _kmc._compress_with_context(_ctx, int(_budget))
-                                            _cent = np.zeros((_nc, _nm), float)
-                                            if len(_cl):
-                                                _bkm = _cl["bank"].to_numpy(); _g = _cl["gateway"].to_numpy()
-                                                _sv = _cl["share"].to_numpy(float)
-                                                _cent[_bkm.astype(np.intp), _g.astype(np.intp)] = _sv
-                                            _assign = np.arange(_nc, dtype=np.intp)
-                                            _cconst = (_cent * _cent).sum(axis=1)
-                                            return _assign, _cent, _cconst
-                                        log("   [full-matrix] compressibility codebook = EXACT tab-3 "
-                                            f"{str(ss.get('compress_method','ward'))}/"
-                                            f"{str(ss.get('compress_allocation','knapsack'))} allocator "
-                                            "(grouped rpgt×currency, gateway=vampMid); cell budget calibrated "
-                                            "against REAL generated-pool counts every "
-                                            f"{int(ss.get('fm_budget_recalib_every', 3) or 3)} refresh(es) — "
-                                            "regularizer target IS the tab-3 compressed split.")
-                                    except Exception as _cbe:  # noqa: BLE001
-                                        if str(_cbe) == "__compress_off__":
-                                            log("   [full-matrix] compressibility λ=0 → codebook + regularizer "
-                                                "OFF; no compression work runs during the per-generation search.")
-                                        else:
-                                            log(f"   [full-matrix] ⚠ exact tab-3 codebook wiring failed "
-                                                f"({type(_cbe).__name__}: {_cbe}) — the engine will use its "
-                                                "internal volume-weighted k-means codebook instead.")
-                                        _fm_codebook_fn = None
                                 # (no proxy fallback — exact bands are mandatory; the not-exact case
                                 #  already crashed loudly above when bands are configured.)
                                 # Honour the tab-2 "Generations" setting (was hardcoded 200 and
@@ -6274,17 +6292,6 @@ def render():
                                     f"{_fm_pop} · restart-mode {_fm_rmode}; "
                                     + ("early-stop DISABLED (run-all-generations ON)"
                                        if _fm_no_stop else f"patience {_fm_pat}") + ".")
-                                _fm_clam = float(ss.get("fm_compress_lambda", 0.0) or 0.0)
-                                # Codebook size = the deployable-pool target (same knob tab-3/5 compress to);
-                                # 0/unset ⇒ 200. Refit cadence from ss (default every 8 gens). The learned
-                                # codebook + delivered-shape scoring replace the old fixed currency×rpgt
-                                # grouping — see genetic_fullmatrix for the objective.
-                                _fm_pools = int(ss.get("max_configs", 0) or 0) or 200
-                                _fm_refresh = max(1, int(ss.get("fm_compress_refresh", 8) or 8))
-                                if _fm_clam > 0 and _fm_deliv_full is None:
-                                    log("   [full-matrix] ⚠ compressibility λ set but no delivery transform "
-                                        "available (exact-bands path off) — the regularizer will score RAW "
-                                        "pre-eligibility shapes.")
                                 _fm_best, _fm_info = _fm_run(
                                     _fm_p, reference_shares=_fm_meta["reference_kept"],
                                     pop_size=_fm_pop, generations=_fm_gens, patience=_fm_pat,
@@ -6292,10 +6299,42 @@ def render():
                                     restart_mode=_fm_rmode, seed=0, log_fn=log,
                                     numba=True,   # verify-gated; self-falls-back to numpy
                                     band_penalty_fn=_fm_bpf, band_report_fn=_fm_report_fn,
-                                    compress_lambda=_fm_clam, compress_pools=_fm_pools,
-                                    compress_refresh=_fm_refresh,
-                                    deliver_full_fn=_fm_deliv_full, gather_fn=_fm_gather,
-                                    codebook_fn=_fm_codebook_fn)
+                                    # No compress_lambda / compress_pools /
+                                    # compress_refresh / codebook_fn as of 2026-08-19p: the
+                                    # λ input is gone, so run_fullmatrix_ga keeps its own
+                                    # defaults (compress_lambda=0.0, codebook_fn=None) and
+                                    # the regularizer is UNREACHABLE, not merely off.
+                                    # deliver_full_fn / gather_fn stay — the BAND penalty
+                                    # needs them.
+                                    deliver_full_fn=_fm_deliv_full,
+                                    gather_fn=_fm_gather)
+                                # [proj-par] DRAIN the projector's parallelism notes into the run
+                                # log. band_projection is a library module: it cannot see this
+                                # `log` closure, and nothing here redirects stdout, so its print()
+                                # lands on the terminal and never in runs/<ts>/log.txt. Without
+                                # this the run log would be silent on whether the candidate-
+                                # parallel kernel actually engaged — and a run that quietly fell
+                                # back to serial would read as "parallel is no faster" instead of
+                                # "parallel never ran". The notes also carry the SELF-CHECK verdict,
+                                # which is the only in-run evidence that the parallel kernel is
+                                # bit-identical on THIS machine's data rather than in a container.
+                                try:
+                                    from routing_optimiser import band_projection as _bpm
+                                    _ppn = list(getattr(_bpm, "_PROJ_PAR_NOTES", []) or [])
+                                    for _pn_msg in _ppn:
+                                        log(f"   [proj-par] {_pn_msg}")
+                                    if not _ppn:
+                                        log("   [proj-par] the projector reported NOTHING about "
+                                            "candidate parallelism. Expected on a build before "
+                                            "2026-08-19y; on 19y or later it means "
+                                            "project_pop_numba was never reached (numba absent, or "
+                                            "an empty scaffold), so the exact band scoring did not "
+                                            "run through the numba path at all — check that before "
+                                            "reading any throughput number.")
+                                    del _bpm._PROJ_PAR_NOTES[:]      # don't repeat them next run
+                                except Exception as _ppe:  # noqa: BLE001
+                                    log(f"   [proj-par] note drain skipped "
+                                        f"({type(_ppe).__name__}: {_ppe}).")
                                 _fm_full = _fm_recon(_fm_best, _fm_meta)
                                 if _fm_use_exact and _fm_bpf is not None:
                                     try:   # self-check: delivered split's EXACT M5 breach (compare to tilt)
@@ -6397,311 +6436,59 @@ def render():
                         # gateways are still floored (data-driven). NO VAMP-cap / per-MID band projection,
                         # no revenue endpoint, no frontier blend.
                         _deliver_G = _safe_endpoint_G
-                        _ga_gran = _explode(_endpoint_agg(_deliver_G))
+                        # ARM the [drop-measure] stash for exactly this explode — the DELIVERED
+                        # one. try/finally so a raise cannot leave it armed for the per-candidate
+                        # codebook caller, which would then pay an anti-join per GA candidate.
+                        _EXKEEP["arm"] = True
+                        try:
+                            _ga_gran = _explode(_endpoint_agg(_deliver_G))
+                        finally:
+                            _EXKEEP["arm"] = False
                         if _blk_pairs_pre:                       # floor dead (bank-blocked) gateways
-                            # keep the PRE-block frame so [block-why] can ask the counterfactual
-                            _bwPre = (_ga_gran.copy()
-                                      if os.environ.get("ROUTING_BLOCK_WHY", "1") != "0" else None)
-                            # REDISTRIBUTION GRAIN — opt-in, ROUTING_BLOCK_CTRY=1. [block-why]
-                            # confirmed that _apply_blocked_caps' default group tuple omits `ctry`
-                            # while the in-search `_fm_block` includes it, so a bank-blocked row's
-                            # freed share is pooled across USA/Non-USA at delivery and kept
-                            # in-country in-search (72 rows, Σ|Δshare| 1.6761, all on BIN 414398 —
-                            # the same BIN [step2]'s worst keys sit on). Aligning it CHANGES THE
-                            # DEPLOYED ROUTING, so it defaults OFF.
+                            # REDISTRIBUTION GRAIN — DEFAULT ON as of 2026-08-19o.
+                            # The (now-deleted) [block-why] probe confirmed that
+                            # _apply_blocked_caps' default group tuple
+                            # omits `ctry` while the in-search `_fm_block` includes it, so a
+                            # bank-blocked row's freed share is pooled across USA/Non-USA at
+                            # delivery and kept in-country in-search (72 rows, Σ|Δshare| 1.6561,
+                            # all on BIN 414398 — the same BIN [step2]'s worst keys sit on), worth
+                            # exactly 1 unit of reconciliation error.
+                            # This shipped OFF from 2026-08-18l because it CHANGES THE DEPLOYED
+                            # ROUTING. It is now ON by default for two reasons, in this order:
+                            #  1. the alternative is coarsening the SEARCH to match delivery, which
+                            #     would discard the (pmp, ctry) sub-cell grain the engine is built
+                            #     on — so refining delivery is the only real way to make the two
+                            #     sides agree;
+                            #  2. independent of reconciliation, moving share freed in a USA
+                            #     sub-cell onto Non-USA doors is a cross-border reroute the search
+                            #     would never pick. The missing `ctry` reads as an oversight in the
+                            #     group tuple, not a policy.
+                            # Measured 2026-08-20: BIN 414398 carries 1,779 USA / 460 Non-USA
+                            # attempts in the 30D window — the only BIN with enough on BOTH sides
+                            # for the pooling to bite — which is why the [block-why] probe, before it
+                            # was deleted on 2026-08-19t, reached exactly one BIN.
+                            # ROUTING_BLOCK_CTRY=0 restores the pooled behaviour exactly.
                             _bwGK = None
-                            if os.environ.get("ROUTING_BLOCK_CTRY", "0") == "1":
+                            if os.environ.get("ROUTING_BLOCK_CTRY", "1") != "0":
                                 _bwGK = tuple(c for c in ("rpgt", "currency", "bank", "pmp", "ctry")
                                               if c in _ga_gran.columns)
-                                log(f"   [block-ctry] ROUTING_BLOCK_CTRY=1 — blocked-caps "
-                                    f"redistribution now groups by {_bwGK}, matching the search's "
-                                    "sub-cell grain. THIS CHANGES THE DEPLOYED SPLIT: a blocked "
-                                    "row's freed share stays inside its own country sub-cell "
-                                    "instead of spreading across USA/Non-USA. Unset the var to "
-                                    "revert.")
+                                log(f"   [block-ctry] blocked-caps redistribution groups by "
+                                    f"{_bwGK}, matching the search's sub-cell grain — DEFAULT ON "
+                                    "since 2026-08-19o"
+                                    + (" (explicitly set)"
+                                       if os.environ.get("ROUTING_BLOCK_CTRY") is not None
+                                       else " (default, no env var set)")
+                                    + ". A blocked row's freed share stays inside its own country "
+                                    "sub-cell instead of spreading across USA/Non-USA. This IS a "
+                                    "deployed-split change vs pre-19o runs, and it is the last unit "
+                                    "of reconciliation error. ROUTING_BLOCK_CTRY=0 reverts.")
                             _ga_gran, _ = _apply_blocked_caps(_ga_gran, _blk_pairs_pre, float(floor),
                                                               bin_to_bank=bin_to_bank,
                                                               group_keys=_bwGK)
-                            # ── [block-why] IS THE BLOCKED-CAPS REDISTRIBUTION GRAIN THE SPLIT? ──
-                            # [split-why] killed the eligibility-grain hypothesis (0 of 143,407
-                            # rows, Σ|Δshare| 0.0000), and BAND-TRANSFORM agrees: raw →
-                            # +blocked-caps moves the M5 value, +eligibility does not. min2 is OFF.
-                            # By elimination the SPLIT step is THIS stage, and the two sides differ
-                            # on one tuple:
-                            #   delivery  _apply_blocked_caps groups by
-                            #             (rpgt, currency, bank, pmp)   — `ctry` ABSENT
-                            #   in-search _fm_block uses ctx["cell_starts"], the search's sub-cell
-                            #             segments cur|bin|rpgt|pmp|ctry — `ctry` PRESENT
-                            # So delivery pools USA + Non-USA when redistributing a blocked row's
-                            # freed share; the GA keeps them apart. Every [step2] worst key is
-                            # `usd|414398|monthly initial|non_gp_ap|NON-USA`, which is exactly the
-                            # dimension that differs.
-                            # MEASUREMENT ONLY — `_bwSub` is computed, compared and discarded.
-                            if _bwPre is not None:
-                                try:
-                                    _bwCols = set(_bwPre.columns)
-                                    _bwDel = [c for c in ("rpgt", "currency", "bank", "pmp")
-                                              if c in _bwCols]
-                                    _bwSubK = _bwDel + (["ctry"] if "ctry" in _bwCols else [])
-                                    _bwNd = (int(_bwPre.groupby(_bwDel).ngroups) if _bwDel else 0)
-                                    _bwNs = (int(_bwPre.groupby(_bwSubK).ngroups) if _bwSubK else 0)
-                                    log(f"   [block-why] blocked-caps REDISTRIBUTION GRAIN — "
-                                        f"delivery groups by {tuple(_bwDel)} → {_bwNd:,} group(s); "
-                                        f"the in-search `_fm_block` groups by the search sub-cell "
-                                        f"{tuple(_bwSubK)} → {_bwNs:,} group(s)."
-                                        + ("  ✓ SAME grain — cannot be the SPLIT cause."
-                                           if _bwNs == _bwNd else
-                                           f"  ⚠ delivery is COARSER by {_bwNs - _bwNd:,} group(s): "
-                                           "`ctry` is missing from its group tuple, so a blocked "
-                                           "row's freed share is pooled across USA and Non-USA."))
-                                    if _bwSubK != _bwDel:
-                                        _bwSub, _bwNc = _apply_blocked_caps(
-                                            _bwPre, _blk_pairs_pre, float(floor),
-                                            bin_to_bank=bin_to_bank,
-                                            group_keys=tuple(_bwSubK))
-                                        _bwA = pd.to_numeric(_ga_gran["share"],
-                                                             errors="coerce").fillna(0.0).to_numpy()
-                                        _bwB = pd.to_numeric(_bwSub["share"],
-                                                             errors="coerce").fillna(0.0).to_numpy()
-                                        if len(_bwA) == len(_bwB):
-                                            _bwD = _bwB - _bwA
-                                            _bwN = int(np.count_nonzero(np.abs(_bwD) > 1e-12))
-                                            log(f"   [block-why] SHIPPED (no ctry) vs the SAME "
-                                                f"function WITH ctry: {_bwN:,} of {len(_bwD):,} "
-                                                f"row(s) differ · Σ|Δshare| "
-                                                f"{np.abs(_bwD).sum():,.4f} · Σsigned "
-                                                f"{_bwD.sum():+,.6f} · rows capped "
-                                                f"{int(_bwNc):,}")
-                                            if _bwGK is not None:
-                                                log("   [block-why]   MODE: ROUTING_BLOCK_CTRY=1, "
-                                                    "so the shipped split ALREADY groups by the "
-                                                    "search grain and this diff is expected to be "
-                                                    "0.0000. Here a ZERO means THE FIX LANDED — it "
-                                                    "does NOT mean the hypothesis died. The "
-                                                    "confirming measurement is the 17:16 baseline "
-                                                    "(72 rows / Σ|Δshare| 1.6761 / BIN 414398 "
-                                                    "only), taken with the flag OFF.")
-                                            else:
-                                                log("   [block-why]   MODE: ROUTING_BLOCK_CTRY unset "
-                                                    "(default) — the shipped split pools "
-                                                    "USA/Non-USA, so this diff measures what "
-                                                    "aligning the grain WOULD change. COMPARE "
-                                                    "against [step2] below (62 keys / Σ|Δprop| "
-                                                    "0.224 / Σsigned +0.000): a MATCH means this "
-                                                    "tuple IS the SPLIT divergence; a near-ZERO "
-                                                    "means the hypothesis is DEAD, as [split-why]'s "
-                                                    "0.0000 already was for eligibility. Do NOT "
-                                                    "read a match into a mismatch.")
-                                            if _bwN:
-                                                _bwIx = np.argsort(-np.abs(_bwD))[:6]
-                                                _bwKc = [c for c in ("currency", "bank", "rpgt",
-                                                                     "pmp", "ctry", "vampMid")
-                                                         if c in _bwCols]
-                                                _bwKs = (_bwPre[_bwKc].astype(str)
-                                                         .agg("|".join, axis=1).to_numpy()
-                                                         if _bwKc
-                                                         else np.arange(len(_bwD)).astype(str))
-                                                log("   [block-why]   worst rows (with-ctry − "
-                                                    "shipped): "
-                                                    + " · ".join(
-                                                        f"{str(_bwKs[int(_i)])[:52]} "
-                                                        f"{float(_bwD[int(_i)]):+.4f}"
-                                                        for _i in _bwIx))
-                                                _bwAg = {}
-                                                for _i in np.nonzero(np.abs(_bwD) > 1e-12)[0]:
-                                                    _bwM = (str(_bwPre["vampMid"].iat[int(_i)])
-                                                            if "vampMid" in _bwCols else "?")
-                                                    _bwAg[_bwM] = _bwAg.get(_bwM, 0.0) + abs(
-                                                        float(_bwD[int(_i)]))
-                                                log("   [block-why]   by MID (Σ|Δshare|): "
-                                                    + " · ".join(
-                                                        f"{_m[:22]} {_v:.4f}" for _m, _v in
-                                                        sorted(_bwAg.items(),
-                                                               key=lambda kv: -kv[1])[:5]))
-                                                _bwBins = sorted({
-                                                    str(_bwPre["bank"].iat[int(_i)])
-                                                    for _i in np.nonzero(np.abs(_bwD) > 1e-12)[0]
-                                                }) if "bank" in _bwCols else []
-                                                log(f"   [block-why]   distinct BIN(s) affected: "
-                                                    f"{len(_bwBins):,}"
-                                                    + (f" — {', '.join(_bwBins[:8])}"
-                                                       if _bwBins else "")
-                                                    + ". [step2]'s worst keys are all BIN 414398; "
-                                                    "if 414398 is in this list the two probes are "
-                                                    "pointing at the same rows.")
-                                        else:
-                                            log(f"   [block-why] row counts differ ({len(_bwA):,} "
-                                                f"vs {len(_bwB):,}) — comparison SKIPPED rather "
-                                                "than aligned on a guess.")
-                                    else:
-                                        log("   [block-why] no `ctry` column on the granular "
-                                            "split — cell grain, where delivery's group tuple "
-                                            "already matches the search cell. Nothing to test.")
-                                except Exception as _bwE:  # noqa: BLE001
-                                    log(f"   [block-why] skipped "
-                                        f"({type(_bwE).__name__}: {_bwE})")
                         _comp_gran = _restrict(_ga_gran)         # eligibility only (bans / wallet / USA)
                         log("   Enforcement OFF: delivered split = GA search output + eligibility "
                             "(bans / wallet-incapable / USA-only); no VAMP-cap / per-MID band projection.")
-                        # ── [split-why] IS THE RENORM/BLEND GROUP GRAIN THE SPLIT DIVERGENCE? ────────
-                        # [step2] localised the SPLIT step to 62 of 208,718 prop-keys, Σ|Δprop| 0.224,
-                        # Σsigned +0.000, on BIN usd|414398 with WoodForest dominant. Reading both
-                        # implementations, one structural divergence survives:
-                        #   delivery  apply_restrictions(..., group_keys=("rpgt","currency","bank"))
-                        #             — the DEFAULT, which `_restrict` never overrides. So every
-                        #             (pmp, ctry) SUB-CELL of a (rpgt, currency, BIN) group is POOLED
-                        #             into one renormalise / capability-blend group.
-                        #   in-search apply_elig_pop renormalises within `cell_starts`, i.e. ONE GROUP
-                        #             PER SUB-CELL at sub-cell grain.
-                        # build_elig_operator's docstring states the requirement this breaks: "The cell
-                        # segments this derives must equal the (rpgt, currency, bank) groups
-                        # apply_restrictions renormalises within." Σsigned +0.000 with non-zero Σ|Δ| is
-                        # the signature: share is conserved but lands on different keys.
-                        # NOTE the "[elig-grain] EXACT 0/1 capability" line above reads
-                        # _elig_op["w_exact"]/["u_exact"], which build_elig_operator does NOT return —
-                        # it prints 0/0 unconditionally and its "0% ⇒ cell grain, nothing changed" text
-                        # is wrong at sub-cell grain. Do not trust that line; trust this block.
-                        # MEASUREMENT ONLY — `_comp_sub` is computed, compared and discarded.
-                        if os.environ.get("ROUTING_SPLIT_WHY", "1") != "0":
-                            try:
-                                _swCols = set(_ga_gran.columns)
-                                _swDel = [c for c in ("rpgt", "currency", "bank") if c in _swCols]
-                                _swSub = _swDel + [c for c in ("pmp", "ctry") if c in _swCols]
-                                _swNd = int(_ga_gran.groupby(_swDel).ngroups) if _swDel else 0
-                                _swNs = int(_ga_gran.groupby(_swSub).ngroups) if _swSub else 0
-                                log(f"   [split-why] renorm/blend GROUP GRAIN — delivery groups by "
-                                    f"{tuple(_swDel)} → {_swNd:,} group(s); the GA's operator groups "
-                                    f"by the search cell (sub-cell) → {_swNs:,} group(s)."
-                                    + ("  ✓ SAME grain, so this cannot be the SPLIT cause."
-                                       if _swNs == _swNd else
-                                       f"  ⚠ delivery is COARSER by {_swNs - _swNd:,} group(s): it "
-                                       "pools every (pmp, ctry) sub-cell of a (rpgt, currency, BIN) "
-                                       "group, so freed share lands on different keys than the GA "
-                                       "scored."))
-                                if _swSub != _swDel and "share" in _swCols:
-                                    # THE DECISIVE TEST: same function, same frame, only the group
-                                    # grain widened to the search's. If the grain is the cause this
-                                    # reproduces [step2]'s population.
-                                    _comp_sub = apply_restrictions(
-                                        _ga_gran, _elig_rules, _fid2vamp_l,
-                                        wallet_incapable=frozenset(_wallet_incapable),
-                                        wallet_frac=_wallet_frac, wallet_default=_wallet_default,
-                                        usa_only=frozenset(_usa_only), nonusa_frac=_nonusa_frac,
-                                        nonusa_default=_nonusa_default,
-                                        group_keys=tuple(_swSub))
-                                    _swA = pd.to_numeric(_comp_gran["share"],
-                                                         errors="coerce").fillna(0.0).to_numpy()
-                                    _swB = pd.to_numeric(_comp_sub["share"],
-                                                         errors="coerce").fillna(0.0).to_numpy()
-                                    if len(_swA) == len(_swB):
-                                        _swD = _swB - _swA
-                                        _swN = int(np.count_nonzero(np.abs(_swD) > 1e-12))
-                                        log(f"   [split-why] SHIPPED (coarse grain) vs the SAME "
-                                            f"function at the SEARCH's sub-cell grain: {_swN:,} of "
-                                            f"{len(_swD):,} row(s) differ · Σ|Δshare| "
-                                            f"{np.abs(_swD).sum():,.4f} · Σsigned "
-                                            f"{_swD.sum():+,.6f}")
-                                        log("   [split-why]   COMPARE against [step2] below "
-                                            "(62 keys / Σ|Δprop| 0.224 / Σsigned +0.000). A MATCH "
-                                            "means the group grain IS the SPLIT divergence and the "
-                                            "fix is one argument: pass group_keys=the search grain "
-                                            "to apply_restrictions. A near-ZERO here means the grain "
-                                            "is NOT the cause and this hypothesis is DEAD — do not "
-                                            "read a match into a mismatch.")
-                                        if _swN:
-                                            _swIx = np.argsort(-np.abs(_swD))[:6]
-                                            _swKc = [c for c in ("currency", "bank", "rpgt", "pmp",
-                                                                 "ctry", "vampMid")
-                                                     if c in _swCols]
-                                            _swKs = (_ga_gran[_swKc].astype(str)
-                                                     .agg("|".join, axis=1).to_numpy()
-                                                     if _swKc else
-                                                     np.arange(len(_swD)).astype(str))
-                                            log("   [split-why]   worst rows (sub-cell grain − "
-                                                "shipped): "
-                                                + " · ".join(f"{str(_swKs[int(_i)])[:52]} "
-                                                             f"{float(_swD[int(_i)]):+.4f}"
-                                                             for _i in _swIx))
-                                            _swAg = {}
-                                            for _i in np.nonzero(np.abs(_swD) > 1e-12)[0]:
-                                                _swM = (str(_ga_gran["vampMid"].iat[int(_i)])
-                                                        if "vampMid" in _swCols else "?")
-                                                _swAg[_swM] = _swAg.get(_swM, 0.0) + abs(
-                                                    float(_swD[int(_i)]))
-                                            log("   [split-why]   by MID (Σ|Δshare|): "
-                                                + " · ".join(
-                                                    f"{_m[:22]} {_v:.4f}" for _m, _v in
-                                                    sorted(_swAg.items(),
-                                                           key=lambda kv: -kv[1])[:5]))
-                                            _swMulti = int((_ga_gran.groupby(_swDel)[_swSub[-1]]
-                                                            .nunique() > 1).sum()) if _swDel else 0
-                                            log(f"   [split-why]   coarse groups holding >1 sub-cell "
-                                                f"value on `{_swSub[-1]}`: {_swMulti:,} of {_swNd:,}"
-                                                " — pooling can only bite where this is >0, so a "
-                                                "large count here with a near-zero Σ|Δshare| above "
-                                                "would mean the pooling is harmless in practice.")
-                                    else:
-                                        log(f"   [split-why] row counts differ "
-                                            f"({len(_swA):,} vs {len(_swB):,}) — apply_restrictions "
-                                            "reordered or reindexed; comparison SKIPPED rather than "
-                                            "aligned on a guess.")
-                                else:
-                                    log("   [split-why] no pmp/ctry columns on the granular split — "
-                                        "cell grain, where delivery's default group_keys already "
-                                        "match the search cell. Nothing to test.")
-                            except Exception as _swE:  # noqa: BLE001
-                                log(f"   [split-why] skipped ({type(_swE).__name__}: {_swE})")
 
-                        # ── MIN-2 LOW-RISK FLOOR (opt-in, ROUTING_MIN2_FLOOR=1) ───────────────────────
-                        # Keep the 2 lowest-RISK non-VAMP-capped doors in every sub-cell at >= a floor
-                        # (default 1%) and renormalise, so every cell already has >=2 real doors. That
-                        # makes deploy's spare-door BACK-FILL redundant (no more dumping onto Authorize),
-                        # and the renormalise routes a sliver AWAY from the breached VAMP MIDs — lowering
-                        # their SHIPPED VAMP. It never floors a VAMP-capped MID, so it can't keep a sliver
-                        # on a breached door (validated offline: WorldPay -55, Braintree -16, Authorize
-                        # under its txn ceiling; nothing pushed up). NOTE: this CHANGES the deployed routing
-                        # (more spread) — it is a policy change, not a reconciliation; scored != delivered
-                        # still holds (the gap is rounding, independent of this). Kill-switch default OFF.
-                        def _min2_lowrisk_floor(_gr, _protected, _flr):
-                            _subk = [c for c in ["currency", "bank", "rpgt", "pmp", "ctry"] if c in _gr.columns]
-                            if "share" not in _gr.columns or "vampMid" not in _gr.columns or not _subk:
-                                return _gr, "missing share/vampMid/sub-keys — skipped"
-                            _g = _gr.copy()
-                            _g["_risk"] = pd.to_numeric(
-                                _g.get("gateway_risk_rate", _g.get("rate", 0.006)), errors="coerce").fillna(9.9)
-                            _g["_sh"] = pd.to_numeric(_g["share"], errors="coerce").fillna(0.0)
-                            _g["_prot"] = _g["vampMid"].astype(str).str.strip().str.lower().isin(_protected)
-                            _nb = _g[~_g["_prot"]].copy()
-                            _nb["_rank"] = _nb.groupby(_subk)["_risk"].rank(method="first")
-                            _g["_fl"] = False
-                            _g.loc[_nb.index[_nb["_rank"] <= 2], "_fl"] = True
-                            _g["_sh"] = np.where(_g["_fl"], np.maximum(_g["_sh"], float(_flr)), _g["_sh"])
-                            _tot = _g.groupby(_subk)["_sh"].transform("sum")
-                            _g["share"] = np.where(_tot > 0, _g["_sh"] / _tot, _g["_sh"])
-                            _nfl = int(_g["_fl"].sum())
-                            return (_g.drop(columns=["_risk", "_sh", "_prot", "_fl"], errors="ignore"),
-                                    f"{_nfl} door(s) floored across {_g[_subk].drop_duplicates().shape[0]} sub-cells")
-                        if os.environ.get("ROUTING_MIN2_FLOOR", "0") == "1":
-                            try:
-                                _m2_prot = set()
-                                _m2_eb = locals().get("_fm_eb")
-                                for _sp in (getattr(_m2_eb, "specs", []) if _m2_eb is not None else []):
-                                    # protect ANY constrained MID (vamp OR txn); a txn-capped low-risk
-                                    # door (Authorize etc.) must not be a floor recipient or its txn
-                                    # ceiling blows (see fitness-aware site above).
-                                    _mid = str(getattr(_sp, "midl", "")).strip().lower()
-                                    if _mid:
-                                        _m2_prot.add(_mid)
-                                _m2_flr = float(os.environ.get("ROUTING_MIN2_FLOOR_PCT", "1.0") or 1.0) / 100.0
-                                _comp_gran, _m2_msg = _min2_lowrisk_floor(_comp_gran, _m2_prot, _m2_flr)
-                                log(f"   [min2-floor] ON: kept 2 lowest-risk non-CONSTRAINED doors >= "
-                                    f"{_m2_flr:.1%} per sub-cell, renormalised — protects {len(_m2_prot)} "
-                                    f"constrained MID(s) (vamp+txn); {_m2_msg}. CHANGES SHIPPED ROUTING "
-                                    "(spare-door back-fill now redundant; floors only uncapped low-risk "
-                                    "doors so it can't pump a txn-capped door). Kill-switch: "
-                                    "ROUTING_MIN2_FLOOR=0.")
-                            except Exception as _m2e:  # noqa: BLE001
-                                log(f"   [min2-floor] skipped ({type(_m2e).__name__}: {_m2e}).")
 
                         # ── RECONCILE: authoritative delivered M5 (== tab-3 'Now') ────────────────────
                         # The in-search band readouts above (BAND-TRANSFORM / per-RPGT) project the RAW+
@@ -6800,81 +6587,6 @@ def render():
                                             _crHas = [tuple(_r) in _crH
                                                       for _r in _crA[_crK].astype(str).to_numpy()]
                                             _crA["_has"] = _crHas
-                                            # ── [ca-ladder] THE UNIVERSE LADDER ──────────────────
-                                            # My [ca-reach] line called this "sub-cells in the
-                                            # delivered split", and the run's own arithmetic says
-                                            # that reading is probably wrong: 23,791 sub-cell
-                                            # problems − 8,978 dropped share mass = 14,813 Σprop_raw
-                                            # = the exact integer [ca-reach] printed. All round, so
-                                            # whole sub-cells map or don't. That points to 14,813
-                                            # being the split ∩ the projector's vampMid'd columns,
-                                            # NOT the split itself. Which side is true decides
-                                            # whether Option 2 means "add cells to the split" or
-                                            # "give existing cells a banded door" — a much smaller
-                                            # change. Measure it rather than assume it.
-                                            try:
-                                                _clV = None
-                                                if "vampMid" in _crC:
-                                                    _clV = (_crG["vampMid"].astype(str)
-                                                            .str.strip().str.lower())
-                                                elif "gateway" in _crC:
-                                                    _clV = (_crG["gateway"].astype(str)
-                                                            .str.strip().str.lower()
-                                                            .map(_fid2vamp_l))
-                                                _clD = _crG[[c for c in _crK if c in _crC]].copy()
-                                                for _c in _crK:
-                                                    _clD[_c] = (_clD[_c].astype(str).str.strip()
-                                                                .str.lower() if _c != "bank"
-                                                                else _clD[_c].astype(str).str.strip())
-                                                _clD["_banded"] = (_clV.notna() & (_clV.astype(str)
-                                                                   .str.len() > 0)
-                                                                   & (_clV.astype(str) != "nan")
-                                                                   ) if _clV is not None else False
-                                                _clD["_sh"] = pd.to_numeric(
-                                                    _crG["share"], errors="coerce").fillna(0.0)
-                                                if _crS:
-                                                    _clD = _clD[_clD["rpgt"].isin(_crS)]
-                                                _clG = _clD.groupby(_crK, as_index=False).agg(
-                                                    _nb=("_banded", "sum"), _sh=("_sh", "sum"))
-                                                _r1 = len(_clG)
-                                                _r2 = int((_clG["_nb"] > 0).sum())
-                                                _r3 = int(_crA["_has"].sum()) if "_has" in _crA.columns else -1
-                                                log(f"   [ca-ladder] rung 1 — SCOPED sub-cells in the "
-                                                    f"delivered split: {_r1:,}")
-                                                log(f"   [ca-ladder] rung 2 — of those, with ≥1 BANDED "
-                                                    f"(vampMid-carrying) door: {_r2:,}"
-                                                    f"  ·  WITHOUT any banded door: {_r1 - _r2:,}")
-                                                log(f"   [ca-ladder] rung 3 — of rung 2, present in the "
-                                                    f"enforced prop items: "
-                                                    + (f"{_r3:,}" if _r3 >= 0 else "n/a"))
-                                                _clNo = _clG[_clG["_nb"] <= 0]
-                                                log(f"   [ca-ladder]   cells lost between rung 1 and 2 "
-                                                    f"carry Σshare {_clNo['_sh'].sum():,.1f} across "
-                                                    f"{len(_clNo):,} cell(s) — these route ONLY to "
-                                                    "gateways with no vampMid, so the banded projector "
-                                                    "cannot see them at all.")
-                                                if _r1 - _r2 > 100:
-                                                    log("   [ca-ladder] ⇒ READING: the profiles ARE in "
-                                                        "the split; what they lack is a BANDED door. "
-                                                        "Option 2 is therefore NOT 'change how the "
-                                                        "split's profile list is built' — it is 'give "
-                                                        "these cells an eligible banded door', which "
-                                                        "belongs in the candidate-door / incidence "
-                                                        "path ([door-cover]) and is a much smaller "
-                                                        "change. Compare rung 1 against the 23,791 "
-                                                        "sub-cell problems and rung 2 against the "
-                                                        "14,813 Σprop_raw.")
-                                                else:
-                                                    log("   [ca-ladder] ⇒ READING: rung 1 is already at "
-                                                        "the prop-key count, so the split genuinely "
-                                                        "holds fewer profiles than the search does. "
-                                                        "Option 2 stands as described: the split's "
-                                                        "profile list is the thing to extend. My "
-                                                        "23,791−8,978 hypothesis is then WRONG — say "
-                                                        "so rather than reading the ladder to fit it.")
-                                            except Exception as _clE:  # noqa: BLE001
-                                                log(f"   [ca-ladder] skipped "
-                                                    f"({type(_clE).__name__}: {_clE})")
                                             # cells the ENFORCED prop actually covers
                                             _crM = _crA[~_crA["_has"]]
                                             _crPos = int((_crM["share"] > 1e-12).sum())
@@ -6883,7 +6595,9 @@ def render():
                                                 f"split: {len(_crA):,} · covered by enforced prop "
                                                 f"{int(_crA['_has'].sum()):,} · NOT covered "
                                                 f"{len(_crM):,}. (Offline on this run's export the "
-                                                "same figure was 176 of 14,983 — a large "
+                                                "same figure was 176 of 14,983 ON AN AUGUST 2026 "
+                                                "EXPORT — that is a historical note, NOT a target; "
+                                                "a difference "
                                                 "disagreement here means the two universes are not "
                                                 "the same object and this block is unreliable.)")
                                             log(f"   [ca-reach]   of the uncovered: {_crZero:,} "
@@ -7301,9 +7015,20 @@ def render():
                                                     log(f"   [rung2] per-cell prop budget (must be ~1.000): "
                                                         f"p05 {_p05:.3f} · p50 {_p50:.3f} · p95 {_p95:.3f} · "
                                                         f"{_bad:.1f}% of cells off by >2%."
-                                                        + ("  ⚠ the sub-cell→cell collapse is LOSING mass — "
-                                                           "treat this rung as unreliable." if _bad > 5.0
-                                                           else "  ✓ collapse conserves mass."))
+                                                        + ("  ✓ collapse conserves mass."
+                                                           if _bad <= 5.0 else
+                                                           ("  NOTE: the budgets are uniformly ≈"
+                                                            f"{_p50:.0f}×, which is the 0-100 vs 0-1 "
+                                                            "CONVENTION, not lost mass — a real loss "
+                                                            "would not be uniform to 3 decimals. Divide "
+                                                            "by that factor to read this rung."
+                                                            if (abs(_p05 - _p50) < 0.01
+                                                                and abs(_p95 - _p50) < 0.01
+                                                                and _p50 > 1.5)
+                                                            else "  ⚠ the sub-cell→cell collapse is "
+                                                                 "LOSING mass and it is NOT a uniform "
+                                                                 "rescale — treat this rung as "
+                                                                 "unreliable.")))
                                             except Exception as _bE:  # noqa: BLE001
                                                 log(f"   [rung2] budget check skipped ({type(_bE).__name__})")
                                             # SUB-CELL PRESENCE — the absence-side of GRAIN DISPERSION,
@@ -8003,6 +7728,224 @@ def render():
                                             log("   [step2] skipped — the raw or pre-blend shipped vector "
                                                 "is unavailable this run.")
 
+                                        # ---- WHO ARE THESE PROFILES? (2026-08-19n) ----------------
+                                        # MEASUREMENT ONLY. PART A tests the dropped profiles against
+                                        # the 30D ATTEMPTS frame — real observed transactions, at the
+                                        # exact 3-field grain the merge drops on, and the frame the
+                                        # routing cells were built from. It deliberately does NOT test
+                                        # against orig_forecast (absence from it IS the definition of
+                                        # dropped, so that test is circular and would read 0% real
+                                        # whatever the truth) nor against `cell_volume` (apportioned
+                                        # forecast volume, positive almost everywhere — the 19i error).
+                                        # PART B prints the discrepancy keys FULL; [step2] truncates
+                                        # them at 44 chars, which cuts the pmp/ctry/MID tail off
+                                        # exactly where the profile is identified.
+                                        if os.environ.get("ROUTING_PROFILES", "1") != "0":
+                                            try:
+                                                _prN = max(1, int(
+                                                    os.environ.get("ROUTING_PROFILES_N", "8") or 8))
+                                                _dcP = _EXKEEP.get("drop_cnt") or {}
+                                                _dTri = {}
+                                                for _t, _n in _dcP.items():
+                                                    if len(_t) >= 3:
+                                                        _k3 = (_t[0], _t[1], _t[2])
+                                                        _dTri[_k3] = _dTri.get(_k3, 0) + int(_n)
+                                                # ---- the attempts frame, keyed to the merge grain ----
+                                                _attT = {}
+                                                try:
+                                                    _aA = agg_adf
+                                                    _acols = ["currency", "parent_bank", "rpgt"]
+                                                    if (_aA is not None and not _aA.empty
+                                                            and all(_c in _aA.columns for _c in _acols)
+                                                            and "attempts" in _aA.columns):
+                                                        _agw_on = "gateway" in _aA.columns
+                                                        _aT = _aA[_acols + ["attempts"]
+                                                                  + (["gateway"] if _agw_on else [])].copy()
+                                                        for _c in _acols:
+                                                            _aT[_c] = (_aT[_c].astype(str)
+                                                                       .str.strip().str.lower())
+                                                        _aT["attempts"] = pd.to_numeric(
+                                                            _aT["attempts"], errors="coerce").fillna(0.0)
+                                                        _ag = _aT.groupby(_acols)
+                                                        _asum = _ag["attempts"].sum()
+                                                        _agn = _ag["gateway"].nunique() if _agw_on else None
+                                                        for _k3, _v in _asum.items():
+                                                            _attT[tuple(_k3)] = (
+                                                                float(_v),
+                                                                int(_agn.get(_k3, 0)) if _agn is not None
+                                                                else -1)
+                                                    else:
+                                                        log("   [profiles] PART A unavailable — the "
+                                                            "attempts frame is missing a column of "
+                                                            f"{_acols + ['attempts']}; without real "
+                                                            "transaction history there is NO honest test "
+                                                            "of whether these profiles are real, so no "
+                                                            "verdict is printed.")
+                                                except Exception as _aE:  # noqa: BLE001
+                                                    log(f"   [profiles] PART A attempts lookup failed "
+                                                        f"({type(_aE).__name__}: {_aE})")
+                                                # ---- the circularity self-check set ----
+                                                _fcT = set()
+                                                try:
+                                                    _ofc = ["currency", "bank", "rpgt"]
+                                                    if all(_c in orig_forecast.columns for _c in _ofc):
+                                                        _ofT = orig_forecast[_ofc].astype(str)
+                                                        for _c in _ofc:
+                                                            _ofT[_c] = (_ofT[_c].str.strip()
+                                                                        .str.lower())
+                                                        _fcT = set(_ofT.drop_duplicates()
+                                                                   .itertuples(index=False, name=None))
+                                                except Exception:  # noqa: BLE001
+                                                    _fcT = set()
+                                                _nTri = len(_dTri)
+                                                if not _nTri:
+                                                    log("   [profiles] PART A skipped — no dropped-row "
+                                                        "stash this run, so there are no profiles to "
+                                                        "identify. Look for a [drop-measure] line above.")
+                                                elif _attT:
+                                                    _real = [_k for _k in _dTri
+                                                             if _attT.get(_k, (0.0, 0))[0] > 0]
+                                                    _sumA = sum(_attT.get(_k, (0.0, 0))[0]
+                                                                for _k in _real)
+                                                    _inFc = sum(1 for _k in _dTri if _k in _fcT)
+                                                    log(f"   [profiles] PART A — ARE THE DROPPED PROFILES "
+                                                        f"REAL? {_nTri:,} distinct (currency, bank, rpgt) "
+                                                        f"profile(s) sit behind the "
+                                                        f"{_EXKEEP.get('drop_rows', 0):,} dropped row(s). "
+                                                        f"Ground truth = the 30D attempts frame (REAL "
+                                                        f"observed transactions).")
+                                                    log(f"   [profiles]   WITH real attempts: "
+                                                        f"{len(_real):,} of {_nTri:,} "
+                                                        f"({100.0 * len(_real) / max(_nTri, 1):.1f}%) · "
+                                                        f"Σattempts {_sumA:,.0f} · WITHOUT any history: "
+                                                        f"{_nTri - len(_real):,}")
+                                                    log(f"   [profiles]   self-check: {_inFc:,} of "
+                                                        f"{_nTri:,} also appear in orig_forecast — this "
+                                                        f"MUST read 0, because absence from orig_forecast "
+                                                        f"is the DEFINITION of dropped. Anything else "
+                                                        f"means the two key vocabularies differ and every "
+                                                        f"number in PART A is unreliable.")
+                                                    _ex = sorted(
+                                                        _dcP.items(),
+                                                        key=lambda kv: -_attT.get(
+                                                            (kv[0][0], kv[0][1], kv[0][2]),
+                                                            (0.0, 0))[0])
+                                                    log("   [profiles]   EXAMPLES — DROPPED profiles with "
+                                                        "the MOST real traffic (full key, untruncated):")
+                                                    for _t, _n in _ex[:_prN]:
+                                                        _k3 = (_t[0], _t[1], _t[2])
+                                                        _at, _gw = _attT.get(_k3, (0.0, 0))
+                                                        log(f"   [profiles]     {'|'.join(_t)}"
+                                                            f"  ·  30D attempts {_at:>9,.0f}"
+                                                            + (f" over {_gw} gateway(s)" if _gw >= 0
+                                                               else "")
+                                                            + f"  ·  {_n} split row(s)"
+                                                            + ("  ·  REAL" if _at > 0
+                                                               else "  ·  NO HISTORY"))
+                                                    _zer = [(_t, _n) for _t, _n in _ex
+                                                            if _attT.get((_t[0], _t[1], _t[2]),
+                                                                         (0.0, 0))[0] <= 0]
+                                                    if _zer:
+                                                        log(f"   [profiles]   EXAMPLES — DROPPED profiles "
+                                                            f"with NO history at all ({len(_zer):,} row(s) "
+                                                            f"of the drop):")
+                                                        for _t, _n in _zer[:_prN]:
+                                                            log(f"   [profiles]     {'|'.join(_t)}"
+                                                                f"  ·  30D attempts         0"
+                                                                f"  ·  {_n} split row(s)  ·  NO HISTORY")
+                                                    else:
+                                                        log("   [profiles]   there are NO zero-history "
+                                                            "profiles in the drop — every dropped profile "
+                                                            "has real attempts behind it.")
+                                                    _frac = len(_real) / max(_nTri, 1)
+                                                    if _inFc:
+                                                        log("   [profiles]   ⇒ NO VERDICT — the self-check "
+                                                            "above is non-zero, so the keys are not "
+                                                            "comparable. Fix that before reading the "
+                                                            "percentages.")
+                                                    elif _frac > 0.9:
+                                                        log("   [profiles]   ⇒ VERDICT: REAL. These "
+                                                            "profiles carry actual transaction history, "
+                                                            "and the routing cells were built from that "
+                                                            "same attempts frame — the pipeline ADMITS "
+                                                            "them at stage ③ and the export merge "
+                                                            "discards them afterwards. So OPTION 1 (let "
+                                                            "them through) is aimed at a real population. "
+                                                            "It CHANGES LIVE ROUTING, so it still needs "
+                                                            "the per-profile row count from "
+                                                            "[inv-vs-drop] before anything is written.")
+                                                    elif _frac < 0.1:
+                                                        log("   [profiles]   ⇒ VERDICT: NOT REAL. These "
+                                                            "profiles have no transaction history — they "
+                                                            "are exploration-injected candidates. OPTION "
+                                                            "2 (stop planning for them) is the right one: "
+                                                            "narrowing the search cannot lose anything "
+                                                            "real and changes nothing that ships.")
+                                                    else:
+                                                        log(f"   [profiles]   ⇒ VERDICT: MIXED — "
+                                                            f"{100.0 * _frac:.0f}% have history. Neither "
+                                                            f"option is right for all of them and a "
+                                                            f"single-sided change is wrong for the other "
+                                                            f"group. Split the population on THIS test "
+                                                            f"before building either.")
+                                                # ---- PART B: the discrepancy profiles, in full ----
+                                                if (_rawF is not None and _shnbF is not None
+                                                        and len(_rawF) == len(_shnbF)):
+                                                    _dB2 = _shnbF - _rawF
+                                                    _nz2 = np.nonzero(np.abs(_dB2) > 1e-12)[0]
+
+                                                    def _tri3(_ix):
+                                                        _kk = (str(_pkS[int(_ix)])
+                                                               if int(_ix) < len(_pkS) else "")
+                                                        _pp = [_x.strip().lower()
+                                                               for _x in _kk.split("|")]
+                                                        return (_kk, (tuple(_pp[:3])
+                                                                      if len(_pp) >= 3 else None))
+
+                                                    _onD = 0
+                                                    for _ix in _nz2:
+                                                        _t3 = _tri3(_ix)[1]
+                                                        if _t3 is not None and _t3 in _dTri:
+                                                            _onD += 1
+                                                    log(f"   [profiles] PART B — WHICH PROFILES CARRY THE "
+                                                        f"DISCREPANCY? {len(_nz2):,} prop-key(s) differ "
+                                                        f"between the split the GA SCORED and the one it "
+                                                        f"SHIPS · Σ|Δprop| {np.abs(_dB2).sum():,.4f}. Full "
+                                                        f"keys below, worst first — [step2] truncates "
+                                                        f"these at 44 chars and loses the pmp/ctry/MID "
+                                                        f"tail.")
+                                                    _ord2 = _nz2[np.argsort(-np.abs(_dB2[_nz2]))]
+                                                    for _ix in _ord2[:_prN]:
+                                                        _kk, _t3 = _tri3(_ix)
+                                                        log(f"   [profiles]     {_kk}  ·  Δprop "
+                                                            f"{float(_dB2[int(_ix)]):+.6f}"
+                                                            + ("  ·  ON A DROPPED PROFILE"
+                                                               if (_t3 is not None and _t3 in _dTri)
+                                                               else "  ·  this profile DOES ship"))
+                                                    if len(_nz2):
+                                                        log(f"   [profiles]   of the {len(_nz2):,} "
+                                                            f"discrepancy key(s), {_onD:,} sit on a "
+                                                            f"DROPPED profile."
+                                                            + ("  ⇒ the discrepancy and the drop are the "
+                                                               "SAME problem, so fixing the drop should "
+                                                               "close it."
+                                                               if _onD > 0.5 * len(_nz2) else
+                                                               "  ⇒ the discrepancy is on profiles that "
+                                                               "DO ship, so it is INDEPENDENT of the "
+                                                               "drop and needs its own fix — see "
+                                                               "ROUTING_BLOCK_CTRY, which is DEFAULT "
+                                                               "ON since 19o — so with it unset this "
+                                                               "should read 0 keys."))
+                                                    else:
+                                                        log("   [profiles]   no key differs, so there is "
+                                                            "no discrepancy profile to name this run.")
+                                                else:
+                                                    log("   [profiles] PART B skipped — the scored or "
+                                                        "shipped prop vector is unavailable this run.")
+                                            except Exception as _prE:  # noqa: BLE001
+                                                log(f"   [profiles] skipped "
+                                                    f"({type(_prE).__name__}: {_prE})")
+
                                         # ---- BLOCK B: the TWO BLENDS, effect vs effect ----
                                         if (_shbF is not None and _shnbF is not None
                                                 and _enfF is not None and _nbF is not None
@@ -8168,6 +8111,224 @@ def render():
                                                                       minlength=len(_cposS))
                                                     _invC = (np.abs(_sB) > 1e-12) & (np.abs(_sN) <= 1e-12)
                                                     _invK = _invC[_cidS]
+                                                    # ── INVENTED CELLS vs WHAT THE MERGE DROPPED
+                                                    #    (2026-08-19k) — MEASUREMENT ONLY ───────
+                                                    # The question the 19g/19i keep should have
+                                                    # been built on and was not: of the cells the
+                                                    # in-search blend invents, how many are the
+                                                    # very rows `_explode`'s INNER merge threw
+                                                    # away, and HOW MANY ROWS is that? `_invC`
+                                                    # comes from the blend's own +blend/-blend
+                                                    # vectors, so it is the injection list itself
+                                                    # rather than a volume proxy. Nothing here
+                                                    # touches the split.
+                                                    try:
+                                                        _drS = _EXKEEP.get("dropped")
+                                                        _iv2 = {_v: _k for _k, _v in _cposS.items()}
+                                                        _ivKeys = [str(_iv2.get(int(_j), ""))
+                                                                   for _j in np.nonzero(_invC)[0]]
+                                                        if _drS is None:
+                                                            log("   [inv-vs-drop] the delivered "
+                                                                "explode stashed no dropped-row "
+                                                                "set this run, so there is nothing "
+                                                                "to intersect. Check for a "
+                                                                "[drop-measure] line above; if it "
+                                                                "is absent the arm never fired.")
+                                                        else:
+                                                            _dkcC = list(
+                                                                _EXKEEP.get("drop_keys") or [])
+                                                            log(f"   [inv-vs-drop] invented cells "
+                                                                f"{len(_ivKeys):,} · merge-dropped "
+                                                                f"rows "
+                                                                f"{_EXKEEP.get('drop_rows', 0):,} "
+                                                                f"over "
+                                                                f"{_EXKEEP.get('drop_cells', 0):,} "
+                                                                f"distinct key(s), keyed on "
+                                                                f"{tuple(_dkcC)}")
+                                                            log("   [inv-vs-drop]   sample INVENTED "
+                                                                "cell key(s): "
+                                                                + (" · ".join(_ivKeys[:4])
+                                                                   or "(none)"))
+                                                            log("   [inv-vs-drop]   sample DROPPED "
+                                                                "row key(s):   "
+                                                                + (" · ".join(
+                                                                    _EXKEEP.get("sample") or [])
+                                                                   or "(none)"))
+                                                            # WHICH VOCABULARY IS FIELD 1? The
+                                                            # prop-key comment calls it a BIN and
+                                                            # the GA frame carries a parent_bank.
+                                                            # Count the overlap against both
+                                                            # instead of believing either.
+                                                            _f1 = set()
+                                                            for _k in _ivKeys:
+                                                                _p = str(_k).split("|")
+                                                                if len(_p) > 1:
+                                                                    _f1.add(_p[1].strip().lower())
+                                                            _pbv = _EXKEEP.get("pb_vals") or set()
+                                                            _bnv = _EXKEEP.get("bin_vals") or set()
+                                                            log(f"   [inv-vs-drop]   prop-key field "
+                                                                f"1: {len(_f1):,} distinct value(s) "
+                                                                f"· {len(_f1 & _pbv):,} appear in "
+                                                                f"split.parent_bank · "
+                                                                f"{len(_f1 & _bnv):,} appear in "
+                                                                f"orig_forecast.bank (BIN)  ⇒ the "
+                                                                f"larger overlap names the grain; "
+                                                                f"if BOTH are ~0 the keys are not "
+                                                                f"comparable and every match count "
+                                                                f"below is meaningless.")
+                                                            _ivT, _ivT4 = set(), set()
+                                                            for _k in _ivKeys:
+                                                                _p = [str(_x).strip().lower() for _x
+                                                                      in str(_k).split("|")]
+                                                                if len(_p) >= 5:
+                                                                    _ivT.add((_p[0], _p[1], _p[2],
+                                                                              _p[3], _p[4]))
+                                                                    _ivT4.add((_p[0], _p[2], _p[3],
+                                                                               _p[4]))
+                                                            _drT4 = {(_t[0], _t[2], _t[3], _t[4])
+                                                                     for _t in _drS if len(_t) >= 5}
+                                                            _m5 = len(_ivT & _drS)
+                                                            _m4 = len(_ivT4 & _drT4)
+                                                            _cntD = _EXKEEP.get("drop_cnt") or {}
+                                                            _rIn = sum(int(_cntD.get(_t, 0))
+                                                                       for _t in _ivT)
+                                                            log(f"   [inv-vs-drop]   MATCH on the "
+                                                                f"full (cur, bank, rpgt, pmp, ctry) "
+                                                                f"key: {_m5:,} of {len(_ivT):,} "
+                                                                f"invented cell(s) · ignoring the "
+                                                                f"bank field: {_m4:,} of "
+                                                                f"{len(_ivT4):,}")
+                                                            if not _ivT:
+                                                                log("   [inv-vs-drop]   ⚠ the "
+                                                                    "invented cell keys have fewer "
+                                                                    "than 5 fields, so they cannot "
+                                                                    "carry (pmp, ctry) and this "
+                                                                    "comparison is at the WRONG "
+                                                                    "GRAIN. Read the sample keys "
+                                                                    "above, not the counts.")
+                                                            elif _m5 == 0 and _m4 == 0:
+                                                                log("   [inv-vs-drop]   ⚠ NO "
+                                                                    "overlap under either key. "
+                                                                    "Either the invented cells are "
+                                                                    "NOT merge casualties — in "
+                                                                    "which case Option 3 is aimed "
+                                                                    "at the wrong mechanism — or "
+                                                                    "the two key vocabularies "
+                                                                    "differ. Do NOT build the keep "
+                                                                    "until this line is non-zero.")
+                                                            elif _m5 < len(_ivT):
+                                                                log(f"   [inv-vs-drop]   ⚠ only "
+                                                                    f"{_m5:,} of {len(_ivT):,} "
+                                                                    f"invented cells are merge "
+                                                                    f"casualties, so keeping them "
+                                                                    f"cannot close all of chain "
+                                                                    f"step 1. The remainder has a "
+                                                                    f"different cause and a "
+                                                                    f"single-sided keep will "
+                                                                    f"leave it.")
+                                                            else:
+                                                                log("   [inv-vs-drop]   every "
+                                                                    "invented cell is a merge "
+                                                                    "casualty ⇒ the keep, scoped "
+                                                                    "to this key set, is the whole "
+                                                                    "of chain step 1.")
+                                                            if _ivT:
+                                                                log(f"   [inv-vs-drop]   ⇒ THE NUMBER "
+                                                                    f"THAT DECIDES THE BUILD: a keep "
+                                                                    f"scoped to EXACTLY the invented "
+                                                                    f"cells would re-admit {_rIn:,} "
+                                                                    f"split row(s) across {_m5:,} "
+                                                                    f"profile(s). The 19i attempt, "
+                                                                    f"scoped by cell_volume > 0, "
+                                                                    f"re-admitted 97,465 rows / ~8,978 "
+                                                                    f"profiles.")
+                                                    except Exception as _ivE:  # noqa: BLE001
+                                                        log(f"   [inv-vs-drop] skipped "
+                                                            f"({type(_ivE).__name__}: {_ivE})")
+                                                    # ---- DO THE INVENTED CELLS CARRY TRAFFIC? ----
+                                                    # This is the Option 1 vs Option 2 decision and
+                                                    # nothing else in the run answers it. A cell with
+                                                    # cell_tot ≈ 0 is a profile that carries no
+                                                    # transactions, so injecting the catch-all there
+                                                    # is inventing traffic and the IN-SEARCH side is
+                                                    # wrong (Option 1). A cell with real cell_tot is a
+                                                    # live profile with no specific rule — exactly what
+                                                    # a catch-all is for — so the DELIVERED side is the
+                                                    # one missing rows (Option 2). Offline, the six
+                                                    # keys [step1] prints as worst are all present in
+                                                    # the pro-rata export carrying VI 13-28 and
+                                                    # non-zero vampCount, i.e. REAL — but those six are
+                                                    # selected for being worst, so measure all of them.
+                                                    try:
+                                                        _pjB = locals().get("_pj")
+                                                        _pkB = list(getattr(_pjB, "prop_keys", None)
+                                                                    or ()) if _pjB is not None else []
+                                                        if _pjB is not None and _pkB:
+                                                            _ctB = np.asarray(_pjB._ctot, float)
+                                                            _pidB = np.asarray(_pjB._propidx, np.int64)
+                                                            # cell_tot is constant within a cell, so take
+                                                            # the max over its rows rather than a sum.
+                                                            _ckB = [str(_k).rsplit("|", 1)[0]
+                                                                    for _k in _pkB]
+                                                            _cvol = np.zeros(len(_cposS), float)
+                                                            for _rB in range(len(_pidB)):
+                                                                _jB = _cposS.get(_ckB[_pidB[_rB]])
+                                                                if _jB is not None and _ctB[_rB] > _cvol[_jB]:
+                                                                    _cvol[_jB] = _ctB[_rB]
+                                                            _ivIdx = np.nonzero(_invC)[0]
+                                                            _ivVol = _cvol[_ivIdx]
+                                                            _nReal = int((_ivVol > 1e-9).sum())
+                                                            _nPhan = int(len(_ivIdx) - _nReal)
+                                                            _inv2k = {_v: _k for _k, _v in _cposS.items()}
+                                                            log(f"   [blend-cells]   VOLUME CHECK on the "
+                                                                f"{len(_ivIdx):,} invented cell(s): "
+                                                                f"{_nReal:,} carry cell_tot > 0 "
+                                                                f"(Σ {_ivVol.sum():,.0f} txns, median "
+                                                                f"{float(np.median(_ivVol)) if len(_ivVol) else 0.0:,.1f})"
+                                                                f" · {_nPhan:,} carry NO volume")
+                                                            for _oB in np.argsort(-_ivVol)[:6]:
+                                                                log(f"   [blend-cells]     "
+                                                                    f"{_inv2k.get(int(_ivIdx[_oB]), '?')[:58]:<58} "
+                                                                    f"cell_tot {_ivVol[_oB]:>9,.1f}")
+                                                            _frR = (_nReal / max(len(_ivIdx), 1))
+                                                            if _frR > 0.9:
+                                                                log("   [blend-cells]   ⇒ READING: these are "
+                                                                    "REAL profiles that carry traffic and "
+                                                                    "have no specific rule — precisely what "
+                                                                    "a catch-all exists for. The IN-SEARCH "
+                                                                    "side is right to serve them and the "
+                                                                    "DELIVERED side is missing the rows, so "
+                                                                    "OPTION 2 (emit these cells on the "
+                                                                    "delivered side) is the fix, NOT Option "
+                                                                    "1. They are absent from the delivered "
+                                                                    "split because `_explode`'s INNER merge "
+                                                                    "against orig_forecast drops them — "
+                                                                    "[ca-reach] reads 0 uncovered because it "
+                                                                    "only sees cells the split already has, "
+                                                                    "so it is blind to these by construction.")
+                                                            elif _frR < 0.1:
+                                                                log("   [blend-cells]   ⇒ READING: these cells "
+                                                                    "carry no transactions, so the in-search "
+                                                                    "blend is inventing traffic for profiles "
+                                                                    "that do not exist. OPTION 1 (stop "
+                                                                    "injecting there) is the fix, and my "
+                                                                    "offline 6-of-6 'all real' sample was "
+                                                                    "unrepresentative — say so.")
+                                                            else:
+                                                                log(f"   [blend-cells]   ⇒ READING: MIXED "
+                                                                    f"({100.0 * _frR:.0f}% carry volume). "
+                                                                    "Neither Option 1 nor Option 2 is right "
+                                                                    "for all 145 — the fix must split them, "
+                                                                    "and any single-sided change will be "
+                                                                    "wrong for the other group. Do not pick "
+                                                                    "one on the aggregate.")
+                                                        else:
+                                                            log("   [blend-cells]   VOLUME CHECK skipped — "
+                                                                "the projector or its prop_keys are not "
+                                                                "available in this scope.")
+                                                    except Exception as _bvE:  # noqa: BLE001
+                                                        log(f"   [blend-cells]   VOLUME CHECK skipped "
+                                                            f"({type(_bvE).__name__}: {_bvE})")
                                                     log(f"   [blend-cells] the in-search blend INVENTS "
                                                         f"{int(_invC.sum()):,} cell(s) that carry no "
                                                         f"specific shipped share, across "
@@ -8842,7 +9003,7 @@ def render():
                                 # SAME grain choice as the delivered `_ga_gran` site — if these two
                                 # ever disagree, the tabs show a split the reconcile never scored.
                                 _vgk = None
-                                if os.environ.get("ROUTING_BLOCK_CTRY", "0") == "1":
+                                if os.environ.get("ROUTING_BLOCK_CTRY", "1") != "0":
                                     # NOT `getattr(...) or []` — a pandas Index has no truth value,
                                     # and `Index or []` raises "The truth value of a Index is
                                     # ambiguous". That is exactly what the 19:46 run hit: the whole

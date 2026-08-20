@@ -131,8 +131,14 @@ def _render_prepost_table(vp: pd.DataFrame, fit_content: bool = False, bold: boo
                 f'text-align:left; position:sticky; left:0; width:1%; white-space:nowrap;">{_id}</th>')
     for gi, grp in enumerate(col_groups):
         for c in grp:
+            # Mastercard uses chargebacks (CB) and mastercard txn (MC), so relabel the headers
+            # for display only — the underlying column names (VAMP/VI Txn) are unchanged, so all
+            # the totals / conditional-formatting logic below still keys off them.
+            # Mastercard relabels the metric names (CB / MC Txn) but KEEPS the M0..M5 period axis —
+            # the M0->M1 rename applies only to the input widgets/buttons, never the output table.
+            _hdr = (c.replace("VAMP", "CB").replace("VI Txn", "MC Txn")) if _is_mc else c
             html.append(f'<th style="background-color:var(--tav-red); color:#FFF; padding:3px 6px; '
-                        f'text-align:right; white-space:nowrap;">{c}</th>')
+                        f'text-align:right; white-space:nowrap;">{_hdr}</th>')
         if gi < len(col_groups) - 1:
             html.append('<th style="background-color:var(--tav-card); border:none; width:8px; '
                         'min-width:8px; padding:0;"></th>')
@@ -140,7 +146,12 @@ def _render_prepost_table(vp: pd.DataFrame, fit_content: bool = False, bold: boo
 
     for _, r in vp_view.iterrows():
         is_total = str(r[_id]) == "TOTAL"
-        tb = "border-top:2px solid var(--tav-ink);" if is_total else "border-bottom:1px solid var(--tav-line);"
+        # Mastercard: drop the per-row bottom gridlines so it reads like the Visa/VAMP table.
+        # (TOTAL keeps its heavy top rule either way.)
+        if is_total:
+            tb = "border-top:2px solid var(--tav-ink);"
+        else:
+            tb = "" if _is_mc else "border-bottom:1px solid var(--tav-line);"
         wt = ("800" if is_total else "600") if bold else ("600" if is_total else "400")
         # Conditional formatting: a VAMP/CB cell (and its paired txn) is RED / AMBER when BOTH its
         # count and its rate exceed the scheme thresholds set above (Visa 1500·1.5% / 1200·1.2%;
@@ -223,11 +234,21 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
     # kept in sync every rerun by the Build Baseline sub-tab (from its widgets), so it's available
     # here even on a fresh reopen without running/loading a baseline first. Fall back to {} (all
     # fields below have sensible defaults) if it's somehow absent.
-    from app_common import RPGT_LIST, fetch_m0_weightings, green_button_css  # shared constants + helpers
+    from app_common import RPGT_LIST, COMPANIES, fetch_m0_weightings, green_button_css  # shared constants + helpers
     fs = ss.get("forecast_settings") or {}
 
-    _company = str(fs.get("company", "TotalAV"))
-    _month = str(fs.get("month_var", "") or "")
+    # Company + Month 0 are settable in Section 1 (widgets keyed 'validate_company' / 'validate_month0').
+    # Read them here from session_state (same "read at top, render the widget below" pattern as the
+    # scheme selector), falling back to the inherited Build Baseline values on first render.
+    _company_default = str(fs.get("company", "TotalAV"))
+    if _company_default not in COMPANIES:
+        _company_default = COMPANIES[0]
+    ss.setdefault("validate_company", _company_default)
+    # Guard: a stale/invalid stored value (e.g. an old free-text entry) would break the Company
+    # selectbox below, so snap it back to a valid option.
+    if ss.get("validate_company") not in COMPANIES:
+        ss["validate_company"] = _company_default
+    _company = str(ss.get("validate_company") or _company_default)
 
     # [FN-396]
     def _d(key, fallback):
@@ -237,7 +258,17 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
             return fallback
 
     _today = datetime.date.today()
-    _m0 = _d("month_0", _today.replace(day=1))
+    _m0_default = _d("month_0", _today.replace(day=1))
+    ss.setdefault("validate_month0", _m0_default)
+    _m0 = ss.get("validate_month0") or _m0_default
+    if not isinstance(_m0, datetime.date):
+        try:
+            _m0 = pd.to_datetime(_m0).date()
+        except Exception:  # noqa: BLE001
+            _m0 = _m0_default
+    # month_var (the output month-folder label, e.g. "AUG") is DERIVED from Month 0 so outputs land in
+    # the right folder when the user changes it here.
+    _month = _m0.strftime("%b").upper()
     _rpgts = list((fs.get("m0_transaction_weightings") or {}).keys())
 
     # Everything sits in a FORM: changing any input does NOT rerun/reload the app — the
@@ -282,7 +313,11 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
             _scheme_default = str(fs.get("card_scheme", "visa") or "visa").strip().lower()
             ss.setdefault("validate_card_scheme", _scheme_default)
             _scheme = str(ss.get("validate_card_scheme") or _scheme_default).strip().lower()
-            fs = {**fs, "card_scheme": _scheme}
+            fs = {**fs, "card_scheme": _scheme, "company": _company,
+                  "month_0": str(_m0), "month_var": _month}
+            # Mastercard's pipeline is M1-anchored (month 0 = injected historical baseline), so every
+            # "M0" header/input in this tab reads "M1" for mastercard. Visa stays "M0".
+            _mlabel = "M1" if _scheme == "mastercard" else "M0"
             ss.setdefault("validate_rules_dir", os.path.join("data", "exported_rules", _scheme))
 
             # Rules folder follows the scheme via an on_change CALLBACK (a programmatic write in the
@@ -302,34 +337,59 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
                 help="Which card scheme's pipeline to validate. Selects the Visa vs Mastercard forecast "
                      "pipeline and the attempts/success SQL, and points the rules folder at that "
                      "scheme's subfolder. Defaults to the Build Baseline scheme.")
+            # Company + Month 0 (settable here; default to the inherited Build Baseline values). Both
+            # are read back from session_state at the top of render(); no value= kwarg, so there is no
+            # "default value + Session State API" warning.
+            _ri3, _ri4 = st.columns(2)
+            _ri3.selectbox(
+                "Company", COMPANIES, key="validate_company",
+                help="Company to forecast/validate. Defaults to the Build Baseline company.")
+            _ri4.date_input(
+                "M0 start date", key="validate_month0",
+                help="Month 0 start date (the 1st of the base month). Sets the forecast anchor and the "
+                     "output month folder (month_var). Defaults to the Build Baseline Month 0.")
             _drift_check(ss, ss.get("validate_rules_dir", ""))   # flag if these rules ≠ tab-3's split
 
         with st.container(border=True):
-            st.markdown("<h5 style='margin-top:0; margin-bottom:0.25rem;'>2. M0 Transaction Weightings</h5>",
-                        unsafe_allow_html=True)
+            st.markdown(f"**2. {_mlabel} Transaction Weightings**")   # same bold body size as headers 1 & 3
             # Green button, white text (scoped to this button's key).
             green_button_css("validate_fetch_m0_btn")
             _vfb1, _vfb2 = st.columns([1, 1.5], vertical_alignment="center")
-            _vfb1.button("Fetch projected M0 from BigQuery", key="validate_fetch_m0_btn",
+            _vfb1.button(f"Fetch {_mlabel} Weightings", key="validate_fetch_m0_btn",
                          on_click=_v_fetch_m0, args=(_company, _scheme),
                          help=f"Query last month's projected {_scheme.title()} transactions per RPGT "
                               f"for {_company} and fill the weightings below.")
             if ss.get("_v_m0_fetch_err"):
-                _vfb2.markdown("<span style='color:#e63748; font-size:0.8rem;'>✗ M0 fetch failed: "
+                _vfb2.markdown(f"<span style='color:#e63748; font-size:0.8rem;'>✗ {_mlabel} fetch failed: "
                                f"{ss.get('_v_m0_fetch_err')}</span>", unsafe_allow_html=True)
             else:
                 _vfb2.markdown("<span></span>", unsafe_allow_html=True)  # fetch success message suppressed
-            # Pre-fill ONCE from Build Baseline's current M0 values, then edit independently here.
+            # Auto-populate the M0 weightings from BigQuery — the SAME projection the 'Fetch M0
+            # Weightings' button runs — so the DEFAULTS are the fetched values. Runs once per
+            # (company, scheme); manual edits then persist until company/scheme changes. Falls back to
+            # the Build Baseline M0 values if the fetch fails or leaves any field unset.
             _w0 = fs.get("m0_transaction_weightings") or {}
+            _m0_sig = (_company, _scheme)
+            if ss.get("_validate_m0_autofetch_sig") != _m0_sig:
+                ss["_validate_m0_autofetch_sig"] = _m0_sig
+                # Clear the previous (company, scheme) values so a re-fetch replaces them and a failed
+                # fetch falls back to the Build Baseline defaults set below.
+                ss.pop("validate_m0_total_key", None)
+                for _rp in RPGT_LIST:
+                    ss.pop(f"validate_assumed_{_rp}", None)
+                try:
+                    _v_fetch_m0(_company, _scheme)
+                except Exception:  # noqa: BLE001
+                    pass
             ss.setdefault("validate_m0_total_key", int(fs.get("m0_total_transactions", 0) or 0))
             for _rp in RPGT_LIST:
                 ss.setdefault(f"validate_assumed_{_rp}", int(_w0.get(_rp, 0) or 0))
             _v_alloc = sum(int(ss.get(f"validate_assumed_{_rp}", 0) or 0) for _rp in RPGT_LIST)
             _v_total = int(ss.get("validate_m0_total_key", 0) or 0)
             _vmt1, _vmt2 = st.columns([3, 2], vertical_alignment="center")
-            _vmt1.number_input(f"M0 {_company} - {_scheme} - Total", 0, 50_000_000,
+            _vmt1.number_input(f"{_mlabel} {_company} - {_scheme} - Total", 0, 50_000_000,
                                step=1000, key="validate_m0_total_key",
-                               help="Total starting transactions for month 0.")
+                               help=f"Total starting transactions for {_mlabel}.")
             if _v_total == _v_alloc:
                 _vmt2.markdown("<div style='color:#1D9E75; font-size:0.8rem; font-weight:700;'>"
                                "✓ matches RPGT sum</div>", unsafe_allow_html=True)
@@ -343,41 +403,40 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
                 _vw_cols[_i % 2].number_input(
                     _rpgt, 0, 50_000_000, step=500, key=f"validate_assumed_{_rpgt}",
                     help="Assumed month-0 volume for this type.")
+        # Load-previous toggle lives in the LEFT column, directly below section 2 (≈ under the
+        # P6M Renewals weighting). OUTSIDE the form so ticking it reruns immediately and shows/
+        # hides the Forecast outputs folder in the form below (a form would defer that to submit).
+        v_use_prev = st.checkbox(
+            "Load a previously-run forecast (skip the live pipeline)",
+            value=bool(ss.get("validate_use_prev", False)), key="validate_use_prev",
+            help="Reuse an existing data/outputs/<MONTH>/<COMPANY>/ folder from a prior run "
+                 "instead of re-running the pipeline. The rules folder above is still parsed "
+                 "for the impact split.")
     with _gR:
-        st.markdown("**3. Live actuals**")
-        v_use_live = st.checkbox(
-            "Use Live Actuals",
-            value=bool(ss.get("validate_use_live", fs.get("use_live_actuals", False))),
-            key="validate_use_live", help="Blend in real recent results. Uses the dates below.")
-        _d1, _d2 = st.columns(2)
-        v_start = _d1.date_input("Start Date", value=ss.get("validate_actuals_start", _d("start_date", _today)),
-                                 key="validate_actuals_start")
-        v_end = _d2.date_input("End Date", value=ss.get("validate_actuals_end", _d("end_date", _today)),
-                               key="validate_actuals_end")
+        v_use_live = True   # always on — the 'Use Live Actuals' toggle was removed
+        # Header + date pair share ONE bordered container (mirrors section 2 and the section-4 form).
+        # The shared border/padding (a) lines the "3. Live actuals" header up horizontally with the
+        # "4. Inputs & Assumptions" header below, and (b) makes the combined Start+End width match the
+        # 'Force Actuals for' input inside that form.
+        with st.container(border=True):
+            st.markdown("**3. Live actuals**")
+            _d1, _d2 = st.columns(2)
+            v_start = _d1.date_input("Start Date", value=ss.get("validate_actuals_start", _d("start_date", _today)),
+                                     key="validate_actuals_start")
+            v_end = _d2.date_input("End Date", value=ss.get("validate_actuals_end", _d("end_date", _today)),
+                                   key="validate_actuals_end")
 
-        # Attempts & success data window (same inputs as the Routing engine tab). Used to
-        # pull the success-rate data that populates tab 3's impact views for this split.
-        st.markdown("**4. Attempts & success data**")
-        _yday = _today - datetime.timedelta(days=1)
-        # Default Start date = the 1st of the month 3 months ago (e.g. Aug -> 1 May).
-        _mi3 = (_today.year * 12 + _today.month - 1) - 3
-        _att_start_default = datetime.date(_mi3 // 12, _mi3 % 12 + 1, 1)
-        _as1, _as2 = st.columns(2)
-        v_att_start = _as1.date_input(
-            "Start date",
-            value=ss.get("validate_attempts_start", _att_start_default),
-            key="validate_attempts_start",
-            help="Success-rate data window (attempts & successes) used to populate tab 3's "
-                 "impact views for the validated split.")
-        v_att_end = _as2.date_input(
-            "End date", value=ss.get("validate_attempts_end", _yday),
-            key="validate_attempts_end")
+        # Spacer: Section 1 (left) carries an extra input row (Company + M0 start date) that Section 3
+        # (right) does not, so Section 2's header sits one row lower than Section 4's. Drop Section 4
+        # by the same amount so its "4. Inputs & Assumptions" header lines up horizontally with the
+        # "2. … Transaction Weightings" header. Tune the px if it's slightly off on your screen
+        # (≈ one date-input row incl. its label + the inter-element gap).
+        st.markdown("<div style='height:76px'></div>", unsafe_allow_html=True)
 
-    # 5. Inputs & Assumptions (LEFT column) with the run log to its RIGHT (populated on submit).
-    _ia_col, _log_col = st.columns(2)
-    with _ia_col:
+        # 4. Inputs & Assumptions — moved directly below Live actuals (same right column). Its
+        # submit button drives the run log rendered full-width below the grid.
         with st.form("validate_form", border=True):
-            st.markdown("**5. Inputs & Assumptions**")
+            st.markdown("**4. Inputs & Assumptions**")
             _gc, _tc = st.columns(2)   # go-live / anchor (left) · lookback / thermometer (right)
             with _gc:
                 v_go_live = st.date_input(
@@ -388,7 +447,7 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
                     key="validate_anchor", help="Date the forecast is anchored to.")
             with _tc:
                 v_lookback = st.number_input(
-                    "t0 lookback (months)", min_value=1, max_value=12,
+                    "T0 lookback (months)", min_value=1, max_value=12,
                     value=int(ss.get("validate_lookback", int(fs.get("t0_lookback_months", 1) or 1))),
                     key="validate_lookback", help="Actuarial t0_lookback_months.")
                 v_thermo = st.number_input(
@@ -397,28 +456,60 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
                     key="validate_thermo", help="Actuarial thermometer_sample_months.")
             # Inside the form so changing it does NOT rerun the tab — it only takes effect when
             # the green submit button is pressed. Defaults to ALL RPGTs.
-            _force_opts = [str(r) for r in _rpgts]
+            # 'Error' is never a routable RPGT (removed from attempts_success.sql), so it must
+            # never be an option here. Filter it from the options; and on repeat renders scrub any
+            # stale 'Error' out of the existing selection. Pass `default` ONLY on the FIRST render
+            # (no session_state yet) — passing `default` AND writing session_state triggers
+            # Streamlit's "default value + Session State API" warning.
+            _force_opts = [str(r) for r in _rpgts if str(r).strip().lower() != "error"]
+            _ms_kw = {}
+            if isinstance(ss.get("validate_force_actuals"), list):
+                ss["validate_force_actuals"] = [
+                    _x for _x in ss["validate_force_actuals"] if str(_x).strip().lower() != "error"]
+            else:
+                _ms_kw["default"] = list(_force_opts)
             v_force_manual = st.multiselect(
-                "Force Actuals for", options=_force_opts, default=list(_force_opts),
-                key="validate_force_actuals",
+                "Force Actuals for", options=_force_opts, key="validate_force_actuals",
                 help="These transaction types use live actuals instead of the forecast for "
-                     "month 0. Leave empty to force none.")
-            # Optionally reuse a prior run's forecast outputs instead of running the pipeline
-            # live via BigQuery. Both controls live in the form so ticking the box does not
-            # reload the tab — it only takes effect on the green submit button.
-            v_use_prev = st.checkbox(
-                "Load a previously-run forecast (skip the live pipeline)",
-                value=bool(ss.get("validate_use_prev", False)), key="validate_use_prev",
-                help="Reuse an existing data/outputs/<MONTH>/<COMPANY>/ folder from a prior "
-                     "run instead of re-running the VAMP pipeline. The rules folder above is "
-                     "still parsed for the impact split.")
-            v_prev_dir = st.text_input(
-                "Forecast outputs folder", value=ss.get("validate_prev_dir", ""),
-                key="validate_prev_dir",
-                help="The data/outputs/<MONTH>/<COMPANY>/ folder containing mid_level.csv "
-                     "(and the other VAMP export CSVs) from a previous run. Only used when the "
-                     "box above is ticked.")
-            run = st.form_submit_button("Run validation with these rules", type="primary")
+                     "month 0. Leave empty to force none.", **_ms_kw)
+            # Forecast outputs folder only appears when the load-previous box (above, outside
+            # the form) is ticked. Default to the stored path when hidden so `if run:` is safe.
+            v_prev_dir = ss.get("validate_prev_dir", "")
+            if v_use_prev:
+                v_prev_dir = st.text_input(
+                    "Forecast outputs folder", value=ss.get("validate_prev_dir", ""),
+                    key="validate_prev_dir",
+                    help="The data/outputs/<MONTH>/<COMPANY>/ folder containing mid_level.csv "
+                         "(and the other export CSVs) from a previous run.")
+            run = st.form_submit_button("Run Validation", type="primary")
+
+    # 5. Attempts & success data — its own row, below Inputs & Assumptions + the run log
+    # (swapped up from where it used to sit beside Live actuals). Same inputs as the Routing
+    # engine tab; used to pull the success-rate data that populates tab 3's impact views.
+    _as_col, _as_sp = st.columns(2)
+    with _as_col:
+        # Bordered container mirrors section 1 (Rules Import): the same border/padding inset makes the
+        # combined Start+End width match the 'Exported rules folder' + 'Card Scheme' combined width.
+        with st.container(border=True):
+            st.markdown("**5. Attempts & success data**")
+            _yday = _today - datetime.timedelta(days=1)
+            # Default Start date = the 1st of the month 3 months ago (e.g. Aug -> 1 May).
+            _mi3 = (_today.year * 12 + _today.month - 1) - 3
+            _att_start_default = datetime.date(_mi3 // 12, _mi3 % 12 + 1, 1)
+            _as1, _as2 = st.columns(2)
+            v_att_start = _as1.date_input(
+                "Start date",
+                value=ss.get("validate_attempts_start", _att_start_default),
+                key="validate_attempts_start",
+                help="Success-rate data window (attempts & successes) used to populate tab 3's "
+                     "impact views for the validated split.")
+            v_att_end = _as2.date_input(
+                "End date", value=ss.get("validate_attempts_end", _yday),
+                key="validate_attempts_end")
+
+    # Run log — full width below the sections (the Inputs & Assumptions form moved into the right
+    # column, so the log no longer sits beside it). Target container; populated on submit.
+    _log_col = st.container()
 
     if run:
         if v_use_live and v_start > v_end:
@@ -463,7 +554,6 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
                              f"`{v_prev_dir}`. Impact populates on tab 3.")
             _df = ss.get("validate_result")
             if _df is not None and not getattr(_df, "empty", True):
-                st.markdown(f"**Pipeline pre vs post** · output: `{v_prev_dir}`")
                 _render_prepost_table(_to_prepost(_df), bold=False)
             return
 
@@ -490,8 +580,9 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
         # Separate output dir so this never clobbers tab 1/tab 3's live outputs.
         # Mastercard runs land in their own subfolder so the two schemes never collide.
         _validate_out = os.path.join("data", "outputs", "_validate", "{month_var}", "{company}")
-        if _is_mc:
-            _validate_out = os.path.join(_validate_out, "mastercard")
+        # Each scheme lands in its own subfolder so the two never collide (visa used to
+        # sit bare in <company>/; now symmetric with mastercard).
+        _validate_out = os.path.join(_validate_out, "mastercard" if _is_mc else "visa")
         cfg["paths"]["output_dir"] = _validate_out + os.sep
         cfg["run_settings"]["use_chunked_csv_files"] = True
 
@@ -531,7 +622,11 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
         status = _log_col.status(f"Running the {'MASTERCARD' if _is_mc else 'VAMP'} pipeline with "
                                  f"{nr} rule file(s)… (BigQuery; uses cache where available)", expanded=True)
         with status:
-            _area = st.empty()
+            # Fixed-height scroll box so the run log stays bounded to ~the Inputs & Assumptions
+            # form's height (its bottom lines up ~with the green submit button) instead of
+            # sprawling down the page. Tune _LOG_H (px) to nudge the bottom to match on your screen.
+            _LOG_H = 460
+            _area = st.container(height=_LOG_H).empty()
             _lines: list[str] = []
 
             # [FN-397]
@@ -592,7 +687,6 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
 
     _df = ss.get("validate_result")
     if _df is not None and not getattr(_df, "empty", True):
-        st.markdown(f"**Pipeline pre vs post** · output: `{ss.get('validate_out_dir', '')}`")
         _render_prepost_table(_to_prepost(_df), bold=False)
     elif not run:
         st.info("Point at your exported rules folder and run the pipeline to see its pre/post table.")

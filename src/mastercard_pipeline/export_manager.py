@@ -10,7 +10,7 @@ from .utils import setup_logger
 
 logger = setup_logger(__name__)
 
-__build__ = "2026-08-12-mastercard-initial+reconcile-guard"
+__build__ = "2026-08-17-mastercard-initial+reconcile-guard+prorata-export"
 
 
 def reconcile_granular_to_mid_level(output_dir, *, id_col, vamp_metric, txn_metric,
@@ -106,7 +106,10 @@ class ExportManager:
         rs = config['run_settings']
         self.company = str(rs['company']).strip()
         self.month_var = str(rs['month_var']).strip()
-        self.mr_weights = mr_weights or {}  # reserved for parity; not used by the MC exports
+        self.mr_weights = mr_weights or {}  # MR daily weights: now used by the pro-rata export
+        # Split Go-Live + month-0 drive the additive pro-rata export (parity with the visa pipeline).
+        self._month_0 = pd.to_datetime(rs.get('month_0_start_date'), errors='coerce')
+        self._go_live = pd.to_datetime(rs.get('split_go_live_date'), errors='coerce')
 
         self.mid_df = mid_df.copy()
         self.attempts_df = attempts_df.copy()
@@ -378,6 +381,85 @@ class ExportManager:
         return m1_export
 
     # =========================================================================
+    # === PRO-RATA EXPORT (mastercard parity with the visa/vamp pipeline)
+    # =========================================================================
+    def _month_prorata(self, month_dt, is_mr: bool) -> float:
+        """Weighted fraction of a calendar month on/after the Split Go-Live date.
+        Scheme-agnostic — identical to the visa pipeline (depends only on go-live / month-0 /
+        MR daily weights)."""
+        if pd.isna(self._go_live) or pd.isna(month_dt):
+            return 0.0
+        days_in_mo = calendar.monthrange(month_dt.year, month_dt.month)[1]
+        month_start = pd.Timestamp(month_dt.year, month_dt.month, 1)
+        month_end = month_start + pd.DateOffset(months=1)
+        gl = self._go_live.normalize()
+        if gl <= month_start:
+            return 1.0
+        if gl >= month_end:
+            return 0.0
+        start_day = int((gl - month_start).days) + 1
+        end_day = days_in_mo
+        if is_mr and self.mr_weights and month_dt.month in self.mr_weights:
+            mr_w = np.array([self.mr_weights[month_dt.month].get(d, 0.0)
+                             for d in range(1, days_in_mo + 1)], dtype=float)
+            if mr_w.sum() <= 0:
+                mr_w = np.ones(days_in_mo)
+            cdf = np.insert(np.cumsum(mr_w / mr_w.sum()), 0, 0.0)
+        else:
+            cdf = np.linspace(0.0, 1.0, days_in_mo + 1)
+        return float(np.clip(cdf[end_day] - cdf[start_day - 1], 0.0, 1.0))
+
+    def _prorata_lookup(self) -> pd.DataFrame:
+        """Pre-computed pro-rata by (is_mr, orig_period) for orig_period in -9..5."""
+        rows = []
+        if not (pd.isna(self._go_live) or pd.isna(self._month_0)):
+            for orig in range(-9, 6):
+                month_dt = self._month_0 + pd.DateOffset(months=orig)
+                for is_mr in (False, True):
+                    rows.append({"is_mr": is_mr, "orig_period": orig,
+                                 "pro_rata": self._month_prorata(month_dt, is_mr)})
+        return pd.DataFrame(rows, columns=["is_mr", "orig_period", "pro_rata"])
+
+    def _generate_prorata_export(self, t_data: pd.DataFrame) -> None:
+        """Mastercard equivalent of the visa pro-rata export → 'mc_cb_t_period_prorata_export.csv':
+        the go-live-pro-rated period×t baseline of chargebacks (CB) and mastercard txn (MC).
+
+        Column schema mirrors the visa export (id + period/t + count columns + pro_rata + fcp1_frac)
+        but carries CB / MC semantics: CB_Pre → cbCount, MC_Txn_Pre → MC_Txn_Count.
+
+        Caveats: (1) fcp1_frac defaults to 1.0 — the visa cohort-gating port (fcpNumber==1 etc.)
+        is a follow-up; (2) this file is NOT yet consumed by the routing/impact loaders, which read
+        the visa-named 'vamp_t_period_prorata_export.csv' — it's an inspection/parity artifact until
+        those loaders are made scheme-aware."""
+        if pd.isna(self._go_live) or pd.isna(self._month_0):
+            logger.info("   > pro-rata export skipped (no Split Go Live / month_0 date).")
+            return
+        rpgt_col = 'RPGT' if 'RPGT' in t_data.columns else 'rpgt'
+        _need = ['mastercardMid', rpgt_col, 'BIN', 'Currency', 'period', 't', 'CB_Pre', 'MC_Txn_Pre']
+        _missing = [c for c in _need if c not in t_data.columns]
+        if _missing:
+            logger.warning(f"   > pro-rata export skipped (t_data missing {_missing}).")
+            return
+        base_cols = list(_need)
+        if 'paymentMethodProvider' in t_data.columns:
+            base_cols.insert(4, 'paymentMethodProvider')
+        if 'Country' in t_data.columns:
+            base_cols.insert(4, 'Country')
+        df = t_data[base_cols].copy()
+        df = df.rename(columns={rpgt_col: 'RPGT', 'CB_Pre': 'cbCount', 'MC_Txn_Pre': 'MC_Txn_Count'})
+        df['orig_period'] = df['period'].astype(int) - df['t'].astype(int)
+        df['is_mr'] = df['RPGT'].astype(str).str.lower().str.strip() == 'monthly renewal'
+        lut = self._prorata_lookup()
+        df = df.merge(lut, on=['is_mr', 'orig_period'], how='left')
+        # Transactions originated before month 0 pre-date the forecast window → pro_rata = 0.
+        df['pro_rata'] = np.where(df['orig_period'] < 0, 0.0, df['pro_rata'].fillna(0.0))
+        df = df.drop(columns=['orig_period', 'is_mr'])
+        df['fcp1_frac'] = 1.0   # TODO: port the visa cohort-gating fcp1_frac for mastercard
+        out = os.path.join(self.output_dir, 'mc_cb_t_period_prorata_export.csv')
+        df.to_csv(out, index=False)
+        logger.info(f"   > pro-rata export saved ({len(df)} rows, go-live {self._go_live.date()}) -> {out}")
+
+    # =========================================================================
     # === PUBLIC RUN ENTRYPOINT
     # =========================================================================
 
@@ -413,6 +495,15 @@ class ExportManager:
         if not m1_export.empty:
             logger.info(f"   > Total Forecast Sales (M1): {m1_export['Forecast_Sales'].sum():,.0f}")
             logger.info(f"   > Total Forecast CBs (M1): {m1_export['Forecast_CBs'].sum():,.0f}")
+
+        # Additive pro-rata export (parity with visa). Guarded so this new, not-yet-live-validated
+        # artifact can never break the (validated) rest of the mastercard export run.
+        try:
+            logger.info("📊 Generating Pro-Rata Export (go-live baseline)...")
+            self._generate_prorata_export(t_data)
+        except Exception as _e:  # noqa: BLE001
+            logger.warning(f"   ⚠️ pro-rata export failed (skipped, non-fatal): "
+                           f"{type(_e).__name__}: {_e}")
 
         # GUARD: confirm the granular bin_rpgt export ties exactly to mid_level (Tab 3 reads the
         # former, the Validate Split table reads the latter — this proves the two views reconcile).

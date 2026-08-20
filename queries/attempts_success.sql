@@ -138,7 +138,7 @@ SELECT
   initialSuccess, initialFailure, initialattempt, fcpNumber,
   bankName, bin, gatewayFid, country
 FROM enriched_logic
-WHERE rpgt NOT IN ('Bin', 'Refund')
+WHERE rpgt NOT IN ('Bin', 'Refund', 'Error')
   AND date >= '{START_DATE}'
   AND date < '{END_DATE}'
   AND Company = '{COMPANY}'

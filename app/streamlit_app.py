@@ -308,6 +308,15 @@ st.markdown("""
     font-size: 12px !important;
   }
 
+  /* Multiselect: the selected-value tags are [data-baseweb="tag"] (not caught by the rule
+     above), so pin them AND the label to the same 12px input scale — label == values. */
+  .stMultiSelect [data-testid="stWidgetLabel"] p,
+  .stMultiSelect [data-baseweb="tag"],
+  .stMultiSelect [data-baseweb="tag"] span,
+  .stMultiSelect [data-baseweb="tag"] div {
+    font-size: 12px !important;
+  }
+
   /* Table text size -> 9px across all tabs.
      Covers custom HTML tables (rendered via st.markdown) and native
      st.table / st.dataframe / st.data_editor grids. The !important beats
@@ -623,19 +632,32 @@ def _render_preflight(project):
     _has_issue = any(_c[1] in ("fail", "warn") for _c in _pf)
     _title = "Environment check — ⚠️ action needed" if _has_issue else "Environment check — ✅ ready"
     with st.expander(_title, expanded=_has_issue):
+        # Render at 12px to match the widget-label scale (e.g. "Exported rules folder").
+        _esc = lambda _s: str(_s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # Render ALL rows inside ONE markdown container. Rendering each row as its own st.markdown
+        # made Streamlit's block spacing collapse the 12px lines into each other (the overlap);
+        # a single container + per-row margins spaces them cleanly. Ink text (#0B1F3A) throughout.
+        _rows_html = []
         for _lbl, _stt, _detail, _fix in _pf:
-            _line = f"{_icon.get(_stt, '•')} **{_lbl}** — {_detail}"
+            _r = (f"<div style='margin:0 0 6px;'>"
+                  f"{_icon.get(_stt, '•')} <b>{_esc(_lbl)}</b> — {_esc(_detail)}")
             if _fix:
-                _line += f"  \n&nbsp;&nbsp;&nbsp;&nbsp;↳ {_fix}"
-            st.markdown(_line)
+                _r += f"<br><span style='padding-left:1.4em;'>↳ {_esc(_fix)}</span>"
+            _r += "</div>"
+            _rows_html.append(_r)
+        # Check text on the LEFT; the action buttons stacked vertically in a column on the RIGHT.
+        _txt_col, _btn_col = st.columns([3, 1])
+        _txt_col.markdown(
+            "<div style='font-size:12px; line-height:1.45; color:#0B1F3A;'>"
+            + "".join(_rows_html) + "</div>",
+            unsafe_allow_html=True)
         _gc = _find_gcloud()
         _reqs = os.path.join(PROJECT_ROOT, "requirements.txt")
-        _b1, _b2, _b3, _spc = st.columns([1, 1.5, 1.6, 3])
-        _do_recheck = _b1.button("Re-check", key="_pf_recheck")
-        _do_signin = (_b2.button("Sign in to Google Cloud", key="_pf_signin", type="primary")
-                      if _gc else False)
-        _do_pip = (_b3.button("Install / update packages", key="_pf_pip")
-                   if os.path.exists(_reqs) else False)
+        _do_recheck = _btn_col.button("Re-check", key="_pf_recheck", use_container_width=True)
+        _do_signin = (_btn_col.button("Sign in to Google Cloud", key="_pf_signin", type="primary",
+                                      use_container_width=True) if _gc else False)
+        _do_pip = (_btn_col.button("Install / update packages", key="_pf_pip",
+                                   use_container_width=True) if os.path.exists(_reqs) else False)
         if _do_recheck:
             ss.pop("_preflight", None)
             st.rerun()

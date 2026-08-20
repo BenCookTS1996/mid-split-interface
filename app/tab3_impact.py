@@ -27,11 +27,93 @@ from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, DEFAU
                         _switched_off_gateways, _locked_panel, _split_df_to_xlsx_bytes)
 
 
+# [FN-347b] Scheme-normalisation shim. This whole tab is written against the VISA export schema
+# (vampMid / VAMP_* / VI_Txn_* and 'vamp_'-prefixed filenames). A Mastercard run emits the SAME
+# data under Mastercard names (mastercardMid / CB_* / MC_Txn_* and 'cb_'/'mc_cb_'-prefixed
+# filenames). Rather than rename column references in ~2100 lines, we normalise at the load points:
+# filenames resolve to their Mastercard twin, and columns are renamed to the Visa vocabulary on the
+# way in. Both helpers are no-ops on a Visa run.
+_MC_TWIN_FILES = {
+    "vamp_t_period_export.csv": "cb_t_period_export.csv",
+    "vamp_t_period_prorata_export.csv": "mc_cb_t_period_prorata_export.csv",
+}
+
+
+def _normalise_scheme_columns(df):
+    """Rename Mastercard export columns to their Visa equivalents. No-op unless the frame is
+    Mastercard-shaped (i.e. carries 'mastercardMid'). Covers bin_rpgt / mid_level / t-period /
+    pro-rata / effective-rate schemas in one pass."""
+    if df is None or getattr(df, "empty", True) or "mastercardMid" not in getattr(df, "columns", []):
+        return df
+    ren = {}
+    for c in df.columns:
+        nc = c
+        if c == "mastercardMid":
+            nc = "vampMid"
+        elif c == "cbPre":
+            nc = "vampPre"
+        elif c == "cbRatioPre":
+            nc = "vampRatioPre"
+        elif c == "cbCount":
+            nc = "vampCount"
+        elif c == "MC_Txn_Count":
+            nc = "VI_Txn_Count"
+        else:
+            # Order matters: strip the FC_ prefixes before the bare MC_Txn_/CB_ ones.
+            nc = nc.replace("FC_MC_Txn_", "FC_VI_Txn_").replace("FC_CB_", "FC_VAMP_")
+            nc = nc.replace("MC_Txn_Pre", "VI_Txn_Pre").replace("MC_Txn_Post", "VI_Txn_Post")
+            nc = (nc.replace("CB_Pre", "VAMP_Pre").replace("CB_Post", "VAMP_Post")
+                    .replace("CB_Diff", "VAMP_Diff"))
+            nc = nc.replace("Forecast_CBs", "Forecast_VAMPs").replace("Sim_CBs", "Sim_VAMPs")
+        if nc != c:
+            ren[c] = nc
+    return df.rename(columns=ren) if ren else df
+
+
+def _scheme_norm_export(out_dir, visa_name):
+    """Return a path to a VISA-schema CSV for `visa_name`.
+
+    Visa run -> the file as-is. Mastercard run -> read the Mastercard-named twin, rename its
+    columns to the Visa vocabulary, and cache a '_shim_'-prefixed copy next to it (regenerated only
+    when the source is newer), so downstream Visa-hardcoded readers (incl. impact_calcs, which reads
+    the path itself) work untouched. Returns the (absent) Visa path if neither file exists, so
+    callers keep their existing 'No export found' behaviour."""
+    _visa_p = os.path.join(out_dir or "", visa_name)
+    if os.path.exists(_visa_p):
+        return _visa_p
+    _twin = _MC_TWIN_FILES.get(visa_name)
+    if not _twin:
+        return _visa_p
+    _mc_p = os.path.join(out_dir or "", _twin)
+    if not os.path.exists(_mc_p):
+        return _visa_p
+    _shim_p = os.path.join(out_dir or "", "_shim_" + visa_name)
+    try:
+        if (not os.path.exists(_shim_p)) or (os.path.getmtime(_shim_p) < os.path.getmtime(_mc_p)):
+            _normalise_scheme_columns(pd.read_csv(_mc_p)).to_csv(_shim_p, index=False)
+        return _shim_p
+    except Exception:  # noqa: BLE001 - on any failure, fall back to the (absent) Visa path
+        return _visa_p
+
+
 # [FN-348]
 def render():
     # `out_dir` used to be a module global set by the (now-extracted) engine tab; re-derive it
     # locally from session_state so this tab is self-contained — identical value (ss.get).
     out_dir = ss.get("pipeline_out_dir")
+
+    # Mastercard runs land in a '/mastercard/' output folder; the scheme shim normalises their
+    # exports to the Visa column vocabulary (vampMid / VAMP / VI Txn) so this tab's logic works
+    # unchanged. That vocabulary was leaking into the DISPLAYED table headers — relabel just the
+    # header text back to Mastercard (mastercardMid / CB / MC Txn). Data column NAMES are untouched
+    # (the shim depends on them). No-op on Visa runs.
+    _is_mc_disp = "mastercard" in os.path.normpath(str(out_dir or "")).lower().split(os.sep)
+
+    def _mc_hdr(_t):
+        if not _is_mc_disp:
+            return _t
+        return (str(_t).replace("VAMP", "CB").replace("VI Txn", "MC Txn")
+                .replace("VI_Txn", "MC_Txn").replace("vampMid", "mastercardMid"))
 
     # VALIDATE-MODE single source of truth: the pipeline's granular bin_rpgt_impact_export.csv,
     # normalised to the granular frame shape mid_table_from_granular / mid_revenue_month_table expect
@@ -291,14 +373,8 @@ def render():
                     format_func=lambda w: f"{int(round(w * 100))}",
                     help="Dial: safer routing ↔ more revenue.")
             else:
-                # Single variation (dial 100 removed) — no dial to pick; show a static label.
+                # Single variation (dial 100 removed) — no dial to pick, and no static label shown.
                 picked_w = weights[0]
-                _sld_col.markdown(
-                    "<div style='padding-top:0.15rem;'>"
-                    "<div style='font-size:0.82rem; font-weight:700; color:var(--tav-ink);'>Split</div>"
-                    "<div style='font-size:0.85rem; color:var(--tav-muted); margin-top:0.1rem;'>"
-                    "Risk-minimised · compliant</div></div>",
-                    unsafe_allow_html=True)
             ss["selected_variation_weight"] = picked_w
             # Impact basis: always the Compressed Rules — the split trimmed so the generated pool
             # count stays within your target, i.e. what the exported configs actually deliver. The
@@ -803,7 +879,7 @@ def render():
                     return
                 _g = _g.sort_values("prop", ascending=True)          # largest at top of h-chart
                 _lbl = _g["_vmid"].astype(str).str.replace("_", " ").str.strip().str[:40].tolist()
-                _tc.markdown("###### Before → after volume share (by vampMid)")
+                _tc.markdown(f"###### Before → after volume share (by {_mc_hdr('vampMid')})")
                 _f1 = _go.Figure()
                 # connector line spanning the three points per vampMid
                 _xs, _ys = [], []
@@ -1183,7 +1259,7 @@ def render():
             # that RPGT in that vampMid, summed to the vampMid. Renders into the slot
             # reserved above the Bank x Currency Impact section.
             with _rev_slot:
-                _pp_r = os.path.join(out_dir, "vamp_t_period_prorata_export.csv")
+                _pp_r = _scheme_norm_export(out_dir, "vamp_t_period_prorata_export.csv")
                 if not os.path.exists(_pp_r):
                     st.info("No pro-rata export found — revenue-by-vampMid table unavailable.")
                 elif split is None or getattr(split, "empty", True):
@@ -1301,12 +1377,12 @@ def render():
                     _rh.append('<table style="width:100%; border-collapse:collapse; font-family:inherit; '
                                'font-size:0.68rem; line-height:1.1;"><tr>')
                     _rh.append('<th style="background-color:var(--tav-red); color:#FFF; padding:3px 6px; text-align:left; '
-                               'position:sticky; left:0; width:1%; white-space:nowrap;">vampMid</th>')
+                               f'position:sticky; left:0; width:1%; white-space:nowrap;">{_mc_hdr("vampMid")}</th>')
                     _rh.append(_sp)
                     for _grp in _grp6:
                         for _c in _grp:
                             _rh.append(f'<th style="background-color:var(--tav-red); color:#FFF; padding:3px 6px; '
-                                       f'text-align:right; white-space:nowrap; width:1%;">{_c.replace("$Revenue", "$Amt")}</th>')
+                                       f'text-align:right; white-space:nowrap; width:1%;">{_mc_hdr(_c.replace("$Revenue", "$Amt"))}</th>')
                         _rh.append(_sp)
                     _rh.append('</tr>')
                     for _, _r in _rvv.iterrows():
@@ -3267,7 +3343,7 @@ def render():
                         # Wrap numeric headers at underscores so the column shrinks to its widest VALUE;
                         # match body-row padding + drop the fixed height so header height == row height.
                         # Header on ONE line; column auto-sizes to fit the header AND its values.
-                        _hdr = _c
+                        _hdr = _mc_hdr(_c)
                         _hws = "nowrap"
                         _dh.append(f'<th style="background-color:var(--tav-red); color:#FFF; font-weight:bold; '
                                    f'padding:1px 6px; text-align:{_al}; white-space:{_hws}; position:sticky; top:0; '
@@ -3339,7 +3415,7 @@ def render():
                         _al = "left" if _c in ("vampMid", "BIN") else "right"
                         # Non-vampMid headers wrap at underscores (<wbr>) so the column shrinks to
                         # the value width instead of the long header — ~40%+ narrower.
-                        _disp = _lthdr.get(_c, _c)
+                        _disp = _mc_hdr(_lthdr.get(_c, _c))
                         # Header on ONE line; column auto-sizes to fit the header AND its values.
                         _hdr = _disp
                         _ws = "nowrap"
@@ -3380,7 +3456,7 @@ def render():
                     for _c in _rtcols:
                         _al = "left" if _c in ("vampMid", "RPGT") else "right"
                         # Wrap numeric headers at underscores so each column fits its value width.
-                        _hdr = _c if _c in ("vampMid", "RPGT") else _c.replace("_", "_<wbr>")
+                        _hdr = _mc_hdr(_c) if _c in ("vampMid", "RPGT") else _mc_hdr(_c).replace("_", "_<wbr>")
                         _ws = "nowrap" if _c in ("vampMid", "RPGT") else "normal"
                         _rth.append(f'<th style="background-color:var(--tav-red); color:#FFF; font-weight:bold; '
                                     f'padding:2px 3px; text-align:{_al}; white-space:{_ws}; position:sticky; top:0; width:1%;">{_hdr}</th>')
@@ -3423,7 +3499,15 @@ def render():
                     if HAS_PLOTLY:
                         _fs2 = ss.get("forecast_settings", {}) or {}
                         _bd = pd.to_datetime(_fs2.get("month_0", date.today().replace(day=1)))
-                        _mv2, _cmp2 = _fs2.get("month_var"), _fs2.get("company")
+                        # month / company / scheme for the ACTUALS caches: derive from the loaded
+                        # output folder (…/<month>/<company>/<scheme>/) so the actuals match the SAME
+                        # brand + scheme as the forecast being viewed. Fall back to forecast_settings.
+                        _odsegs = os.path.normpath(str(out_dir or "")).split(os.sep)
+                        if len(_odsegs) >= 3 and _odsegs[-1] in ("visa", "mastercard"):
+                            _mv2, _cmp2, _sch2 = _odsegs[-3], _odsegs[-2], _odsegs[-1]
+                        else:
+                            _mv2, _cmp2 = _fs2.get("month_var"), _fs2.get("company")
+                            _sch2 = "mastercard" if _is_mc_disp else "visa"
                         import plotly.graph_objects as _gob
                         _rows = []
                         _ratio = {}   # month label -> VAMP ratio (%)
@@ -3448,16 +3532,22 @@ def render():
                         # Prefer the gatewayFid-grained actuals cache (from fcast_query_gatewayfid.sql)
                         # so actuals can be reconciled to the forecast's vampMid grain; fall back to
                         # the standard thermometer cache if it hasn't been generated yet.
-                        _th_gw = os.path.join(PROJECT_ROOT, "data", "cache", str(_mv2), str(_cmp2),
-                                              f"thermometer_data_gwfid_{_mv2}_fcp_v3.parquet")
-                        _th_std = os.path.join(PROJECT_ROOT, "data", "cache", str(_mv2), str(_cmp2),
-                                               f"thermometer_data_{_mv2}_fcp_v3.parquet")
+                        # Caches live under data/cache/<month>/<company>/<scheme>/ (post-restructure).
+                        # Mastercard files carry a '_mc' suffix and have no gatewayFid-grained variant.
+                        _cache_dir = os.path.join(PROJECT_ROOT, "data", "cache", str(_mv2), str(_cmp2), _sch2)
+                        _sfx = "_mc" if _sch2 == "mastercard" else ""
+                        _th_gw = os.path.join(_cache_dir, f"thermometer_data_gwfid_{_mv2}{_sfx}_fcp_v3.parquet")
+                        _th_std = os.path.join(_cache_dir, f"thermometer_data_{_mv2}{_sfx}_fcp_v3.parquet")
                         _th = _th_gw if os.path.exists(_th_gw) else _th_std
                         _act, _act_raw = {}, {}
                         _act_v_rp = None   # actual VAMP by (period, RPGT-title) for the by-RPGT chart
                         _act_t_rp = None   # actual txns by (period, RPGT-title) for the by-RPGT chart
                         if os.path.exists(_th):
                             _av = _c_read_parquet(_th, _mtime(_th)).copy()
+                            # Mastercard thermometer stores chargebacks as 'cb_count'; the code below
+                            # is written for the Visa 'vamp_count' — alias so both schemes work.
+                            if "vamp_count" not in _av.columns and "cb_count" in _av.columns:
+                                _av = _av.rename(columns={"cb_count": "vamp_count"})
                             # gatewayFid cache: map gatewayFid -> vampMid (Master_MID_List) so the
                             # vampMid filter matches the forecast grain on the actuals too.
                             if "gatewayFid" in _av.columns and "vampMid" not in _av.columns:
@@ -3506,11 +3596,14 @@ def render():
                                     _act_ts_df = (_att.groupby(["period", "_t"], as_index=False)["vamp_count"]
                                                   .sum().rename(columns={"_t": "t", "vamp_count": "VAMP"}))
                         # Actual transactions from the gateway-mapping cache (for the ratio).
-                        _gm = os.path.join(PROJECT_ROOT, "data", "cache", str(_mv2), str(_cmp2),
-                                           f"gateway_mapping_data_{_mv2}_fcp_v3.parquet")
+                        _gm = os.path.join(_cache_dir, f"gateway_mapping_data_{_mv2}{_sfx}_fcp_v3.parquet")
                         _act_txn = {}
                         if os.path.exists(_gm):
                             _gmd = _c_read_parquet(_gm, _mtime(_gm)).copy()
+                            # Mastercard mapping stores 'mastercard_trx_count'; alias to the Visa name
+                            # ('visa_trx_count') the code below uses.
+                            if "visa_trx_count" not in _gmd.columns and "mastercard_trx_count" in _gmd.columns:
+                                _gmd = _gmd.rename(columns={"mastercard_trx_count": "visa_trx_count"})
                             for _cc in ("Company", "company"):
                                 if _cmp2 and _cc in _gmd.columns:
                                     _gmd = _gmd[_gmd[_cc].astype(str).str.lower().str.strip() == str(_cmp2).lower().strip()]
@@ -3567,12 +3660,12 @@ def render():
                         _fig = _gob.Figure()
                         _fig.add_trace(_gob.Bar(
                             x=_mon, y=[_v if _a else 0 for _v, _a in zip(_vmp, _is_act)],
-                            name="Actual VAMP", marker_color="#9AA8C0",
+                            name=_mc_hdr("Actual VAMP"), marker_color="#9AA8C0",
                             text=[_l if _a else "" for _l, _a in zip(_lbls, _is_act)],
                             textposition="inside", textfont=dict(size=9, color='#FFFFFF'), cliponaxis=False))
                         _fig.add_trace(_gob.Bar(
                             x=_mon, y=[_v if not _a else 0 for _v, _a in zip(_vmp, _is_act)],
-                            name="Forecast VAMP", marker_color="#e63748",
+                            name=_mc_hdr("Forecast VAMP"), marker_color="#e63748",
                             text=[_l if not _a else "" for _l, _a in zip(_lbls, _is_act)],
                             textposition="inside", textfont=dict(size=9, color='#FFFFFF'), cliponaxis=False))
                         
@@ -3587,7 +3680,7 @@ def render():
 
                         _ratio_y = [_ratio.get(_mo) for _mo in _order]
                         _fig.add_trace(_gob.Scatter(
-                            x=_order, y=_ratio_y, name="VAMP ratio",
+                            x=_order, y=_ratio_y, name=_mc_hdr("VAMP ratio"),
                             mode="lines+markers+text", yaxis="y2", connectgaps=True,
                             line=dict(color="#22C36B", width=2), marker=dict(size=5),
                             text=[(f"{_v:.1f}%" if _v is not None else "") for _v in _ratio_y],
@@ -3653,7 +3746,7 @@ def render():
                         # VAMP ratio line on the right axis — same format as the VAMP chart above.
                         _txratio_y = [_ratio.get(_mo) for _mo in _txo]
                         _txfig.add_trace(_gob.Scatter(
-                            x=_txo, y=_txratio_y, name="VAMP ratio",
+                            x=_txo, y=_txratio_y, name=_mc_hdr("VAMP ratio"),
                             mode="lines+markers+text", yaxis="y2", connectgaps=True,
                             line=dict(color="#22C36B", width=2), marker=dict(size=5),
                             text=[(f"{_v:.1f}%" if _v is not None else "") for _v in _txratio_y],
@@ -3875,7 +3968,7 @@ def render():
                                 _wtt_lo = (min(_wtt_pos) * 0.8) if _wtt_pos else 0.0
                                 _wtt_hi = (max(_wtt) * 1.1) if _wtt else 1.0
                                 _f.add_trace(_gob.Scatter(
-                                    x=_tso, y=_wtt, name="Avg Months to VAMP", mode="lines+markers+text", yaxis="y2",
+                                    x=_tso, y=_wtt, name=_mc_hdr("Avg Months to VAMP"), mode="lines+markers+text", yaxis="y2",
                                     line=dict(color="#22C36B", width=2), marker=dict(size=4),
                                     text=[f"{_v:.1f}" for _v in _wtt], textposition="top center",
                                     textfont=dict(size=8, color="#22C36B")))
@@ -3906,8 +3999,8 @@ def render():
             # -------------- Forecast VAMP impact of the proposed split (M0-5) --------
             # Renders into the slot reserved ABOVE the Bank Impact section.
             with st.container(border=True):
-                tp_path = os.path.join(out_dir, "vamp_t_period_export.csv")
-                pp_path = os.path.join(out_dir, "vamp_t_period_prorata_export.csv")
+                tp_path = _scheme_norm_export(out_dir, "vamp_t_period_export.csv")
+                pp_path = _scheme_norm_export(out_dir, "vamp_t_period_prorata_export.csv")
                 _gr_shared = None   # always defined (used by the pre/post render-call guards)
                 split_now = ss.get("impact_split", ss.get("split"))   # follows the impact-basis toggle
                 if not os.path.exists(tp_path) and not os.path.exists(pp_path):
@@ -4069,14 +4162,14 @@ def render():
 
                     html = ['<div style="box-shadow:0 4px 12px rgba(0,0,0,0.08); border-radius:0; overflow-x:auto; width:100%; background-color:var(--tav-card); border:1px solid var(--tav-line);">']
                     html.append('<table style="width:100%; border-collapse:collapse; font-family:inherit; font-size:0.68rem; line-height:1.1;"><tr>')
-                    html.append('<th style="background-color:var(--tav-red); color:#FFF; padding:3px 6px; text-align:left; position:sticky; left:0; width:1%; white-space:nowrap;">vampMid</th>')
+                    html.append(f'<th style="background-color:var(--tav-red); color:#FFF; padding:3px 6px; text-align:left; position:sticky; left:0; width:1%; white-space:nowrap;">{_mc_hdr("vampMid")}</th>')
                 
                     # Reduced spacing from 24px to 12px
                     html.append('<th style="background-color:var(--tav-card); border:none; width:8px; min-width:8px; padding:0;"></th>')
                 
                     for gi, grp in enumerate(col_groups):
                         for c in grp:
-                            html.append(f'<th style="background-color:var(--tav-red); color:#FFF; padding:3px 6px; text-align:right; white-space:nowrap; width:1%;">{c}</th>')
+                            html.append(f'<th style="background-color:var(--tav-red); color:#FFF; padding:3px 6px; text-align:right; white-space:nowrap; width:1%;">{_mc_hdr(c)}</th>')
                         # Reduced spacing from 24px to 12px
                         html.append('<th style="background-color:var(--tav-card); border:none; width:8px; min-width:8px; padding:0;"></th>')
                     html.append('</tr>')

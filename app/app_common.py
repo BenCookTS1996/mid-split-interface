@@ -44,21 +44,71 @@ COMPANIES = ["TotalAV", "Total Drive", "Total Adblock", "Total Cleaner", "Total 
 # pd.read_csv(path), just without the repeated disk read + parse. An edited file (new
 # mtime) busts the cache automatically.
 _MID_LIST_CACHE: dict = {}
+# Which encoding the last successful read used, and any note worth logging. `tab2_engine`
+# re-emits this through log() — app_common has no logger, and a silent fallback is exactly
+# how a mojibake'd MID list would go unnoticed.
+LAST_MID_LIST_ENCODING: str = ""
+LAST_MID_LIST_NOTE: str = ""
+
+# Excel on macOS saves "CSV" as Mac Roman, not UTF-8 — a single curly quote, en-dash or
+# non-breaking space in a URL/description column is enough to make pd.read_csv raise
+# UnicodeDecodeError on byte 0xCA (NBSP) or 0x96 (en-dash). That killed the 2026-08-19
+# 11:53 run outright at tab2_engine:2394, and — worse — five OTHER call sites swallow the
+# same exception and degrade SILENTLY, including [midlist-filter], which logged
+# "candidates are UNFILTERED ... Master-MID capability is not enforced this run". A routing
+# run that quietly stops enforcing MID capability is a far bigger problem than a crash.
+# So: try UTF-8 first (unchanged for a well-formed file), then fall back, and SAY SO.
+# Mac Roman is tried before cp1252 because the observed corruption is macOS-Excel-shaped;
+# both decode the same bytes, so the order only decides how one cosmetic character renders
+# in a free-text column — no key used for matching (gatewayFid, currency, brand) is
+# non-ASCII, which is why a fallback read is safe rather than a guess at the data.
+_MID_LIST_ENCODINGS = ("utf-8", "utf-8-sig", "mac_roman", "cp1252", "latin-1")
+
+
+def _read_mid_csv(path):
+    """pd.read_csv(path), but tolerant of a non-UTF-8 (macOS-Excel) save.
+
+    Records the encoding used in LAST_MID_LIST_ENCODING so a fallback can be surfaced.
+    Re-raises the ORIGINAL UnicodeDecodeError if nothing decodes, so a genuinely broken
+    file still fails loudly instead of silently returning something wrong.
+    """
+    global LAST_MID_LIST_ENCODING, LAST_MID_LIST_NOTE
+    _first_err = None
+    for _enc in _MID_LIST_ENCODINGS:
+        try:
+            _out = pd.read_csv(path, encoding=_enc)
+        except UnicodeDecodeError as _ue:
+            if _first_err is None:
+                _first_err = _ue
+            continue
+        LAST_MID_LIST_ENCODING = _enc
+        LAST_MID_LIST_NOTE = ("" if _enc in ("utf-8", "utf-8-sig") else
+                              f"Master_MID_List.csv is NOT valid UTF-8 — decoded as {_enc} "
+                              "instead (macOS Excel saves CSV as Mac Roman). The read "
+                              "succeeded and every matching key is ASCII, so routing is "
+                              "unaffected; re-save the file as 'CSV UTF-8' to clear this. "
+                              "Before this fallback existed the run either CRASHED or "
+                              "silently ran with the MID-capability filter DISABLED.")
+        return _out
+    if _first_err is not None:
+        raise _first_err
+    return pd.read_csv(path)
 
 
 def load_mid_list(path):
     """Read Master_MID_List.csv once per (path, mtime), reused across reruns.
 
     Returns a fresh COPY so callers may mutate the frame freely without corrupting the
-    cache. Identical in content/dtypes to ``pd.read_csv(path)``.
+    cache. Identical in content/dtypes to ``pd.read_csv(path)`` for a UTF-8 file; falls
+    back to a non-UTF-8 encoding rather than raising (see _read_mid_csv).
     """
     try:
         _k = (str(path), os.path.getmtime(path))
     except OSError:
-        return pd.read_csv(path)          # missing/odd path → behave exactly like read_csv
+        return _read_mid_csv(path)        # missing/odd path → behave exactly like read_csv
     _df = _MID_LIST_CACHE.get(_k)
     if _df is None:
-        _df = pd.read_csv(path)
+        _df = _read_mid_csv(path)
         _MID_LIST_CACHE.clear()           # keep only the latest (path, mtime)
         _MID_LIST_CACHE[_k] = _df
     return _df.copy()
@@ -427,7 +477,8 @@ _TAB_FIDS = [
 DEFAULT_GATEWAY_FIDS = "(" + ",".join(f"'{f}'" for f in _TAV_FIDS + _TDR_FIDS + _TAB_FIDS) + ")"
 
 
-APP_BUILD = "2026-08-19b"  # [ca-ladder]: is Option 2 "add cells to the split" or "add a banded door"?
+APP_BUILD = "2026-08-19y"  # candidate-parallel band projection (measured 2.13x on 2 cores,
+                          # bit-identical; the projector kernel was 92% of a GA generation)
 
 
 # [FN-243]

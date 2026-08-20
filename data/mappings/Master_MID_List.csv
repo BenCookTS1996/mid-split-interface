@@ -1,4 +1,4 @@
-gatewayFid,MIDActual,vampMid,mastercardMid,gateway,brand,currency,RDR Merchant Name,DBA,BIN,CAID,IsActive,isCrossBorder,processWallet,Duplicate ?
+ï»¿gatewayFid,MIDActual,vampMid,mastercardMid,gateway,brand,currency,RDR Merchant Name,DBA,BIN,CAID,IsActive,isCrossBorder,processWallet,Duplicate ?
 play_store,EXCLUDED,EXCLUDED,play_store,play_store,EXCLUDED,EXCLUDED,EXCLUDED,EXCLUDED,EXCLUDED,EXCLUDED,FALSE,FALSE,FALSE,1
 adyen-usd-pango-armor,Adyen - Pango Armor - USD,Adyen - Pango Armor,Adyen - Pango Armor - USD,Adyen,Pango Armor,USD,,,,,FALSE,FALSE,TRUE,1
 adyen-usd-pango-fortress,Adyen - Pango Fortress - USD,Adyen_PangoFortress,Adyen_PangoFortress_US,Adyen,Pango Fortress,USD,,,,,FALSE,FALSE,TRUE,1
@@ -84,7 +84,7 @@ adyen-usd-tab-emea,Adyen EU - Total Adblock,Adyen_TotalAdblock,Adyen_TotalAdbloc
 adyen-usd-tab-emea-cap1,Adyen EMEA - Total Adblock,Adyen_TotalAdblock,Adyen_TotalAdblock_EMEA,Adyen,Total Adblock,USD,,,,,FALSE,TRUE,TRUE,1
 adyen-usd-tab-online,Adyen USA - Total Adblock Online,Adyen_TotalAdblockOnline,Adyen_TotalAdblockOnline_US,Adyen,Total Adblock,USD,,,479338,4.79E+14,TRUE,FALSE,TRUE,1
 adyen-usd-tab-pro,Adyen - Total Adblock - USD,Adyen_TotalAdblockPro,Adyen_TotalAdblockPro_US,Adyen,Total Adblock,USD,,,479338,4.79E+14,TRUE,FALSE,TRUE,1
-adyen-gbp-tsc-x-tab,Adyen - Total Adblock - GBP,Adyen_TotalSecurity,Adyen_TotalSecurity_EMEA,Adyen,Total Adblock,GBP,www.totalsecurity.coÊ- 487530 - 487530005335658,www.totalsecurity.coÊ,487530,4.88E+14,FALSE,FALSE,TRUE,1
+adyen-gbp-tsc-x-tab,Adyen - Total Adblock - GBP,Adyen_TotalSecurity,Adyen_TotalSecurity_EMEA,Adyen,Total Adblock,GBP,www.totalsecurity.coÂ - 487530 - 487530005335658,www.totalsecurity.coÂ ,487530,4.88E+14,FALSE,FALSE,TRUE,1
 adyen-usd-tsc-x-tab,Adyen - Total Adblock - USD,Adyen_TotalSecurity,Adyen_TotalSecurity_US,Adyen,Total Adblock,USD,www.totalsecurity.co - 479338 - 479338002117479,www.totalsecurity.co,479338,4.79E+14,TRUE,FALSE,TRUE,1
 authorize-usd-tab,Authorize - Total Adblock - USD,Authorize - Total Adblock,Authorize - Total Adblock,Authorize,Total Adblock,USD,,,469216,6.85E+14,TRUE,FALSE,FALSE,1
 bancard-usd-tab,Bancard - Total Adblock - USD,Bancard - Total Adblock,Bancard - Total Adblock,Bancard,Total Adblock,USD,TotalSec*SpeedyClean - 403481 - A0000000000GSBK,TotalSec*SpeedyClean,403481,A0000000000GSBK,FALSE,FALSE,FALSE,1
@@ -191,7 +191,7 @@ adyen-usd-tav-pro,Adyen USA - Total AV Pro,Adyen_TotalAVPro,Adyen_TotalAVPro_US,
 adyen-usd-tav-test,Adyen USA - Total AV,Adyen_TotalAV,Adyen_TotalAV_US,Adyen,Total AV,USD,,,,,FALSE,FALSE,TRUE,1
 adyen-usd-tav-ultimate,Adyen USA - Total AV Ultimate,Adyen_TotalAVUltimate,Adyen_TotalAVUltimate_US,Adyen,Total AV,USD,,,479338,4.79E+14,TRUE,FALSE,TRUE,1
 adyen-usd-tcl-x-tav,Adyen - Total AV - USD,Adyen_TotalCleaner,Adyen_TotalCleaner_US,Adyen,Total AV,USD,,,,,FALSE,FALSE,TRUE,1
-adyen-gbp-tsc-x-tav,Adyen - Total AV - GBP,Adyen_TotalSecurity,Adyen_TotalSecurity_EMEA,Adyen,Total AV,GBP,www.totalsecurity.coÊ- 487530 - 487530005335658,www.totalsecurity.coÊ,487530,4.88E+14,FALSE,FALSE,TRUE,1
+adyen-gbp-tsc-x-tav,Adyen - Total AV - GBP,Adyen_TotalSecurity,Adyen_TotalSecurity_EMEA,Adyen,Total AV,GBP,www.totalsecurity.coÂ - 487530 - 487530005335658,www.totalsecurity.coÂ ,487530,4.88E+14,FALSE,FALSE,TRUE,1
 adyen-usd-tsc,Adyen - Total AV - USD,Adyen_TotalSecurity,Adyen_TotalSecurity_US,Adyen,Total AV,USD,www.totalsecurity.co - 479338 - 479338002117479,www.totalsecurity.co,479338,4.79E+14,FALSE,FALSE,TRUE,1
 adyen-usd-tsc-x-tav,Adyen - Total AV - USD,Adyen_TotalSecurity,Adyen_TotalSecurity_US,Adyen,Total AV,USD,www.totalsecurity.co - 479338 - 479338002117479,www.totalsecurity.co,479338,4.79E+14,TRUE,FALSE,TRUE,1
 authorize-usd-tav,Authorize - Total AV - USD,Authorize - Total AV,Authorize - Total AV,Authorize,Total AV,USD,,,469216,6.85E+14,TRUE,FALSE,FALSE,1
@@ -510,9 +510,9 @@ paypal-cad-betternet,Paypal - BetterNet - CAD,Paypal - BetterNet,Paypal - Better
 paypal-usd-vpn360,Paypal - VPN360 - USD,Paypal - VPN360,Paypal - VPN360 - USD,Paypal,VPN360,USD,,,,,FALSE,FALSE,FALSE,1
 adyen-usd-vpn360,Adyen - VPN360 - USD,Adyen - VPN360,Adyen - VPN360 - USD,Adyen,VPN360,USD,,,,,FALSE,FALSE,TRUE,1
 paypal-gbp-hss,Paypal - Hotspot Shield - GBP,Paypal - Hotspot Shield,Paypal - Hotspot Shield - GBP,Paypal,Hotspot Shield,GBP,,,,,FALSE,FALSE,FALSE,1
-adyen-usd-tav-na,Adyen - Total AV - USD,Adyen - Total AV - NA,Adyen - Total AV - USD,Adyen,Total AV,USD,,,,,TRUE,FALSE,TRUE,1
-adyen-usd-tdr-na,Adyen - Total Drive - USD,Adyen - Total Drive - NA,Adyen - Total Drive - USD,Adyen,Total Drive,USD,,,,,TRUE,FALSE,TRUE,1
-adyen-usd-tab-na,Adyen - Total Adblock - USD,Adyen - Total Adblock - NA,Adyen - Total Adblock - USD,Adyen,Total Adblock,USD,,,,,TRUE,FALSE,TRUE,1
+adyen-usd-tav-na,Adyen - Total AV - USD,Adyen - TotalAV - NA,Adyen - TotalAV - NA,Adyen,Total AV,USD,,,,,TRUE,FALSE,TRUE,1
+adyen-usd-tdr-na,Adyen - Total Drive - USD,Adyen - Total Drive - NA,Adyen - Total Drive - NA,Adyen,Total Drive,USD,,,,,TRUE,FALSE,TRUE,1
+adyen-usd-tab-na,Adyen - Total Adblock - USD,Adyen - Total Adblock - NA,Adyen - Total Adblock - NA,Adyen,Total Adblock,USD,,,,,TRUE,FALSE,TRUE,1
 adyen-usd-tvn-na,Adyen - Total VPN - USD,Adyen - Total VPN - NA,Adyen - Total VPN - USD,Adyen,Total VPN,USD,,,,,TRUE,FALSE,TRUE,1
 adyen-usd-tcl-na,Adyen - Total Cleaner - USD,Adyen - Total Cleaner - NA,Adyen - Total Cleaner - USD,Adyen,Total Cleaner,USD,,,,,TRUE,FALSE,TRUE,1
 adyen-gbp-hss,Adyen - Hotspot Shield - GBP,Adyen - Hotspot Shield,Adyen - Hotspot Shield - GBP,Adyen,Hotspot Shield,GBP,,,,,TRUE,FALSE,TRUE,1
@@ -529,11 +529,11 @@ woodforest-usd-tcl,WoodForest - Total Cleaner - USD,WoodForest - Total Cleaner,W
 paypal-gbp-tvn-2,Paypal - Total VPN - GBP,Paypal - Total VPN,Paypal - Total VPN - GBP,Paypal,Total VPN,GBP,,,,,FALSE,FALSE,FALSE,1
 paypal-usd-tvn-2,Paypal - Total VPN - USD,Paypal - Total VPN,Paypal - Total VPN - USD,Paypal,Total VPN,USD,,,,,FALSE,FALSE,FALSE,1
 paypal-gbp-pcp-2,Paypal - PC Protect - GBP,Paypal - PC Protect,Paypal - PC Protect - GBP,Paypal,PC Protect,GBP,,,,,FALSE,FALSE,FALSE,1
-adyen-usd-tcl-na-test,Adyen - Total Cleaner - USD,Adyen - Total Cleaner,Adyen - Total Cleaner - USD,Adyen,Total Cleaner,USD,,,,,FALSE,FALSE,FALSE,1
-adyen-usd-tav-na-test,Adyen - Total AV - USD,Adyen - Total AV,Adyen - Total AV - USD,Adyen,Total AV,USD,,,,,FALSE,FALSE,FALSE,1
-adyen-usd-tab-na-test,Adyen - Total Adblock - USD,Adyen - Total Adblock,Adyen - Total Adblock - USD,Adyen,Total Adblock,USD,,,,,FALSE,FALSE,FALSE,1
-adyen-usd-tvn-na-test,Adyen - Total VPN - USD,Adyen - Total VPN,Adyen - Total VPN - USD,Adyen,Total VPN,USD,,,,,FALSE,FALSE,FALSE,1
-adyen-usd-tdr-na-test,Adyen - Total Drive - USD,Adyen - Total Drive,Adyen - Total Drive - USD,Adyen,Total Drive,USD,,,,,FALSE,FALSE,FALSE,1
+adyen-usd-tcl-na-test,Adyen - Total Cleaner - USD,Adyen - Total Cleaner - NA,Adyen - Total Cleaner - USD,Adyen,Total Cleaner,USD,,,,,FALSE,FALSE,FALSE,1
+adyen-usd-tav-na-test,Adyen - Total AV - USD,Adyen - TotalAV - NA,Adyen - TotalAV - NA,Adyen,Total AV,USD,,,,,FALSE,FALSE,FALSE,1
+adyen-usd-tab-na-test,Adyen - Total Adblock - USD,Adyen - Total Adblock - NA,Adyen - Total Adblock - NA,Adyen,Total Adblock,USD,,,,,FALSE,FALSE,FALSE,1
+adyen-usd-tvn-na-test,Adyen - Total VPN - USD,Adyen - Total VPN - NA,Adyen - Total VPN - USD,Adyen,Total VPN,USD,,,,,FALSE,FALSE,FALSE,1
+adyen-usd-tdr-na-test,Adyen - Total Drive - USD,Adyen - Total Drive - NA,Adyen - Total Drive - NA,Adyen,Total Drive,USD,,,,,FALSE,FALSE,FALSE,1
 stripe-hss-legacy,Stripe - Hotspot Shield - USD,Stripe - Hotspot Shield,Stripe - Hotspot Shield - USD,Stripe,Hotspot Shield,USD,,,,,TRUE,FALSE,FALSE,1
 paypal-aud-hss,Adyen - Hotspot Shield - AUD,Adyen - Hotspot Shield,Adyen - Hotspot Shield - AUD,Adyen,Hotspot Shield,AUD,,,,,TRUE,FALSE,FALSE,1
 stripe-hss,Stripe - Hotspot Shield - USD,Stripe - Hotspot Shield,Stripe - Hotspot Shield - USD,Stripe,Hotspot Shield,USD,,,,,TRUE,FALSE,FALSE,1

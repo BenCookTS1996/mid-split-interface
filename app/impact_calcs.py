@@ -41,7 +41,7 @@ def _apply_keep(t0, excluded_mids, kill_eff, month_0):
     return t0
 
 __build__ = ("2026-08-17b-count-only-pool-search+subcell-exporter+staged-enforcement"
-             "+projection-mode-no-round+no-lt2-backfill+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zerocell")
+             "+projection-mode-no-round+no-lt2-backfill+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zerocell+vamp-term-stash")
 
 
 # [FN-247]
@@ -1289,6 +1289,99 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     pp["_moved_v"] = pp["vampCount"] * pp["_move"]
     pp["_moved_vpool"] = pp.groupby(_gk)["_moved_v"].transform("sum")
     pp["VAMP_Post"] = pp["vampCount"] * (1.0 - pp["_move"]) + pp["_moved_vpool"] * pp["_pshare"]
+
+    # ── VAMP TERM STASH (read-only) ────────────────────────────────────────────────────────
+    # VAMP_Post = vampCount*(1-move) + moved_vpool*_pshare, i.e. HELD + MOVED-IN, exactly the
+    # shape the TXN `[terms]` block decomposes. `[terms]` is TXN-only, so no VAMP band has ever
+    # been decomposed — and the entire remaining DELIVERY DRIFT (+5, all of it worldpay [vamp],
+    # all of it in the ROUTED leg, 79% of it in the PROJECTOR-swap step) lives on VAMP. Stash the
+    # four terms plus three single-variable counterfactuals so the reconcile can attribute it.
+    # Nothing here is consumed downstream; see patch note for why these three counterfactuals.
+    if os.environ.get("ROUTING_VTERMS", "1") != "0":
+        try:
+            _vt_vc = pd.to_numeric(pp["vampCount"], errors="coerce").fillna(0.0)
+            _vt_mv = pd.to_numeric(pp["_move"], errors="coerce").fillna(0.0)
+            _vt_pl = pd.to_numeric(pp["_moved_vpool"], errors="coerce").fillna(0.0)
+            _vt_ps = pd.to_numeric(pp["_pshare"], errors="coerce").fillna(0.0)
+            _vt_ml = pp["vampMid"].astype(str).str.strip().str.lower()
+            _vt_pr = pd.to_numeric(pp["period"], errors="coerce").fillna(-1).astype(int)
+            _vt_sum = pd.to_numeric(_psum, errors="coerce").fillna(0.0)
+
+            # (2) cf_norenorm — undo ONLY the renormalise-to-1. The shipped line divided by
+            #     _psum, so multiplying it back recovers the pre-renorm share exactly.
+            _vt_ps_raw = _vt_ps * _vt_sum
+            _vt_cf_nr = _vt_vc * (1.0 - _vt_mv) + _vt_pl * _vt_ps_raw
+
+            # (3) cf_nopass — undo ONLY the "no recipient -> passthrough" override, so `move`
+            #     reverts to gf x pr_app and the pool is rebuilt from that.
+            _vt_mv_raw = np.where(pd.to_numeric(pp["orig_m"], errors="coerce").fillna(-1) >= 0,
+                                  pd.to_numeric(pp["_gf"], errors="coerce").fillna(0.0)
+                                  * pd.to_numeric(pp["_pr_app"], errors="coerce").fillna(0.0), 0.0)
+            _vt_pool_raw = (pp.assign(_mvr=_vt_vc * _vt_mv_raw)
+                            .groupby(_gk)["_mvr"].transform("sum"))
+            _vt_cf_np = _vt_vc * (1.0 - _vt_mv_raw) + _vt_pool_raw * _vt_ps
+
+            # (1) cf_ps — rebuild vshare from `prop_share` (which carries the 0.97 max-share cap
+            #     AND the 0.01 exploration floor) instead of raw `prop_raw` (which carries
+            #     neither), then push it through the SAME merge / fillna / renormalise pipeline so
+            #     the numerator object is the only thing that differs. Own copies throughout —
+            #     `t0` and `pp` are not mutated.
+            _vt_cf_psh = None
+            try:
+                _t0v = t0[grp + ["vampMid", "prop_share", "vampCount"]].copy()
+                _t0v["_vp2"] = (pd.to_numeric(_t0v["prop_share"], errors="coerce").fillna(0.0)
+                                * (pd.to_numeric(_t0v["vampCount"], errors="coerce").fillna(0.0)
+                                   > 0).astype(float))
+                _t0v["_vs2"] = np.where(_t0v.groupby(grp)["_vp2"].transform("sum") > 0,
+                                        _t0v["_vp2"] / _t0v.groupby(grp)["_vp2"]
+                                        .transform("sum").replace(0.0, 1.0), 0.0)
+                _mv2 = (_t0v[_sub + ["vampMid", "period", "_vs2"]]
+                        .rename(columns={"period": "orig_m"}))
+                _pp2 = pp[_sub + ["vampMid", "orig_m", "period", "t"]].copy()
+                _pp2 = _pp2.merge(_mv2, on=_sub + ["vampMid", "orig_m"], how="left")
+                _ps2 = pd.to_numeric(_pp2["_vs2"], errors="coerce").fillna(0.0)
+                _sm2 = _ps2.groupby([_pp2[c] for c in _gk]).transform("sum")
+                _ps2 = np.where(_sm2 > 1e-12, _ps2 / np.where(_sm2 > 1e-12, _sm2, 1.0), 0.0)
+                if len(_ps2) == len(_vt_vc):
+                    _vt_cf_psh = _vt_vc * (1.0 - _vt_mv) + _vt_pl * _ps2
+            except Exception:  # noqa: BLE001
+                _vt_cf_psh = None
+
+            _vt_df = pd.DataFrame({
+                "midl": _vt_ml, "per": _vt_pr,
+                "pre": _vt_vc,
+                "held": _vt_vc * (1.0 - _vt_mv),
+                "out": _vt_vc * _vt_mv,
+                "inn": _vt_pl * _vt_ps,
+                "pool": _vt_pl,
+                "post": _vt_vc * (1.0 - _vt_mv) + _vt_pl * _vt_ps,
+                "cf_norenorm": _vt_cf_nr,
+                "cf_nopass": _vt_cf_np,
+                "cf_ps": (_vt_cf_psh if _vt_cf_psh is not None
+                          else _vt_vc * (1.0 - _vt_mv) + _vt_pl * _vt_ps),
+            })
+            _vt_df["cfpsok"] = 1.0 if _vt_cf_psh is not None else 0.0
+            globals()["_LAST_VAMP_TERMS"] = _vt_df.groupby(["midl", "per"], as_index=False).sum()
+            # Is the renormalisation even doing anything? If _psum is 1.0 everywhere then
+            # counterfactual (2) is a no-op and dead before it is read.
+            _vt_g = pd.DataFrame({"s": _vt_sum}).assign(
+                **{c: pp[c].astype(str) for c in _gk}).groupby(_gk, as_index=False)["s"].first()
+            _vt_live = _vt_g[_vt_g["s"] > 1e-12]["s"]
+            globals()["_LAST_VAMP_PSUM"] = {
+                "groups": int(len(_vt_g)),
+                "passthrough": int((_vt_g["s"] <= 1e-12).sum()),
+                "off_one": int((_vt_live.sub(1.0).abs() > 1e-9).sum()),
+                "sum_abs_dev": float(_vt_live.sub(1.0).abs().sum()),
+                "min": float(_vt_live.min()) if len(_vt_live) else float("nan"),
+                "p50": float(_vt_live.median()) if len(_vt_live) else float("nan"),
+                "max": float(_vt_live.max()) if len(_vt_live) else float("nan"),
+            }
+        except Exception:  # noqa: BLE001 — a diagnostic must never break the projection
+            globals()["_LAST_VAMP_TERMS"] = None
+            globals()["_LAST_VAMP_PSUM"] = None
+    else:
+        globals()["_LAST_VAMP_TERMS"] = None
+        globals()["_LAST_VAMP_PSUM"] = None
 
     _tp = t0[_sub + ["vampMid", "period", "post_txn"]]
     pp = pp.merge(_tp, on=_sub + ["vampMid", "period"], how="left")

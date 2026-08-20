@@ -59,9 +59,9 @@ def build_pipeline_config(ui: dict) -> dict:
             "split_go_live_date": ui.get("split_go_live_date"),
         },
         "paths": {
-            "cache_path": "data/cache/{month_var}/{company}/",
-            "chunked_files_dir": "data/rules/{month_var}/{company}/",
-            "output_dir": "data/outputs/{month_var}/{company}/",
+            "cache_path": "data/cache/{month_var}/{company}/visa/",
+            "chunked_files_dir": "data/rules/{month_var}/{company}/visa/",
+            "output_dir": "data/outputs/{month_var}/{company}/visa/",
             "split_rules_file": ui.get("split_rules_file", ""),
             "mid_list_file": ui.get("mid_list_file",
                                     "data/mappings/Master_MID_List.csv"),
