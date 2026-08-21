@@ -47,6 +47,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import os
 import time
+import os as _os_gf
+
 import numpy as np
 
 # Persistent Numba cache (same folder GA-Numba uses) so the one-time kernel compile
@@ -75,7 +77,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+seed-as-genome-diag"
+__build__ = "2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -921,10 +923,25 @@ def _crossover(a, b, cell_start, cell_len, rng):
     return np.where(row_pick, a, b)
 
 
-def _mutate(logits, rate, strength, cell_start, cell_len, rng):
-    """Gaussian perturbation of a fraction of CELLS' logit segments."""
+def _mutate(logits, rate, strength, cell_start, cell_len, rng, cell_w=None):
+    """Gaussian perturbation of a fraction of CELLS' logit segments.
+
+    `cell_w`: optional (n_cells,) multiplier on each cell's SELECTION PROBABILITY (not on the
+    noise). Added 2026-08-19ab for breach-targeted mutation — cells feeding a still-breached band
+    get boosted so the mutation budget lands where the shortfall is instead of being spread
+    uniformly over every cell, most of which feed already-compliant MIDs.
+
+    The RNG DRAW COUNT is deliberately unchanged: still exactly one `rng.random(n_cells)` and one
+    `standard_normal(logits.shape)`, in that order. Only the threshold each draw is compared
+    against moves. So `cell_w=None` (or all-ones) reproduces the pre-19ab search BIT-IDENTICALLY,
+    random stream included — which is what makes ROUTING_MUT_TARGET=0 a true revert rather than a
+    different-but-similar search. Do not add or reorder draws here.
+
+    Probabilities are clipped to 1.0: a boosted rate above 1 would otherwise be a silent no-op
+    (every draw already below it), making a large boost indistinguishable from a moderate one."""
     n_cells = len(cell_start)
-    hit = rng.random(n_cells) < rate
+    _thr = rate if cell_w is None else np.minimum(np.asarray(cell_w, float) * rate, 1.0)
+    hit = rng.random(n_cells) < _thr
     row_hit = np.repeat(hit, cell_len)
     noise = rng.standard_normal(logits.shape) * strength
     return logits + np.where(row_hit, noise, 0.0)
@@ -937,7 +954,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                       pop_size=60, generations=120, elite=6,
                       mutation_rate=0.3, mutation_strength=0.4,
                       patience=25, seed=0, log_fn=None, numba=False,
-                      band_penalty_fn=None, band_report_fn=None, n_seeds=1, restarts=1,
+                      band_penalty_fn=None, band_report_fn=None, mut_weight_fn=None,
+                      n_seeds=1, restarts=1,
                       restart_mode="lean", compress_lambda=0.0,
                       compress_pools=200, compress_refresh=8, deliver_fn=None,
                       codebook_fn=None, deliver_full_fn=None, gather_fn=None):
@@ -1119,19 +1137,6 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             f"({'eligibility-aware' if (_have_full or callable(deliver_fn)) else 'raw — no deliver_fn'}) "
             "— VWSR −= λ·volume-weighted VQ distortion; pushes cells to route ALIKE so the split "
             "compresses into fewer configs; trades a little conversion.")
-    # SEED-AS-GENOME diagnostic. The app measures the seed's breach on the RAW share vector,
-    # then hands it here, where it is re-encoded through _shares_to_logits -> segment-softmax.
-    # That round-trip cannot express an EXACT ZERO (eps=1e-6 floor), and in a sub-cell where a
-    # breached MID is the SOLE VAMP-positive gateway vshare == 1 for ANY share > 0 — so a share
-    # the seed zeroed comes back at 1e-6 and collects that cell's whole moved VAMP pool. When
-    # that happens the never-worse guarantee is void: the GA is anchored on a DEGRADED seed and
-    # can deliver a worse breach than the app printed. Log both so the gap is visible.
-    if band_penalty_fn is not None:
-        log(f"[fullmatrix-ga] seed AS THE GENOME SEES IT: M5 breach={seed_band:.6g} — compare to "
-            "the app's \"[full-matrix] seed = ... exact M5 breach\" line. If the app's value is "
-            "LOWER, the softmax/logit genome cannot represent the seed (eps=1e-6 floor revives "
-            "shares the seed drove to 0, flipping vshare 0 -> 1 in sole-VAMP-positive cells) and "
-            "the never-worse guarantee does NOT hold for this run.")
     seed_key = _key_of(seed_vwsr, seed_other, seed_band)
     best_logits = seed_logits.copy()
     best_key = seed_key
@@ -1156,6 +1161,41 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
 
     n_seeds = max(1, int(n_seeds))
     restarts = max(1, int(restarts))
+    _mw_warned = False          # one-shot flag: never spam a per-generation failure 160 times
+    # Per-cell mutation probability, tunable WITHOUT a build (it never was before — there is no UI
+    # input and tab2 does not pass mutation_rate). Default 0.01 = the value the old three-term
+    # expression always produced, so the default run is unchanged.
+    _MUT_RATE = float(_os_gf.environ.get("ROUTING_MUT_RATE", "") or 0.01)
+    _eff_cells = _MUT_RATE * int(p.n_cells)
+    log(f"[fullmatrix-ga] mutation rate {min(float(mutation_rate), _MUT_RATE):.4f} per cell over "
+        f"{int(p.n_cells):,} cells ⇒ ~{min(float(mutation_rate), _MUT_RATE) * int(p.n_cells):,.0f} "
+        f"cell(s) perturbed per exploration child (~"
+        f"{min(float(mutation_rate), _MUT_RATE) * int(p.n_cells) * 0.25:,.0f} per refine child, "
+        f"which uses a quarter rate). Ceiling mutation_rate={float(mutation_rate):g} "
+        f"{'BINDS' if float(mutation_rate) < _MUT_RATE else 'does not bind'}. "
+        "ROUTING_MUT_RATE overrides.")
+    # Say it when the 2026-08-19ac removal actually changes this run. The deleted term was
+    # max(0.01, 60/n_cells), which bound only below 6,000 cells — so at the live grain nothing
+    # moved, but at a coarser grain it did, and a silent halving of the mutation is exactly the
+    # kind of thing that gets mistaken for the engine getting worse.
+    _old_rate = min(float(mutation_rate), max(0.01, 60.0 / max(int(p.n_cells), 1)))
+    if abs(_old_rate - min(float(mutation_rate), _MUT_RATE)) > 1e-12:
+        log(f"[fullmatrix-ga] ⚠ MUTATION RATE CHANGED BY BUILD 2026-08-19ac AT THIS GRAIN: the "
+            f"deleted `max(0.01, 60/n_cells)` term would have given {_old_rate:.5f} "
+            f"(~{_old_rate * int(p.n_cells):,.0f} cells) on {int(p.n_cells):,} cells, vs "
+            f"{min(float(mutation_rate), _MUT_RATE):.5f} "
+            f"(~{min(float(mutation_rate), _MUT_RATE) * int(p.n_cells):,.0f} cells) now. That term "
+            "bound only below 6,000 cells; the live rpgt×currency×bank grain (23,791) is "
+            "unaffected, but this run is coarser. Set ROUTING_MUT_RATE="
+            f"{_old_rate:.5f} to reproduce the pre-19ac search exactly.")
+    if mut_weight_fn is not None:
+        log("[fullmatrix-ga] mutation is BREACH-TARGETED: cells feeding a still-breached band get "
+            "a boosted selection probability, so the fixed budget lands on the MIDs that are "
+            "actually short instead of being spread over every cell. See [mut-target] for the "
+            "boost, the cell counts and which MIDs are aimed at.")
+    else:
+        log("[fullmatrix-ga] mutation is UNIFORM over cells (no mut_weight_fn) — every cell is "
+            "equally likely to be perturbed, including the ones feeding already-compliant MIDs.")
     log(f"[fullmatrix-ga] budget: {n_seeds} seed(s) × {restarts} restart(s) × "
         f"{generations} gens (pop {pop_size}, mode={restart_mode})")
     # SEED = an independent search (own RNG, own random exploration). RESTART =
@@ -1249,19 +1289,71 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 elite_band = band[order[:_el]].copy()
                 children = np.empty((_pn - _el, R))
                 pool = order[: max(_el, _pn // 2)]
-                _base_rate = min(mutation_rate, max(0.01, 60.0 / max(p.n_cells, 1)))
+                # EFFECTIVE per-cell mutation probability. Until 2026-08-19ac this read
+                #     min(mutation_rate, max(0.01, 60.0 / max(p.n_cells, 1)))
+                # which at 23,791 cells always reduced to exactly 0.01, with BOTH other terms
+                # inert: 60/23,791 = 0.0025 sat below the 0.01 floor so the "aim for ~60 cells"
+                # intent never applied (it was written for a much smaller problem; once n_cells
+                # passed ~6,000 the floor took over and quadrupled the count to ~238), and
+                # mutation_rate=0.3 sat above the floor so `min` never picked it — and tab2 never
+                # passed it anyway, so the signature default was the only value that ever existed.
+                # Now ONE number. UNCHANGED IN VALUE, AND THEREFORE BIT-IDENTICAL TO 19ab,
+                # ONLY WHEN n_cells >= 6,000 — my first draft of this comment claimed bit-identity
+                # unconditionally and the end-to-end test caught it on a 40-cell fixture.
+                # 60/n > 0.01 exactly when n < 6,000, so BELOW that the old term really did bind:
+                #     n_cells    old rate   new rate   cells perturbed
+                #         500     0.12000    0.01000      60 ->    5
+                #       2,974     0.02017    0.01000      60 ->   30
+                #       6,000     0.01000    0.01000      60 ->   60   (and identical above)
+                #      23,791     0.01000    0.01000     238 ->  238
+                # The LIVE grain (rpgt x currency x bank) is 23,791 cells, so the shipped search is
+                # unchanged. But the coarser "Bank x Currency" grain is roughly 23,791/8 RPGTs
+                # ~= 2,974 cells, where this HALVES the mutation. The banner below says so on any
+                # run where it bites, rather than leaving it to be discovered.
+                # `mutation_rate` is kept as a real CEILING so the signature stops being a lie.
+                _base_rate = min(float(mutation_rate), _MUT_RATE)
+                # BREACH-TARGETED MUTATION (2026-08-19ab). `mut_weight_fn()` returns an
+                # (n_cells,) probability multiplier reflecting which bands are STILL breached, so
+                # the fixed mutation budget concentrates on cells that feed them. Called ONCE per
+                # generation (it only reads per-spec penalties the band hook already computed —
+                # no extra projection). None, or any failure, means uniform mutation: the
+                # pre-19ab behaviour, bit-identical including the RNG stream.
+                _cw = None
+                if mut_weight_fn is not None:
+                    try:
+                        _cw = mut_weight_fn()
+                        if _cw is not None:
+                            _cw = np.asarray(_cw, float)
+                            if _cw.shape != (p.n_cells,):
+                                # Wrong shape would silently broadcast or throw deep inside
+                                # _mutate; refuse it here and say so once.
+                                if not _mw_warned:
+                                    log(f"[fullmatrix-ga] mut_weight_fn returned shape "
+                                        f"{_cw.shape}, expected ({p.n_cells},) — ignoring it and "
+                                        "mutating UNIFORMLY for the rest of the run.")
+                                    _mw_warned = True
+                                _cw = None
+                    except Exception as _mwe:                    # noqa: BLE001
+                        if not _mw_warned:
+                            log(f"[fullmatrix-ga] mut_weight_fn raised "
+                                f"({type(_mwe).__name__}: {_mwe}) — mutating UNIFORMLY for the "
+                                "rest of the run. Targeting is an optimisation, not a "
+                                "correctness requirement, so the search continues; but it IS "
+                                "now doing the thing 19ab was meant to stop.")
+                            _mw_warned = True
+                        _cw = None
                 _n_refine = children.shape[0] // 2
                 for c in range(children.shape[0]):
                     if c < _n_refine:
                         base = pop[order[_rng.integers(0, max(1, _el))]]
                         child = _mutate(base, _base_rate * 0.25, mutation_strength * 0.6,
-                                        p.cell_start, p.cell_len, _rng)
+                                        p.cell_start, p.cell_len, _rng, cell_w=_cw)
                     else:
                         pa = pop[_rng.choice(pool)]
                         pb = pop[_rng.choice(pool)]
                         child = _crossover(pa, pb, p.cell_start, p.cell_len, _rng)
                         child = _mutate(child, _base_rate, mutation_strength,
-                                        p.cell_start, p.cell_len, _rng)
+                                        p.cell_start, p.cell_len, _rng, cell_w=_cw)
                     children[c] = child
                 child_vwsr, child_other, child_band = _eval_with_bands(children)
                 evaluated += children.shape[0]

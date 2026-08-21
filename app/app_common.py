@@ -477,7 +477,14 @@ _TAB_FIDS = [
 DEFAULT_GATEWAY_FIDS = "(" + ",".join(f"'{f}'" for f in _TAV_FIDS + _TDR_FIDS + _TAB_FIDS) + ")"
 
 
-APP_BUILD = "2026-08-19y"  # candidate-parallel band projection (measured 2.13x on 2 cores,
+APP_BUILD = "2026-08-19ac"  # [frozen-scaffold] measurement; mutation rate = one explicit number
+                           # (dead 60/n_cells term removed, ROUTING_MUT_RATE added);
+                           # breach-TARGETED mutation (cells feeding a breached band get a
+                           # boosted selection probability); breach_fixed 0.3; 4 silent
+                           # fallbacks -> raise; scipy hard;
+                           # exact-proj seed unconditional (checkbox gone); [feas-starts];
+                           # candidate-parallel band projection
+                          # (measured 2.13x on 2 cores,
                           # bit-identical; the projector kernel was 92% of a GA generation)
 
 

@@ -123,6 +123,64 @@ def _matches(pool, want):
     return True
 
 
+# [FN-433b]
+def render_profile_lookup(named_pools, key_prefix="cfgval_"):
+    """Profile-lookup UI over `named_pools` (list of (filename, pool_dict)): profile filters → scatter
+    charts of the matches → a dropdown + single JSON viewer. Widget keys are prefixed so it can render
+    in more than one place (Config Validation and the '4 · Generate configs' tab)."""
+    from app_common import render_config_profile_charts as _rcpc
+    if not named_pools:
+        st.markdown("<div style='font-size:12px; color:#0B1F3A;'>No configs to look up yet.</div>",
+                    unsafe_allow_html=True)
+        return
+    _curs = sorted({c for _, p in named_pools for c in _profile_of(p)["currency"]})
+    _conns = sorted({c for _, p in named_pools for c in _connectors_of(p)})
+    _c1, _c2 = st.columns(2)
+    _cur = _c1.selectbox("Currency", ["(Any)"] + _curs, key=key_prefix + "cur")
+    _bin = (_c2.text_input("BIN", key=key_prefix + "bin",
+                           help="Exact card BIN, e.g. 400609. Catch-all pools (no BIN rule) match any BIN.")
+            or "").strip()
+    _c3, _c4 = st.columns(2)
+    _country = _c3.selectbox("Country", ["(Any)", "USA", "Non-USA"], key=key_prefix + "country")
+    _provider = _c4.selectbox("Provider", list(_PROVIDERS.keys()), key=key_prefix + "provider")
+    _c5, _c6 = st.columns(2)
+    _scheme = _c5.selectbox("Payment scheme", ["(Any)", "Visa", "Non-Visa"], key=key_prefix + "scheme")
+    _rpgt = _c6.selectbox("RPGT", ["(Any)"] + list(RPGT_MAP.keys()), key=key_prefix + "rpgt")
+    _conn = st.selectbox("Connector", ["(Any)"] + _conns, key=key_prefix + "conn")
+    want = {
+        "currency": None if _cur == "(Any)" else _cur,
+        "bin": _bin or None,
+        "country": None if _country == "(Any)" else _country,
+        "scheme": None if _scheme == "(Any)" else ("visa" if _scheme == "Visa" else "non-visa"),
+        "provider": _PROVIDERS[_provider],
+        "rpgt": None if _rpgt == "(Any)" else _rpgt,
+        "connector": None if _conn == "(Any)" else _conn,
+    }
+    matches = [(fn, p) for fn, p in named_pools if _matches(p, want)]
+    matches.sort(key=lambda t: (-int((t[1].get("selector") or {}).get("priority", 0) or 0),
+                                0 if _profile_of(t[1])["bins"] else 1))
+    # Charts sit below the inputs and reflect the CURRENT filter (the matching configs).
+    _rcpc([(fn, p) for fn, p in matches])
+    if not any(want.values()):
+        st.info(f"Showing all **{len(matches)}** config(s). Set one or more profile fields to narrow the lookup.")
+    else:
+        st.markdown(f"**{len(matches)}** config(s) route this profile.")
+    if not matches:
+        st.warning("No config routes this exact profile. Try relaxing a field to (Any).")
+        return
+    _sel_fn = st.selectbox("Config filename", [fn for fn, _ in matches], key=key_prefix + "json_fname",
+                           help="Pick one of the configs that route this profile to view its JSON.")
+    _hit = next(((fn, p) for fn, p in matches if fn == _sel_fn), None)
+    if _hit is None:
+        return
+    _fn, _p = _hit
+    # JSON viewer text at 12px, in a fixed-height scroll window ≈ the two stacked charts' combined
+    # height (2 × 300px); anything taller scrolls within the window. Tune the px to taste.
+    st.markdown("<style>[data-testid=\"stJson\"], [data-testid=\"stJson\"] * "
+                "{ font-size: 12px !important; }</style>", unsafe_allow_html=True)
+    st.container(height=620).json(_p)
+
+
 # [FN-433]
 def render(ss, PROJECT_ROOT):
     from app_common import green_button_css
@@ -150,75 +208,36 @@ def render(ss, PROJECT_ROOT):
 
         _ck = ss.get("_cfgval_cache") or {}
         if folder and (_reload or _ck.get("folder") != folder):
-            if not os.path.isdir(folder):
-                st.error(f"Not a folder: {folder or '(empty)'}")
+            # Resolve the path: use it as-is if it's a folder; otherwise try it relative to the project
+            # root (also fixes a stray leading '/', e.g. '/data/...' which Python reads as an absolute
+            # filesystem path, not a project-relative one).
+            _resolved = folder
+            _alt = os.path.join(PROJECT_ROOT, folder.lstrip("/\\"))   # project-relative fallback
+            if not os.path.isdir(_resolved) and os.path.isdir(_alt):
+                _resolved = _alt
+            if not os.path.isdir(_resolved):
+                st.error(f"Not a folder: {folder or '(empty)'} "
+                         f"(also tried under the project root: {_alt})")
                 return
-            _ck = {"folder": folder, "pools": _load_configs(folder)}
+            _ck = {"folder": folder, "resolved": _resolved, "pools": _load_configs(_resolved)}
             ss["_cfgval_cache"] = _ck
 
-        if not folder:
-            # 12px to match the 'Configs folder' widget-label size (not the larger st.info alert).
-            st.markdown("<div style='font-size:12px; color:#0B1F3A;'>Enter a configs folder path "
-                        "and click <b>Load Configs</b>.</div>", unsafe_allow_html=True)
-            return
-        pools = _ck.get("pools") or []
-        if not pools:
-            st.warning(f"No ConnectorPool .json configs found in: {folder}")
-            return
-        st.caption(f"Loaded **{len(pools)}** config(s) from `{folder}`.")
-
-        # Scatter charts: BINs matched per config + filename length per config.
-        from app_common import render_config_profile_charts as _rcpc
-        _rcpc([(os.path.basename(fp), p) for fp, p in pools])
-
-        # Dropdown options derived from what's actually in the loaded configs.
-        _curs = sorted({c for _, p in pools for c in _profile_of(p)["currency"]})
-        _conns = sorted({c for _, p in pools for c in _connectors_of(p)})
-
-        st.markdown("###### Transaction profile — leave a field on **(Any)** / blank to not constrain it")
-        _c1, _c2 = st.columns(2)
-        _cur = _c1.selectbox("Currency", ["(Any)"] + _curs, key="cfgval_cur")
-        _bin = (_c2.text_input("BIN", key="cfgval_bin",
-                               help="Exact card BIN, e.g. 400609. Catch-all pools (no BIN rule) match any BIN.")
-                or "").strip()
-        _c3, _c4 = st.columns(2)
-        _country = _c3.selectbox("Country", ["(Any)", "USA", "Non-USA"], key="cfgval_country")
-        _provider = _c4.selectbox("Provider", list(_PROVIDERS.keys()), key="cfgval_provider")
-        _c5, _c6 = st.columns(2)
-        _scheme = _c5.selectbox("Payment scheme", ["(Any)", "Visa", "Non-Visa"], key="cfgval_scheme")
-        _rpgt = _c6.selectbox("RPGT", ["(Any)"] + list(RPGT_MAP.keys()), key="cfgval_rpgt")
-        _conn = st.selectbox("Connector", ["(Any)"] + _conns, key="cfgval_conn")
-
-        want = {
-            "currency": None if _cur == "(Any)" else _cur,
-            "bin": _bin or None,
-            "country": None if _country == "(Any)" else _country,
-            "scheme": None if _scheme == "(Any)" else ("visa" if _scheme == "Visa" else "non-visa"),
-            "provider": _PROVIDERS[_provider],
-            "rpgt": None if _rpgt == "(Any)" else _rpgt,
-            "connector": None if _conn == "(Any)" else _conn,
-        }
-
-        matches = [(fp, p) for fp, p in pools if _matches(p, want)]
-        # Most specific first: higher selector priority, then a specific BIN before a catch-all.
-        matches.sort(key=lambda t: (-int((t[1].get("selector") or {}).get("priority", 0) or 0),
-                                    0 if _profile_of(t[1])["bins"] else 1))
-
-        if not any(want.values()):
-            st.info(f"Showing all **{len(matches)}** config(s). Set one or more profile fields to narrow the lookup.")
+        # Source of configs to look up: a loaded folder wins; otherwise the configs just GENERATED on
+        # the left (key_prefix 'cv_' → ss['cv_configs']) auto-populate here.
+        if folder:
+            _pools = _ck.get("pools") or []
+            if not _pools:
+                st.warning(f"No ConnectorPool .json configs found in: {folder}")
+                return
+            _named = [(os.path.basename(fp), p) for fp, p in _pools]
+            st.caption(f"Loaded **{len(_named)}** config(s) from `{_ck.get('resolved', folder)}`.")
+        elif ss.get("cv_configs"):
+            _gen = ss["cv_configs"]
+            _named = [(f"{_n}.json", _p) for _n, _p in _gen.items()]
+            st.caption(f"Showing the **{len(_named)}** config(s) generated on the left.")
         else:
-            st.markdown(f"**{len(matches)}** config(s) route this profile.")
-        if not matches:
-            st.warning("No config routes this exact profile. Try relaxing a field to (Any).")
+            st.markdown("<div style='font-size:12px; color:#0B1F3A;'>Enter a configs folder and click "
+                        "<b>Load Configs</b>, or generate configs on the left.</div>",
+                        unsafe_allow_html=True)
             return
-
-        for fp, p in matches:
-            _nm = (p.get("metadata") or {}).get("name") or os.path.basename(fp)
-            _pr = (p.get("selector") or {}).get("priority")
-            _cw = ", ".join(f"{c.get('connectorId')} ({c.get('weighting')})"
-                            for c in ((p.get("spec") or {}).get("connectors") or []))
-            with st.expander(f"{_nm}  ·  priority {_pr}  ·  {os.path.basename(fp)}"):
-                st.caption(f"File: `{fp}`")
-                if _cw:
-                    st.caption(f"Connectors: {_cw}")
-                st.json(p)
+        render_profile_lookup(_named, key_prefix="cfgval_")

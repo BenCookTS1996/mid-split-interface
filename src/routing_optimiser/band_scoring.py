@@ -8,8 +8,17 @@ adds a per-MID month-band VIOLATION using a crude volume-ratio PROXY:
 
 This module replaces `proj_proxy` with the EXACT pro-rata projection (via the validated,
 numba-accelerated `PopulationBandProjector.project_pop_numba`), keeping the penalty SHAPE
-(`_pen`: fixed hit + quadratic/exponential, tolerance dust-guard) and weights (`wm[mid] · pmul`)
-byte-identical to `_obj_viol`. It is computed ONCE per generation for the whole population.
+(`_pen`: fixed hit + quadratic/exponential, tolerance dust-guard) byte-identical to
+`_obj_viol`. It is computed ONCE per generation for the whole population.
+
+WEIGHTS: `BandSpec.weight` is the PRIORITY multiplier ALONE — `GAP**(1-priority)` with GAP=8, so
+prio-1 = 1.0, prio-2 = 0.125, prio-3 = 0.015625. Corrected 2026-08-19aa: this file previously said
+`wm[mid] · pmul (priority × volume)` in two places, but the live construction site
+(tab2_engine.py, `_specs.append(_BSpec(..., weight=float(_pmulx)))`) passes the priority
+multiplier only. The volume term `wm[mid]` IS computed on the PROXY band path (`_vmul` alongside
+`_pmul`) and is simply not carried onto the exact path. Whether that omission was deliberate is
+not recorded anywhere; this docstring now describes what the code does, and changing the weighting
+itself would change the search and is a separate decision.
 
 ANALOGY: a "band" is a speed limit for a MID in a given month. The old proxy guessed how fast
 you were going from a rough rule of thumb; this module reads the exact speedometer (the true
@@ -35,11 +44,13 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-try:
-    import scipy.sparse as _sp
-    _HAVE_SCIPY = True
-except Exception:  # noqa: BLE001
-    _HAVE_SCIPY = False
+# scipy is a HARD requirement, not an optional accelerator (2026-08-19aa). It used to be
+# wrapped in try/except with a dense NumPy fallback in `build_col_incidence`; at the live scaffold
+# size that fallback allocates a 212,557 × 245,409 float64 matrix = ~417 GB, so it never actually
+# degraded gracefully — it died with a MemoryError far from the cause, or (on a small enough
+# problem) silently ran a different code path. An ImportError here names the real problem on line
+# one. Ben's call, 2026-08-19aa: if it fails, crash.
+import scipy.sparse as _sp
 
 
 # [FN-026]
@@ -69,11 +80,10 @@ def build_col_incidence(col_propkeys: Sequence[str], prop_keys: Sequence[str]):
             row_idx.append(row)
             col_idx.append(col)
     ones = np.ones(len(row_idx), dtype=float)
-    if _HAVE_SCIPY:
-        return _sp.csr_matrix((ones, (row_idx, col_idx)), shape=(row_count, col_count))
-    dense_matrix = np.zeros((row_count, col_count), dtype=float)
-    dense_matrix[np.asarray(row_idx, int), np.asarray(col_idx, int)] = 1.0
-    return dense_matrix
+    # ALWAYS sparse as of 2026-08-19aa. The dense fallback that used to sit here is deleted, not
+    # merely unreachable: at the live size it was a ~417 GB allocation masquerading as a graceful
+    # degradation.
+    return _sp.csr_matrix((ones, (row_idx, col_idx)), shape=(row_count, col_count))
 
 
 # [FN-027]
@@ -91,8 +101,11 @@ def shares_to_prop_raw(shares: np.ndarray, incidence) -> np.ndarray:
 
 @dataclass
 class BandSpec:
-    """One GA band, in projector coordinates. `weight` = wm[mid] · pmul (priority × volume),
-    matching `_obj_viol`'s `_wm[_mi] * _pmul`. `months` are the periods summed for the metric."""
+    """One GA band, in projector coordinates. `months` are the periods summed for the metric.
+
+    `weight` = the PRIORITY multiplier only (GAP**(1-priority), GAP=8: prio-1 1.0, prio-2 0.125,
+    prio-3 0.015625). NOT priority × volume — see the module docstring. `_obj_viol` on the proxy
+    path uses `_wm[_mi] * _pmul` (volume × priority); the exact path passes `_pmul` alone."""
     midl: str
     months: tuple
     metric: str                 # "vamp" or "txn"
@@ -148,15 +161,32 @@ class ExactBandPenalty:
         return self.projector.project_pop(prop_raw)
 
     # [FN-031]
-    def penalty(self, prop_raw) -> np.ndarray:
-        """(P, K) prop_raw → (P,) total band violation to add to each candidate's `viol`."""
+    def penalty(self, prop_raw, detail_out=None) -> np.ndarray:
+        """(P, K) prop_raw → (P,) total band violation to add to each candidate's `viol`.
+
+        `detail_out`: optional dict. When given, it receives
+            detail_out["per_spec"] : (P, n_specs) float — this spec's WEIGHTED penalty per
+                                     candidate, i.e. the exact quantity summed into the return
+                                     value, split out instead of discarded.
+            detail_out["specs"]    : the spec list, so a caller can map columns → midl.
+        Added 2026-08-19ab for BREACH-TARGETED MUTATION: the GA needs to know WHICH bands are
+        still breached in order to aim mutation at the cells feeding them, and this loop already
+        computes exactly that before throwing it away. The projection is the expensive part and has
+        already run, so the detail is free.
+
+        BIT-IDENTICAL to the pre-19ab total: each `+=` into `penalties` adds the SAME expression it
+        added before (stored in a temp and reused for the detail, never recomputed and never
+        reassociated). Do not "tidy" this into a single accumulation — the two separate `+=` are
+        load-bearing for reproducing earlier runs."""
         prop_raw = np.ascontiguousarray(prop_raw, dtype=float)
         if prop_raw.ndim == 1:
             prop_raw = prop_raw[None, :]
         candidate_count = prop_raw.shape[0]
         vamp, txn = self.project(prop_raw)                      # (P, B) each
         penalties = np.zeros(candidate_count, dtype=float)
-        for spec in self.specs:
+        per_spec = (np.zeros((candidate_count, len(self.specs)), dtype=float)
+                    if detail_out is not None else None)
+        for spec_index, spec in enumerate(self.specs):
             metric_values = txn if spec.metric == "txn" else vamp
             # Sum the metric across the band's months for every candidate.
             band_total = np.zeros(candidate_count, dtype=float)
@@ -166,9 +196,18 @@ class ExactBandPenalty:
                     band_total += metric_values[:, band_col]
             # Over-the-ceiling side and under-the-floor side, each scaled by the band weight.
             if spec.ceil is not None:
-                penalties += self._pen(np.maximum(band_total / max(float(spec.ceil), 1e-9) - 1.0, 0.0)) * spec.weight
+                _over = self._pen(np.maximum(band_total / max(float(spec.ceil), 1e-9) - 1.0, 0.0)) * spec.weight
+                penalties += _over
+                if per_spec is not None:
+                    per_spec[:, spec_index] += _over
             if spec.floor is not None and float(spec.floor) > 0:
-                penalties += self._pen(np.maximum(1.0 - band_total / max(float(spec.floor), 1e-9), 0.0)) * spec.weight
+                _under = self._pen(np.maximum(1.0 - band_total / max(float(spec.floor), 1e-9), 0.0)) * spec.weight
+                penalties += _under
+                if per_spec is not None:
+                    per_spec[:, spec_index] += _under
+        if detail_out is not None:
+            detail_out["per_spec"] = per_spec
+            detail_out["specs"] = self.specs
         return penalties
 
     # [FN-032]

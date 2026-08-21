@@ -1152,18 +1152,27 @@ def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mi
 # [FN-122b]
 def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_rows, mid_labels,
                              exact_bands, incidence, *, max_share=1.0, damping=0.5, tol=1e-6,
-                             patience=4, n_starts=1, rng_seed=0, jitter=0.5):
+                             patience=4, n_starts=1, rng_seed=0, jitter=0.5, keys_out=None):
     """MULTI-START `band_greedy_shares`: run the constrained projection from the base split PLUS
     (n_starts − 1) log-normally-jittered starts, and keep the one with the LOWEST
     (priority-weighted unmet-band count, total breach). A single projection is a fast (~seconds)
     greedy that lands in one corner; a few restarts make the feasibility verdict — and the seed the
     GA inherits — less dependent on that starting corner (it can clear a band the single pass left
-    just over). Cheap vs the GA. Returns (best_shares, best_key). n_starts ≤ 1 ⇒ a single pass."""
+    just over). Cheap vs the GA. Returns (best_shares, best_key). n_starts ≤ 1 ⇒ a single pass.
+
+    `keys_out`: optional list. When supplied, EVERY start's key is appended as
+    (start_index, unmet_weighted, breach) — start 0 is the un-jittered base. Added 2026-08-19z
+    because the caller could not tell whether the jittered starts ever WON: only the best key was
+    returned and tab2 discarded even that, so four runs of logs could not answer whether
+    n_starts=4 bought anything over n_starts=1. Measurement only — it does not change which split
+    is chosen, and an unsupplied keys_out leaves behaviour byte-identical."""
     _kw = dict(max_share=max_share, damping=damping, tol=tol, patience=patience)
     base = np.asarray(base_shares, float)
     best_s, best_key = band_greedy_shares(
         base, cell_starts, cell_counts, elig, mid_rows, mid_labels, exact_bands, incidence,
         return_key=True, **_kw)
+    if keys_out is not None:
+        keys_out.append((0, float(best_key[0]), float(best_key[1])))
     if int(n_starts) <= 1:
         return best_s, best_key
     _starts = np.asarray(cell_starts, np.intp)
@@ -1179,6 +1188,8 @@ def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_ro
         _s, _k = band_greedy_shares(
             _pert, cell_starts, cell_counts, elig, mid_rows, mid_labels, exact_bands, incidence,
             return_key=True, **_kw)
+        if keys_out is not None:
+            keys_out.append((int(_i), float(_k[0]), float(_k[1])))
         if _k < best_key:
             best_key, best_s = _k, _s
     return best_s, best_key

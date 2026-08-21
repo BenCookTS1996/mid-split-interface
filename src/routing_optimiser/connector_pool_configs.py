@@ -162,7 +162,7 @@ def rows_from_dataframe(df, brand_name):
 
 # [FN-042]
 def make_pool(cfg, name, priority, currencies, bins, providers, scheme_filter,
-              type_selectors, connectors_weighted, country_label):
+              type_selectors, connectors_weighted, country_label, control_bpid=None):
     expressions = []
     if currencies and len(currencies) < 5:
         if len(currencies) == 1:
@@ -204,6 +204,11 @@ def make_pool(cfg, name, priority, currencies, bins, providers, scheme_filter,
         else:
             expressions.append({"key": "method.info.card.bin", "operator": "In", "conversion": "", "values": sorted(set(bins))})
 
+    if control_bpid is not None:
+        # Control-group bucket: only transactions whose bucket.bpid is below the given value route here.
+        expressions.append({"key": "bucket.bpid", "operator": "Lt", "conversion": "",
+                            "values": [str(control_bpid)]})
+
     pool_connectors = [
         {"connectorId": cid, "priority": 0, "weighting": w, "uses": 0}
         for cid, w in sorted(connectors_weighted.items())
@@ -238,7 +243,7 @@ def normalize_weights(connectors, expected_total):
 
 
 # [FN-044]
-def process_compressed_rows(cfg, rows, scheme_filter, count_only=False):
+def process_compressed_rows(cfg, rows, scheme_filter, count_only=False, control_bpid=None):
     """BIN-specific pools (bin != 'Other'). Returns {name: pool}.
 
     count_only=True: the pool-budget SEARCH only needs len(pools), and the unique `name`
@@ -297,23 +302,30 @@ def process_compressed_rows(cfg, rows, scheme_filter, count_only=False):
                 country_tag = "-us" if country_label == "USA" else ("-nonus" if country_label == "Non-USA" else "")
                 file_prefix = (f"rr-{cfg['prefix']}" if (term.endswith("-ren") or term in RENEWAL_TERMS)
                                else cfg["prefix"])
-                tag_n[f"{tag}{country_tag}"] += 1
-                n = tag_n[f"{tag}{country_tag}"]
-                name = f"{file_prefix}-{_fname_term(term)}-{cfg['date']}-{scheme_filter}{tag}{country_tag}-bins-{n}"
-                if count_only:                       # search needs only len(pools) → skip payload
-                    out[name] = None
-                    continue
-                raw = groups[(p_set[0], currency, orig_country, sig)]["raw"]
-                weighted = normalize_weights(raw, 1000)
-                is_apgp = all(p in ("APPLEPAY", "GOOGLEPAY") for p in p_set)
-                priority = get_priority(term, is_apgp, True, cfg.get("extra_priority", 200000))
-                out[name] = make_pool(cfg, name, priority, {currency}, list(bins_tuple), p_set,
-                                      scheme_filter, type_selectors, weighted, country_label)
+                # Split BIN lists over the 6,500 cap into consecutive -bins-N files (a single
+                # ConnectorPool has a character limit; each chunk stays at or under 6,500 BINs).
+                _bin_list = list(bins_tuple)
+                _CHUNK = 6500
+                _chunks = [_bin_list[_i:_i + _CHUNK] for _i in range(0, len(_bin_list), _CHUNK)] or [[]]
+                _raw = groups[(p_set[0], currency, orig_country, sig)]["raw"]
+                _is_apgp = all(p in ("APPLEPAY", "GOOGLEPAY") for p in p_set)
+                _priority = get_priority(term, _is_apgp, True, cfg.get("extra_priority", 200000))
+                for _chunk in _chunks:
+                    tag_n[f"{tag}{country_tag}"] += 1
+                    n = tag_n[f"{tag}{country_tag}"]
+                    name = f"{file_prefix}-{_fname_term(term)}-{cfg['date']}-{scheme_filter}{tag}{country_tag}-bins-{n}"
+                    if count_only:                   # search needs only len(pools) → skip payload
+                        out[name] = None
+                        continue
+                    weighted = normalize_weights(_raw, 1000)
+                    out[name] = make_pool(cfg, name, _priority, {currency}, _chunk, p_set,
+                                          scheme_filter, type_selectors, weighted, country_label,
+                                          control_bpid=control_bpid)
     return out
 
 
 # [FN-045]
-def process_backup_rows(cfg, rows, scheme_filter, count_only=False):
+def process_backup_rows(cfg, rows, scheme_filter, count_only=False, control_bpid=None):
     """Catch-all pools (bin == 'Other'). Returns {name: pool}.
 
     count_only=True: skip the payload build (see process_compressed_rows) and store
@@ -378,7 +390,8 @@ def process_backup_rows(cfg, rows, scheme_filter, count_only=False):
                 is_apgp = all(p in ("APPLEPAY", "GOOGLEPAY") for p in p_set)
                 priority = get_priority(term, is_apgp, False, cfg.get("extra_priority", 200000))
                 out[name] = make_pool(cfg, name, priority, currencies, None, p_set,
-                                      scheme_filter, type_selectors, weighted, country_label)
+                                      scheme_filter, type_selectors, weighted, country_label,
+                                      control_bpid=control_bpid)
     return out
 
 
@@ -408,7 +421,8 @@ def emit_pool_generic(cfg, pools):
 
 # [FN-047]
 def generate_configs(exports, brand_key, date, scheme="vi", mode="sales",
-                     extra_priority_amount=200000, emit_generic=False, count_only=False):
+                     extra_priority_amount=200000, emit_generic=False, count_only=False,
+                     control_bpid=None):
     """Generate ConnectorPool configs from the export templates.
 
     exports: dict{(brand, rpgt): DataFrame} as returned by build_split_exports.
@@ -436,9 +450,11 @@ def generate_configs(exports, brand_key, date, scheme="vi", mode="sales",
             skipped.append(rows[0]["rpgt"])
             continue
         n_before = len(pools)
-        pools.update(process_compressed_rows(cfg, rows, scheme, count_only=count_only))
+        pools.update(process_compressed_rows(cfg, rows, scheme, count_only=count_only,
+                                             control_bpid=control_bpid))
         if mode == "full":
-            pools.update(process_backup_rows(cfg, rows, scheme, count_only=count_only))
+            pools.update(process_backup_rows(cfg, rows, scheme, count_only=count_only,
+                                             control_bpid=control_bpid))
         per_rpgt[str(rpgt_lbl)] = per_rpgt.get(str(rpgt_lbl), 0) + (len(pools) - n_before)
 
     generic = 0

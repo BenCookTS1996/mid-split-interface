@@ -1358,13 +1358,14 @@ def render():
                     _numc = [c for c in _rev_tbl.columns if c != "vampMid"]
                     _tot_r = {"vampMid": "TOTAL", **{c: float(_rev_tbl[c].sum()) for c in _numc}}
                     _rvv = pd.concat([_rev_tbl, pd.DataFrame([_tot_r])], ignore_index=True)
+                    # Table shows M0–M2 only; the freed space holds the M1 revenue-bridge waterfall.
                     _grp6 = [[f"VI Txn M{m}", f"$Revenue M{m}", f"VI Txn Post M{m}", f"$Revenue Post M{m}"]
-                             for m in range(6)]
+                             for m in range(3)]
                     # Colour scales for post-vs-pre change (same green↑/red↓ as other tables).
                     # VI Txn and $Revenue are coloured independently (different units/magnitudes).
                     _rev_maxabs = 0.0
                     _vi_maxabs = 0.0
-                    for _m in range(6):
+                    for _m in range(3):
                         _d = (_rev_tbl[f"$Revenue Post M{_m}"] - _rev_tbl[f"$Revenue M{_m}"]).abs()
                         _rev_maxabs = max(_rev_maxabs, float(_d.max()) if not _d.empty else 0.0)
                         _dv = (_rev_tbl[f"VI Txn Post M{_m}"] - _rev_tbl[f"VI Txn M{_m}"]).abs()
@@ -1415,7 +1416,41 @@ def render():
                             _rh.append(f'<td style="width:8px; min-width:8px; padding:0; {_tb}"></td>')
                         _rh.append('</tr>')
                     _rh.append('</table></div>')
-                    st.markdown("".join(_rh), unsafe_allow_html=True)
+                    # Table (M0–M2) on the LEFT; the freed space on the RIGHT holds an M1 revenue-bridge
+                    # waterfall by vampMid/mastercardMid that reconciles $Amt M1 (pre) → $Amt Post M1 (post).
+                    _tbl_col, _wf_col = st.columns([3, 2])
+                    _tbl_col.markdown("".join(_rh), unsafe_allow_html=True)
+                    # M1 revenue bridge — same _rev_bridge_waterfall format as the other bridges
+                    # (horizontal, Current→movers→Proposed, green↑/red↓, right-pinned $ labels). Show
+                    # every MID whose ABSOLUTE M1 revenue move exceeds $10k; THEN keep pulling the next-
+                    # largest mover in until the pooled 'Other' bar is smaller (in absolute $) than the
+                    # smallest displayed mover — so 'Other' never hides more than any single shown MID.
+                    # Current = Σ $Amt M1, Proposed = Σ $Amt Post M1 → ties to the table's M1 columns.
+                    _wfd = _rev_tbl[["vampMid", "$Revenue M1", "$Revenue Post M1"]].copy()
+                    _wfd["_delta"] = _wfd["$Revenue Post M1"] - _wfd["$Revenue M1"]
+                    _pre1 = float(_rev_tbl["$Revenue M1"].sum())
+                    _post1 = float(_rev_tbl["$Revenue Post M1"].sum())
+                    _wfd = _wfd[_wfd["_delta"].abs() > 1e-6]   # drop exactly-flat MIDs
+                    _wfd = _wfd.reindex(
+                        _wfd["_delta"].abs().sort_values(ascending=False).index).reset_index(drop=True)
+                    _n_disp = int((_wfd["_delta"].abs() > 10_000).sum())
+                    while _n_disp < len(_wfd):
+                        _other_abs = abs(float(_wfd["_delta"].iloc[_n_disp:].sum()))
+                        # 'Other' must be at least 40% smaller than the smallest shown MID (|Other| < 0.6×smallest).
+                        if _n_disp >= 1 and _other_abs < 0.6 * float(_wfd["_delta"].iloc[:_n_disp].abs().min()):
+                            break
+                        _n_disp += 1
+                    _disp = _wfd.iloc[:_n_disp].sort_values("_delta", ascending=False)
+                    _names = _disp["vampMid"].astype(str).tolist()
+                    _deltas = [float(_v) for _v in _disp["_delta"].tolist()]
+                    if _n_disp < len(_wfd):   # roll the remaining movers into one reconciling 'Other'
+                        _names.append("Other")
+                        _deltas.append((_post1 - _pre1) - sum(_deltas))
+                    _wf_fig = _rev_bridge_waterfall(_pre1, _post1, _names, _deltas, money=True, height=392)
+                    if _wf_fig is not None:
+                        _wf_col.plotly_chart(_wf_fig, use_container_width=True)
+                    else:
+                        _wf_col.caption("(M1 revenue bridge unavailable)")
 
             _gwshare_slot = None   # 'Current vs Proposed Gateway Share' table renders here (top-left)
             _gwwf_slot = None      # 'Revenue bridge by gateway' waterfall renders here (top-right)

@@ -710,6 +710,19 @@ class PopulationBandProjector:
         Working arrays are pooled (see _nb_buffers); consume the result before the next call."""
         prop_raw = np.ascontiguousarray(prop_raw, dtype=np.float64)
         if not _HAVE_NUMBA or not len(self._gcode):
+            # SAY SO. This early return is a SILENT FALLBACK: the pure-NumPy `project_pop` is the
+            # reference implementation (correct, but far slower and it allocates dense (P × nR)
+            # arrays), and before 2026-08-19z nothing recorded that the numba path had been
+            # skipped. A run on a box without numba would simply be mysteriously slow, and the
+            # [proj-par] drain could only INFER it from the absence of notes. State it instead.
+            if not _PROJ_PAR_SAID.get("nonumba"):
+                _PROJ_PAR_SAID["nonumba"] = True
+                _pnote("projection is on the pure-NumPy REFERENCE path, NOT the numba kernel — "
+                       + ("numba is unavailable in this process"
+                          if not _HAVE_NUMBA else
+                          "the band scaffold is empty (no constrained cells this build)")
+                       + ". Results are correct but this is the slow path, and candidate "
+                         "parallelism does not apply to it.")
             return self.project_pop(prop_raw)
         P = int(prop_raw.shape[0])
         # CANDIDATE-PARALLEL decision (2026-08-19y). All four conditions are load-bearing:

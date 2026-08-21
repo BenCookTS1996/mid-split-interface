@@ -259,16 +259,16 @@ def render():
                              "result. ON: every seed runs the FULL generation cap regardless, so the candidate "
                              "count becomes exact (= seeds × restarts × generations × λ) and the run is longer, "
                              "usually with no better split. Use for a deterministic, maximum-budget search.")
-                    st.checkbox(
-                        "Exact projector seed (successive-LP, experimental)", value=False,
-                        key="use_exact_band_solver",
-                        help="OFF (default): the band-aware warm-start seed uses the fast multiplicative "
-                             "constrained-projection HEURISTIC. ON: ALSO compute an EXACT seed that minimises "
-                             "the TRUE projector band breach via successive LPs on the analytic Jacobian of the "
-                             "projector — reaching 0 breach is a genuine compliance certificate. Adds a one-time "
-                             "solve before the search; only ever helps (feasibility-first ranking keeps the best "
-                             "seed). Local optimum only (fractional-VAMP nonconvexity), so it is a diagnostic + "
-                             "seed, not a global guarantee.")
+                    # The "Exact projector seed (successive-LP, experimental)" checkbox was
+                    # REMOVED 2026-08-19aa and the stage is now unconditional. It was labelled
+                    # experimental and defaulted OFF, but measured on the 2026-08-20 23:03 run it
+                    # did 71% of the seed chain's work: band-aware 0.032583 → exact-proj 0.0093637
+                    # (−0.023219) → targeted-move 0.0036919 (−0.005672, and the one USED).
+                    # targeted-move starts from exact-proj's output, so switching it off makes
+                    # targeted-move start from 0.0326 instead of 0.0094. A stage carrying that
+                    # much of the result is not optional, and calling it "experimental" invited
+                    # someone to turn off the thing doing most of the work. Cost: ~131.5s of a
+                    # ~737s run (18%).
                     st.checkbox(
                         "Anchor search on the compliant seed (recommended)", value=True,
                         key="anchor_ref_on_seed",
@@ -4350,7 +4350,22 @@ def render():
                             "mid_base_vol": _mid_bvol,         # reference MID volume (for the ratio proxy)
                             "mid_ticket": _mid_tick, "mid_sr": _mid_srm,
                             "shape_mult": 10.0, "max_share": float(max_share), "floor": float(floor),
-                            "breach_fixed": 0.0,   # cap-breach penalty removed — fixed at 0 (no cap penalty)
+                            # FIXED per-band breach penalty. 0.3 as of 2026-08-19aa (was 0.0).
+                            # _pen(overshoot) = breach_fixed·(overshoot>0) + breach_quad·overshoot²,
+                            # all × the band's PRIORITY weight. At 0.0 a band a hair over its
+                            # ceiling cost ~nothing, so the search was indifferent between
+                            # clearing one band and shaving three. At 0.3 crossing a limit costs
+                            # 0.3 × priority weight the instant it happens, so CLEARING a band
+                            # beats shaving several — which is what is wanted with 3 MIDs breaching
+                            # persistently.
+                            # SAFE w.r.t. the 2026-08-17 trap (see ~6274): that bug was a SECOND,
+                            # ranking-only penalty while the log printed the pure breach, so the
+                            # never-worse guarantee read as violated when it held. This value lives
+                            # on the ONE shared ExactBandPenalty (_fm_eb_pen IS _fm_eb), so the
+                            # ranked and printed numbers move together. Verified, not assumed.
+                            # BREACH FIGURES ARE NOT COMPARABLE ACROSS THIS CHANGE — see the
+                            # [breach-scale] banner logged on every run.
+                            "breach_fixed": 0.3,
                             # CMA-ES engine: lean the θ=0 reference gently toward lower risk (γ,
                             # dimensionless) so freed volume redistributes to LOW-risk recipients and
                             # the base is already slightly compliant. 0 = no lean (unbiased reference).
@@ -4448,6 +4463,40 @@ def render():
                                             breach_shape=str(ctx.get("breach_shape", "quadratic")))
                                 ctx["exact_bands"] = _epx
                                 ctx["band_incidence"] = _inc
+                                # [breach-scale] SAY IT EVERY RUN. breach_fixed went 0.0 → 0.3 in
+                                # 2026-08-19aa, which rescales every breach number in this log. A
+                                # reader comparing today's figure to a pre-19aa run without knowing
+                                # that would conclude the engine got ~80x worse when nothing
+                                # regressed, so the banner is unconditional rather than a one-off
+                                # release note nobody will be holding at the time.
+                                try:
+                                    _bf_now = float(ctx.get("breach_fixed", 0.0) or 0.0)
+                                    _n_p1 = sum(1 for _sp in _specs if abs(_sp.weight - 1.0) < 1e-9)
+                                    log(f"   [breach-scale] band penalty = breach_fixed "
+                                        f"{_bf_now:g}·(over?) + {float(ctx.get('breach_quad', 1.0) or 1.0):g}"
+                                        f"·overshoot², × the band's PRIORITY weight "
+                                        f"(prio1 1.0 · prio2 0.125 · prio3 0.015625; volume is NOT "
+                                        f"in the weight). {len(_specs)} band(s), {_n_p1} at prio-1.")
+                                    if _bf_now > 0:
+                                        log(f"   [breach-scale] ⚠ breach_fixed is {_bf_now:g}, NOT 0 "
+                                            "— a band merely CROSSING its limit now costs "
+                                            f"{_bf_now:g} × its priority weight before any "
+                                            "overshoot term. So breach totals in this log are NOT "
+                                            "comparable with runs before 2026-08-19aa (which used "
+                                            "0.0): e.g. one prio-1 band just touching its ceiling "
+                                            f"scores {_bf_now:g}, vs a FULL total of 0.0036919 on "
+                                            "the 2026-08-20 23:03 run. Judge this run on SEARCH "
+                                            "SHORTFALL (M5 units) and the per-band met/unmet counts, "
+                                            "not on the breach scalar. The GA ranks and prints this "
+                                            "SAME number, so the never-worse guarantee still holds.")
+                                    else:
+                                        log("   [breach-scale] breach_fixed is 0 — crossing a limit "
+                                            "is free and only the squared overshoot is charged, so "
+                                            "the search is indifferent between clearing one band "
+                                            "and shaving several.")
+                                except Exception as _bse:  # noqa: BLE001
+                                    log(f"   [breach-scale] banner skipped ({type(_bse).__name__}: "
+                                        f"{_bse}) — the penalty itself is unaffected.")
                                 ctx["_exact_bands_selfcheck"] = {"inc": _inc, "done": False}
                                 _run_midtilt_ga = _plain_ga            # pre-clustering OFF for exact bands
                                 log(f"   GA fitness: EXACT per-generation band scoring ON — {len(_specs)} band(s), "
@@ -5140,8 +5189,23 @@ def render():
                             ctx["_mid_S"] = (_gg._build_mid_incidence(
                                 np.asarray(ctx["mid_id"]), int(ctx["n_mid"]), int(ctx["n_row"]))
                                 if int(ctx["n_mid"]) else None)
-                        except Exception:  # noqa: BLE001
-                            ctx["_mid_S"] = None
+                        except Exception as _msE:
+                            # NO FALLBACK as of 2026-08-19aa. Unlike the other three raises added
+                            # in this build, this one is a PERFORMANCE guard, not a correctness
+                            # one: `_mid_S` is a cache and `None` only means every seed/worker
+                            # rebuilds the incidence itself — identical results, slower. It is
+                            # raised anyway because a cache that cannot be built almost always
+                            # means the frame it is built FROM is malformed (mid_id / n_mid /
+                            # n_row disagreeing), and that is not a condition to run through
+                            # quietly.
+                            raise RuntimeError(
+                                "[full-matrix] per-MID incidence cache failed to build "
+                                f"({type(_msE).__name__}: {_msE}). n_mid="
+                                f"{ctx.get('n_mid')!r} n_row={ctx.get('n_row')!r}. This is a "
+                                "CACHE — its absence would only have been slower, not wrong — but "
+                                "it failing points at malformed mid_id/n_mid/n_row upstream, so "
+                                "the run stops here rather than continuing on the slow path with "
+                                "a possibly-bad frame. (engine=genetic_fullmatrix)") from _msE
                         _progress(_f_eng, "Revenue-max endpoint (greedy)…")
                         # Aggregate per-vampMid VAMP-rate compliance guard (used for the dial-0 adoption).
                         # [FN-344]
@@ -5228,11 +5292,19 @@ def render():
                             _catchall_row_mask = None
                             log(f"   [full-matrix] catch-all ε-floor mask skipped "
                                 f"({type(_cme).__name__}: {_cme}); seeds may leave catch-all MIDs at 0.")
-                        # #1 DIVERSE SEEDS: hand the risk-min search the revenue-greedy compliant split
-                        # PLUS a BAND-AWARE greedy compliant split (the revenue-greedy split nudged so
-                        # each MID moves toward its month bands), so the search starts band-feasible-or-
-                        # close rather than in a band-oblivious corner. (This REPLACES the old risk-greedy
-                        # seed.) Feasibility-first ranking means it can only help.
+                        # SEED STAGE 1 of 3 — the BAND-AWARE constrained projection.
+                        # HISTORY, because the name below still says otherwise: this began as "#1
+                        # DIVERSE SEEDS", a set of COMPETING warm starts the search picked between.
+                        # Since 2026-08-19u the full-matrix engine treats them as ONE seed built in
+                        # a CHAIN — band-aware → exact projector → targeted move — each stage
+                        # starting from the previous one's output (see the ONE SEED, THREE STAGES
+                        # block ~6211). `_seeds` is still a list because ctx["warm_shares"] takes
+                        # one, and the TILT engines do still use it as a diverse set; for
+                        # full-matrix, order is chain order, not preference order.
+                        # Measured contribution of each stage (2026-08-20 23:03, delivered basis):
+                        #   band-aware    0.032583
+                        #   exact-proj    0.0093637   (−0.023219 — the largest single step)
+                        #   targeted-move 0.0036919   (−0.005672, and the one USED)
                         try:
                             _band_greedy_G = np.asarray(_comp_share_G, float)
                             if (_ga_bands and ctx.get("exact_bands") is not None
@@ -5243,16 +5315,57 @@ def render():
                                 # (and the seed the GA inherits) isn't pinned to one starting corner. Each
                                 # start is the ~seconds greedy, so a handful is still tiny vs the GA.
                                 _feas_starts = max(1, int(ss.get("fm_feas_starts", 4) or 1))
+                                _bg_keys = []
                                 _band_greedy_G, _bg_key = _gg.band_greedy_shares_multi(
                                     np.asarray(_comp_share_G, float),
                                     ctx["cell_starts"], ctx["cell_counts"], ctx["elig"],
                                     ctx["mid_rows"], _mids_u,
                                     ctx["exact_bands"], ctx["_exact_bands_selfcheck"]["inc"],
                                     max_share=float(ctx.get("max_share", 1.0) or 1.0),
-                                    n_starts=_feas_starts, rng_seed=0)
+                                    n_starts=_feas_starts, rng_seed=0, keys_out=_bg_keys)
                                 if _feas_starts > 1:
                                     log(f"   feasibility projection: {_feas_starts} starts "
                                         f"(base + {_feas_starts - 1} jittered) — kept the fewest-unmet result.")
+                                # [feas-starts] DOES THE MULTI-START EARN ITS KEEP? Until 2026-08-19z
+                                # this block computed the winning key and threw it away (`_bg_key` was
+                                # assigned and never read), so no run log could say whether a jittered
+                                # start ever beat the base — while the extra starts cost ~11s each
+                                # (measured: 4 starts = 45.5s in the 2026-08-20 23:03 run). The key is
+                                # (priority-weighted unmet-band count, total breach), lower is better,
+                                # and `rng_seed=0` is hardcoded so the SAME jitters recur every run:
+                                # if they lose once they lose forever, and the cost is pure waste.
+                                # READ IT LIKE THIS: "winner: base" on a couple of runs ⇒ set
+                                # "Feasibility-check starts (full-matrix)" to 1 and reclaim the time.
+                                # A jittered winner ⇒ the knob is doing real work; keep it.
+                                try:
+                                    if _bg_keys:
+                                        _bgw = min(_bg_keys, key=lambda t: (t[1], t[2]))
+                                        _bgb = next((k for k in _bg_keys if k[0] == 0), None)
+                                        log("   [feas-starts] per-start result "
+                                            "(start · priority-weighted unmet · total breach; "
+                                            "lower is better, start 0 = un-jittered base):")
+                                        for _si, _uw, _br in _bg_keys:
+                                            log(f"      start {_si}{' (base)' if _si == 0 else ''}: "
+                                                f"unmet_w {_uw:.6g} · breach {_br:.6g}"
+                                                f"{'   ← WINNER' if (_uw, _br) == (_bgw[1], _bgw[2]) else ''}")
+                                        if len(_bg_keys) == 1:
+                                            log("      only ONE start ran, so there is nothing to "
+                                                "compare — this is what n_starts=1 looks like.")
+                                        elif _bgw[0] == 0:
+                                            log(f"      VERDICT: the BASE start won. The "
+                                                f"{len(_bg_keys) - 1} jittered start(s) bought "
+                                                "NOTHING on this run and cost ~11s each. Same "
+                                                "rng_seed=0 every run ⇒ same jitters ⇒ they will not "
+                                                "win later either. If this repeats, set the input to 1.")
+                                        elif _bgb is not None:
+                                            log(f"      VERDICT: jittered start {_bgw[0]} WON, beating "
+                                                f"the base (unmet_w {_bgb[1]:.6g}→{_bgw[1]:.6g}, "
+                                                f"breach {_bgb[2]:.6g}→{_bgw[2]:.6g}). The multi-start "
+                                                "is earning its keep — keep it above 1.")
+                                except Exception as _bke:  # noqa: BLE001
+                                    log(f"   [feas-starts] per-start report skipped "
+                                        f"({type(_bke).__name__}: {_bke}). NOTE this is the "
+                                        "measurement only — the seed itself is unaffected.")
                                 # Confirm the band-aware seed is LIVE + emit a FEASIBILITY CHECK: run
                                 # the exact projector on the constrained-projection seed (min band
                                 # breach s.t. per-cell simplex + max-share) and report the verdict.
@@ -5265,9 +5378,11 @@ def render():
                                         _s2pr_seed(np.asarray(_comp_share_G, float)[None, :], _inc_seed))[0])
                                     _v1 = float(ctx["exact_bands"].penalty(
                                         _s2pr_seed(np.asarray(_band_greedy_G, float)[None, :], _inc_seed))[0])
-                                    log(f"   diverse seeds: revenue-greedy compliant + BAND-AWARE "
-                                        f"constrained-projection seed (per-cell simplex + max-share QP; "
-                                        f"replaces risk-greedy) — seed band breach {_v0:.4g} → {_v1:.4g}.")
+                                    log(f"   seed stage 1/3 BAND-AWARE constrained projection "
+                                        f"(per-cell simplex + max-share QP): band breach "
+                                        f"{_v0:.4g} (revenue-greedy start) → {_v1:.4g}. Stage 2 is "
+                                        "the exact projector, stage 3 the targeted move — see "
+                                        "[seed-chain] for the whole chain and which stage was used.")
                                     # Per-band verdict from the exact projector on the seed.
                                     _pretty = {str(_r.get("vampMid")).strip().lower(): str(_r.get("vampMid"))
                                                for _r in (params.get("mid_constraints", []) or [])}
@@ -5291,11 +5406,13 @@ def render():
                                             "INFEASIBLE under this scope (not a proof — the search explores further).")
                                         log("      still unmet: " + ", ".join(sorted(set(_unmet))))
                                 except Exception:  # noqa: BLE001
-                                    log("   diverse seeds: revenue-greedy compliant + BAND-AWARE "
-                                        "constrained-projection seed (replaces risk-greedy).")
+                                    log("   seed stage 1/3 BAND-AWARE constrained projection "
+                                        "(per-cell simplex + max-share QP); its per-band breakdown "
+                                        "was unavailable this run.")
                             else:
-                                log("   diverse seeds: revenue-greedy compliant only "
-                                    "(no active month bands → band-aware seed not built).")
+                                log("   seed: revenue-greedy compliant ONLY — no active month "
+                                    "bands, so none of the three band-aware stages ran. There is "
+                                    "nothing for [seed-chain] to compare.")
                             # keep the legacy name so the cache-key hash below still hashes the 2nd seed
                             _risk_greedy_G = np.asarray(_band_greedy_G, float)
                             # ε-floor the band-aware seed so it doesn't hand the GA a split with catch-all
@@ -5316,17 +5433,23 @@ def render():
                                     log(f"   [full-matrix] seed ε-floor skipped ({type(_fe).__name__}: {_fe}).")
                             _seeds = [np.asarray(_comp_share_G, float), _risk_greedy_G]
                             # OPTIONAL exact projector-defined seed: successive-LP that minimises the TRUE
-                            # projector band breach using the analytic Jacobian (exact_band_solver). Default
-                            # OFF (one-time solve; opt in via the tab-2 checkbox). Appended as a THIRD diverse
-                            # seed — feasibility-first ranking means it can only help. 0 breach = a genuine
-                            # compliance certificate; a positive floor is a strong (not proof) infeasibility
-                            # signal. Local optimum only (fractional-VAMP nonconvexity + fixed active mask).
-                            # Runs for the full-matrix engine too now: it's a WARM-START seed only
-                            # (the GA's never-worse guarantee carries a compliant seed forward) — NOT a
-                            # post-search finishing pass. Opt-in via use_exact_band_solver; ~minutes at
-                            # BIN grain, so only when the user ticks it. `_exact_G` feeds `_fm_cands`.
-                            if (bool(ss.get("use_exact_band_solver"))
-                                    and _ga_bands and ctx.get("exact_bands") is not None
+                            # projector band breach using the analytic Jacobian (exact_band_solver).
+                            # SEED STAGE 2 of 3, unconditional since 2026-08-19aa — it is NOT a
+                            # "third diverse seed" and no longer opt-in; the tab-2 checkbox that
+                            # gated it is gone. 0 breach = a genuine compliance certificate; a
+                            # positive floor is a strong (not proof) infeasibility signal. Local
+                            # optimum only (fractional-VAMP nonconvexity + fixed active mask).
+                            # It is a WARM-START seed only (the GA's never-worse guarantee carries a
+                            # compliant seed forward) — NOT a post-search finishing pass.
+                            # UNCONDITIONAL as of 2026-08-19aa (was opt-in via the removed
+                            # `use_exact_band_solver` checkbox). It is stage 2 of the seed chain and
+                            # measured the largest single contributor: band-aware 0.032583 →
+                            # exact-proj 0.0093637 → targeted-move 0.0036919 (23:03 run, delivered
+                            # basis). `_exact_G` feeds `_fm_cands`; if the solve fails it is set to
+                            # None and the stage drops out of the chain WITH a log line — that
+                            # remains the correct behaviour here, because an unavailable stage is
+                            # not the same as a silently substituted one.
+                            if (_ga_bands and ctx.get("exact_bands") is not None
                                     and isinstance(ctx.get("_exact_bands_selfcheck"), dict)
                                     and ctx["_exact_bands_selfcheck"].get("inc") is not None):
                                 try:
@@ -5561,9 +5684,32 @@ def render():
                                 except Exception as _use:  # noqa: BLE001 — a diagnostic must never break the run
                                     log(f"   seed unmet-band summary skipped ({type(_use).__name__}: {_use}).")
                             ctx["warm_shares"] = _seeds
-                        except Exception:  # noqa: BLE001
-                            _risk_greedy_G = np.asarray(_comp_share_G, float)
-                            ctx["warm_shares"] = np.asarray(_comp_share_G, float)
+                        except Exception as _bsE:
+                            # NO FALLBACK as of 2026-08-19aa. This handler used to do
+                            #     _risk_greedy_G = _comp_share_G
+                            # which substituted the REVENUE-GREEDY, BAND-OBLIVIOUS split for the
+                            # band-aware seed and then let it into `_fm_cands` still LABELLED
+                            # "band-aware" — while ~370 lines further down the engine raises
+                            # loudly rather than seed from that very split ("Refusing to fall back
+                            # to the band-oblivious greedy+LP split"). One guard forbade exactly
+                            # what the other did in silence, and the log said "band-aware" either
+                            # way, so a run could optimise from a band-oblivious corner with no
+                            # trace. The `try` spans the whole seed construction — multi-start
+                            # projection, feasibility check, per-start report, seed summary — so
+                            # this could fire for any of them.
+                            # Crash instead: a failed seed build is a bug to fix upstream, not a
+                            # condition to route around.
+                            raise RuntimeError(
+                                "[full-matrix] BAND-AWARE SEED CONSTRUCTION FAILED "
+                                f"({type(_bsE).__name__}: {_bsE}). Refusing to fall back to the "
+                                "revenue-greedy band-OBLIVIOUS split: it was previously "
+                                "substituted here silently and still labelled 'band-aware', so "
+                                "the search could run from a band-oblivious corner undetected. "
+                                "Fix the seed construction upstream. The whole block is covered "
+                                "by this guard — the multi-start constrained projection, the "
+                                "FEASIBILITY CHECK, the [feas-starts] report and the seed "
+                                "unmet-band summary — so read the traceback for which. "
+                                "(engine=genetic_fullmatrix)") from _bsE
                         # ── ANCHOR THE SEARCH ON THE COMPLIANT SEED (recentre the CMA-ES reference) ──
                         # The 45-dial tilt genome can't REPRESENT a share-space seed (43,522 gateways), so
                         # fitting a seed to a genome blurs its compliance away — which is why the search used
@@ -6008,9 +6154,34 @@ def render():
                                                 [((_b, _g) in _blk_pairs_pre) or ((_p, _g) in _blk_pairs_pre)
                                                  for _b, _p, _g in zip(_bkL, _pkL, _gwL)], dtype=bool)
                                             if not _fm_blk_row.any():
+                                                # LEGITIMATE None: no row is blocked, so the
+                                                # transform genuinely IS the identity. Distinct
+                                                # from the failure case below.
                                                 _fm_blk_row = None
-                                        except Exception:  # noqa: BLE001
-                                            _fm_blk_row = None
+                                        except Exception as _blkE:
+                                            # NO FALLBACK as of 2026-08-19aa. This used to set
+                                            # _fm_blk_row = None on ANY error, which makes
+                                            # `_fm_block` the identity — so the GA silently stops
+                                            # modelling blocked caps while `_blk_pairs_pre` says
+                                            # rows ARE blocked. That is exactly the
+                                            # Adyen-TotalAV-NA divergence described directly above
+                                            # (the delivered split showing a breach the GA never
+                                            # saw), and it would put RECONCILIATION ERROR back
+                                            # above 0 with nothing in the log to explain it. The
+                                            # whole grain-alignment effort of 2026-08-19o depends
+                                            # on this transform matching delivery row for row.
+                                            raise RuntimeError(
+                                                "[full-matrix] BANK AUTO-BLOCK FLOORING FAILED to "
+                                                f"build ({type(_blkE).__name__}: {_blkE}) while "
+                                                f"{len(_blk_pairs_pre)} bank×gateway pair(s) ARE "
+                                                "blocked. Refusing to continue with the flooring "
+                                                "silently disabled: `_fm_block` would become the "
+                                                "identity, the GA would stop modelling blocked "
+                                                "caps, and the delivered split would breach bands "
+                                                "the search never scored (RECONCILIATION ERROR > 0 "
+                                                "with no stated cause). Fix bin_to_bank / the "
+                                                "gateway+bank columns on G. "
+                                                "(engine=genetic_fullmatrix)") from _blkE
                                     _fm_bcs = np.asarray(ctx["cell_starts"], np.intp)
                                     _fm_bcc = np.asarray(ctx["cell_counts"], np.intp)
                                     _fm_bfloor = float(floor)
@@ -6243,9 +6414,17 @@ def render():
                                     # NOTE both hooks now receive the engine's SHARED full-grain DELIVERED
                                     # array (blocked-caps + eligibility already applied, once per evaluation),
                                     # so they only roll up to prop-raw + score — no per-hook scatter/deliver.
-                                    def _fm_bpf(_fd, _eb=_fm_eb_pen, _inc=_fm_inc):
+                                    # BREACH-TARGETED MUTATION plumbing (2026-08-19ab).
+                                    # `_fm_bdet` catches the per-spec penalties `penalty()` already
+                                    # computes, so `_fm_mut_w` below can see WHICH bands are still
+                                    # breached without a second projection. Overwritten every
+                                    # evaluation; only the latest generation matters.
+                                    _fm_bdet = {}
+
+                                    def _fm_bpf(_fd, _eb=_fm_eb_pen, _inc=_fm_inc, _dt=_fm_bdet):
                                         return np.asarray(
-                                            _eb.penalty(_fm_s2pr(np.asarray(_fd, float), _inc)), dtype=float)
+                                            _eb.penalty(_fm_s2pr(np.asarray(_fd, float), _inc),
+                                                        detail_out=_dt), dtype=float)
 
                                     # Heartbeat readout: (# distinct MIDs with an unmet band, total
                                     # MID-constraint penalty, sorted NAMES of the unmet MIDs) at one split
@@ -6292,6 +6471,82 @@ def render():
                                     f"{_fm_pop} · restart-mode {_fm_rmode}; "
                                     + ("early-stop DISABLED (run-all-generations ON)"
                                        if _fm_no_stop else f"patience {_fm_pat}") + ".")
+                                # ── BREACH-TARGETED MUTATION: spec → cell mask ────────────
+                                # Mutation picks whole CELLS. To aim it we need, per band spec, the
+                                # set of cells containing at least one row that feeds that spec's
+                                # vampMid. Built ONCE (15 specs × 23,791 cells ≈ 357k booleans) and
+                                # in PROBLEM order — `_fm_p.mid_id` is permuted by `_fm_p.order`
+                                # and aligned with cell_start/cell_len, so it MUST be read from the
+                                # problem, never from ctx["mid_id"] (which is in G order and would
+                                # silently mis-target every cell).
+                                _fm_mut_boost = float(os.environ.get("ROUTING_MUT_BOOST", "3") or 3)
+                                _fm_mut_on = os.environ.get("ROUTING_MUT_TARGET", "1") != "0"
+                                _fm_spec_cells = None
+                                _sp_list = list(getattr(_fm_eb_pen, "specs", []) or [])
+                                try:
+                                    _mid_by_lbl = {str(_m).strip().lower(): _k
+                                                   for _k, _m in enumerate(_mids_u)}
+                                    _pmid = np.asarray(_fm_p.mid_id, int)
+                                    _pcs = np.asarray(_fm_p.cell_start, np.intp)
+                                    _rows_sc = []
+                                    for _sp in _sp_list:
+                                        _k = _mid_by_lbl.get(str(_sp.midl).strip().lower())
+                                        if _k is None:
+                                            _rows_sc.append(np.zeros(int(_fm_p.n_cells), bool))
+                                            continue
+                                        _rows_sc.append(np.add.reduceat(
+                                            (_pmid == _k).astype(np.int64), _pcs) > 0)
+                                    _fm_spec_cells = np.vstack(_rows_sc) if _rows_sc else None
+                                    if _fm_spec_cells is not None:
+                                        _unmapped = [str(_sp.midl) for _sp in _sp_list
+                                                     if _mid_by_lbl.get(
+                                                         str(_sp.midl).strip().lower()) is None]
+                                        log(f"   [mut-target] spec→cell map: {len(_sp_list)} band "
+                                            f"spec(s) over {int(_fm_p.n_cells):,} cells; each "
+                                            "spec's cells are those holding >=1 row feeding its "
+                                            "vampMid.")
+                                        if _unmapped:
+                                            log(f"      ⚠ {len(_unmapped)} spec(s) had NO matching "
+                                                f"vampMid in the GA's mid list and can never be "
+                                                f"targeted: {', '.join(sorted(set(_unmapped)))}. "
+                                                "That is a label mismatch between the band editor "
+                                                "and _mids_u, and it would also mean those bands "
+                                                "are unreachable by the search.")
+                                except Exception as _msce:  # noqa: BLE001
+                                    _fm_spec_cells = None
+                                    log(f"   [mut-target] spec→cell map FAILED "
+                                        f"({type(_msce).__name__}: {_msce}) — mutation stays "
+                                        "UNIFORM. Not fatal (targeting is an optimisation, not a "
+                                        "correctness requirement), but this run will NOT have the "
+                                        "2026-08-19ab behaviour.")
+
+                                _fm_mut_stat = {"gen": 0, "cells": 0, "mids": ()}
+
+                                def _fm_mut_w(_sc=_fm_spec_cells, _dt=_fm_bdet,
+                                              _boost=_fm_mut_boost, _on=_fm_mut_on,
+                                              _st=_fm_mut_stat):
+                                    # (n_cells,) mutation-probability multiplier, or None = uniform.
+                                    # A band counts as BREACHED when the population MINIMUM of its
+                                    # weighted penalty is > 0 — i.e. even the BEST candidate still
+                                    # breaches it, which is exactly a band the search has not
+                                    # cracked. The min is also order-independent, so this does not
+                                    # depend on the ranking having been computed yet. "ANY candidate
+                                    # breaches it" would target nearly everything early on and
+                                    # nothing useful later.
+                                    if not _on or _sc is None:
+                                        return None
+                                    _ps = _dt.get("per_spec")
+                                    if _ps is None:
+                                        return None          # first call, before any evaluation
+                                    _br = np.asarray(_ps, float).min(axis=0) > 0.0
+                                    if not _br.any():
+                                        return None          # nothing breached ⇒ uniform
+                                    _mask = _sc[_br].any(axis=0)
+                                    _st["gen"] += 1
+                                    _st["cells"] = int(_mask.sum())
+                                    _st["mids"] = tuple(int(_i) for _i in np.where(_br)[0])
+                                    return np.where(_mask, _boost, 1.0)
+
                                 _fm_best, _fm_info = _fm_run(
                                     _fm_p, reference_shares=_fm_meta["reference_kept"],
                                     pop_size=_fm_pop, generations=_fm_gens, patience=_fm_pat,
@@ -6299,6 +6554,7 @@ def render():
                                     restart_mode=_fm_rmode, seed=0, log_fn=log,
                                     numba=True,   # verify-gated; self-falls-back to numpy
                                     band_penalty_fn=_fm_bpf, band_report_fn=_fm_report_fn,
+                                    mut_weight_fn=_fm_mut_w,
                                     # No compress_lambda / compress_pools /
                                     # compress_refresh / codebook_fn as of 2026-08-19p: the
                                     # λ input is gone, so run_fullmatrix_ga keeps its own
@@ -6308,6 +6564,157 @@ def render():
                                     # needs them.
                                     deliver_full_fn=_fm_deliv_full,
                                     gather_fn=_fm_gather)
+                                # [frozen-scaffold] HOW MUCH OF THE PROJECTOR IS PERMANENTLY
+                                # CONSTANT? 92% of a GA generation is _pop_band_kernel over the cap
+                                # scaffold (1.28M rows / 22.3k cells), an object sized by the
+                                # DELIVERED forecast grain + back-filled sub-cell rows, not by the
+                                # GA genome. So shrinking the genome alone saves ~6%. The real prize
+                                # is dropping scaffold rows out of the per-generation kernel.
+                                # That is EXACT, not approximate, wherever psum == 0. From the
+                                # kernel: psum[c]==0 ⇒ pshare[r]=base[r], mvrow[r]=0, vshare[r]=0,
+                                # moved[c]=0, so
+                                #     txn  += ctot[r]*base[r]      (constant)
+                                #     vamp += pc_vc[j]             (constant)
+                                # i.e. the cell contributes a FIXED vector to every band for every
+                                # candidate, summable once before the search.
+                                # WHICH cells qualify candidate-INDEPENDENTLY: prop_raw =
+                                # incidence @ shares, so a prop-key with an all-zero incidence row
+                                # is zero for EVERY candidate. A cell whose every row is either
+                                # masked or on such an unmapped prop-key therefore has psum==0
+                                # always — permanently frozen, with no assumption about the split.
+                                # READ-ONLY. This measures; it does not change the kernel.
+                                try:
+                                    _fsp = getattr(_fm_eb, "projector", None)
+                                    _fs_pi = np.asarray(getattr(_fsp, "_propidx", []), np.int64)
+                                    _fs_gc = np.asarray(getattr(_fsp, "_gcode", []), np.int64)
+                                    _fs_ng = int(getattr(_fsp, "_ngc", 0) or 0)
+                                    _fs_mk = (np.asarray(_fsp._excl, bool)
+                                              | np.asarray(_fsp._emask, bool))
+                                    if _fs_pi.size and _fs_gc.size and _fs_ng:
+                                        # reachable prop-key = the incidence has >=1 GA column on it
+                                        _fs_K = int(_fm_inc.shape[0])
+                                        _fs_reach = np.zeros(_fs_K, bool)
+                                        try:      # sparse
+                                            _fs_nnz = np.asarray(
+                                                (_fm_inc != 0).sum(axis=1)).ravel()
+                                        except Exception:  # noqa: BLE001 - dense incidence
+                                            _fs_nnz = (np.asarray(_fm_inc) != 0).sum(axis=1)
+                                        _fs_reach[: len(_fs_nnz)] = np.asarray(_fs_nnz) > 0
+                                        _fs_idx_ok = (_fs_pi >= 0) & (_fs_pi < _fs_K)
+                                        # a scaffold row is LIVE if the GA can move it at all
+                                        _fs_live = (~_fs_mk) & _fs_idx_ok & _fs_reach[
+                                            np.clip(_fs_pi, 0, max(_fs_K - 1, 0))]
+                                        # bincount, NOT reduceat: gcode need not be sorted, and a
+                                        # reduceat over unsorted codes would silently mis-group.
+                                        _fs_per = np.bincount(_fs_gc,
+                                                              weights=_fs_live.astype(float),
+                                                              minlength=_fs_ng)
+                                        _fs_cell_frozen = _fs_per <= 0.0
+                                        _fs_nR = int(_fs_pi.size)
+                                        _fs_frz_cells = int(_fs_cell_frozen.sum())
+                                        _fs_frz_rows = int(_fs_cell_frozen[_fs_gc].sum())
+                                        _fs_reach_keys = int(_fs_reach.sum())
+                                        log("   ── [frozen-scaffold] how much of the band projector "
+                                            "is PERMANENTLY constant? (read-only) ──")
+                                        log(f"      prop-keys reachable by the GA: "
+                                            f"{_fs_reach_keys:,} of {_fs_K:,} "
+                                            f"({_fs_reach_keys / max(_fs_K, 1):.1%}). The rest have "
+                                            "an all-zero incidence row, so prop_raw is 0 there for "
+                                            "EVERY candidate.")
+                                        log(f"      scaffold rows masked (excl|emask): "
+                                            f"{int(_fs_mk.sum()):,} of {_fs_nR:,}")
+                                        log(f"      FROZEN scaffold cells (psum==0 for every "
+                                            f"candidate, so their vamp/txn contribution is a "
+                                            f"constant): {_fs_frz_cells:,} of {_fs_ng:,} "
+                                            f"({_fs_frz_cells / max(_fs_ng, 1):.1%}), carrying "
+                                            f"{_fs_frz_rows:,} of {_fs_nR:,} rows "
+                                            f"({_fs_frz_rows / max(_fs_nR, 1):.1%}).")
+                                        _fs_share = _fs_frz_rows / max(_fs_nR, 1)
+                                        log(f"      READ: the kernel makes ~8 flat passes over "
+                                            f"those {_fs_nR:,} rows per candidate, and that kernel "
+                                            f"is ~92% of a generation. Lifting the frozen rows out "
+                                            f"as a precomputed constant would remove ~{_fs_share:.1%} "
+                                            f"of the row work ⇒ roughly "
+                                            f"{0.92 * _fs_share:.1%} of a generation, i.e. about "
+                                            f"{1.0 / max(1.0 - 0.92 * _fs_share, 1e-9):.2f}x "
+                                            "faster if the bookkeeping were free.")
+                                        if _fs_share < 0.10:
+                                            log("      ⇒ NOT WORTH IT on these numbers: too little "
+                                                "of the scaffold is permanently frozen to pay for "
+                                                "the extra bookkeeping in cap_row / pc_org. The "
+                                                "genome-shrink idea stays a SEARCH-QUALITY change "
+                                                "(~6% of runtime), not a speed one.")
+                                        elif _fs_share < 0.35:
+                                            log("      ⇒ MARGINAL: a real saving but not "
+                                                "transformative. Weigh it against the risk of "
+                                                "maintaining two row sets in a kernel whose "
+                                                "bit-identity everything else depends on.")
+                                        else:
+                                            log("      ⇒ WORTH BUILDING: this is the speed prize, "
+                                                "and it is EXACT rather than approximate — the "
+                                                "frozen contribution is a constant, so removing "
+                                                "those rows is bit-identical, not an approximation.")
+                                        log("      CAVEAT: this counts rows that can NEVER be "
+                                            "moved. A cell whose rows are reachable but happen to "
+                                            "be 0 in the current split is NOT counted — it could "
+                                            "become non-zero, so freezing it would be wrong. This "
+                                            "is deliberately the safe, candidate-independent set.")
+                                    else:
+                                        log("   [frozen-scaffold] skipped: the projector exposes no "
+                                            "scaffold arrays (propidx/gcode/ngc empty) — nothing to "
+                                            "measure, and the kernel is not being used either.")
+                                except Exception as _fse:  # noqa: BLE001
+                                    log(f"   [frozen-scaffold] measurement skipped "
+                                        f"({type(_fse).__name__}: {_fse}). READ-ONLY diagnostic — "
+                                        "the search is unaffected.")
+                                # [mut-target] WAS the targeting live, and what did it aim at?
+                                # A run where the map failed, the switch was off, or nothing was
+                                # ever breached mutates UNIFORMLY — and that is indistinguishable
+                                # from the targeted case unless it is stated outright. Each branch
+                                # below names which of those happened.
+                                try:
+                                    _mt_n = int(_fm_mut_stat.get("gen", 0))
+                                    _mt_c = int(_fm_mut_stat.get("cells", 0))
+                                    _mt_m = _fm_mut_stat.get("mids", ()) or ()
+                                    _mt_tot = int(_fm_p.n_cells)
+                                    _mt_names = ", ".join(sorted(
+                                        {str(_sp_list[_i].midl) for _i in _mt_m
+                                         if 0 <= _i < len(_sp_list)})) or "none"
+                                    if not _fm_mut_on:
+                                        log("   [mut-target] OFF — ROUTING_MUT_TARGET=0, so "
+                                            f"mutation was UNIFORM over all {_mt_tot:,} cells. "
+                                            "That is the pre-2026-08-19ab behaviour, bit-identical "
+                                            "including the RNG stream.")
+                                    elif _fm_spec_cells is None:
+                                        log("   [mut-target] NOT APPLIED — the spec→cell map could "
+                                            "not be built (see the failure above); mutation was "
+                                            "uniform.")
+                                    elif _mt_n == 0:
+                                        log("   [mut-target] never engaged: no generation had a "
+                                            "band breached by EVERY candidate in the population, "
+                                            "so mutation stayed uniform. If the run ENDED with "
+                                            "unmet MIDs that is contradictory — check that "
+                                            "`_fm_bpf` is being called with detail_out=, since "
+                                            "that is what feeds the breach read.")
+                                    else:
+                                        _mt_share = _mt_c / max(_mt_tot, 1)
+                                        _mt_p = min(0.01 * _fm_mut_boost, 1.0)
+                                        log(f"   [mut-target] ON (boost ×{_fm_mut_boost:g}) — aimed "
+                                            f"mutation at {_mt_c:,} of {_mt_tot:,} cells "
+                                            f"({_mt_share:.1%}) across {_mt_n:,} generation(s). "
+                                            f"Bands targeted on the last generation: {_mt_names}.")
+                                        log(f"      Per-cell mutation probability: {_mt_p:.3f} on a "
+                                            "targeted cell vs 0.010 elsewhere. Under UNIFORM "
+                                            f"mutation ~{0.01 * _mt_tot:,.0f} cells were perturbed "
+                                            f"per exploration child but only ~{0.01 * _mt_c:,.0f} "
+                                            "of them could move a breached band; targeting raises "
+                                            "the expected count on those cells to "
+                                            f"~{_mt_p * _mt_c:,.0f}. ROUTING_MUT_BOOST tunes the "
+                                            "boost, ROUTING_MUT_TARGET=0 reverts to uniform.")
+                                except Exception as _mte:  # noqa: BLE001
+                                    log(f"   [mut-target] summary skipped "
+                                        f"({type(_mte).__name__}: {_mte}) — this is the REPORT "
+                                        "only; the targeting itself is unaffected.")
                                 # [proj-par] DRAIN the projector's parallelism notes into the run
                                 # log. band_projection is a library module: it cannot see this
                                 # `log` closure, and nothing here redirects stdout, so its print()

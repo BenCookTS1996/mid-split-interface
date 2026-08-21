@@ -59,12 +59,16 @@ from typing import Optional
 import os as _os
 import numpy as np
 
-try:
-    from scipy.optimize import linprog as _linprog
-    import scipy.sparse as _sparse
-    _HAVE_SCIPY = True
-except Exception:  # noqa: BLE001
-    _HAVE_SCIPY = False
+# scipy is a HARD requirement (2026-08-19aa) — see band_scoring.py for the reasoning. NOTE this
+# module needs BOTH scipy.optimize.linprog (the successive-LP solver) and scipy.sparse, so there
+# was never a meaningful degraded mode: without them the exact projector and targeted-move stages
+# cannot run at all. The two
+#   `if not _HAVE_SCIPY: info["reason"] = "scipy unavailable"; return base_shares`
+# early-returns that used to guard the solvers are deleted with the flag. They returned the seed
+# UNCHANGED under its own name, so a missing dependency surfaced as "the projector achieved
+# nothing" — indistinguishable from a genuinely unimprovable seed.
+from scipy.optimize import linprog as _linprog
+import scipy.sparse as _sparse
 
 __build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+global-linear-lp-seed+minimal-move-projection+colocation-report+held-movable-report+movable-provenance+reachable-minimum-no-floor+vamp-positive-sibling+selfcheck+seedgrad+vpsum+usable-recipient+degenerate-gradient-flag+breach-concentration+scoped-frozen-split+gradient-vpsum-regularisation+insearch-rpgt-breakdown+catchall-eps-floor+targeted-move-headroom"
 
@@ -442,9 +446,6 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
     info = {"ok": False, "build": __build__, "reason": "", "n_free": 0, "outer": 0,
             "breach0": float("nan"), "breach": float("nan"), "feasible": False}
     try:
-        if not _HAVE_SCIPY:
-            info["reason"] = "scipy unavailable"
-            return np.asarray(base_shares, float).copy(), info
         s = np.asarray(base_shares, float).copy()
         N = s.shape[0]
         cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
@@ -1463,9 +1464,6 @@ def solve_global_linear_lp(exact_bands, incidence, base_shares, cell_starts, cel
     info = {"ok": False, "build": __build__, "reason": "", "n_free": 0, "n_bands": 0,
             "breach0": float("nan"), "breach_true": float("nan")}
     try:
-        if not _HAVE_SCIPY:
-            info["reason"] = "scipy unavailable"
-            return np.asarray(base_shares, float).copy(), info
         s0 = np.asarray(base_shares, float).copy()
         N = s0.shape[0]
         cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)

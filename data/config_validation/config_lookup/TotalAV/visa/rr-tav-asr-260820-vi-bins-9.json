@@ -1,0 +1,209 @@
+{
+  "kind": "ConnectorPool",
+  "metadata": {
+    "projectId": "totalav",
+    "name": "rr-tav-asr-260820-vi-bins-9",
+    "uuid": "23274a4d-fc7a-4508-b52f-613a1e80e95e",
+    "displayName": "",
+    "description": "",
+    "annotations": {},
+    "labels": null,
+    "disabled": false
+  },
+  "specVersion": "v1",
+  "selector": {
+    "priority": 300000,
+    "expressions": [
+      {
+        "key": "charge.amount.currency",
+        "operator": "Equal",
+        "conversion": "",
+        "values": [
+          "GBP"
+        ]
+      },
+      {
+        "key": "method.provider",
+        "operator": "NotIn",
+        "conversion": "",
+        "values": [
+          "PAYMENT_METHOD_PROVIDER_APPLEPAY",
+          "PAYMENT_METHOD_PROVIDER_GOOGLEPAY"
+        ]
+      },
+      {
+        "key": "method.paymentScheme",
+        "operator": "Equal",
+        "conversion": "",
+        "values": [
+          "card_visa"
+        ]
+      },
+      {
+        "key": "charge.meta.item.duration",
+        "operator": "Gt",
+        "conversion": "",
+        "values": [
+          "25920000"
+        ]
+      },
+      {
+        "key": "charge.renewalNumber",
+        "operator": "Gt",
+        "conversion": "",
+        "values": [
+          "0"
+        ]
+      },
+      {
+        "key": "method.info.card.bin",
+        "operator": "In",
+        "conversion": "",
+        "values": [
+          "402396",
+          "404970",
+          "404971",
+          "404972",
+          "411298",
+          "412983",
+          "412984",
+          "412985",
+          "423346",
+          "429504",
+          "439654",
+          "442162",
+          "446204",
+          "446271",
+          "446278",
+          "446279",
+          "446281",
+          "446282",
+          "446291",
+          "448429",
+          "448445",
+          "449352",
+          "449353",
+          "450197",
+          "450198",
+          "450199",
+          "450823",
+          "451860",
+          "453978",
+          "453979",
+          "454103",
+          "454313",
+          "455647",
+          "456072",
+          "456073",
+          "457348",
+          "459661",
+          "465842",
+          "465855",
+          "465858",
+          "465863",
+          "465864",
+          "465866",
+          "465902",
+          "465911",
+          "465921",
+          "465923",
+          "465934",
+          "475145",
+          "475732",
+          "476220",
+          "476221",
+          "476222",
+          "476223",
+          "476224",
+          "476225",
+          "476383",
+          "481817",
+          "481818",
+          "481819",
+          "481820",
+          "481877",
+          "481878",
+          "481879",
+          "481881",
+          "481882",
+          "481883",
+          "481884",
+          "481885",
+          "481886",
+          "481888",
+          "481918",
+          "481919",
+          "482171",
+          "482172",
+          "482173",
+          "482193",
+          "482194",
+          "482872",
+          "482873",
+          "483205",
+          "483209",
+          "483210",
+          "483211",
+          "484407",
+          "484431",
+          "484432",
+          "486430",
+          "489394",
+          "489396",
+          "490918",
+          "491232",
+          "491601",
+          "491605",
+          "496668"
+        ]
+      }
+    ]
+  },
+  "spec": {
+    "restriction": "fullCycle",
+    "connectors": [
+      {
+        "connectorId": "adyen-gbp-tav",
+        "priority": 0,
+        "weighting": 22,
+        "uses": 0
+      },
+      {
+        "connectorId": "adyen-gbp-tav-prem",
+        "priority": 0,
+        "weighting": 680,
+        "uses": 0
+      },
+      {
+        "connectorId": "adyen-gbp-tav-pro",
+        "priority": 0,
+        "weighting": 75,
+        "uses": 0
+      },
+      {
+        "connectorId": "adyen-gbp-tav-ultimate",
+        "priority": 0,
+        "weighting": 87,
+        "uses": 0
+      },
+      {
+        "connectorId": "braintree-gbp-tav",
+        "priority": 0,
+        "weighting": 92,
+        "uses": 0
+      },
+      {
+        "connectorId": "checkout-gbp-tav-new",
+        "priority": 0,
+        "weighting": 14,
+        "uses": 0
+      },
+      {
+        "connectorId": "paysafe-gbp-tav",
+        "priority": 0,
+        "weighting": 30,
+        "uses": 0
+      }
+    ]
+  }
+}

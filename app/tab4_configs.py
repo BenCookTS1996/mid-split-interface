@@ -149,6 +149,16 @@ def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
             extra_priority = _pbc.number_input(
                 "Extra priority boost", 0, 2_000_000, 0, step=50000, key=(_kp + "cfg_extra_priority"),
                 help="Added to every pool's priority (script's EXTRA_PRIORITY_AMOUNT).")
+            # Control-group bucket: when ticked, every generated pool gets a
+            # `bucket.bpid Lt <value>` selector expression (default 9,900).
+            _cgc, _cgv, _cgsp = st.columns([1.5, 1.1, 3.4], vertical_alignment="bottom")
+            _ctrl_on = _cgc.checkbox(
+                "Add Control-Group", value=False, key=(_kp + "cfg_ctrl_on"),
+                help="Adds a `bucket.bpid` (operator Lt) expression to every generated config so only "
+                     "transactions whose bucket.bpid is below the value route through these pools.")
+            _ctrl_bpid = _cgv.number_input(
+                "bucket.bpid <", min_value=0, max_value=10000, value=9900, step=100,
+                key=(_kp + "cfg_ctrl_bpid"), help="The bucket.bpid ceiling for the control group.")
             # Green submit — applies all the settings above (width ≈ 25%).
             _gbc, _gbsp = st.columns([1.5, 4.5])
             _do_generate = _gbc.form_submit_button(
@@ -266,7 +276,8 @@ def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
                     _cfg_scheme = _scheme_code(_gen_scheme_name)
                     _pools, _counts = _gen_cfgs(
                         _exports_c, brand_key, date_tag, scheme=_cfg_scheme, mode=_gen_mode,
-                        extra_priority_amount=int(extra_priority), emit_generic=bool(emit_generic))
+                        extra_priority_amount=int(extra_priority), emit_generic=bool(emit_generic),
+                        control_bpid=(int(_ctrl_bpid) if _ctrl_on else None))
                     ss[(_kp + "configs")] = _pools
                     ss[(_kp + "configs_counts")] = _counts
                     ss[(_kp + "configs_meta")] = {"brand_key": brand_key, "date": date_tag,
@@ -347,74 +358,14 @@ def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
                     '</tr>' + "".join(_rows_html) + '</table></div>')
                 st.markdown(_tbl_html, unsafe_allow_html=True)
 
-            # Scatter charts: BINs matched per config + filename length per config.
-            from app_common import render_config_profile_charts as _rcpc
-            _rcpc([(f"{_n}.json", _pool) for _n, _pool in _pools.items()])
-
-        # ---- Find & download a single config (outside the form so its BIN / name filters update
-        #      live as you type). Rendered into the slot just below the form (reserved above). ----
+        # ---- Look up configs by profile (replaces the old 'Find & download a config' panel);
+        #      reuses the shared lookup UI over the just-generated configs. ----
         if not show_find:
-            return   # find panel is the last block in render(); callers can suppress it
+            return   # lookup is the last block; the embedded (Config Validation) generator suppresses it
         with _find_slot:
-            _pools_f = ss.get((_kp + "configs")) or {}
-            _, _hc = st.columns([3, 3])   # header aligned with the "BIN contains" column (right half)
-            _hc.markdown("**Find & download a config**")
-
-            # [FN-387]
-            def _pool_bins(_pool):
-                """All BINs referenced by a pool's card.bin matching-rule expressions."""
-                _found = set()
-
-                # [FN-388]
-                def _walk(o):
-                    if isinstance(o, dict):
-                        if o.get("key") == "method.info.card.bin":
-                            for v in (o.get("values") or []):
-                                _found.add(str(v).strip())
-                        for v in o.values():
-                            _walk(v)
-                    elif isinstance(o, list):
-                        for v in o:
-                            _walk(v)
-                _walk(_pool)
-                return _found
-
-            # Inputs at half width, pushed to the RIGHT: a 3-unit leading spacer + three 1-unit columns.
-            _, _f1, _f2, _f3 = st.columns([3, 1, 1, 1])
-            _bin_q = _f1.text_input("BIN contains", key=(_kp + "cfg_bin_filter"),
-                                    help="Show only configs whose card.bin matching rule includes this BIN "
-                                         "(partial match, e.g. '470793' or just '4707').")
-            _name_q = _f2.text_input("Name contains", key=(_kp + "cfg_name_filter"),
-                                     help="Filter by config file name (RPGT / currency / provider are in the name).")
-            if _pools_f:
-                _bq = _bin_q.strip()
-                _nq = _name_q.strip().lower()
-                _matches = []
-                for _nm, _pool in _pools_f.items():
-                    if _nq and _nq not in _nm.lower():
-                        continue
-                    if _bq and not any(_bq in _b for _b in _pool_bins(_pool)):
-                        continue
-                    _matches.append(_nm)
-                _, _mc = st.columns([1, 1])   # caption at half width (right half)
-                _mc.caption(f"{len(_matches)} of {len(_pools_f)} configs match.")
-                if _matches:
-                    # Dropdown sits in the third column, to the right of "Name contains".
-                    _sel = _f3.selectbox("Config file", _matches, key=(_kp + "cfg_json_sel"))
-                    _pool_sel = _pools_f[_sel]
-                    _bins_sel = sorted(_pool_bins(_pool_sel), key=lambda x: (len(x), x))
-                    if _bins_sel:
-                        _shown = ", ".join(_bins_sel[:80]) + (" …" if len(_bins_sel) > 80 else "")
-                        _, _bc = st.columns([1, 1])   # caption at half width (right half)
-                        _bc.caption(f"BINs in this config ({len(_bins_sel)}): {_shown}")
-                    import json as _js3
-                    _one = _js3.dumps(_pool_sel, indent=2, ensure_ascii=False) + "\n"
-                    # Download button aligned with the "BIN contains" column (right half).
-                    _, _dc = st.columns([3, 3])
-                    _dc.download_button("⬇ Download this config (.json)", _one, file_name=f"{_sel}.json",
-                                        mime="application/json", type="primary", key=(_kp + "cfg_dl_one"))
-                    # JSON at half width, pushed to the RIGHT (left half is a spacer).
-                    _, _jc = st.columns([1, 1])
-                    _jc.json(_pool_sel)
-                else:
-                    st.info("No configs match these filters.")
+            from tab_config_validation import render_profile_lookup as _rpl
+            _gen0 = ss.get((_kp + "configs")) or {}
+            if _gen0:
+                _rpl([(f"{_n0}.json", _p0) for _n0, _p0 in _gen0.items()], key_prefix=(_kp + "lk_"))
+            else:
+                st.caption("Generate configs above, then look them up by profile here.")
