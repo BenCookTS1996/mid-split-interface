@@ -21,6 +21,13 @@ this optimiser starts from.
 """
 from __future__ import annotations
 
+# KEEP THIS IN STEP WITH THE FILE. The run header prints it under "backend build markers", and this
+# module had NONE — so it printed "(no __build__)" on every run and a stale in-memory copy of it was
+# undetectable. That is the failure mode that wasted the 2026-08-22 16:13 run on band_projection.
+__build__ = ("2026-08-19bn-baseline-recon-wrong-frame"
+             "+2026-08-19au-baseline-recon-missing-column")
+
+
 import logging
 import os
 
@@ -495,18 +502,52 @@ def _reconcile_pre_against_bin_rpgt(pre: pd.DataFrame, out_dir: str) -> None:
         b = pd.read_csv(bin_p)
         b0 = b[b.get("period", 0) == 0] if "period" in b.columns else b
         p0 = pre[pre.get("period", 0) == 0] if "period" in pre.columns else pre
-        bt = float(pd.to_numeric(b0.get("Txn_Pre", 0), errors="coerce").fillna(0).sum())
-        pt = float(pd.to_numeric(p0.get("Txn_Pre", 0), errors="coerce").fillna(0).sum())
-        bv = float(pd.to_numeric(b0.get("VAMP_Pre", 0), errors="coerce").fillna(0).sum())
-        pv = float(pd.to_numeric(p0.get("VAMP_Pre", 0), errors="coerce").fillna(0).sum())
-        tol_t = max(1.0, 0.005 * abs(bt)); tol_v = max(1.0, 0.005 * abs(bv))
-        if abs(bt - pt) > tol_t or abs(bv - pv) > tol_v:
+
+        # BUGFIX 2026-08-19au. This used `df.get("Txn_Pre", 0)`, and DataFrame.get returns the
+        # DEFAULT — the int 0 — when the column is absent. `pd.to_numeric(0).fillna(0)` is then
+        # "AttributeError: 'int' object has no attribute 'fillna'", which is EXACTLY what this
+        # guard printed on every run instead of doing its job. A guard whose whole purpose is
+        # "never silently baseline off a mismatched file" was itself silently doing nothing.
+        # Now: name the missing column, and compare whichever metric IS present.
+        def _sum(_df, _col):
+            """Σ of a numeric column, or None if the column is not there."""
+            if _col not in getattr(_df, "columns", ()):
+                return None
+            return float(pd.to_numeric(_df[_col], errors="coerce").fillna(0.0).sum())
+
+        _pairs = {}
+        _missing = []
+        for _col, _lbl in (("Txn_Pre", "txn"), ("VAMP_Pre", "vamp")):
+            _bx, _px = _sum(b0, _col), _sum(p0, _col)
+            if _bx is None or _px is None:
+                _missing.append(
+                    f"{_col} (bin_rpgt {'has' if _bx is not None else 'MISSING'}, "
+                    f"pro-rata {'has' if _px is not None else 'MISSING'})")
+            else:
+                _pairs[_lbl] = (_px, _bx)
+        if _missing:
+            logger.info("      (baseline reconciliation: cannot compare %s. bin_rpgt columns: %s "
+                        "· pro-rata columns: %s)", "; ".join(_missing),
+                        sorted(getattr(b0, "columns", []))[:12],
+                        sorted(getattr(p0, "columns", []))[:12])
+        if not _pairs:
+            logger.info("      (baseline reconciliation: NEITHER metric is comparable — the two "
+                        "exports share no baseline column, so this guard cannot verify the "
+                        "single-source claim. That is a schema problem, not a pass.)")
+            return
+        _bad = []
+        for _lbl, (_px, _bx) in _pairs.items():
+            if abs(_bx - _px) > max(1.0, 0.005 * abs(_bx)):
+                _bad.append(f"{_lbl} {_px:,.1f} vs {_bx:,.1f}")
+        if _bad:
             logger.warning("      ⚠️ baseline reconciliation: pro-rata export vs bin_rpgt DIVERGE "
-                           "(txn %.0f vs %.0f, vamp %.1f vs %.1f) — expected identical; using pro-rata.",
-                           pt, bt, pv, bv)
+                           "(%s) — expected identical; using pro-rata.", "; ".join(_bad))
         else:
-            logger.info("      ✓ baseline reconciliation: pro-rata export == bin_rpgt "
-                        "(txn %.0f, vamp %.1f) — single source consistent.", pt, pv)
+            logger.info("      ✓ baseline reconciliation: pro-rata export == bin_rpgt (%s)%s "
+                        "— single source consistent.",
+                        "; ".join(f"{_l} {_v[0]:,.1f}" for _l, _v in sorted(_pairs.items())),
+                        "" if len(_pairs) == 2 else
+                        f" — NOTE only {sorted(_pairs)} compared, the other is missing")
     except Exception as exc:  # noqa: BLE001 — a cross-check must never break the run
         logger.info("      (baseline reconciliation skipped: %s: %s)", type(exc).__name__, exc)
 
@@ -522,11 +563,21 @@ def load_pre_forecast(path: str) -> pd.DataFrame:
         for fname in PRE_SOURCE_FILES:
             fpath = os.path.join(path, fname)
             if os.path.exists(fpath):
-                out = _normalise_pre(_prorata_to_pre(pd.read_csv(fpath)))
+                # 19bn — WHY THE GUARD NEVER RAN. It compares Txn_Pre / VAMP_Pre against
+                # bin_rpgt_impact_export.csv. `_prorata_to_pre` produces EXACTLY those two columns;
+                # `_normalise_pre` then reshapes its output into the routing frame (bank / currency
+                # / gateway / volume / baseline_share / risk_rate) and drops them. Handing the guard
+                # `out` therefore handed it a frame one step too late, and every run printed
+                # "NEITHER metric is comparable ... That is a schema problem, not a pass" — a guard
+                # whose entire purpose is "never silently baseline off a mismatched file" doing
+                # nothing at all, for the second time (19au fixed a different bug in the same
+                # guard). Give it the INTERMEDIATE. Read-only: the guard only logs.
+                _pre_mid = _prorata_to_pre(pd.read_csv(fpath))
+                out = _normalise_pre(_pre_mid)
                 logger.info(f"      - baseline from {fname}: {len(out):,} cell-rows")
                 if len(out):
                     if fname == "vamp_t_period_prorata_export.csv":
-                        _reconcile_pre_against_bin_rpgt(out, path)
+                        _reconcile_pre_against_bin_rpgt(_pre_mid, path)
                     return out
         raise FileNotFoundError(
             f"No usable baseline export found in {path}. Looked for: "

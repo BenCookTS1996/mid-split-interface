@@ -1,0 +1,151 @@
+"""Row-parallel map for CANDIDATE-INDEPENDENT population transforms (2026-08-19bn).
+
+A transform qualifies if row p of its output depends only on row p of its input. `_segment_softmax`
+and the delivery transform (`_fm_block` then `apply_elig_pop`) both qualify: every operation in them
+is either elementwise or runs along axis=1 (np.add.reduceat, np.maximum.reduceat, np.repeat), so no
+value ever crosses between candidates. Splitting the population across threads then performs the
+SAME operations in the SAME order on the SAME values — bit-identity is a property of the transform,
+not something this module has to arrange.
+
+This is the identical argument band_projection uses for its chunked parallel kernel ("each candidate
+reads only its own row and writes only its own slice"). numpy releases the GIL inside these ufuncs,
+so python threads do real parallel work: 469 -> 251 ms (1.87x) measured on a TWO-core box.
+
+WHY THE FIRST CALL IS SERIAL. Several of the transforms wrapped here self-check on their first call
+and write the verdict into module-level state (`_fm_blk_ok`, `_RX_OK`, the projector's own). A
+threaded first call would race those writes and could print a verdict twice. So call 1 runs serial,
+call 2 runs serial AND threaded and compares int64 bit patterns, and only then does threading take
+over. A mismatch reverts to serial for the process and records why.
+
+Switches: ROUTING_ROW_PARALLEL=0 disables it everywhere. ROUTING_ROW_PARALLEL_WORKERS pins the
+thread count (default: every core the process may use). ROUTING_ROW_PARALLEL_MIN_ROWS and
+..._MIN_CELLS set the size below which threading is pure overhead.
+"""
+from __future__ import annotations
+
+import os as _os
+from concurrent.futures import ThreadPoolExecutor as _TPE
+
+import numpy as _np
+
+__build__ = "2026-08-19bn-row-parallel"
+
+_RP_ON = _os.environ.get("ROUTING_ROW_PARALLEL", "1") != "0"
+_RP_WORKERS = int(_os.environ.get("ROUTING_ROW_PARALLEL_WORKERS", "0") or 0)
+_RP_MIN_ROWS = int(_os.environ.get("ROUTING_ROW_PARALLEL_MIN_ROWS", "4") or 4)
+# below ~1M cells the thread hand-off costs more than the work it hands off
+_RP_MIN_CELLS = int(_os.environ.get("ROUTING_ROW_PARALLEL_MIN_CELLS", "1000000") or 1000000)
+
+_POOL = [None]
+_STATE = {}
+
+
+# [FN-RP1]
+def workers() -> int:
+    """Threads to use. sched_getaffinity, not cpu_count: a cgroup-limited process may only be
+    allowed a subset of the machine's cores, and oversubscribing bandwidth-bound work hurts."""
+    if _RP_WORKERS > 0:
+        return _RP_WORKERS
+    try:
+        return max(1, len(_os.sched_getaffinity(0)))          # type: ignore[attr-defined]
+    except (AttributeError, OSError):
+        return max(1, _os.cpu_count() or 1)
+
+
+# [FN-RP2]
+def state(name: str) -> dict:
+    """Per-call-site state. `phase`: 0 warm-up (serial), 1 verify, 2 threaded, -1 reverted."""
+    return _STATE.setdefault(name, {"phase": 0, "msg": "", "workers": 0, "calls": 0,
+                                    "threaded": 0, "slices": 0})
+
+
+# [FN-RP3]
+def bounds(P: int, k: int):
+    """Contiguous, as-even-as-possible row slices. Contiguous matters: each thread then walks a
+    contiguous block of a C-ordered array instead of striding through the whole thing."""
+    k = max(1, min(int(k), int(P)))
+    out = []
+    for i in range(k):
+        a, b = i * P // k, (i + 1) * P // k
+        if b > a:
+            out.append((a, b))
+    return out
+
+
+def _run_threaded(fn, X, slices):
+    out = _np.empty_like(X)
+    pool = _POOL[0]
+    if pool is None or pool._max_workers < len(slices):       # noqa: SLF001
+        if pool is not None:
+            pool.shutdown(wait=True)
+        pool = _POOL[0] = _TPE(max_workers=max(len(slices), 2),
+                               thread_name_prefix="rowpar")
+
+    def _one(bd):
+        a, b = bd
+        out[a:b] = fn(X[a:b])
+        return None
+
+    list(pool.map(_one, slices))
+    return out
+
+
+# [FN-RP4]
+def row_parallel(fn, X, name: str, enabled: bool = True):
+    """Apply a CANDIDATE-INDEPENDENT `fn` to row slices of `X` in threads.
+
+    `fn` must return an array of the same shape as its argument. Falls through to `fn(X)` whenever
+    threading is off, the array is too small to be worth it, or a previous verification failed."""
+    Xa = _np.asarray(X)
+    st = state(name)
+    st["calls"] += 1
+    if (not _RP_ON) or (not enabled) or Xa.ndim != 2 or st["phase"] < 0:
+        return fn(X)
+    P = Xa.shape[0]
+    if P < _RP_MIN_ROWS or Xa.size < _RP_MIN_CELLS:
+        return fn(X)
+    sl = bounds(P, workers())
+    if len(sl) < 2:
+        return fn(X)
+
+    if st["phase"] == 0:
+        # WARM-UP, SERIAL ON PURPOSE: let every nested first-call self-check run single-threaded.
+        st["phase"] = 1
+        return fn(X)
+
+    if st["phase"] == 1:
+        ref = fn(X)
+        got = _run_threaded(fn, Xa, sl)
+        same = (ref.shape == got.shape
+                and _np.array_equal(_np.asarray(ref).view(_np.int64), got.view(_np.int64))
+                if _np.asarray(ref).dtype == _np.float64 else _np.array_equal(ref, got))
+        if same:
+            st["phase"], st["workers"], st["slices"] = 2, len(sl), len(sl)
+            st["msg"] = (f"[row-par] {name}: VERIFIED bit-identical threaded, {len(sl)} thread(s) "
+                         f"over {P} candidate(s) (int64 bit-pattern comparison on {P}x"
+                         f"{Xa.shape[1]:,}, stricter than array_equal). The transform is "
+                         "candidate-independent, so each thread performs the same operations in "
+                         "the same order on its own rows. ROUTING_ROW_PARALLEL=0 reverts.")
+        else:
+            st["phase"] = -1
+            _mx = float(_np.abs(_np.asarray(ref) - got).max()) if ref.shape == got.shape else -1.0
+            st["msg"] = (f"[row-par] \u26a0 {name}: threaded result is NOT identical to serial "
+                         f"(max|\u0394| {_mx:.3e}). REVERTING to serial for this process, so what "
+                         "ships is the known-good path. This means the transform is NOT "
+                         "candidate-independent after all — report it, do not treat it as "
+                         "cosmetic.")
+        return ref                                            # always ship the serial result here
+
+    st["threaded"] += 1
+    return _run_threaded(fn, Xa, sl)
+
+
+# [FN-RP5]
+def messages():
+    """Every call site's verdict, for the run log. Empty string for sites that never threaded."""
+    out = []
+    for _n, _s in sorted(_STATE.items()):
+        if _s.get("msg"):
+            out.append(_s["msg"] + (f" Used on {_s['threaded']:,} of {_s['calls']:,} call(s)."
+                                    if _s.get("threaded") else ""))
+    return out

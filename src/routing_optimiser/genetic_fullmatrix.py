@@ -51,6 +51,8 @@ import os as _os_gf
 
 import numpy as np
 
+from routing_optimiser.rowpar import row_parallel as _rowpar
+
 # Persistent Numba cache (same folder GA-Numba uses) so the one-time kernel compile
 # is NOT repaid every run — reclaimed time goes to search. setdefault => an explicit
 # NUMBA_CACHE_DIR wins. MUST be set before importing numba.
@@ -396,11 +398,14 @@ def _segments(sorted_ids):
 # ---------------------------------------------------------------------------
 # Vectorised scoring primitives  (population = (P, R) logit matrices)
 # ---------------------------------------------------------------------------
-def _segment_softmax(logits, cell_start, cell_len):
-    """Per-cell softmax over contiguous row segments.
+def _segment_softmax_serial(logits, cell_start, cell_len):
+    """Per-cell softmax over contiguous row segments. THE REFERENCE.
 
     logits: (P, R). Returns shares (P, R) where each cell's rows sum to 1.
     Numerically stable (subtracts per-segment max).
+
+    Every operation here is elementwise or runs along axis=1, so row p of the output depends only on
+    row p of the input — which is what makes `_segment_softmax` below safe to thread.
     """
     logits = np.atleast_2d(logits)
     # per-segment max, expanded back to row grain
@@ -410,6 +415,16 @@ def _segment_softmax(logits, cell_start, cell_len):
     seg_sum = np.add.reduceat(ex, cell_start, axis=1)                  # (P, n_cells)
     row_sum = np.repeat(seg_sum, cell_len, axis=1)                      # (P, R)
     return ex / row_sum
+
+
+def _segment_softmax(logits, cell_start, cell_len):
+    """Row-parallel wrapper (2026-08-19bn). [gen-cost] put this at 13.2% of a generation, all of it
+    single-threaded numpy. The transform is candidate-independent (see the reference above), so the
+    population is split across threads; `rowpar` verifies bit-identity on its second call and
+    reverts to serial on any mismatch. ROUTING_ROW_PARALLEL=0 disables it."""
+    _lg = np.atleast_2d(logits)
+    return _rowpar(lambda _sub: _segment_softmax_serial(_sub, cell_start, cell_len),
+                   _lg, "softmax")
 
 
 def _vwsr(shares, vol, succ, total_vol):

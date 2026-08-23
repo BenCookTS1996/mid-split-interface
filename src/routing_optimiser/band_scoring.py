@@ -1,7 +1,12 @@
 """Exact per-generation band scoring for the GA (gate 2, increments 1–2).
 
 The GA fitness (`genetic_global._obj_viol` and the lock-stepped `numba_kernels._fused_eval`)
-adds a per-MID month-band VIOLATION using a crude volume-ratio PROXY:
+adds a per-MID month-band VIOLATION. NOTE (2026-08-19bb): the paragraph below describes the
+volume-ratio PROXY this module was built to REPLACE — it is history, not what runs. The only
+penalty class here is `ExactBandPenalty`, the full-matrix GA is called with
+`band_penalty_fn=ExactBandPenalty.penalty` and WITHOUT the `mid_bands` proxy hook, and the run
+log's five-rung chain reads identically at every rung with RECONCILIATION ERROR 0 — which a proxy
+could not produce. The proxy text is kept only to explain what the exact scorer superseded:
 
     proj_proxy(mid, month) = bval × (MID_volume(candidate) / MID_baseline_volume)
     viol += _pen( max(proj/ceil − 1, 0) ) · wm[mid] · pmul      (+ the floor side)

@@ -477,7 +477,325 @@ _TAB_FIDS = [
 DEFAULT_GATEWAY_FIDS = "(" + ",".join(f"'{f}'" for f in _TAV_FIDS + _TDR_FIDS + _TAB_FIDS) + ")"
 
 
-APP_BUILD = "2026-08-19ac"  # [frozen-scaffold] measurement; mutation rate = one explicit number
+APP_BUILD = "2026-08-19bn"  # 19bl: REPAIR. 19bk wrote eligibility.py from a stale base and
+# deleted the 2026-08-18 +exact-subcell-capability work, so the GA scored eligibility with the
+# global wallet/Non-USA fraction while delivery applied the exact pure-sub-cell rule. That is
+# the 17:21 regression: [elig-grain] 147,944/245,409 -> 0/1, RECONCILIATION ERROR 0 -> 7,865,
+# [rung] 100% SPLIT, 78,822 differing prop-keys. Rebased on git HEAD, in-place twin retained
+# and re-proven bit-identical, plus a canary that shouts if the module ever regresses again.
+                           # [deliv-cost] split the 52.2% `deliver` row into eligibility
+                           # 840ms (71.5%), blocked-caps 312ms (26.6%), scatter 22.5ms.
+                           # (1) BLOCKED-CAPS restricted to the cells a blocked row can
+                           # reach — 68 of 23,418 on the 16:01 run. Elsewhere _freed == 0
+                           # so _outb == _capd + 0.0 == _X exactly. [deliv-cost] already
+                           # proved it np.array_equal on the live 35x242,670 array and
+                           # measured 312 -> 19.1 ms (16.3x, 13.3% of a generation).
+                           # (2) ELIGIBILITY in place. apply_elig_pop's two _blend_pop
+                           # calls built ~28 full-width temporaries (~1.9 GB of traffic
+                           # per generation); the twin reuses scratch with the SAME ufuncs
+                           # in the SAME order — np.take(out=) for np.repeat, np.copyto
+                           # for np.where, both selections not arithmetic. Measured 2.80x
+                           # and bit-identical. Costs 0.35 GB of persistent scratch.
+                           # BOTH self-check against the original on their FIRST live call
+                           # and, on any mismatch, revert for the run and shout — the
+                           # fallback ships the KNOWN-GOOD path, it does not hide it.
+                           # ROUTING_BLOCK_RESTRICT=0 / ROUTING_ELIG_INPLACE=0 revert.
+                           # NOTE eligibility is shared with the TILT engine
+                           # (genetic_global), which is why the check is on the function.
+                           # 19bi/bj, on Ben's instructions from the 14:09 run.
+                           # 19bi ADOPTED G: every index array the band kernel reads is
+                           # int32 now (half the index bandwidth, identical values).
+                           # Measured 4.1%, 12/15 rounds, p=0.035, max|Δ| 0.0. A wrapped
+                           # index would read the wrong row SILENTLY, so `_i32` refuses to
+                           # narrow anything whose range does not provably fit and the
+                           # projector logs the largest index against the int32 ceiling.
+                           # 19bi RETIRED H as a variant — chunking has been adopted since
+                           # 19az and [gen-cost] now measures the projector's share of a
+                           # generation directly, which is what H stood in for.
+                           # 19bi [kernel-ga] default A,H -> A,F: F is the only variant
+                           # still open, and this is the only block that measures how far
+                           # it moves the answer END TO END.
+                           # 19bj NEW [deliv-cost]: splits the 51.6% `deliver` row into
+                           # scatter / blocked-caps / eligibility AND tests the one
+                           # optimisation the code offers — `_fm_block` builds ~8
+                           # full-width temporaries for a mask covering 91 of 245,409
+                           # rows, so only the cells holding a blocked row can change. The
+                           # block RUNS the restricted version and diffs it with
+                           # np.array_equal, so the next run says whether it is safe
+                           # rather than leaving it an argument. NOT a behaviour change.
+                           # 19bh: my 19bg A,H default landed on the WRONG LINE — variant
+                           # E's lazy-compile gate, not `_kg_want`, the actual selector. So
+                           # the 14:09 run announced A,H in its footer and ran A,B. The E
+                           # gate re-read the same env var with its own default, which is
+                           # how a one-line edit could hit the wrong one; it now reads the
+                           # parsed list, so there is ONE read of that setting.
+                           # 19bg: FIND THE REAL BOTTLENECK. The log measured ONE component
+                           # of a generation (the band projector, [kernel-ab]) and nothing
+                           # else, while the 11:56 run spent 3.01 s/generation. New
+                           # [gen-cost] times all five stages the search actually runs per
+                           # generation — softmax, deliver_full, project, fitness, genetic —
+                           # with the SAME functions, and prints their sum against the
+                           # engine's own s/generation so an unaccounted remainder cannot
+                           # hide. It also resolves a contradiction: [kernel-ab] predicted
+                           # LIFT OFF would cost +24s over 320 generations and [kernel-ga]
+                           # measured +2.3s. Until that is settled no kernel variant can be
+                           # valued. [kernel-ga] default moves A,B -> A,H (a 4.5x lever
+                           # instead of 1.16x, so the answer clears the noise), B and H are
+                           # relabelled as COUNTERFACTUALS of adopted optimisations rather
+                           # than proposals, and C/D/E/F/G get a standing verdict so settled
+                           # questions stop reopening. All read-only. ROUTING_GEN_COST=0.
+                           # 19bf: two defects the 11:56 run exposed, both mine.
+                           # (1) [seed-basis]'s new ⚠ fired on all three seeds at Δ ≈ 2e-07
+                           # on a breach of ~0.34 — float noise from the same projection
+                           # down two code paths. My 19bd threshold was `_d2 > _r2 + 1e-9`,
+                           # eight orders below the noise. It now needs BAND EVIDENCE (the
+                           # bases disagree on which are met, or a value moves >0.25% of its
+                           # limit — the same test the per-seed lines use) plus a relative
+                           # floor, so it cannot contradict its own block. Noise is counted
+                           # and named in one line instead of three paragraphs.
+                           # (2) band_projection hardcoded "Measured 3.196x" for chunking
+                           # while [kernel-ab] row H measured 4.5x on the SAME log. Same
+                           # defect as the deleted "about 1.08x" frozen-scaffold model:
+                           # a fitted constant next to a live measurement. Deleted; the
+                           # line now points at H.
+                           # 19be: BEHAVIOUR CHANGE, approved 2026-08-23.
+                           # solve_targeted_moves keeps recipient headroom per (MID,
+                           # METRIC). It was ONE slot per MID (last spec wins, metric
+                           # ignored), and report()'s one-row-per-SPEC was collapsed by
+                           # midl the same way, and the running budget was debited in VAMP
+                           # units whatever metric the ceiling belonged to — risk is ~1e-2,
+                           # so a TXN ceiling read ~100x its real room. That is how a VAMP
+                           # shed onto the txn-only WoodForest (23,961 of 24,000) was
+                           # allowed to continue until delivery put it 14 over. Recipients
+                           # now need room under EVERY ceiling they hold, each budget in
+                           # its own units, ranked by binding share-capacity; the donor
+                           # orders cells by whichever of ITS metrics is worst over.
+                           # Never-worse untouched. ROUTING_TMOVE_ALLBANDS=0 ignores
+                           # recipients' txn ceilings. Floors still out of scope.
+                           # 19bd: (a) solve_targeted_moves' "strictly better" now says it is
+                           # the RAW basis, and [seed-basis] names any stage that is better on
+                           # RAW and worse on DELIVERED, with the root cause (recipient headroom
+                           # is computed on the metric being SHED, so a txn-only MID reads
+                           # infinite room for a VAMP shed). Claim only — no shares move.
+                           # (b) [kernel-ab] prints the NUMBER of paired rounds an undecided
+                           # variant needs, and flags a lane cap below the thread count.
+                           # (c) new [zero-cells]: genome cells that cannot move either
+                           # objective. All read-only.
+                           # 19bc:
+                           # (1) A and B each printed TWICE with contradictory
+                           # conventions — 1.158x (B/A) directly above 0.863x median
+                           # (A/B), the same measurement reading as two findings. My
+                           # 19ba edit replaced the report span but the original A/B
+                           # lines sat ABOVE the anchor, so they survived. Deleted.
+                           # (2) The floor test was statistically wrong and it HID THE
+                           # ONE VARIANT THAT MATTERS. 19ba compared each median against
+                           # the max-min RANGE of A' 's per-round ratios — that asks an
+                           # effect to exceed the whole spread of INDIVIDUAL measurements,
+                           # far too conservative at n=15, and max-min is set by one
+                           # outlier and does NOT shrink with more samples. It read 14.4%
+                           # and buried G (int32, BIT-IDENTICAL, bandwidth-halving) at
+                           # 4.9% median. Now: a SIGN TEST over the paired rounds is the
+                           # primary, distribution-free decision, and a 95% CI on the
+                           # median is the effect-size uncertainty. The old range is
+                           # still printed, labelled as over-conservative. A verdict
+                           # needs the sign test to agree, and the wording separates
+                           # "consistent but small" from "not measurable".
+                           #  # band_projection.py's OWN docstring claimed "the search falls
+                           # back to a crude volume-ratio proxy (the source of the large
+                           # proxy-vs-true gaps in the run log)". Both halves are stale:
+                           # the proxy is REMOVED (run_fullmatrix_ga is called WITHOUT the
+                           # mid_bands hook and WITH band_penalty_fn=ExactBandPenalty.
+                           # penalty; band_scoring holds no proxy class at all), and
+                           # _project_capped lives in tab2_engine, not streamlit_app.
+                           # The numbers settle it rather than the comments: the five-rung
+                           # chain reads identically at every rung and RECONCILIATION
+                           # ERROR is 0 on all 15 bands — a proxy scoring the search would
+                           # appear as DELIVERY DRIFT, the column reading zero. Deleted:
+                           # it caused a real misreading, which is documentation worse
+                           # than absent. band_scoring.py's opening line likewise.
+                           #  # the variant MEASUREMENT was noise-dominated, and my own
+                           # interleaving is what revealed it. On the 21:10 chunked run A —
+                           # the SAME computation — drifted 399.8 -> 496.6 ms across the
+                           # block (+24%, +11.3 ms per slot) because 8 lanes contending for
+                           # memory bandwidth heat the machine. The consecutive-reps design
+                           # folded that INTO the floor (29.7%) and buried every variant
+                           # under it, with position and effect inseparable: C and D timed
+                           # late read "slower", F timed near the end read fastest.
+                           # FIX IS THE DESIGN, not more reps (more reps = more heat).
+                           # BLOCKED/PAIRED: _KAB_REPS rounds, every candidate timed ONCE
+                           # per round in the same order, ratios taken WITHIN a round so
+                           # drift slower than one round cancels exactly. Same total kernel
+                           # calls — only the order changed. The FLOOR is now MEASURED:
+                           # A' is the same computation as A, so its per-round ratio must
+                           # be 1.000 and its spread IS the precision. DRIFT is reported
+                           # separately so a hot machine is visible rather than blamed on
+                           # the variants. Verdicts say "NOT MEASURABLE on this run",
+                           # never "no effect" — conflating those is what retired C/D/E/F
+                           # in 19ar on numbers that could not carry the decision.
+                           #  # CHUNKED-PARALLEL PROJECTION ADOPTED. P over the lane cap
+                           # no longer declines to the serial kernel: the population runs
+                           # as ceil(P/cap) parallel calls of at most cap candidates, so
+                           # the scratch cost is the CAP's (0.33 GB) not P's (1.26 GB at
+                           # P=35) and every population from 10 up stops forfeiting
+                           # parallelism. Measured 3.196x AT THE TIME; the live figure is
+                           # [kernel-ab] row H (4.5x on 2026-08-23). On the scaffold at P=35,
+                           # bit-identical, and re-verified IN-RUN by the once-per-process
+                           # self-check, which now diffs _project_chunked itself against
+                           # the serial kernel rather than a stand-in for it.
+                           # ROUTING_PROJ_CHUNK=0 is a true revert (asserted).
+                           # [kernel-ab]/[kernel-ga] follow the adopted path: A IS the
+                           # chunked path and H flips to CHUNKING OFF — its
+                           # counterfactual, the same convention as B (LIFT OFF). Every
+                           # other variant is therefore re-measured on the new baseline,
+                           # which matters because chunking MOVES THE BOTTLENECK: one
+                           # thread was compute-bound (why C/D/E/F/G all sat inside the
+                           # floor), eight lanes are bandwidth-bound, so G (int32) and F
+                           # (float32) have a different case to make than before.
+                           #  # H was NOT testable end-to-end, and I did not notice.
+                           # [kernel-ab] proved H bit-identical on ONE CALL; the
+                           # whole-search check that B passed had never been run on it,
+                           # because _kg_wrap had no H branch. ROUTING_KERNEL_GA_VARIANTS
+                           # =A,H would have fallen through every elif, applied NO
+                           # transform, and reported H as identical to A having run A
+                           # twice — a vacuous PASS on the only question that decides
+                           # whether adopting H changes the delivered split. The
+                           # _kg_calls positive control cannot catch it: the wrapper IS
+                           # called, it just does nothing. Now H chunks for real, and an
+                           # UNRECOGNISED kind RAISES instead of silently running as A.
+                           # H also declines when the projector handed it a single lane,
+                           # because chunking into lane 0 under the parallel compile is
+                           # the forbidden nlane==1 call — a race, not an error.
+                           #  # two defects the pop-40 run exposed in my OWN 19av/19aw
+                           # work. (1) The verbosity gate keyed on the tag alone, but a
+                           # family header carries the tag at 3 spaces and its detail
+                           # rows sit at 6+ with none — so it held [mut-target]'s header
+                           # and printed its detail line ORPHANED, a sentence with its
+                           # subject removed. The gate is now sticky over that
+                           # indentation convention, and ends the run at equal-or-
+                           # shallower depth so nothing unrelated can be swallowed.
+                           # (2) [frozen-scaffold] printed "REALISED SPEEDUP (measured,
+                           # not modelled): about 1.08x" from a curve fitted at P=3,
+                           # while [kernel-ab] measured the same lift at 1.276x on the
+                           # SAME run (B 1733.4 vs A 1358.7 ms, 27.6% outside a 5.0%
+                           # floor). The lift scales with candidate width; the model is
+                           # deleted rather than left to contradict the measurement.
+                           #  # POP 40 CHANGES THE CODE PATH. children = pop -
+                           # min(6, max(1, pop//8)), and the projector declines
+                           # candidate-parallelism once children exceed
+                           # ROUTING_PROJ_LANES=8 — so pop 40 runs the SERIAL compile
+                           # at P=35. [kernel-ab] hardcoded P=3 and the PARALLEL
+                           # compile, correct only at pop 4, and [kernel-ga] patched
+                           # only the parallel dispatcher so every variant row would
+                           # have been A run against itself. Now: width and path are
+                           # DERIVED from the live budget using the projector's own
+                           # constants; both dispatchers are wrapped and restored;
+                           # fastmath gained a SERIAL compile because the parallel one
+                           # at nlane==1 aliases every candidate onto lane 0; A is
+                           # re-timed BETWEEN variants so the resolution floor spans
+                           # the positions the variants occupy. New variant H: chunked
+                           # parallel — a P=35 call split into calls of <=8 is
+                           # BIT-IDENTICAL (asserted) and needs 0.33 GB of lane
+                           # scratch instead of 1.43 GB, so it may recover the
+                           # parallelism high pop currently forfeits. MEASUREMENT ONLY.
+                           #  # RUN-LOG CLEANUP + the retired variants come back.
+                           # (1) A verbosity GATE: 22 settled diagnostic families are
+                           # muted, meaning their lines are HELD, not dropped — one ⚠ /
+                           # STOP / DIVERGE / ✗ / crashed-skip in a family releases its
+                           # whole buffer, so a regression prints in full including the
+                           # run-up. A quiet family collapses to one [muted] line naming
+                           # its release condition. ROUTING_LOG_ALL=1 shows everything.
+                           # The blocks still RUN; this is display, not a skip.
+                           # (2) DELETED stale log text: a retired switch nobody can
+                           # find, a hardcoded "step 1 was 8% at 251" beside live
+                           # numbers, a changelog line inside a diagnostic, and a note
+                           # about a typo fixed three builds ago.
+                           # (3) [zero-rows]: how many nC/nA loop rows are EXACTLY 0.0
+                           # for every candidate. Scoped to what is actually provable —
+                           # my "899k back-fill rows are droppable" claim was WRONG,
+                           # base and ctot are CELL SUMS.
+                           # (4) C/D/E/F BACK plus G (int32), reps 5 -> 15. Three of the
+                           # four were retired against a 4.8% floor they sat INSIDE, so
+                           # they were never measured. C and G claim bit-identity and
+                           # are asserted; D/E/F are labelled answer-changing.
+                           #  # the two long-standing "skipped" lines. (1) baseline
+                           # reconciliation died with AttributeError on EVERY run:
+                           # DataFrame.get(col, 0) returns the int 0 when the column
+                           # is absent, so pd.to_numeric(0).fillna(0) raised. A guard
+                           # whose whole job is "never silently baseline off a
+                           # mismatched file" was itself silently doing nothing. It
+                           # now NAMES the missing column, lists what each export
+                           # does have, and compares whichever metric IS present.
+                           # (2) [step1] "one of the four blend vectors is
+                           # unavailable" was NOT a failure: step 1 IS the backup
+                           # catch-all blend, and with no catch-all configured it is
+                           # identically ZERO. It now says so, and still reports a
+                           # REAL gap as genuinely UNMEASURED when a catch-all
+                           # exists. forecast_pipeline also gains a __build__ marker
+                           # — the header was asking it for one and printing
+                           # "(no __build__)".
+                           #  # [nw-attrib] the no-divergence line printed TWICE identically
+                           # and named neither candidate — my 19an replace was a SILENT
+                           # no-op (no assert on the match). Now names the candidate;
+                           # [loaded] interrogate the LIVE band_projection — the 16:13 run
+                           # reproduced 13:33 byte-for-byte because a long-lived Streamlit
+                           # process still held an 11:20 module; the __build__ marker was
+                           # six changes stale and [proj-par] blamed numba for a drained
+                           # note list. Both fixed. RESTART THE APP after a src/ change;
+                           # IN-SEARCH VAMP CONSERVATION — the move is now gated on the
+                           # origin cell having a VAMP RECIPIENT (vpsum>0), not just being
+                           # routed (psum>0). A routed cell with no VAMP-positive door was
+                           # DESTROYING the moved VAMP (measured 165 of 165), so the GA was
+                           # scoring a fraud reduction that does not happen. All three
+                           # in-search paths. BEHAVIOUR CHANGE — expect worse-looking VAMP.
+                           # ROUTING_VAMP_CONSERVE=0 reverts;
+                           # 19ar: kernel variants C/D/E/F retired (all measured, none
+                           # worth a row) + the fastmath compile deleted with E;
+                           # [kernel-ga] the timing column was labelled "speed" — it times
+                           # the PYTHON WRAPPER (C/D/F rebuild arrays per call), which is
+                           # why every variant read slower than A. Relabelled (wrap) + F is
+                           # now an explicit positive control that the wrapper is live;
+                           # [kernel-ga] run the WHOLE search once per kernel variant and
+                           # compare the ANSWERS — a 1e-12 per-call Δ says nothing about
+                           # where a ranking-based search lands. GA kwargs hoisted so the
+                           # variant runs are provably identical bar the kernel;
+                           # [never-worse] 19an: DRIFT TIE-BREAK DELETED. Decide on
+                           # delivered breach alone and FLAG the drift — the tie-break was
+                           # routing around the projection defect instead of surfacing it.
+                           # ROUTING_NW_TOL retired. Expect the ~616 back, flagged;
+                           # [nw-attrib] attribute the drift of the candidate the
+                           # never-worse guard REJECTS — the guard routes around the
+                           # projection divergence, it does not fix it, so the rejected
+                           # candidate carries the root cause. Per-call stash capture
+                           # (module globals were overwritten, so only the shipped split
+                           # was ever explained). Read-only;
+                           # [kernel-ab] CONTROLS — A' (fresh copies, nothing filtered)
+                           # and A" (A re-timed last) + reps 2→5, so the block reports a
+                           # resolution floor instead of calling a 1.095x on an 0.8% row
+                           # drop a "free win" (12:38 did exactly that);
+                           # [never-worse] decide on the DELIVERED value, not the GA's own
+                           # fitness, + tie-break on reproducibility inside 5%
+                           # (ROUTING_NW_TOL). 11:34 shipped +405/616-recon over +411/3
+                           # because the deciding basis was blind to delivery drift.
+                           # BEHAVIOUR CHANGE. ROUTING_NW_DELIVERED=0 reverts;
+                           # [kernel-ab] E fastmath + F float32 as MEASURED variants, so
+                           # the accuracy cost is a number not a claim (neither shipped;
+                           # ROUTING_KERNEL_AB_PREC=0 skips just these two);
+                           # [vterms] READ the VAMP-term stash impact_calcs has computed
+                           # and discarded every run (_LAST_VAMP_TERMS / _LAST_VAMP_PSUM,
+                           # zero references in tab2 until now). cf_norenorm isolates the
+                           # aged-frame renormalise-to-1, which test_recon616 shows is the
+                           # ENTIRE in-search-vs-delivered VAMP divergence on a fixture;
+                           # [kernel-ab] PLACEMENT FIX — 19ag anchored the block above the
+                           # line that assigns _fm_full, so it raised UnboundLocalError on every
+                           # run and its own except clause downgraded that to a one-line note.
+                           # The measurement never ran once. Measurement-only move;
+                           # [kernel-ab] in-run A/B of the remaining kernel ideas;
+                           # hoist static nC/nA gathers (bit-identical, ~1.08x measured);
+                           # never-worse ENFORCED (ship the seed if the GA regresses);
+                           # frozen-scaffold LIFT (bit-identical, ~1.08x measured);
+                           # targeting: VAMP/TXN CAPACITY not presence, budget-neutral (19ab was
+                           # a no-op that tripled mutation); grain log labels; [frozen-scaffold]
+                           # measurement; mutation rate = one explicit number
                            # (dead 60/n_cells term removed, ROUTING_MUT_RATE added);
                            # breach-TARGETED mutation (cells feeding a breached band get a
                            # boosted selection probability); breach_fixed 0.3; 4 silent

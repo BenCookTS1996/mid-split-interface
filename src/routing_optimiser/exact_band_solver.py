@@ -70,7 +70,7 @@ import numpy as np
 from scipy.optimize import linprog as _linprog
 import scipy.sparse as _sparse
 
-__build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+global-linear-lp-seed+minimal-move-projection+colocation-report+held-movable-report+movable-provenance+reachable-minimum-no-floor+vamp-positive-sibling+selfcheck+seedgrad+vpsum+usable-recipient+degenerate-gradient-flag+breach-concentration+scoped-frozen-split+gradient-vpsum-regularisation+insearch-rpgt-breakdown+catchall-eps-floor+targeted-move-headroom"
+__build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+global-linear-lp-seed+minimal-move-projection+colocation-report+held-movable-report+movable-provenance+reachable-minimum-no-floor+vamp-positive-sibling+selfcheck+seedgrad+vpsum+usable-recipient+degenerate-gradient-flag+breach-concentration+scoped-frozen-split+gradient-vpsum-regularisation+insearch-rpgt-breakdown+catchall-eps-floor+targeted-move-headroom+2026-08-19bd-raw-basis-claim-labelled+2026-08-19be-recipient-headroom-per-metric"
 
 # Gradient-only vpsum/psum floor used by the SEED SOLVERS (not the diagnostics, not the forward
 # values). Share-scale denominators: real high-VAMP cells sit well above this, near-empty cells
@@ -1641,12 +1641,30 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                          movable_frac=0.8, log_fn=None):
     """TARGETED move operator → a WARM-START SEED that directly clears breached CEILINGS.
 
-    For every breached ceiling MID it sheds that MID's share, cell by cell (highest VAMP-contribution
-    first), onto co-located ELIGIBLE sibling gateways — but ONLY onto MIDs that have genuine VAMP
-    HEADROOM under their OWN ceiling, preferring the MIDs with the MOST slack (a MID with no VAMP
-    ceiling — e.g. the txn-only WoodForest/Authorize/Adyen-NA — counts as infinite headroom). A
-    running per-recipient VAMP budget stops it from over-filling any one sibling MID into a NEW breach
-    (the whack-a-mole that made the earlier version relocate breaches instead of removing them).
+    For every breached ceiling MID it sheds that MID's share, cell by cell (highest contribution to
+    whichever of its OWN metrics is worst over), onto co-located ELIGIBLE sibling gateways — but ONLY
+    onto MIDs that have room under EVERY ceiling they hold, preferring the recipients with the most
+    BINDING SHARE-CAPACITY. A running per-recipient PER-METRIC budget stops it from over-filling any
+    one sibling MID into a NEW breach (the whack-a-mole that made the earlier version relocate
+    breaches instead of removing them).
+
+    RECIPIENT HEADROOM IS PER (MID, METRIC) as of 2026-08-19be, and this is a BEHAVIOUR CHANGE — it
+    moves shares. Before 19be every ceiling, VAMP or TXN, was written into one per-MID slot (last
+    spec wins), `report()`'s one-row-per-SPEC was collapsed by midl the same way, and the running
+    budget was debited in VAMP units whichever metric the surviving ceiling belonged to. Since risk
+    is ~1e-2, a TXN ceiling debited at cell_vol×risk read roughly a hundred times the room it had.
+    That is how a VAMP shed onto the txn-only WoodForest (23,961 against a 24,000 txn ceiling) was
+    allowed to continue: the RAW line-search saw it 39 under, delivery added ~115, and it landed 14
+    OVER — the band [seed-basis] flagged as appearing only on the delivered side. Now each ceiling
+    keeps its own budget in its own units, a share increment is converted with that metric's own
+    density (TXN = cell_vol × movable_frac; VAMP = that × the row's risk), and a recipient must have
+    room under all of them. `ROUTING_TMOVE_ALLBANDS=0` ignores recipients' TXN ceilings — which is
+    what the pre-19be DOCSTRING claimed the code did.
+
+    STILL CEILINGS ONLY. Floors are not anticipated by the greedy proposal (the line-search's
+    penalty does cover them, so a floor-breaking batch is rejected, not shipped). And the accept
+    test is still RAW: 19be removes the mechanism that made RAW and DELIVERED disagree here, it does
+    not make the operator delivery-aware.
 
     Each MID's batch of moves is then LINE-SEARCHED against the EXACT projector (factors 1→0.2) and
     only KEPT if the exact TOTAL breach strictly drops — so a move that merely relocates VAMP onto
@@ -1656,12 +1674,13 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
     pass. NEVER-WORSE overall: returns base unchanged if it can't strictly improve.
 
     If it stalls with ceilings still over, that is rigorous evidence the caps are JOINTLY infeasible by
-    routing (the low-VAMP recipient pool lacks the collective headroom). Ceilings only. Never raises.
+    routing (the recipient pool lacks the collective headroom under its own ceilings). Never raises.
 
     Inputs mirror the co-location diagnostic: `mid_id` (per-row MID index into `mid_names`), `risk`
     (per-row VAMP rate), `cell_vol` (per-cell forecast volume), `elig` (per-row eligibility).
-    `movable_frac` converts a share increment to an approximate VAMP increment (share×vol×risk×frac)
-    for the running recipient budget — approximate on purpose; the exact line-search is the guard."""
+    `movable_frac` converts a share increment to approximate METRIC increments for the running
+    recipient budgets — TXN share×vol×frac, VAMP share×vol×risk×frac. Approximate on purpose; the
+    exact line-search is the guard."""
     info = {"ok": False, "build": __build__, "reason": "", "breach0": float("nan"),
             "breach": float("nan"), "moved": 0.0, "n_moves": 0, "passes": 0, "mids": []}
     try:
@@ -1683,9 +1702,11 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
             return _s2pr(_s, incidence)
 
         def _rep(_s):
+            # 19be: return report()'s LIST. It is one row per SPEC, and the old midl-keyed dict
+            # comprehension silently dropped every row but the last for any MID with more than
+            # one band — including every MID with both a VAMP and a TXN ceiling.
             _cost["rep"] += 1
-            return {str(r["midl"]).strip().lower(): r
-                    for r in exact_bands.report(_pr(_s))}
+            return list(exact_bands.report(_pr(_s)))
 
         def _breach_pr(_prop):
             """Breach from an ALREADY-PROJECTED prop_raw — no matvec."""
@@ -1695,20 +1716,51 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
         def _breach(_s):
             return _breach_pr(_pr(_s))
 
-        # per-MID ceiling (inf where the MID has NO VAMP ceiling → unlimited headroom recipient)
-        ceil_by_mid = np.full(n_mid, np.inf)
+        # ── CEILINGS PER (MID, METRIC), 2026-08-19be ──────────────────────────────────────
+        # Until 19be this was ONE slot per MID:
+        #     ceil_by_mid = np.full(n_mid, np.inf)
+        #     for sp in exact_bands.specs:
+        #         if sp.ceil is not None:
+        #             ceil_by_mid[name2idx[sp.midl]] = float(sp.ceil)   # metric IGNORED
+        # so a MID with both a VAMP and a TXN ceiling kept whichever spec came LAST and lost the
+        # other, `_rep` collapsed report()'s one-row-per-SPEC the same way, and the budget was
+        # then debited in VAMP units whatever metric the surviving ceiling belonged to. A txn
+        # ceiling of 24,000 debited at cell_vol×risk (risk ~1e-2) reads ~100x the room it has —
+        # which is how a VAMP shed onto the txn-only WoodForest (23,961 of 24,000) was allowed to
+        # continue until delivery put it 14 OVER.
+        _MET_COL = {"vamp": 0, "txn": 1}
+        _MET_NAME = ("vamp", "txn")
+        # ROUTING_TMOVE_ALLBANDS=0 ignores recipients' TXN ceilings — what the OLD DOCSTRING
+        # claimed the code did (ceilings on the shed metric only). It deliberately does NOT
+        # restore the old mixed-unit arithmetic; reproducing a unit error as a control is useless.
+        _ALLBANDS = _os.environ.get("ROUTING_TMOVE_ALLBANDS", "1") != "0"
+        ceil_m = np.full((n_mid, 2), np.inf)
         for sp in exact_bands.specs:
-            if sp.ceil is not None:
-                _i = name2idx.get(str(sp.midl).strip().lower())
-                if _i is not None:
-                    ceil_by_mid[_i] = float(sp.ceil)
+            if sp.ceil is None:
+                continue
+            _i = name2idx.get(str(sp.midl).strip().lower())
+            _j = _MET_COL.get(str(getattr(sp, "metric", "vamp")).strip().lower())
+            if _i is None or _j is None:
+                continue
+            # several specs on the same (MID, metric) — e.g. different month sets — so take the
+            # TIGHTEST rather than whichever came last.
+            ceil_m[_i, _j] = min(ceil_m[_i, _j], float(sp.ceil))
+        if not _ALLBANDS:
+            ceil_m[:, _MET_COL["txn"]] = np.inf
+        _n_ceil = int(np.isfinite(ceil_m).sum())
+        _n_both = int((np.isfinite(ceil_m).sum(axis=1) == 2).sum())
 
-        def _now_by_mid(rep):
-            out = np.zeros(n_mid)
-            for _nm, _r in rep.items():
-                _i = name2idx.get(_nm)
-                if _i is not None:
-                    out[_i] = float(_r.get("now", 0.0))
+        def _now_m(rep_rows):
+            """(n_mid, 2) projected value per (MID, metric).
+
+            `report()` returns ONE ROW PER SPEC, so a MID with several specs on the same metric
+            appears several times; take the LARGEST, which is the binding one for a ceiling."""
+            out = np.zeros((n_mid, 2))
+            for _r in rep_rows:
+                _i = name2idx.get(str(_r.get("midl", "")).strip().lower())
+                _j = _MET_COL.get(str(_r.get("metric", "vamp")).strip().lower())
+                if _i is not None and _j is not None:
+                    out[_i, _j] = max(out[_i, _j], float(_r.get("now", 0.0)))
             return out
 
         _FASTLS = _os.environ.get("ROUTING_TMOVE_FASTLS", "1") != "0"
@@ -1716,17 +1768,22 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
         _pr_s = None                      # carried s2pr(s) for the linear line search
         b0 = _breach(s); info["breach0"] = b0; b_cur = b0
         rep0 = _rep(s)
-        now0_by_mid = _now_by_mid(rep0)
-        # which ceiling MIDs are breached at the start (for the before/after log)
-        start_breached = {i for i in range(n_mid)
-                          if np.isfinite(ceil_by_mid[i]) and now0_by_mid[i] > ceil_by_mid[i] + 1e-6}
+        now0_m = _now_m(rep0)
+        # which (MID, metric) ceilings are breached at the start (for the before/after log)
+        start_breached = {(i, j) for i in range(n_mid) for j in (0, 1)
+                          if np.isfinite(ceil_m[i, j]) and now0_m[i, j] > ceil_m[i, j] + 1e-6}
         if not start_breached:
             info.update(ok=True, breach=b0, reason="base already ceiling-compliant")
             return s, info
         if log_fn:
-            log_fn(f"      targeted-move seed: {len(start_breached)} breached ceiling MID(s) — shedding "
-                   "onto co-located siblings that have VAMP HEADROOM (most-slack first; whack-a-mole "
-                   "guarded by a per-recipient budget + exact-projector line-search; never-worse).")
+            log_fn(f"      targeted-move seed: {len(start_breached)} breached ceiling band(s) over "
+                   f"{len({_i for _i, _ in start_breached})} MID(s) — shedding onto co-located "
+                   f"siblings with room under EVERY ceiling they hold ({_n_ceil} ceiling(s) tracked, "
+                   f"{_n_both} MID(s) with both a VAMP and a TXN ceiling; binding-capacity first; "
+                   "whack-a-mole guarded by a per-recipient per-metric budget + exact-projector "
+                   "line-search; never-worse)."
+                   + ("" if _ALLBANDS else " ⚠ ROUTING_TMOVE_ALLBANDS=0: recipients' TXN ceilings "
+                      "are being IGNORED, so a VAMP shed can overfill a txn-capped MID."))
         # NO PASS CAP (2026-08-19v). It was a hardcoded 4, and the 2026-08-20 22:22 run used
         # 4 of 4 without hitting `if not progress: break` — still improving when the cap stopped
         # it, while the summary claimed 'recipient headroom exhausted'. The loop now runs until a
@@ -1751,14 +1808,27 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                 break
             _b_pass_start = b_cur
             rep = _rep(s)
-            now_by_mid = _now_by_mid(rep)
-            headroom = ceil_by_mid - now_by_mid                     # +inf for no-ceiling MIDs
-            breached = [i for i in range(n_mid)
-                        if np.isfinite(ceil_by_mid[i]) and now_by_mid[i] > ceil_by_mid[i] + 1e-6]
+            now_m = _now_m(rep)
+            headroom = ceil_m - now_m               # (n_mid, 2); +inf where there is no ceiling
+            # a MID is breached if ANY of its ceilings is over
+            _over = np.isfinite(ceil_m) & (now_m > ceil_m + 1e-6)
+            breached = [i for i in range(n_mid) if _over[i].any()]
             if not breached:
                 stop_reason = 'cleared'
                 break
-            breached.sort(key=lambda i: -(now_by_mid[i] - ceil_by_mid[i]))   # worst overshoot first
+            # worst overshoot first, RELATIVE to the ceiling — the metrics are in different
+            # units (transactions vs VAMP), so an absolute overshoot cannot order them.
+            # Evaluated ONLY on the finite entries: (now - inf) / |inf| is nan, and a nan in a
+            # log line or an argmax is a real defect, not cosmetic noise.
+            def _rel_over(_i):
+                _c = ceil_m[_i]
+                _fin = np.isfinite(_c) & _over[_i]
+                _r = np.full(_c.shape, -np.inf)
+                if _fin.any():
+                    _r[_fin] = ((now_m[_i][_fin] - _c[_fin])
+                                / np.maximum(np.abs(_c[_fin]), 1.0))
+                return _r
+            breached.sort(key=lambda i: -float(_rel_over(i).max()))
             progress = False
             passes += 1
             _dirty = False          # has `s` changed since the top-of-pass _rep(s)?
@@ -1768,28 +1838,50 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                 # projection returned identical values — one wasted full projection per pass,
                 # minimum. Skipping it is bit-identical.
                 if _dirty:
-                    rep = _rep(s); now_by_mid = _now_by_mid(rep)
-                    headroom = ceil_by_mid - now_by_mid
+                    rep = _rep(s); now_m = _now_m(rep)
+                    headroom = ceil_m - now_m
+                    _over = np.isfinite(ceil_m) & (now_m > ceil_m + 1e-6)
                     _dirty = False
-                if now_by_mid[m_idx] <= ceil_by_mid[m_idx] + 1e-6:
+                if not _over[m_idx].any():
                     continue
                 m_rows = np.where((mid_id == m_idx) & (s > 1e-12) & (elig > 0.5))[0]
                 if m_rows.size == 0:
                     continue
-                contrib = s[m_rows] * np.maximum(cell_vol[cell_of[m_rows]], 0.0) * np.maximum(risk[m_rows], 1e-9)
+                # 19be: shed the cells that contribute most to the metric THIS MID is worst over.
+                # It was always the VAMP contribution (s×vol×risk), which is the wrong ordering
+                # for a MID breaching a TRANSACTION ceiling — there the contribution is s×vol and
+                # a low-risk high-volume cell is the one to move.
+                _mj = int(np.argmax(_rel_over(m_idx)))
+                contrib = s[m_rows] * np.maximum(cell_vol[cell_of[m_rows]], 0.0)
+                if _mj == _MET_COL["vamp"]:
+                    contrib = contrib * np.maximum(risk[m_rows], 1e-9)
                 m_rows = m_rows[np.argsort(-contrib)]
                 delta = np.zeros_like(s)
-                hbud = headroom.copy()                              # running VAMP budget per recipient MID
+                hbud = headroom.copy()      # running per-(MID, metric) budget for recipients
                 for r in m_rows:
                     c = int(cell_of[r]); a = int(cs[c]); n = int(cc[c])
                     seg = np.arange(a, a + n)
                     smid = mid_id[seg]
-                    ok_sib = (elig[seg] > 0.5) & (smid != m_idx) & (hbud[smid] > 1e-6)
+                    # 19be: a recipient qualifies only if EVERY ceiling it holds still has room.
+                    # `.all(axis=1)` is correct for unbounded metrics too: hbud is +inf there.
+                    ok_sib = (elig[seg] > 0.5) & (smid != m_idx) & (hbud[smid] > 1e-6).all(axis=1)
                     sib = seg[ok_sib]
                     if sib.size == 0:
                         continue
-                    # recipients with the MOST headroom first (inf = no VAMP ceiling), then lowest risk
-                    sib = sib[np.lexsort((risk[sib], -hbud[mid_id[sib]]))]
+                    # Rank by BINDING SHARE-CAPACITY: how much share this row can actually accept
+                    # before its tightest ceiling stops it, min_j(hbud_j / dens_j). The old key was
+                    # the raw headroom number, which is not comparable across metrics — it ranked a
+                    # MID with 24,000 transactions of nominal room above one with 300 of VAMP.
+                    _dt_all = float(cell_vol[c]) * float(movable_frac)          # TXN per unit share
+                    _dv_all = _dt_all * np.maximum(risk[sib], 1e-9)            # VAMP per unit share
+                    _hb = hbud[mid_id[sib]]
+                    _capv = np.where(np.isfinite(_hb[:, 0]),
+                                     _hb[:, 0] / np.maximum(_dv_all, 1e-30), np.inf)
+                    _capt = (np.where(np.isfinite(_hb[:, 1]),
+                                      _hb[:, 1] / max(_dt_all, 1e-30), np.inf)
+                             if _dt_all > 0 else np.full(sib.size, np.inf))
+                    _cap = np.minimum(_capv, _capt)
+                    sib = sib[np.lexsort((risk[sib], -_cap))]
                     mv = float(s[r])
                     for b_ in sib:
                         if mv <= 1e-12:
@@ -1798,14 +1890,22 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                         room = float(max_share) - float(s[b_] + delta[b_])
                         if room <= 1e-9:
                             continue
-                        dens = float(cell_vol[c]) * max(float(risk[b_]), 1e-9) * float(movable_frac)
-                        vbud_share = (hbud[smid_b] / dens) if (np.isfinite(hbud[smid_b]) and dens > 0) else np.inf
-                        take = min(mv, room, vbud_share)
+                        # 19be: convert the share increment into EACH metric's own units and
+                        # respect BOTH budgets. TXN per unit share is cell_vol × movable_frac;
+                        # VAMP is that times the row's risk. Debiting a txn ceiling by a VAMP
+                        # increment (risk ~1e-2) was reading ~100x the room that existed.
+                        _dt = float(cell_vol[c]) * float(movable_frac)
+                        _dv = _dt * max(float(risk[b_]), 1e-9)
+                        take = min(mv, room)
+                        for _j, _d in ((_MET_COL["vamp"], _dv), (_MET_COL["txn"], _dt)):
+                            if np.isfinite(hbud[smid_b, _j]) and _d > 0.0:
+                                take = min(take, float(hbud[smid_b, _j]) / _d)
                         if take <= 1e-12:
                             continue
                         delta[b_] += take; delta[r] -= take; mv -= take
-                        if np.isfinite(hbud[smid_b]):
-                            hbud[smid_b] -= take * dens
+                        for _j, _d in ((_MET_COL["vamp"], _dv), (_MET_COL["txn"], _dt)):
+                            if np.isfinite(hbud[smid_b, _j]):
+                                hbud[smid_b, _j] -= take * _d
                 if not np.any(np.abs(delta) > 1e-12):
                     continue
                 # LINE-SEARCH the batch against the TRUE projector; keep the best strictly
@@ -1860,10 +1960,14 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                 stop_reason = 'converged'
                 break
         info["passes"] = passes
-        rep1 = _rep(s); now1_by_mid = _now_by_mid(rep1)
-        for i in sorted(start_breached, key=lambda i: -(now0_by_mid[i] - ceil_by_mid[i])):
-            nm = mid_names[i]; n0 = now0_by_mid[i]; n1 = now1_by_mid[i]; cl = ceil_by_mid[i]
-            info["mids"].append({"midl": str(nm), "ceil": float(cl), "now0": float(n0), "now1": float(n1)})
+        rep_end = _rep(s); now1_m = _now_m(rep_end)
+        for (i, j) in sorted(start_breached,
+                             key=lambda t: -((now0_m[t] - ceil_m[t])
+                                             / max(abs(ceil_m[t]), 1.0)
+                                             if np.isfinite(ceil_m[t]) else -np.inf)):
+            nm = mid_names[i]; n0 = now0_m[i, j]; n1 = now1_m[i, j]; cl = ceil_m[i, j]
+            info["mids"].append({"midl": str(nm), "metric": _MET_NAME[j], "ceil": float(cl),
+                                 "now0": float(n0), "now1": float(n1)})
             if log_fn:
                 _v = ("✓ under ceiling" if n1 <= cl + 1e-6 else
                       ("still over — NO IMPROVING MOVE FOUND (a pass found nothing; headroom "
@@ -1874,27 +1978,50 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                         if stop_reason == "converged" else
                         f"still over — ⚠ RUNAWAY BACKSTOP ({_RUNAWAY:,} passes) hit while STILL "
                         f"improving; cause NOT established, raise ROUTING_TMOVE_MAXPASS")))
-                log_fn(f"         • {nm}: {n0:,.0f} → {n1:,.0f} (ceil {cl:,.0f}) · {_v}")
+                log_fn(f"         • {nm} [{_MET_NAME[j]}]: {n0:,.0f} → {n1:,.0f} "
+                       f"(ceil {cl:,.0f}) · {_v}")
         b1 = _breach(s); info["moved"] = moved_share; info["n_moves"] = total_moves
         if b1 < b0 - 1e-12:
             info.update(ok=True, breach=b1)
             if log_fn:
-                _cleared = all(now1_by_mid[i] <= ceil_by_mid[i] + 1e-6 for i in start_breached)
+                _cleared = all(now1_m[t] <= ceil_m[t] + 1e-6 for t in start_breached)
                 log_fn(f"      targeted-move seed: exact breach {b0:.4g} → {b1:.4g} in {passes} pass(es) "
                        f"({total_moves:,} cell-moves, {moved_share:.3g} share). "
                        + ("ALL ceilings cleared — a compliant split exists." if _cleared
                           else ("Some ceilings remain and a pass found NO improving move ⇒ this "
                                 "operator is exhausted (evidence of joint infeasibility BY THIS "
-                                "OPERATOR, not proof of infeasibility). Kept — strictly better."
+                                "OPERATOR, not proof of infeasibility). Kept — strictly better on RAW (see log note)."
                                 if stop_reason == "no-improving-move" else
                                 ("Some ceilings remain; the last pass improved the breach by less "
                                  "than one part in a million, so this is CONVERGED, not capped. "
-                                 "Kept — strictly better."
+                                 "Kept — strictly better on RAW (see log note)."
                                  if stop_reason == "converged" else
                                  f"⚠ Some ceilings remain and the loop hit its RUNAWAY BACKSTOP at "
                                  f"{_RUNAWAY:,} passes while STILL IMPROVING. This is NOT "
                                  f"convergence and NOT exhausted headroom — it is a pathological "
-                                 f"case. Raise ROUTING_TMOVE_MAXPASS. Kept — strictly better."))))
+                                 f"case. Raise ROUTING_TMOVE_MAXPASS. Kept — strictly better on RAW (see log note)."))))
+            if log_fn:
+                # 19bd: say WHICH BASIS "better" was measured on. This operator's
+                # line-search scores the RAW split; the engine SELECTS seeds on the
+                # DELIVERED basis (blocked-caps + eligibility). On 2026-08-23 10:07 it
+                # improved RAW by 0.0017 and worsened DELIVERED by 0.0375, having
+                # reported itself strictly better. Selection rejected it, so nothing bad
+                # shipped — but the claim was false, the stage was wasted, and a reader
+                # had no way to tell from this line.
+                # 19be then removed the CAUSE of that particular divergence (recipient
+                # headroom was one slot per MID, debited in VAMP units whatever metric
+                # the ceiling belonged to). The accept test is STILL RAW, so this note
+                # stays: it is the honest label for what the line-search measured, not a
+                # standing bug report.
+                log_fn("      targeted-move seed: NOTE every 'better' above is the RAW "
+                       "basis — the only one this operator can see. The engine selects "
+                       "on the DELIVERED basis (blocked-caps + eligibility), so the two "
+                       "can still move apart. The mechanism that made them disagree on "
+                       "WoodForest is GONE as of 19be: recipient headroom is now kept "
+                       "per (MID, METRIC), so a txn-only MID no longer reads infinite "
+                       "room for a VAMP shed. What remains is delivery's own transform, "
+                       "not a unit error here. Read [seed-basis] for both bases and "
+                       "[seed-chain] for what shipped.")
             if log_fn:
                 log_fn(f"      targeted-move seed: stopped because '{stop_reason}' after "
                        f"{passes:,} pass(es) · projection cost {_cost['mv']:,} sparse matvec(s), "
