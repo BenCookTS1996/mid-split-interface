@@ -477,7 +477,7 @@ _TAB_FIDS = [
 DEFAULT_GATEWAY_FIDS = "(" + ",".join(f"'{f}'" for f in _TAV_FIDS + _TDR_FIDS + _TAB_FIDS) + ")"
 
 
-APP_BUILD = "2026-08-19bn"  # 19bl: REPAIR. 19bk wrote eligibility.py from a stale base and
+APP_BUILD = "2026-08-19bq"  # 19bl: REPAIR. 19bk wrote eligibility.py from a stale base and
 # deleted the 2026-08-18 +exact-subcell-capability work, so the GA scored eligibility with the
 # global wallet/Non-USA fraction while delivery applied the exact pure-sub-cell rule. That is
 # the 17:21 regression: [elig-grain] 147,944/245,409 -> 0/1, RECONCILIATION ERROR 0 -> 7,865,

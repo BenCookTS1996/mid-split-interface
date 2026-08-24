@@ -93,7 +93,8 @@ import pandas as pd
 # 2026-08-22 16:13 run, which silently re-used an 11:20 module and reproduced the previous run
 # byte-for-byte. `[loaded]` now reports the live module's real state as well, because a marker
 # nobody remembers to bump is not a guard.
-__build__ = ("2026-08-19bn-lane-cap-16"
+__build__ = ("2026-08-19bo-lane-cap-back-to-8-measured-flat"
+             "+2026-08-19bn-lane-cap-16"
              "+2026-08-19bi-int32-indices-adopted+2026-08-19bf-chunk-speedup-claim-delegated-to-kernel-ab+2026-08-19bb-docstring-proxy-claim-deleted+2026-08-19az-chunked-parallel-adopted+2026-08-19aw-serial-fastmath+2026-08-19av-lazy-fastmath+staleness-sentinel+2026-08-19aq-vamp-conservation-gate+2026-08-16-appearance-month-timing"
               "+candidate-parallel-kernel")
 
@@ -403,7 +404,14 @@ _LOADED_SENTINEL = "19bi"
 # the serial one on the LIVE scaffold on its first call, every run. What DOES change is scratch —
 # 0.29 -> 0.58 GB at nR=1,275,348 — and bandwidth pressure, which is the constraint the F and G
 # variants were attacking, so a wider cap is not automatically faster. Watch [kernel-ab] row A.
-_PROJ_LANE_CAP = max(1, int(os.environ.get("ROUTING_PROJ_LANES", "16") or 16))
+# 19bo: BACK TO 8. 19bn raised this to 16 to use the idle cores, and it was MEASURED FLAT: the
+# projector read 530.7 ms (lanes 8, 2026-08-23 19:04) vs 536.5 ms (lanes 16, 21:01), and [kernel-ab]
+# row A read 398.0 vs 409.1 ms — both inside the noise, on runs whose drift metric agreed (+8.5% vs
+# +9.1%), so this is a real comparison and not a hot-machine artefact. Twice the scratch (0.29 ->
+# 0.58 GB) and twice the bandwidth pressure for nothing. The idle cores are NOT free here: memory
+# bandwidth is the shared limit across lanes, which is the same reason the float32 variant F is the
+# only [kernel-ab] idea that ever clears the floor. ROUTING_PROJ_LANES=16 restores the experiment.
+_PROJ_LANE_CAP = max(1, int(os.environ.get("ROUTING_PROJ_LANES", "8") or 8))
 _PROJ_PAR_ON = os.environ.get("ROUTING_PROJ_PARALLEL", "1") != "0"
 _PROJ_PAR_SAID = {}
 

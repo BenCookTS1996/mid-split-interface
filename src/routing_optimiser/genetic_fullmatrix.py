@@ -962,6 +962,54 @@ def _mutate(logits, rate, strength, cell_start, cell_len, rng, cell_w=None):
     return logits + np.where(row_hit, noise, 0.0)
 
 
+# 19bp: MUTATION WITHOUT THE WASTE. `_mutate` above draws one Gaussian per ROW and discards every
+# one whose cell was not selected — at a 1% cell rate that is ~99% waste, and at 35 children over
+# 245,409 rows it is 8.6 MILLION discarded draws per generation, ~170 ms of the ~300 ms [gen-cost]
+# attributes to `genetic` (2026-08-23).
+#
+# This draws only the Gaussians it uses. That CHANGES THE RANDOM STREAM, which is why it needed
+# sign-off: the search sees different children from here on. It is not less random and not less
+# correct — it is a different sample. Two things make it safe to live with:
+#
+#   1. It is DETERMINISTIC. The caller gives each child its own stream keyed on
+#      (seed, seed-index, restart, generation, child), so a rerun reproduces a run exactly, and a
+#      child's numbers no longer depend on how many draws its siblings happened to take. That
+#      independence is also what would make the child loop threadable — though after this there is
+#      little left to thread, which is the better outcome.
+#   2. `_mutate` is UNTOUCHED and ROUTING_MUT_FAST=0 runs it on the old shared generator, so the
+#      previous answer is one env var away for comparison.
+#
+# The SHAPE of the perturbation is identical: the same per-cell selection at the same probability,
+# the same Gaussian scale, applied to the same whole-cell segments.
+def _mutate_fast(logits, rate, strength, cell_start, cell_len, rng, cell_w=None):
+    """`_mutate`'s twin, drawing Gaussians only for the rows it perturbs.
+
+    NOT bit-identical to `_mutate` and not intended to be — see the note above. Same distribution,
+    same per-cell selection rule, a fraction of the draws."""
+    n_cells = len(cell_start)
+    _thr = rate if cell_w is None else np.minimum(np.asarray(cell_w, float) * rate, 1.0)
+    hit = rng.random(n_cells) < _thr
+    if not hit.any():
+        return logits.copy()
+    row_hit = np.repeat(hit, cell_len)
+    n_hit = int(row_hit.sum())
+    out = logits.copy()
+    # `out[row_hit] += noise` — a masked add over the selected rows only. The non-selected rows are
+    # copied through untouched, where `_mutate` added an exact 0.0 to them.
+    out[row_hit] += rng.standard_normal(n_hit) * strength
+    return out
+
+
+def _child_streams(base_seed, s_idx, r_idx, gen, n):
+    """One independent, reproducible Generator per child.
+
+    SeedSequence.spawn is the supported way to make independent streams; deriving them from a tuple
+    of counters means the run is reproducible from (seed, seed-index, restart, generation, child)
+    alone, with no dependence on draw order anywhere else."""
+    return [np.random.default_rng(_ss) for _ss in
+            np.random.SeedSequence([int(base_seed), int(s_idx), int(r_idx), int(gen)]).spawn(int(n))]
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -989,6 +1037,10 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     (best_shares, info) : best_shares is (R,) in ORIGINAL row order.
     """
     p = problem
+    # 19bp: ROUTING_MUT_FAST=0 restores the pre-19bp search EXACTLY — one shared sequential
+    # generator and a full-width Gaussian draw per child. On (the default) it draws only the
+    # Gaussians it uses, from one independent stream per child. Different answer, same search.
+    _MUT_FAST = os.environ.get("ROUTING_MUT_FAST", "1") != "0"
     rng = np.random.default_rng(seed)
     R = p.cell_id.shape[0]
     total_vol = _cell_volume_total(p)
@@ -1211,6 +1263,16 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     else:
         log("[fullmatrix-ga] mutation is UNIFORM over cells (no mut_weight_fn) — every cell is "
             "equally likely to be perturbed, including the ones feeding already-compliant MIDs.")
+    log("[fullmatrix-ga] mutation draws: "
+        + ("SPARSE + PER-CHILD STREAMS (19bp) — Gaussians are drawn only for the rows actually "
+           "perturbed (was one per row, ~99% discarded at a 1% cell rate: 8.6M draws per "
+           "generation), and each child has its own deterministic stream keyed on "
+           "(seed, seed-index, restart, generation, child). THIS IS A DIFFERENT RANDOM SAMPLE "
+           "than any run before 19bp, so vwsr and the breach will differ — that is the change, "
+           "not a fault. ROUTING_MUT_FAST=0 restores the old stream exactly."
+           if _MUT_FAST else
+           "LEGACY (ROUTING_MUT_FAST=0) — one shared generator, one Gaussian per row per child, "
+           "~99% of them discarded. This reproduces every run before 19bp bit for bit."))
     log(f"[fullmatrix-ga] budget: {n_seeds} seed(s) × {restarts} restart(s) × "
         f"{generations} gens (pop {pop_size}, mode={restart_mode})")
     # SEED = an independent search (own RNG, own random exploration). RESTART =
@@ -1358,17 +1420,24 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                             _mw_warned = True
                         _cw = None
                 _n_refine = children.shape[0] // 2
+                # 19bp: ONE STREAM PER CHILD when the fast path is on, so a child's numbers do not
+                # depend on how many draws its siblings took. With ROUTING_MUT_FAST=0 every child
+                # shares `_rng` exactly as before, so that switch is a true revert.
+                _kid = (_child_streams(seed, _s, _r, gen, children.shape[0])
+                        if _MUT_FAST else None)
+                _mut = _mutate_fast if _MUT_FAST else _mutate
                 for c in range(children.shape[0]):
+                    _crng = _kid[c] if _kid is not None else _rng
                     if c < _n_refine:
-                        base = pop[order[_rng.integers(0, max(1, _el))]]
-                        child = _mutate(base, _base_rate * 0.25, mutation_strength * 0.6,
-                                        p.cell_start, p.cell_len, _rng, cell_w=_cw)
+                        base = pop[order[_crng.integers(0, max(1, _el))]]
+                        child = _mut(base, _base_rate * 0.25, mutation_strength * 0.6,
+                                     p.cell_start, p.cell_len, _crng, cell_w=_cw)
                     else:
-                        pa = pop[_rng.choice(pool)]
-                        pb = pop[_rng.choice(pool)]
-                        child = _crossover(pa, pb, p.cell_start, p.cell_len, _rng)
-                        child = _mutate(child, _base_rate, mutation_strength,
-                                        p.cell_start, p.cell_len, _rng, cell_w=_cw)
+                        pa = pop[_crng.choice(pool)]
+                        pb = pop[_crng.choice(pool)]
+                        child = _crossover(pa, pb, p.cell_start, p.cell_len, _crng)
+                        child = _mut(child, _base_rate, mutation_strength,
+                                     p.cell_start, p.cell_len, _crng, cell_w=_cw)
                     children[c] = child
                 child_vwsr, child_other, child_band = _eval_with_bands(children)
                 evaluated += children.shape[0]

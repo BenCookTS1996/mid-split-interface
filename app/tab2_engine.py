@@ -7125,6 +7125,88 @@ def render():
                                         _fs_frz_cells = int(_fs_cell_frozen.sum())
                                         _fs_frz_rows = int(_fs_cell_frozen[_fs_gc].sum())
                                         _fs_reach_keys = int(_fs_reach.sum())
+                                        # ── [prop-reach] (19bp) the ROW-level question the lift
+                                        # never asks. `_fs_live` is already per-row: a row is DEAD
+                                        # when the GA cannot move it at all (masked, bad index, or
+                                        # its prop-key has an all-zero incidence row). The lift
+                                        # collapses that to CELL grain and freezes a cell only when
+                                        # EVERY row in it is dead. So the rows worth counting are
+                                        # the DEAD ones inside LIVE cells: still walked every
+                                        # generation, contributing the same thing every time.
+                                        #
+                                        # This is the same measurement for BOTH open projector
+                                        # ideas — the unreachable prop-keys and the 899k back-fill
+                                        # rows — because a row's contribution is constant exactly
+                                        # when its share cannot move.
+                                        try:
+                                            _pr_dead = ~_fs_live
+                                            _pr_live_cell = ~_fs_cell_frozen[_fs_gc]
+                                            _pr_walked = int((_pr_dead & _pr_live_cell).sum())
+                                            _pr_unreach = int((_fs_idx_ok & ~_fs_reach[
+                                                np.clip(_fs_pi, 0, max(_fs_K - 1, 0))]).sum())
+                                            _pr_masked = int(_fs_mk.sum())
+                                            log(f"      [prop-reach] ROW-LEVEL CEILING: "
+                                                f"{_pr_walked:,} of {_fs_nR:,} scaffold rows "
+                                                f"({_pr_walked / max(_fs_nR, 1):.1%}) are DEAD "
+                                                "(the GA cannot move them, so their contribution "
+                                                "is the same for every candidate) but sit in a "
+                                                "LIVE cell, so the frozen-scaffold lift still "
+                                                "walks them every generation. SEPARATELY, and "
+                                                "NOT a breakdown of that figure: across the WHOLE "
+                                                f"scaffold {_pr_unreach:,} row(s) are dead because "
+                                                "their prop-key has an all-zero incidence row and "
+                                                f"{_pr_masked:,} because they are masked "
+                                                "(excl|emask) — those two OVERLAP, and most of them "
+                                                "are already inside frozen cells, which is why "
+                                                "neither bounds the headline. The headline is the "
+                                                "only actionable number.")
+                                            if _pr_walked <= 0:
+                                                log("      [prop-reach] ⇒ NOTHING TO WIN. Every "
+                                                    "dead row is already inside a frozen cell, so "
+                                                    "the lift is already dropping all of them and "
+                                                    "a row-level reduction would be a no-op. Both "
+                                                    "projector ideas are CLOSED by this number.")
+                                            elif _pr_walked / max(_fs_nR, 1) < 0.05:
+                                                log("      [prop-reach] ⇒ NOT WORTH IT: under 5% "
+                                                    "of rows, and a row filter costs a pass of its "
+                                                    "own. Same verdict as [zero-rows].")
+                                            else:
+                                                # 19bq: CLOSED. Measured 6.4% on 2026-08-23 22:03.
+                                                # Size it against the lift, which skips 26.5% of
+                                                # rows and was worth 14% on that same run
+                                                # ([kernel-ab] row B, 0.860x): 6.4% is worth about
+                                                # 3% of the projector, and [gen-cost] puts the
+                                                # projector at ~31% of a generation, so ~1%. For
+                                                # that you would have to build a reduced scaffold
+                                                # and prove it bit-identical against the denominator
+                                                # risk below. The answer is no.
+                                                log("      [prop-reach] ⇒ STANDING VERDICT: CLOSED "
+                                                    "(19bq). Scale it against the lift — 26.5% of "
+                                                    "rows skipped is worth 14% of the projector, so "
+                                                    f"this {_pr_walked / max(_fs_nR, 1):.1%} is "
+                                                    "worth roughly a THIRD of that on the projector "
+                                                    "and about 1% of a generation. Both open "
+                                                    "projector ideas (the unreachable prop-keys AND "
+                                                    "the 899k back-fill rows) reduce to this one "
+                                                    "number, and it is too small to be worth the "
+                                                    "risk described next. Re-open only if the "
+                                                    "scaffold's shape changes materially.")
+                                                log("      [prop-reach]    THE RISK THAT MAKES IT "
+                                                    "NOT FREE: a dead "
+                                                    "row can still feed a CELL-level denominator "
+                                                    "(psum / vpsum / ctot) that a LIVE row in the "
+                                                    "same cell divides by. Dropping it would then "
+                                                    "move that denominator and the answer with it. "
+                                                    "What would settle it: build the reduced "
+                                                    "scaffold, run the projector on both, and "
+                                                    "compare bit patterns — the same "
+                                                    "restricted-vs-full test that proved the "
+                                                    "blocked-caps and eligibility reductions. "
+                                                    "Do NOT adopt on this count alone.")
+                                        except Exception as _prE:  # noqa: BLE001
+                                            log(f"      [prop-reach] skipped "
+                                                f"({type(_prE).__name__}: {_prE}) — MEASUREMENT "
+                                                "ONLY, the run is unaffected.")
                                         log("   ── [frozen-scaffold] how much of the band projector "
                                             "is PERMANENTLY constant? (read-only) ──")
                                         log(f"      prop-keys reachable by the GA: "
@@ -8889,7 +8971,9 @@ def render():
                                         import time as _gct
                                         from routing_optimiser.genetic_fullmatrix import (
                                             _segment_softmax as _gc_sm, _crossover as _gc_x,
-                                            _mutate as _gc_mu, make_fused_eval as _gc_mfe,
+                                            _mutate as _gc_mu_ref,
+                                            _mutate_fast as _gc_mu_fast,
+                                            make_fused_eval as _gc_mfe,
                                             _shares_to_logits as _gc_s2l, _rank as _gc_rank)
                                         _gc_el = min(6, max(1, int(_fm_pop) // 8))
                                         _gc_P = max(1, int(_fm_pop) - _gc_el)      # the per-generation width
@@ -8905,6 +8989,21 @@ def render():
                                         # to a full-grain array.
                                         _gc_base = _gc_s2l(
                                             np.asarray(_fm_full, float)[_fm_colmap])
+                                        # 19bq: TIME WHAT THE SEARCH RUNS. This read `_mutate`
+                                        # — the untouched reference kept for the
+                                        # ROUTING_MUT_FAST=0 revert — so on 2026-08-23 22:03 the
+                                        # `genetic` row printed 414 ms for a function the engine
+                                        # had stopped calling, and the 8.5x the sparse path
+                                        # measures in isolation was invisible in the log. Same
+                                        # env var, same choice, and the row below names it.
+                                        _gc_mu = (_gc_mu_fast
+                                                  if os.environ.get(
+                                                      "ROUTING_MUT_FAST", "1") != "0"
+                                                  else _gc_mu_ref)
+                                        _gc_mu_name = ("_mutate_fast (sparse draws, 19bp)"
+                                                       if _gc_mu is _gc_mu_fast
+                                                       else "_mutate (legacy full-width draws, "
+                                                            "ROUTING_MUT_FAST=0)")
                                         _gc_pop = np.vstack([
                                             _gc_mu(_gc_base.copy(), 0.01, 1.0, _gc_cs, _gc_cl, _gc_rng)
                                             for _ in range(_gc_P)])
@@ -8956,7 +9055,7 @@ def render():
                                              lambda: _fm_bpf(_gc_fd)),
                                             ("fitness", "eval_pop: vwsr + engineering violation",
                                              lambda: _gc_ev(_gc_pop)),
-                                            ("genetic", f"{_gc_P} x (crossover + mutate)", _gc_gen),
+                                            ("genetic", f"{_gc_P} x (crossover + {_gc_mu_name})", _gc_gen),
                                             ("GENERATION", "ALL OF THE ABOVE end-to-end, plus rank + "
                                                            "elite/child re-assembly — one whole "
                                                            "generation", _gc_whole),
@@ -9071,6 +9170,46 @@ def render():
                                                 + (f"{_gc_cov:.1%}" if _gc_cov >= 0.01 else
                                                    f"under 1% ({_gc_cov:.2%})")
                                                 + " of that.")
+                                            # 19bo: 0.7/1.3 was far too loose. This read 83.9%
+                                            # on 2026-08-23 21:01 and 113.1% at 20:26 and printed
+                                            # "THE MODEL HOLDS" both times — swallowing the single
+                                            # most useful number in the block. A 16% gap between the
+                                            # modelled generation and the observed one is what
+                                            # revealed that the WHOLE was worse than its PARTS after
+                                            # 19bn threaded two stages: the parts got 16-19% cheaper
+                                            # while the run's plateau rate fell from 22/s to 19/s.
+                                            # Anything outside +-10% now says so and names the
+                                            # candidates.
+                                            if 0.90 <= _gc_cov <= 1.10:
+                                                pass                     # genuinely close; fall through
+                                            elif _gc_cov < 1.0:
+                                                log(f"      \u26a0 MODEL vs RUN GAP: the modelled "
+                                                    f"generation is {1.0 - _gc_cov:.1%} CHEAPER than "
+                                                    "the observed one, so roughly "
+                                                    f"{(_gc_obs - (_gc_wh or _gc_sum)) * 1000:,.0f} ms "
+                                                    "per generation is real search time this block "
+                                                    "does not see. Candidates, in the order worth "
+                                                    "checking: (a) THREAD-POOL THRASH \u2014 the run "
+                                                    "alternates numpy's row-parallel pool with "
+                                                    "numba's projector pool every generation, while "
+                                                    "this block times each stage repeatedly and warm; "
+                                                    "(b) the STARTUP RAMP \u2014 the progress lines "
+                                                    "begin around 7/s and plateau later, and this "
+                                                    "figure averages the whole run; (c) one-off "
+                                                    "costs (numba compiles, per-restart re-init). "
+                                                    "Read the percentages above as a RANKING, not as "
+                                                    "a budget, until the gap is explained.")
+                                            elif _gc_cov > 1.0:
+                                                log(f"      \u26a0 MODEL vs RUN GAP: the modelled "
+                                                    f"generation is {_gc_cov - 1.0:.1%} DEARER than "
+                                                    "the observed one. That means THIS BLOCK ran on a "
+                                                    "worse machine than the search did \u2014 it "
+                                                    "executes after [kernel-ab], which saturates "
+                                                    "every lane for minutes. Cross-check "
+                                                    "[kernel-ab]'s own DRIFT line: above ~20% there, "
+                                                    "these absolute milliseconds are not comparable "
+                                                    "with another run's, though the RANKING between "
+                                                    "stages still is.")
                                             if _gc_cov < 0.7:
                                                 log("      ⚠ A WHOLE SYNTHETIC GENERATION IS MUCH CHEAPER "
                                                     "THAN THE RUN'S. Everything the generation loop does "
@@ -9089,16 +9228,32 @@ def render():
                                                     "here is being timed on colder caches than the search "
                                                     "sees, so the percentages are a ranking and NOT a budget.")
                                             else:
+                                                # 19bq: the gap flag above already fired if the gap
+                                                # exceeds 10%. Saying "THE MODEL HOLDS" underneath
+                                                # it — which is what 85.2% produced on 2026-08-23
+                                                # 22:03 — contradicts it. The RANKING is still worth
+                                                # printing when the gap is large; the words "holds"
+                                                # and "budget" are not.
                                                 _gc_top = max(_gc_rows, key=lambda r: r[2])
-                                                log(f"      ⇒ THE MODEL HOLDS, so this is the answer: "
-                                                    f"'{_gc_top[0]}' is the bottleneck at "
-                                                    f"{_gc_top[2] / max(_gc_sum, 1e-12):.1%} of a "
-                                                    f"generation ({_gc_top[1]}). The percentages ARE a "
-                                                    "budget: a stage worth x% can return AT MOST x% of "
-                                                    "the search, so nothing else is worth touching until "
-                                                    "that row is. Raising the generation count scales "
-                                                    "every row equally, which is why this ranking does "
-                                                    "not change with the budget.")
+                                                if not (0.90 <= _gc_cov <= 1.10):
+                                                    log(f"      ⇒ RANKING ONLY (see the gap above): "
+                                                        f"'{_gc_top[0]}' is the largest stage at "
+                                                        f"{_gc_top[2] / max(_gc_sum, 1e-12):.1%} of "
+                                                        f"the MEASURED generation ({_gc_top[1]}). "
+                                                        "Treat that as the order to attack, NOT as a "
+                                                        "budget — a stage's share of a generation "
+                                                        "this block mis-sizes cannot bound its share "
+                                                        "of the run.")
+                                                else:
+                                                    log(f"      ⇒ THE MODEL HOLDS, so this is the answer: "
+                                                        f"'{_gc_top[0]}' is the bottleneck at "
+                                                        f"{_gc_top[2] / max(_gc_sum, 1e-12):.1%} of a "
+                                                        f"generation ({_gc_top[1]}). The percentages ARE a "
+                                                        "budget: a stage worth x% can return AT MOST x% of "
+                                                        "the search, so nothing else is worth touching until "
+                                                        "that row is. Raising the generation count scales "
+                                                        "every row equally, which is why this ranking does "
+                                                        "not change with the budget.")
                                         # and the specific question this block was built to answer
                                         _gc_pj = dict((_r[0], _r[2]) for _r in _gc_rows).get("project")
                                         if _gc_pj is not None and _gc_sum > 0:
@@ -9308,6 +9463,62 @@ def render():
                                                             "result is NOT identical, so its "
                                                             f"{_gc_ms(_dc_rm).strip()} ms would be the "
                                                             "cost of a wrong answer.)")
+                                                # ── [elig-nocap] (19bp) the last bit-identical
+                                                # trim in eligibility. `_blend_pop` ends with
+                                                # np.where(posc, capX/sd, base) — ~69 ms, twice per
+                                                # delivery — and `posc` is False ONLY in a cell
+                                                # where no gateway is capable. Count those cells: if
+                                                # they are rare the select becomes the divide it
+                                                # already computes plus a scatter over their rows,
+                                                # worth ~130 ms (~8% of a generation) and
+                                                # bit-identical. If they are common the idea is
+                                                # dead. This is a COUNT, not a change.
+                                                try:
+                                                    _ncop = ctx.get("elig_op")
+                                                    if _ncop is None:
+                                                        raise ValueError("no eligibility operator")
+                                                    _nccs = np.asarray(_ncop["cell_starts"], np.intp)
+                                                    _ncX = np.asarray(_dc_full, float)
+                                                    _nc_any = False
+                                                    for _nck, _ncname in (("w", "wallet"),
+                                                                          ("u", "USA-only")):
+                                                        if not _ncop.get("has_" + _nck):
+                                                            continue
+                                                        _nc_any = True
+                                                        _ncinc = np.asarray(
+                                                            _ncop[_nck + "_incap"], bool)
+                                                        _nccap = _ncX * (~_ncinc)[None, :]
+                                                        _ncseg = np.add.reduceat(
+                                                            _nccap, _nccs, axis=1)
+                                                        # a cell is a NO-CAPABLE cell for this
+                                                        # stage when its capable total is <= 0 for
+                                                        # EVERY candidate in the population
+                                                        _ncbad = (_ncseg <= 0.0).all(axis=0)
+                                                        _ncrows = int(np.asarray(
+                                                            _ncop["cell_counts"])[_ncbad].sum())
+                                                        log(f"      [elig-nocap] {_ncname}: "
+                                                            f"{int(_ncbad.sum()):,} of "
+                                                            f"{_nccs.size:,} cell(s) "
+                                                            f"({_ncbad.mean():.2%}) have NO capable "
+                                                            f"gateway, carrying {_ncrows:,} of "
+                                                            f"{_ncX.shape[1]:,} row(s) "
+                                                            f"({_ncrows / max(_ncX.shape[1], 1):.2%})"
+                                                            " — these are the only rows where the "
+                                                            "trailing select does anything.")
+                                                    if _nc_any:
+                                                        log("      [elig-nocap] ⇒ READ IT AS: a "
+                                                            "SMALL row share means the ~69 ms "
+                                                            "full-width select can be replaced by "
+                                                            "a scatter over those rows, twice per "
+                                                            "delivery, bit-identically. A LARGE "
+                                                            "share means the select is doing real "
+                                                            "work and the idea is dead. Measured "
+                                                            "on THIS run's delivered population, "
+                                                            "not on a fixture.")
+                                                except Exception as _ncE:  # noqa: BLE001
+                                                    log(f"      [elig-nocap] skipped "
+                                                        f"({type(_ncE).__name__}: {_ncE}) — "
+                                                        "MEASUREMENT ONLY.")
                                                 log("      (read-only: run on a copy of the delivered split and discarded. "
                                                     "ROUTING_DELIV_COST=0 skips it.)")
                                             except Exception as _dcE:  # noqa: BLE001
@@ -9378,6 +9589,20 @@ def render():
                                 # terminal and could not be confirmed from this log. Read it here —
                                 # an empty msg means the twin never ran (ROUTING_ELIG_INPLACE=0, or
                                 # no eligibility operator was built at all).
+                                try:
+                                    _nc_note = str(_elig_mod_bl.nocap_note())
+                                    if _nc_note:
+                                        log("   " + _nc_note)
+                                except Exception as _ncnE:  # noqa: BLE001
+                                    log(f"   [elig-nocap] note unavailable "
+                                        f"({type(_ncnE).__name__}: {_ncnE}) \u2014 MEASUREMENT ONLY.")
+                                try:
+                                    _nc_note = str(_elig_mod_bl.nocap_note())
+                                    if _nc_note:
+                                        log("   " + _nc_note)
+                                except Exception as _ncnE:  # noqa: BLE001
+                                    log(f"   [elig-nocap] note unavailable "
+                                        f"({type(_ncnE).__name__}: {_ncnE}) \u2014 MEASUREMENT ONLY.")
                                 try:
                                     import routing_optimiser.rowpar as _rp_mod
                                     _rp_msgs = list(_rp_mod.messages())

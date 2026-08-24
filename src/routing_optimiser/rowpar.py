@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor as _TPE
 
 import numpy as _np
 
-__build__ = "2026-08-19bn-row-parallel"
+__build__ = "2026-08-19bo-half-cores+2026-08-19bn-row-parallel"
 
 _RP_ON = _os.environ.get("ROUTING_ROW_PARALLEL", "1") != "0"
 _RP_WORKERS = int(_os.environ.get("ROUTING_ROW_PARALLEL_WORKERS", "0") or 0)
@@ -41,15 +41,35 @@ _STATE = {}
 
 
 # [FN-RP1]
-def workers() -> int:
-    """Threads to use. sched_getaffinity, not cpu_count: a cgroup-limited process may only be
-    allowed a subset of the machine's cores, and oversubscribing bandwidth-bound work hurts."""
-    if _RP_WORKERS > 0:
-        return _RP_WORKERS
+def cores() -> int:
+    """Cores this process may actually use. sched_getaffinity, not cpu_count: a cgroup-limited
+    process may only be allowed a subset of the machine."""
     try:
         return max(1, len(_os.sched_getaffinity(0)))          # type: ignore[attr-defined]
     except (AttributeError, OSError):
         return max(1, _os.cpu_count() or 1)
+
+
+# [FN-RP1]
+def workers() -> int:
+    """HALF the cores by default (19bo), not all of them.
+
+    numba already sizes its own pool to every core for the band projector, and a generation
+    alternates between the two pools several times: genetic (serial) -> softmax (THIS pool) ->
+    deliver (THIS pool) -> project (NUMBA's pool) -> fitness. Two pools each claiming the whole
+    machine, handing off hundreds of times per run, leave each other descheduled and cache-cold.
+
+    That is the only mechanism that fits the 2026-08-23 evidence: at 16 workers `deliver` and
+    `softmax` were 16-19% FASTER in [gen-cost] while `genetic` and `fitness` — which this module
+    never touches — were 21-23% SLOWER in the same measurement, and the search's plateau rate fell
+    from 21-22/s to 19/s even though the modelled generation got cheaper. [gen-cost] cannot see it
+    because it times each stage repeatedly in a tight round-robin, so every stage runs warm.
+
+    The returns are strongly diminishing anyway — on a 2-core container 4 threads beat 16 by 1.49x —
+    so half the cores should keep most of the 1.45x. ROUTING_ROW_PARALLEL_WORKERS pins it."""
+    if _RP_WORKERS > 0:
+        return _RP_WORKERS
+    return max(2, cores() // 2)
 
 
 # [FN-RP2]
@@ -122,6 +142,9 @@ def row_parallel(fn, X, name: str, enabled: bool = True):
         if same:
             st["phase"], st["workers"], st["slices"] = 2, len(sl), len(sl)
             st["msg"] = (f"[row-par] {name}: VERIFIED bit-identical threaded, {len(sl)} thread(s) "
+                         f"of {cores()} usable core(s) — HALF by default since 19bo, so numba's "
+                         f"projector pool is not contending with this one; "
+                         f"ROUTING_ROW_PARALLEL_WORKERS pins it — "
                          f"over {P} candidate(s) (int64 bit-pattern comparison on {P}x"
                          f"{Xa.shape[1]:,}, stricter than array_equal). The transform is "
                          "candidate-independent, so each thread performs the same operations in "

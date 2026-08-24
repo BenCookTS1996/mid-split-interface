@@ -31,7 +31,8 @@ import os as _os        # 19bl: the in-place twin's kill-switch reads it under t
 import numpy as np
 import pandas as pd
 
-__build__ = ("2026-08-19bm-restricted-blends"
+__build__ = ("2026-08-19bq-nocap-select-guarded"
+             "+2026-08-19bm-restricted-blends"
              "+2026-08-19bl-exact-subcell-capability-RESTORED-after-19bk-clobber"
              "+2026-08-19bk-elig-inplace"
              "+2026-08-18-eligibility-ban-mask-cache+population-operator+fid-grain-capability"
@@ -521,9 +522,21 @@ def _blend_pop(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
     base = X
     capX = base * (~incap)[None, :]
     seg_c = np.add.reduceat(capX, cs, axis=1)
-    sd = np.repeat(np.where(seg_c > 0, seg_c, 1.0), cc, axis=1)
-    posc = np.repeat(seg_c > 0, cc, axis=1)
-    cshare = np.where(posc, capX / sd, base)
+    pos_cell = seg_c > 0
+    sd = np.repeat(np.where(pos_cell, seg_c, 1.0), cc, axis=1)
+    # 19bq: THE SELECT IS USUALLY UNREACHABLE. `posc` is False only in a cell where NO gateway is
+    # capable, and [elig-nocap] measured that on the live population: 0 of 23,791 cells for wallet
+    # AND 0 for USA-only, carrying 0 rows. Where every cell is positive, np.where(True, a, b) == a
+    # elementwise EXACTLY, so the select and the bool repeat are both pure cost — ~69 ms + ~3 ms,
+    # twice per delivery. The guard is at CELL grain (23,791 booleans), not row grain, so it is free;
+    # when any cell IS non-positive it falls through to the identical select and nothing changes.
+    if pos_cell.all():
+        _NC_STAT["skip"] += 1
+        cshare = capX / sd
+    else:
+        _NC_STAT["select"] += 1
+        posc = np.repeat(pos_cell, cc, axis=1)
+        cshare = np.where(posc, capX / sd, base)
     wfb = wf[None, :]
     blended = wfb * cshare + (1.0 - wfb) * base
     return _renorm_pop(blended, cs, cc)
@@ -556,6 +569,27 @@ _RX_ON = _os.environ.get("ROUTING_ELIG_RESTRICT", "1") != "0"
 # rewrite above is the unconditional win and does not care about the hit fraction.
 _RX_MAXHIT = float(_os.environ.get("ROUTING_ELIG_RESTRICT_MAXHIT", "0.25") or 0.25)
 _RX_OK = {"checked": False, "use": _FAST_ON, "msg": "", "note": ""}
+
+# 19bq: how often the no-capable-gateway select was SKIPPED as unreachable vs actually needed.
+# [elig-nocap] measured 0 such cells on 2026-08-23, but that was one population — if `select` ever
+# climbs, the guard has stopped paying and the log will say so instead of leaving it to be assumed.
+_NC_STAT = {"skip": 0, "select": 0}
+
+
+def nocap_note():
+    """One line for the run log: was the capability select reachable this run?"""
+    _s, _n = int(_NC_STAT["skip"]), int(_NC_STAT["select"])
+    if not (_s + _n):
+        return ""
+    if not _n:
+        return (f"[elig-nocap] the no-capable-gateway select was UNREACHABLE on all {_s:,} blend "
+                "call(s), so it was skipped every time — every cell had a capable gateway. That is "
+                "a ~69 ms full-width select plus a bool repeat saved, twice per delivery, "
+                "bit-identically (19bq).")
+    return (f"[elig-nocap] the select was skipped on {_s:,} of {_s + _n:,} blend call(s) "
+            f"({_s / (_s + _n):.1%}) and genuinely NEEDED on {_n:,} — some cell had no capable "
+            "gateway. The guard still shipped the identical answer; it just paid for the select "
+            "on those calls.")
 
 
 def _rx_rows(cs, cc, hit):
@@ -625,8 +659,19 @@ def _blend_pop_rx(X, incap, wf, cs, cc, st):
     inc = np.asarray(incap)[rows]
     base_sum = np.repeat(np.add.reduceat(sub, scs, axis=1), scc, axis=1)
     capX = sub * (~inc)[None, :]
-    s_cap = np.repeat(np.add.reduceat(capX, scs, axis=1), scc, axis=1)
-    cshare = np.where(s_cap > 0, capX / np.where(s_cap > 0, s_cap, 1.0), sub)
+    _sub_seg = np.add.reduceat(capX, scs, axis=1)
+    _sub_pos = _sub_seg > 0
+    s_cap = np.repeat(np.where(_sub_pos, _sub_seg, 1.0), scc, axis=1)
+    # 19bq: the same unreachable select as `_blend_pop`, guarded the same way at cell grain.
+    # NOTE the denominator moved from `np.where(s_cap > 0, s_cap, 1.0)` on the REPEATED array to the
+    # same select on the CELL-grain array before the repeat. That is elementwise identical because
+    # np.repeat is a gather: repeat(f(seg)) == f(repeat(seg)).
+    if _sub_pos.all():
+        _NC_STAT["skip"] += 1
+        cshare = capX / s_cap
+    else:
+        _NC_STAT["select"] += 1
+        cshare = np.where(np.repeat(_sub_pos, scc, axis=1), capX / s_cap, sub)
     wfb = np.asarray(wf)[rows][None, :]
     blended = wfb * cshare + (1.0 - wfb) * sub
     Y = np.array(X, float, copy=True)
