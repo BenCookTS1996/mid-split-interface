@@ -93,7 +93,10 @@ import pandas as pd
 # 2026-08-22 16:13 run, which silently re-used an 11:20 module and reproduced the previous run
 # byte-for-byte. `[loaded]` now reports the live module's real state as well, because a marker
 # nobody remembers to bump is not a guard.
-__build__ = ("2026-08-19bo-lane-cap-back-to-8-measured-flat"
+__build__ = ("2026-08-19bz-float32-optin"
+             "+2026-08-19by-lane-cap-16-measured-on-the-cell-blocked-kernel"
+             "+2026-08-19bt-cell-blocked-kernel"
+             "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
              "+2026-08-19bn-lane-cap-16"
              "+2026-08-19bi-int32-indices-adopted+2026-08-19bf-chunk-speedup-claim-delegated-to-kernel-ab+2026-08-19bb-docstring-proxy-claim-deleted+2026-08-19az-chunked-parallel-adopted+2026-08-19aw-serial-fastmath+2026-08-19av-lazy-fastmath+staleness-sentinel+2026-08-19aq-vamp-conservation-gate+2026-08-16-appearance-month-timing"
               "+candidate-parallel-kernel")
@@ -371,6 +374,124 @@ _pop_band_kernel_fm_cache = {}
 
 
 # [FN-010a]
+# ── CELL-BLOCKED KERNEL (2026-08-19bt) ────────────────────────────────────────────────────────
+# See the module patch note. Same arithmetic, same order, one cell at a time instead of fifteen
+# passes over the whole scaffold; `mvrow` and `vshare` are derived in their only reader instead of
+# being materialised. The row-indexed arguments are CELL-MAJOR permutations of the originals
+# (built once per layout by _cb_arrays), so `_pshare[i]` here means the same row as `_pshare[r]`
+# there — only the label changed.
+def _cb_kernel_impl(prop_raw, propidx_c, masked_c, base_c, mv_c, vcpos_c,
+                    cells, cstart, ccnt,
+                    cap_rowc, cap_band, cap_c, cap_ctot, cap_base,
+                    pc_orgc, pc_vc, pc_pool, pc_band, pc_heldfac, pc_gc,
+                    cap, nlane, vamp, txn, psum, vpsum, moved, pr, pshare, sw):
+    P = prop_raw.shape[0]
+    nCl = cells.shape[0]; nC = cap_rowc.shape[0]; nA = pc_orgc.shape[0]
+    vamp[:, :] = 0.0; txn[:, :] = 0.0
+    # Same lane discipline as the flat kernel: stride 1 => lane q == p (parallel compile, one lane
+    # per candidate); stride 0 => lane 0 for everyone (serial compile, candidates run in sequence).
+    lane_stride = 1 if nlane > 1 else 0
+    for p in _prange(P):
+        q = p * lane_stride
+        _psum = psum[q]; _vpsum = vpsum[q]; _moved = moved[q]
+        _pr = pr[q]; _pshare = pshare[q]
+        for ci in range(nCl):
+            c = cells[ci]
+            s = cstart[ci]; e = s + ccnt[ci]
+            # ---- pass 1: proposals + the cell sum, in the original row order ----
+            ps = 0.0
+            for i in range(s, e):
+                v = 0.0 if masked_c[i] else prop_raw[p, propidx_c[i]]
+                _pr[i] = v
+                ps += v
+            _psum[c] = ps
+            if ps > 0.0:
+                # ---- passes 2 + 3 + nzc, FUSED: none reads what the others write ----
+                mv = 0.0
+                nz = 0.0
+                for i in range(s, e):
+                    mv += base_c[i] * mv_c[i]
+                    sh = _pr[i] / ps
+                    _pshare[i] = sh
+                    if sh > 1e-12:
+                        nz += 1.0
+                _moved[c] = mv
+                # ---- water-fill, per cell (see point 3 of the patch note) ----
+                if cap < 1.0 and nz >= 2.0:
+                    for _it in range(50):
+                        exc = 0.0
+                        over = False
+                        for i in range(s, e):
+                            if _pshare[i] > cap + 1e-12:
+                                exc += _pshare[i] - cap
+                                over = True
+                        if not over:
+                            break
+                        if _it + 1 > sw[q]:
+                            sw[q] = _it + 1          # per lane, so no race
+                        for i in range(s, e):
+                            if _pshare[i] > cap + 1e-12:
+                                _pshare[i] = cap
+                        rs = 0.0
+                        for i in range(s, e):
+                            if _pshare[i] > 1e-12 and _pshare[i] < cap - 1e-12:
+                                rs += cap - _pshare[i]
+                        if rs > 1e-12:
+                            for i in range(s, e):
+                                if _pshare[i] > 1e-12 and _pshare[i] < cap - 1e-12:
+                                    _pshare[i] += (cap - _pshare[i]) / rs * exc
+                # ---- vpsum ----
+                vp = 0.0
+                for i in range(s, e):
+                    if vcpos_c[i] > 0.5:
+                        vp += _pshare[i]
+                _vpsum[c] = vp
+            else:
+                # exactly what the flat kernel's else-branches wrote for an unrouted cell
+                _moved[c] = 0.0
+                _vpsum[c] = 0.0
+                for i in range(s, e):
+                    _pshare[i] = base_c[i]
+        # ---- nC: mvrow derived instead of read (mv_c[r] gated on the cell being routed) ----
+        for j in range(nC):
+            r = cap_rowc[j]; c = cap_c[j]
+            mvr = mv_c[r] if _psum[c] > 0.0 else 0.0
+            txn[p, cap_band[j]] += cap_ctot[j] * (cap_base[j] * (1.0 - mvr)
+                                                 + _moved[c] * _pshare[r])
+        # ---- nA: vshare derived instead of read, under the SAME two guards ----
+        for j in range(nA):
+            o = pc_orgc[j]
+            if o >= 0:
+                _cg = pc_gc[j]
+                if _VAMP_CONSERVE:
+                    mpc = (pc_heldfac[j] if (_psum[_cg] > 0.0 and _vpsum[_cg] > 0.0) else 0.0)
+                else:
+                    mpc = pc_heldfac[j] if _psum[_cg] > 0.0 else 0.0
+                if _psum[_cg] > 0.0 and vcpos_c[o] > 0.5 and _vpsum[_cg] > 0.0:
+                    psh = _pshare[o] / _vpsum[_cg]
+                else:
+                    psh = 0.0
+            else:
+                mpc = 0.0
+                psh = 0.0
+            vamp[p, pc_band[j]] += pc_vc[j] * (1.0 - mpc) + pc_pool[j] * psh
+    return vamp, txn
+
+
+_cb_kernel = _njit(cache=False)(_cb_kernel_impl)
+_cb_kernel_par = _njit(cache=False, parallel=True)(_cb_kernel_impl)
+_PROJ_CB_ON = os.environ.get("ROUTING_PROJ_CELLBLOCK", "1") != "0"
+# 19bz: FLOAT32, OPT-IN. See the module patch note. This is the ONE setting in the projector that
+# changes the answer, so it defaults OFF, it announces itself in the run log, and it measures its
+# own drift on the live scaffold every run instead of quoting a remembered figure.
+_PROJ_F32 = os.environ.get("ROUTING_PROJ_FLOAT32", "0") != "0"
+_F32_OK = {"use": _PROJ_F32, "said": False, "dv": None, "dt": None}
+# `use` is flipped off for the process by the live self-check. `sweeps` is the water-fill sweep
+# high-water mark: the ONE case where per-cell convergence could differ from the shipped kernel's
+# global loop is a cell that never converges in 50, so it is counted rather than assumed.
+_CB_OK = {"use": _PROJ_CB_ON, "checked": False, "sweeps": 0, "why": ""}
+
+
 def pop_band_kernel_fastmath(parallel=True):
     """The fastmath dispatcher, compiled on first use. Measurement only.
 
@@ -411,7 +532,13 @@ _LOADED_SENTINEL = "19bi"
 # 0.58 GB) and twice the bandwidth pressure for nothing. The idle cores are NOT free here: memory
 # bandwidth is the shared limit across lanes, which is the same reason the float32 variant F is the
 # only [kernel-ab] idea that ever clears the floor. ROUTING_PROJ_LANES=16 restores the experiment.
-_PROJ_LANE_CAP = max(1, int(os.environ.get("ROUTING_PROJ_LANES", "8") or 8))
+# 19by: 8 -> 16, ADOPTED ON A MEASUREMENT. [stage-ab] row L timed the projector at both widths on
+# the live scaffold at the live width on 2026-08-24 20:55: 253.0 -> 240.0 ms, 7 of 7 paired rounds,
+# p=0.016, bit-identical on int64 patterns. 19bo reverted 16 -> 8 and that was CORRECT AT THE TIME:
+# the flat kernel was memory-bandwidth-bound, so extra lanes bought nothing (530.7 vs 536.5 ms).
+# 19bt's cell-blocked kernel made the projector compute-bound, and that is exactly why the eight
+# idle cores now pay. Cost: 0.58 GB of scratch instead of 0.29 GB. ROUTING_PROJ_LANES=8 reverts.
+_PROJ_LANE_CAP = max(1, int(os.environ.get("ROUTING_PROJ_LANES", "16") or 16))
 _PROJ_PAR_ON = os.environ.get("ROUTING_PROJ_PARALLEL", "1") != "0"
 _PROJ_PAR_SAID = {}
 
@@ -446,6 +573,37 @@ def _pnote(msg):
     if len(_PROJ_PAR_NOTES) < 64:
         _PROJ_PAR_NOTES.append(str(msg))
     print(f"[band_projection] {msg}")
+
+
+# [FN-010c]
+def _bitview(a):
+    """An INTEGER view of a float array AT THE ARRAY'S OWN WIDTH, for bit-pattern comparison.
+
+    Why bit patterns at all: `np.array_equal` calls -0.0 == 0.0, and -0.0 is exactly the value for
+    which `x + 0.0 == x` fails, so values alone cannot prove two paths agree.
+
+    Why the width has to match: `.view(np.int64)` only works on float64. On a float32 array it
+    raises unless the last axis happens to be an even length, because the view must divide each row
+    into whole 8-byte words:
+
+        ValueError: When changing to a larger dtype, its size must be a divisor of the total size
+        in bytes of the last axis of the array.
+
+    Hard-coding int64 here cost the 2026-08-24 23:03 run 5 h 22 m at the flat kernel's speed —
+    see the self-check in `_project_cb`. Matching the width keeps the comparison a BIT comparison at
+    either precision, instead of raising at one of them or silently degrading to a value comparison.
+
+    Non-float dtypes come back untouched. A non-contiguous array is made contiguous first, because
+    `.view` refuses those too and the copy preserves every bit.
+    """
+    a = np.asarray(a)
+    if a.dtype == np.float64:
+        return np.ascontiguousarray(a).view(np.int64)
+    if a.dtype == np.float32:
+        return np.ascontiguousarray(a).view(np.int32)
+    if a.dtype == np.float16:
+        return np.ascontiguousarray(a).view(np.int16)
+    return a
 
 
 # [FN-011]
@@ -1220,12 +1378,326 @@ class PopulationBandProjector:
                 globals()["_PROJ_CHUNK_ON"] = False
                 buf = self._nb_buffers(P, 1)
                 nlane = 1
+        # 19bt: CELL-BLOCKED FIRST. It declines (returns None) if the layout cannot be built or
+        # the lift's cell-granularity invariant does not hold, in which case everything below runs
+        # exactly as before — the flat path is the revert, untouched, and ROUTING_PROJ_CELLBLOCK=0
+        # forces it.
+        # hasattr, not a bare call: `project_pop_numba` is borrowed by lightweight stand-in
+        # objects (the test suite's projector stubs, and any future diagnostic that wants the
+        # kernel without the class). A stand-in without the cell-blocked machinery must fall
+        # through to the flat path, not raise.
+        if _PROJ_CB_ON and _CB_OK["use"] and hasattr(self, "_project_cb"):
+            _cbres = self._project_cb(prop_raw, a, P, par, chunk, _lanes, nlane, buf)
+            if _cbres is not None:
+                return _cbres
         if chunk:
             return self._project_chunked(prop_raw, a, buf, _lanes)
         _lr, _lc = self._lift_arrays(nlane, buf)
         _kern = _pop_band_kernel_par if par else _pop_band_kernel
         return _kern(prop_raw, *a, int(self._ngc), int(self._B), float(self._cap), nlane,
                      _lr, _lc, *buf)
+
+    # [FN-023c]
+    def _cb_arrays(self, a):
+        """The cell-major layout, built ONCE per lift (returns None if it cannot be trusted).
+
+        Layout: [live rows, cell-major, stable within a cell | frozen rows]. `pos` maps an original
+        row index to its slot, so cap_row / pc_org are remapped statically and the nC / nA loops
+        keep their exact order.
+
+        THE INVARIANT. The frozen-scaffold lift is at CELL granularity — live_rows is exactly the
+        rows of live cells — and the derived `mvrow` / `vshare` (see the kernel) lean on that: a
+        frozen row must always sit in a cell with psum == 0 so the gate returns 0.0. If that ever
+        stops holding, this returns None and the flat kernel runs instead. It is checked, not
+        assumed, because the failure would be a silently wrong answer rather than a crash."""
+        _lr, _lc = self._lift_arrays(1, None)
+        key = (int(_lr.size), int(_lc.size), int(len(self._gcode)))
+        cb = getattr(self, "_cb", None)
+        if cb is not None and cb.get("key") == key:
+            return cb if cb.get("ok") else None
+        nR = len(self._gcode); ncell = int(self._ngc)
+        # Built from `a` = _nb_arrays(), NOT from the raw attributes: `a` is what the flat kernel
+        # actually reads (same dtypes, same int32 narrowing, cap rows already pre-filtered to
+        # non-excl), so the two paths cannot drift apart in their inputs.
+        gc = np.asarray(a[2], np.int64)
+        try:
+            lr = np.asarray(_lr, np.int64)
+            live_cell = np.zeros(ncell, bool)
+            live_cell[np.asarray(_lc, np.int64)] = True
+            # THE INVARIANT, both ways round: every live row is in a live cell, and every row of a
+            # live cell is live.
+            if not (live_cell[gc[lr]].all()
+                    and int(live_cell[gc].sum()) == int(lr.size)):
+                self._cb = {"key": key, "ok": False}
+                _pnote("cell-blocked projection UNAVAILABLE: the frozen-scaffold lift is no longer "
+                       "cell-granular (some live cell has a frozen row), and the derived mvrow / "
+                       "vshare depend on that. Running the flat kernel, which does not. This is a "
+                       "correctness refusal, not a performance one — report it.")
+                return None
+            order = np.argsort(gc[lr], kind="stable")          # STABLE: keeps row order in a cell
+            cm = lr[order]
+            froz = np.where(~live_cell[gc])[0].astype(np.int64)
+            perm = np.concatenate([cm, froz])
+            pos = np.empty(nR, np.int64)
+            pos[perm] = np.arange(nR, dtype=np.int64)
+            cnt = np.bincount(gc[cm], minlength=ncell).astype(np.int64)
+            cells = np.where(cnt > 0)[0].astype(np.int64)
+            cstart = np.zeros(ncell + 1, np.int64)
+            np.cumsum(cnt, out=cstart[1:])
+            cb = {
+                "key": key, "ok": True, "nLR": int(cm.size), "perm": perm, "pos": pos,
+                "cells": _ix32(cells), "cstart": _ix32(cstart[cells]), "ccnt": _ix32(cnt[cells]),
+                "propidx_c": _ix32(np.asarray(a[0], np.int64)[perm]),
+                "masked_c": np.ascontiguousarray(np.asarray(a[1], bool)[perm]),
+                "base_c": np.ascontiguousarray(np.asarray(a[3], np.float64)[perm]),
+                "mv_c": np.ascontiguousarray(np.asarray(a[4], np.float64)[perm]),
+                "vcpos_c": np.ascontiguousarray(np.asarray(a[5], np.float64)[perm]),
+                "cap_rowc": _ix32(pos[np.asarray(a[12], np.int64)]),
+                "pc_orgc": _ix32(np.where(np.asarray(a[7], np.int64) >= 0,
+                                          pos[np.clip(np.asarray(a[7], np.int64), 0,
+                                                      max(nR - 1, 0))], -1)),
+                "primed": None,
+            }
+            self._cb = cb
+            print(f"[band_projection] cell-blocked layout built: {cb['nLR']:,} live rows in "
+                  f"{cells.size:,} cells (~{cb['nLR'] / max(cells.size, 1):.1f} rows/cell), "
+                  f"{froz.size:,} frozen rows parked in the tail. The multi-pass block now runs "
+                  "one cell at a time (an L1-sized working set) instead of ~15 passes over the "
+                  "whole scaffold, and mvrow / vshare are derived in their only reader instead of "
+                  "being materialised. Bit-identical — stable permutation, so every per-cell sum "
+                  "keeps its order — and self-checked against the flat kernel on this scaffold "
+                  "before any result is used. ROUTING_PROJ_CELLBLOCK=0 reverts.")
+            return cb
+        except Exception as _cbe:                  # noqa: BLE001
+            self._cb = {"key": key, "ok": False}
+            _pnote(f"cell-blocked layout could not be built ({type(_cbe).__name__}: {_cbe}) — "
+                   "running the flat kernel. Correct, just slower.")
+            return None
+
+    # [FN-023c2]
+    def _f32_arrays(self, a, cb):
+        """float32 twins of every FLOAT input, plus float32 scratch. Index arrays stay int32.
+
+        Cached on the cell-blocked layout, so it is built once per layout and dies with it. Only
+        float64 arrays are narrowed — casting an index array would be a correctness change, not a
+        precision one."""
+        _f = cb.get("_f32")
+        if _f is not None:
+            return _f
+        def _n(x):
+            x = np.asarray(x)
+            return (np.ascontiguousarray(x.astype(np.float32))
+                    if x.dtype == np.float64 else x)
+        nR = len(self._gcode); ncell = int(self._ngc); B = int(self._B)
+        _f = {
+            "args": tuple(_n(_x) for _x in a),
+            "base_c": _n(cb["base_c"]), "mv_c": _n(cb["mv_c"]), "vcpos_c": _n(cb["vcpos_c"]),
+            "cap": np.float32(self._cap),
+            "buf": None, "lanes": 0, "primed": None,
+        }
+        cb["_f32"] = _f
+        return _f
+
+    def _f32_buffers(self, f32, P, lanes, cb):
+        """(vamp, txn, psum, vpsum, moved, pr, pshare) in float32, reallocated on a lane change."""
+        nR = len(self._gcode); ncell = int(self._ngc); B = int(self._B)
+        if (f32["buf"] is None or f32["lanes"] != int(lanes)
+                or f32["buf"][0].shape[0] != int(P)):
+            f32["buf"] = (np.zeros((int(P), B), np.float32), np.zeros((int(P), B), np.float32),
+                          np.zeros((int(lanes), ncell), np.float32),
+                          np.zeros((int(lanes), ncell), np.float32),
+                          np.zeros((int(lanes), ncell), np.float32),
+                          np.zeros((int(lanes), nR), np.float32),
+                          np.zeros((int(lanes), nR), np.float32))
+            f32["lanes"] = int(lanes)
+            f32["primed"] = None
+        _k = (id(f32["buf"][2]), int(lanes), cb["key"])
+        if f32["primed"] != _k:
+            _nLR = cb["nLR"]
+            _bc = f32["base_c"]
+            for _q in range(int(lanes)):
+                f32["buf"][2][_q][:] = 0.0
+                f32["buf"][3][_q][:] = 0.0
+                f32["buf"][4][_q][:] = 0.0
+                f32["buf"][5][_q][_nLR:] = 0.0
+                f32["buf"][6][_q][_nLR:] = _bc[_nLR:]
+            f32["primed"] = _k
+        return f32["buf"]
+
+    # [FN-023d]
+    def _cb_prime(self, cb, buf, lanes):
+        """Frozen rows keep the values the lift primes; frozen cells keep zero.
+
+        Idempotent per (buffer identity, lane count) — the frozen slots are candidate- AND
+        call-independent, and the kernel never writes them, so priming once is enough. Leave them
+        stale and the answer is silently wrong with nothing to see, which is the same warning the
+        flat lift carries."""
+        key = (id(buf[2]), int(lanes), cb["key"])
+        if cb.get("primed") == key:
+            return
+        psum, vpsum, moved, pr, pshare = buf[2], buf[3], buf[4], buf[5], buf[6]
+        nLR = cb["nLR"]
+        bc = cb["base_c"]
+        for q in range(int(lanes)):
+            psum[q][:] = 0.0                      # frozen CELLS stay 0 for the whole process
+            vpsum[q][:] = 0.0
+            moved[q][:] = 0.0
+            pr[q][nLR:] = 0.0
+            pshare[q][nLR:] = bc[nLR:]            # what the unlifted kernel's else-branch wrote
+        cb["primed"] = key
+
+    # [FN-023e]
+    def _project_cb(self, prop_raw, a, P, par, chunk, lanes, nlane, buf):
+        """Cell-blocked projection. Returns None to decline, in which case the flat path runs."""
+        cb = self._cb_arrays(a)
+        if cb is None:
+            return None
+        # The cell-blocked path writes pshare's FROZEN slots at cell-major positions, which are not
+        # where the flat kernel expects them. If this path ever hands back to the flat one (a failed
+        # self-check, a later decline) the lift must re-prime, so invalidate its idempotence key
+        # here rather than relying on the buffer identity changing. Stale frozen slots are a
+        # silently wrong answer, which is the one failure mode worth paying a re-prime to avoid.
+        self._lift_primed = None
+        ncell = int(self._ngc); cap = float(self._cap)
+        vamp, txn = buf[0], buf[1]
+        psum, vpsum, moved, pr, pshare = buf[2], buf[3], buf[4], buf[5], buf[6]
+        _lanes = int(lanes if chunk else (P if par else 1))
+        if not _F32_OK["use"]:
+            self._cb_prime(cb, buf, _lanes)
+        sw = getattr(self, "_cb_sw", None)
+        if sw is None or sw.size < max(_lanes, 1):
+            sw = self._cb_sw = np.zeros(max(_lanes, 1), np.int64)
+        _args = (cb["propidx_c"], cb["masked_c"], cb["base_c"], cb["mv_c"], cb["vcpos_c"],
+                 cb["cells"], cb["cstart"], cb["ccnt"],
+                 cb["cap_rowc"], a[13], a[14], a[15], a[16],
+                 cb["pc_orgc"], a[8], a[9], a[10], a[11], a[17])
+        # 19bz: FLOAT32. Same kernel, a float32 specialisation of it. Every float the kernel
+        # streams halves; the index arrays are untouched. This MOVES THE ANSWER — see the module
+        # patch note and the banner this prints on its first pass.
+        _f32 = None
+        _pr_run = None
+        if _F32_OK["use"]:
+            _f32 = self._f32_arrays(a, cb)
+            _fa = _f32["args"]
+            _args = (cb["propidx_c"], cb["masked_c"], _f32["base_c"], _f32["mv_c"],
+                     _f32["vcpos_c"], cb["cells"], cb["cstart"], cb["ccnt"],
+                     cb["cap_rowc"], _fa[13], _fa[14], _fa[15], _fa[16],
+                     cb["pc_orgc"], _fa[8], _fa[9], _fa[10], _fa[11], _fa[17])
+            cap = _f32["cap"]
+            vamp, txn, psum, vpsum, moved, pr, pshare = self._f32_buffers(
+                _f32, P, _lanes if chunk else (P if par else 1), cb)
+            # a SEPARATE name: `prop_raw` must stay float64 for the self-check's reference call,
+            # or the "float64 reference" would itself be a mixed-dtype specialisation and the
+            # drift measured against it would be meaningless.
+            _pr_run = np.ascontiguousarray(np.asarray(prop_raw).astype(np.float32))
+
+        _pr_in = _pr_run if _F32_OK["use"] else prop_raw
+
+        def _run():
+            if chunk:
+                for _s0 in range(0, P, _lanes):
+                    _s1 = min(_s0 + _lanes, P)
+                    _n = _s1 - _s0
+                    _k = _cb_kernel if _n == 1 else _cb_kernel_par
+                    _k(np.ascontiguousarray(_pr_in[_s0:_s1]), *_args, cap, _n,
+                       vamp[_s0:_s1], txn[_s0:_s1], psum, vpsum, moved, pr, pshare, sw)
+                return vamp, txn
+            _k = _cb_kernel_par if par else _cb_kernel
+            return _k(_pr_in, *_args, cap, (P if par else 1),
+                      vamp, txn, psum, vpsum, moved, pr, pshare, sw)
+
+        try:
+            _v, _t = _run()
+        except Exception as _cbe:                  # noqa: BLE001
+            _CB_OK["use"] = False
+            _pnote(f"cell-blocked projection FAILED to run ({type(_cbe).__name__}: {_cbe}) — "
+                   "disabled for this process, the flat kernel takes over. Correct, just slower.")
+            return None
+        if not _CB_OK["checked"]:
+            # SELF-CHECK on the LIVE scaffold, against the untouched flat SERIAL kernel, before any
+            # result is used. Same discipline as the candidate-parallel check: a re-implementation
+            # is only trustworthy diffed against the original on the SAME inputs in the SAME run.
+            _CB_OK["checked"] = True
+            _v, _t = _v.copy(), _t.copy()
+            try:
+                _nR = len(self._gcode); _B = int(self._B)
+                _vb = ((np.zeros((P, _B)), np.zeros((P, _B)))
+                       + tuple(np.zeros((1, ncell)) for _ in range(3))
+                       + tuple(np.zeros((1, _nR)) for _ in range(4))
+                       + tuple(np.zeros((1, ncell)) for _ in range(3)))
+                _lrv, _lcv = self._lift_arrays(1, _vb)
+                _rv, _rt = _pop_band_kernel(prop_raw, *a, ncell, _B, cap, 1, _lrv, _lcv, *_vb)
+                del _vb                      # the tuple name only; _rv/_rt still hold its arrays
+                # 19cd: THE FLOAT32 BRANCH COMES FIRST. It used to come after the bit comparison
+                # below, and that comparison hard-coded `.view(np.int64)` on arrays that are
+                # float32 under this setting — which RAISES on any odd band count, because a
+                # (P, B) float32 row is not a whole number of 8-byte words. On 2026-08-24 that
+                # raised, the `except` below disabled cell-blocking for the process, float32 died
+                # with it because it lives inside this same path, and a 5 h 22 m run used the flat
+                # float64 kernel throughout — never printing the banner, because the banner is
+                # printed after the line that raised. Under float32 a bit-IDENTITY test is the
+                # wrong test to run at all, so now it is not reached; `_bitview` below is the
+                # independent second fix, for every other caller and precision.
+                if _F32_OK["use"]:
+                    # NOT a bit-identity check — float32 is EXPECTED to differ, and pretending
+                    # otherwise would be the dishonest version. Measure the actual movement on
+                    # THIS run's scaffold and say what it means for the reconciliation numbers.
+                    _dv = float(np.abs(_rv.astype(np.float64) - _v.astype(np.float64)).max())
+                    _dt2 = float(np.abs(_rt.astype(np.float64) - _t.astype(np.float64)).max())
+                    _F32_OK["dv"], _F32_OK["dt"] = _dv, _dt2
+                    _pnote("*** FLOAT32 PROJECTOR IS ON (ROUTING_PROJ_FLOAT32=1). This is the one "
+                           "setting that CHANGES THE ANSWER, and it is on because a ~2-transaction "
+                           "drift was accepted, not because it is free. Measured on THIS run's "
+                           f"scaffold against the float64 kernel: max|\u0394vamp| {_dv:.4g}, "
+                           f"max|\u0394txn| {_dt2:.4g} at P={P}. TWO CONSEQUENCES. (1) "
+                           "RECONCILIATION ERROR will no longer read 0: it is "
+                           "\u03a3|delivered \u2212 GA-fitness|, GA-fitness now comes from this "
+                           "float32 kernel and delivery is still float64, so it will read about "
+                           "the drift above. That is the setting, not a regression \u2014 but the "
+                           "number also stops being able to detect a REAL reconciliation bug at "
+                           "that magnitude. (2) The search is chaotic, so this run's trajectory "
+                           "diverges from a float64 run's; only the end results compare. "
+                           "ROUTING_PROJ_FLOAT32=0 restores exactness.")
+                    return _v, _t
+                # bit patterns, not np.array_equal: array_equal calls -0.0 == 0.0, and -0.0 is
+                # exactly the value for which x + 0.0 == x fails. `_bitview` picks the integer
+                # width to match the float width — see 19cd.
+                _same = (np.array_equal(_bitview(_rv), _bitview(_v))
+                         and np.array_equal(_bitview(_rt), _bitview(_t)))
+                if _same:
+                    _pnote("cell-blocked projection SELF-CHECK PASSED on the live scaffold: "
+                           "bit-identical to the flat kernel (int64 bit-pattern comparison on "
+                           f"vamp AND txn at P={P}, stricter than np.array_equal). "
+                           f"Water-fill high-water mark {int(sw.max())} sweep(s) of 50 — the ONE "
+                           "way per-cell convergence could differ from the flat kernel's global "
+                           "loop is a cell that never converges, so it is counted, not assumed.")
+                else:
+                    _CB_OK["use"] = False
+                    _pnote("*** cell-blocked projection SELF-CHECK FAILED — "
+                           f"max|\u0394vamp|={float(np.abs(_rv - _v).max()):.6e} "
+                           f"max|\u0394txn|={float(np.abs(_rt - _t).max()):.6e}. DISABLED for the "
+                           "rest of this process and the flat kernel's result is being used, so "
+                           "this run's numbers are the pre-19bt numbers. Report this.")
+                    return _rv, _rt
+            except Exception as _cve:              # noqa: BLE001
+                _CB_OK["use"] = False
+                _pnote(f"*** cell-blocked self-check could not run ({type(_cve).__name__}: "
+                       f"{_cve}) \u2014 falling back to the flat kernel for this process rather "
+                       "than trusting an unverified path. READ THIS BEFORE READING ANY TIMING "
+                       "BELOW: the flat kernel is the SLOW one, and the float32 projector lives "
+                       "inside this same path, so if ROUTING_PROJ_FLOAT32=1 it is off for this run "
+                       "too and no float32 banner will print. The run is CORRECT and roughly half "
+                       "speed. Report this line rather than reading the [gen-cost] split as the "
+                       "engine's real cost profile.")
+                return None
+        if int(sw.max()) >= 50 and not _CB_OK.get("shouted"):
+            _CB_OK["shouted"] = True
+            _pnote("*** cell-blocked water-fill hit the 50-sweep cap. That is the one case where "
+                   "per-cell convergence is NOT provably identical to the flat kernel's global "
+                   "loop. Re-run with ROUTING_PROJ_CELLBLOCK=0 and compare before trusting these "
+                   "numbers.")
+        _CB_OK["sweeps"] = max(int(_CB_OK.get("sweeps", 0)), int(sw.max()))
+        return _v, _t
 
     # [FN-023b]
     def _project_chunked(self, prop_raw, a, buf, lanes):

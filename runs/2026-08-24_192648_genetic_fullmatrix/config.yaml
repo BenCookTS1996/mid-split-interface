@@ -10,9 +10,9 @@ ga_risk_aversion: 0.0
 ga_breach_fixed: 0.0
 ga_band_mult: 1.0
 ga_generations: 20
-ga_pop_override: 4
+ga_pop_override: 40
 ga_perf:
-  secs: 222.88280391693115
+  secs: 163.49669408798218
   budget: 4
   gen: 1
   pop: 4
@@ -20,4 +20,4 @@ ga_perf:
   restarts: 2
   nvar: 1
   n: 245409
-total_secs: 667.8
+total_secs: 1031.0

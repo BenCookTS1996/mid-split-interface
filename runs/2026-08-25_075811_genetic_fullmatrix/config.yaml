@@ -9,15 +9,15 @@ ga_search: breach_targeted+smart_init+adaptive_lambda+diversity_archive (always 
 ga_risk_aversion: 0.0
 ga_breach_fixed: 0.0
 ga_band_mult: 1.0
-ga_generations: 160
-ga_pop_override: 64
+ga_generations: 20
+ga_pop_override: 40
 ga_perf:
-  secs: 209.0700068473816
+  secs: 120.84295010566711
   budget: 4
   gen: 1
   pop: 4
   seeds: 1
   restarts: 4
   nvar: 1
-  n: 245409
-total_secs: 24228.3
+  n: 186643
+total_secs: 1149.3

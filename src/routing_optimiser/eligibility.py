@@ -31,7 +31,8 @@ import os as _os        # 19bl: the in-place twin's kill-switch reads it under t
 import numpy as np
 import pandas as pd
 
-__build__ = ("2026-08-19bq-nocap-select-guarded"
+__build__ = ("2026-08-19bs-fused-elementwise-blends"
+             "+2026-08-19bq-nocap-select-guarded"
              "+2026-08-19bm-restricted-blends"
              "+2026-08-19bl-exact-subcell-capability-RESTORED-after-19bk-clobber"
              "+2026-08-19bk-elig-inplace"
@@ -463,6 +464,90 @@ def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, 
     }
 
 
+# ── FUSED ELEMENTWISE PASSES (2026-08-19bs) ───────────────────────────────────────────────────
+# See the module note on _blend_pop: the chain's cost is the NUMBER of full-width temporaries, and
+# every step except the two np.add.reduceat calls is elementwise. Elementwise work has no
+# summation order to preserve, so fusing it into one loop cannot reassociate anything. The
+# reductions are left to numpy precisely because reduceat does NOT sum left-to-right and
+# reimplementing its association would be a guess.
+try:
+    from numba import njit as _e_njit
+    _E_HAVE_NB = True
+except Exception:                                   # noqa: BLE001 - numba absent is not an error
+    _E_HAVE_NB = False
+
+    def _e_njit(*_a, **_k):                         # so the bodies stay valid python
+        def _deco(f):
+            return f
+        return _deco
+
+
+@_e_njit(cache=False, fastmath=False)
+def _fu_mask(X, incap, out):
+    """capX = X * (~incap). The MULTIPLY is kept, not turned into a branch: numpy casts the bool
+    to 1.0/0.0 and multiplies, and for a negative x, x * 0.0 is -0.0 while a branch returning a
+    literal 0.0 gives +0.0. Those differ in bits, which is the whole game here."""
+    P, N = X.shape
+    for p in range(P):
+        for i in range(N):
+            out[p, i] = X[p, i] * (0.0 if incap[i] else 1.0)
+    return out
+
+
+@_e_njit(cache=False, fastmath=False)
+def _fu_blend(capX, base, seg, co, wf, out, all_pos):
+    """cshare + the wf blend, in ONE pass instead of five.
+
+    Mirrors, elementwise and operator for operator:
+        sd     = repeat(where(seg > 0, seg, 1.0), cc)
+        cshare = capX / sd                       (all_pos)   or   where(posc, capX / sd, base)
+        out    = wf * cshare + (1.0 - wf) * base
+    `all_pos` is the 19bq no-capable-gateway guard, decided at CELL grain by the caller."""
+    P, N = capX.shape
+    for p in range(P):
+        for i in range(N):
+            s = seg[p, co[i]]
+            if s > 0.0:
+                csh = capX[p, i] / s
+            elif all_pos:
+                csh = capX[p, i] / 1.0           # unreachable when all_pos; kept for exactness
+            else:
+                csh = base[p, i]
+            w = wf[i]
+            out[p, i] = w * csh + (1.0 - w) * base[p, i]
+    return out
+
+
+@_e_njit(cache=False, fastmath=False)
+def _fu_renorm(X, seg, co, out):
+    """X / repeat(where(seg > 0, seg, 1.0), cc), in one pass with no repeat and no select."""
+    P, N = X.shape
+    for p in range(P):
+        for i in range(N):
+            s = seg[p, co[i]]
+            out[p, i] = X[p, i] / (s if s > 0.0 else 1.0)
+    return out
+
+
+_FU_ON = (_os.environ.get("ROUTING_ELIG_FUSE", "1") != "0") and _E_HAVE_NB
+# `use` is flipped OFF for the process by the live self-check in `apply_elig_pop` on any mismatch,
+# the same way the restriction and the in-place twin are governed. `why` is read into the run log.
+_FU_OK = {"use": _FU_ON, "why": (
+    "fused elementwise passes ON (ROUTING_ELIG_FUSE=0 reverts to the 19bm numpy chain)"
+    if _FU_ON else
+    ("fused elementwise passes OFF — numba is unavailable in this process, so the numpy chain "
+     "runs; correct, just ~2x dearer" if not _E_HAVE_NB else
+     "fused elementwise passes OFF — ROUTING_ELIG_FUSE=0"))}
+
+
+def _co_build(cc):
+    """cell_of: the cell index of every row. Built ONCE per layout by `_rx_build` and carried on
+    the operator — never rebuilt per call, and never cached under a (N, ncell) key, because two
+    different sub-layouts can share that pair and a mis-keyed cell map is a silent wrong answer."""
+    cc = np.asarray(cc, np.int64)
+    return np.repeat(np.arange(cc.size, dtype=np.int32), cc)
+
+
 # [FN-067]
 def _renorm_pop_ref(X: np.ndarray, cs: np.ndarray, cc: np.ndarray) -> np.ndarray:
     """THE REFERENCE. Per-cell renormalise to sum 1, leaving all-zero cells (matches `_renorm`).
@@ -471,7 +556,7 @@ def _renorm_pop_ref(X: np.ndarray, cs: np.ndarray, cc: np.ndarray) -> np.ndarray
     return np.where(s > 0, X / np.where(s > 0, s, 1.0), X)
 
 
-def _renorm_pop(X: np.ndarray, cs: np.ndarray, cc: np.ndarray) -> np.ndarray:
+def _renorm_pop(X: np.ndarray, cs: np.ndarray, cc: np.ndarray, co=None) -> np.ndarray:
     """Same result, bit for bit, in three full-width passes instead of five.
 
     TWO CHANGES, both exact:
@@ -482,6 +567,11 @@ def _renorm_pop(X: np.ndarray, cs: np.ndarray, cc: np.ndarray) -> np.ndarray:
         1.0, so X / 1.0 == X, which is precisely what the discarded branch returned.
     135.5 ms -> 67.0 ms at 35 x 242,670 / 23,418 cells."""
     seg = np.add.reduceat(X, cs, axis=1)
+    if co is not None and _FU_OK["use"]:
+        # 19bs: one fused pass instead of repeat + select + divide. Same reduceat, same divisor,
+        # same elementwise result — the repeat is a gather of identical values and the select is
+        # a no-op where the divisor is exactly 1.0.
+        return _fu_renorm(X, seg, co, np.empty_like(X))
     return X / np.repeat(np.where(seg > 0, seg, 1.0), cc, axis=1)
 
 
@@ -505,7 +595,7 @@ def _blend_pop_ref(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
 
 
 def _blend_pop(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
-               cs: np.ndarray, cc: np.ndarray) -> np.ndarray:
+               cs: np.ndarray, cc: np.ndarray, co=None) -> np.ndarray:
     """Same result, bit for bit, with three of the five full-width selects removed.
 
       * `base_sum` is never materialised. Its only use was the trailing select, and that select is a
@@ -520,6 +610,22 @@ def _blend_pop(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
     437.3 ms -> 270.2 ms at 35 x 242,670 / 23,418 cells. Bit-identical (int64 view) across
     all-zero cells, cells with no capable gateway, -0.0 shares and 1e-14 magnitudes."""
     base = X
+    if co is not None and _FU_OK["use"]:
+        # 19bs: THREE full-width arrays instead of eight. The two reduceat calls are untouched and
+        # in the same places; only the elementwise steps between them are fused.
+        capX = _fu_mask(X, np.asarray(incap, bool), np.empty_like(X))
+        seg_c = np.add.reduceat(capX, cs, axis=1)
+        _ap = bool((seg_c > 0).all())
+        _NC_STAT["skip" if _ap else "select"] += 1
+        # IN-PLACE into capX, which saves a 68 MB allocation and measured 114.7 -> 100.8 ms.
+        # Safe, and not the thing I refused in 19bo: `capX` is CALL-LOCAL (allocated three lines
+        # up, never escapes, never shared with another call or thread), and the fused pass reads
+        # element i then writes element i, so no iteration can read a slot a previous one wrote.
+        # A module-level scratch POOL would be the unsafe version — rowpar calls this from several
+        # threads at once, and that is exactly the silent aliasing the bit-identity bar exists for.
+        blended = _fu_blend(capX, X, seg_c, co, np.asarray(wf, float), capX, _ap)
+        seg = np.add.reduceat(blended, cs, axis=1)
+        return _fu_renorm(blended, seg, co, np.empty_like(X))
     capX = base * (~incap)[None, :]
     seg_c = np.add.reduceat(capX, cs, axis=1)
     pos_cell = seg_c > 0
@@ -613,7 +719,11 @@ def _rx_build(op):
     cs = np.asarray(op["cell_starts"], np.intp)
     cc = np.asarray(op["cell_counts"], np.intp)
     n = int(cc.sum())
-    rx = {"n_rows": n, "n_cell": int(cs.size), "stages": {}, "why": []}
+    rx = {"n_rows": n, "n_cell": int(cs.size), "stages": {}, "why": [],
+          # 19bs: built ONCE per layout, here, and passed down. Never cached under a (N, ncell)
+          # key — two sub-layouts can share that pair, and a mis-keyed cell map is a silent wrong
+          # answer, not a slow one.
+          "co": _co_build(cc) if _FU_OK["use"] else None}
     if not _RX_ON:
         rx["why"].append("hit-cell restriction OFF (ROUTING_ELIG_RESTRICT=0); the cell-grain "
                          "rewrite still applies")
@@ -630,7 +740,7 @@ def _rx_build(op):
         frac = (rows.size / n) if n else 1.0
         if rows.size == 0:
             # the whole stage is the identity up to the trailing renorm
-            rx["stages"][_k] = {"rows": rows, "scs": scs, "scc": scc,
+            rx["stages"][_k] = {"rows": rows, "scs": scs, "scc": scc, "co": None,
                                 "cells": 0, "frac": 0.0}
             rx["why"].append(f"{_k}: NO cell can change (every wf == 0) — 0 of {n:,} rows")
         elif frac > _RX_MAXHIT:
@@ -638,6 +748,7 @@ def _rx_build(op):
                              f"{_RX_MAXHIT:.0%} cut-off — kept FULL-WIDTH")
         else:
             rx["stages"][_k] = {"rows": rows, "scs": scs, "scc": scc,
+                                "co": _co_build(scc) if _FU_OK["use"] else None,
                                 "cells": int(hit.sum()), "frac": frac}
             rx["why"].append(f"{_k}: {int(hit.sum()):,} of {cs.size:,} cells "
                              f"({hit.mean():.2%}) carrying {rows.size:,} of {n:,} rows "
@@ -645,7 +756,7 @@ def _rx_build(op):
     return rx
 
 
-def _blend_pop_rx(X, incap, wf, cs, cc, st):
+def _blend_pop_rx(X, incap, wf, cs, cc, st, co=None):
     """`_blend_pop` over the changeable cells only, then the SAME full-width trailing renorm.
 
     THE PRIMITIVES MUST MATCH the full version operation for operation — np.add.reduceat over the
@@ -654,9 +765,22 @@ def _blend_pop_rx(X, incap, wf, cs, cc, st):
     left-to-right."""
     rows, scs, scc = st["rows"], st["scs"], st["scc"]
     if rows.size == 0:                       # nothing can change: only the renorm is left
-        return _renorm_pop(np.array(X, float, copy=True), cs, cc)
+        return _renorm_pop(np.array(X, float, copy=True), cs, cc, co)
     sub = np.ascontiguousarray(X[:, rows])
     inc = np.asarray(incap)[rows]
+    if st.get("co") is not None and _FU_OK["use"]:
+        # 19bs: the same fusion on the gathered sub-array. `base_sum` is not needed — see the note
+        # in `_blend_pop`: the trailing `where(base_sum > 0, blended, sub)` is a no-op because a
+        # cell with base_sum <= 0 is all zeros, so blended == sub in both branches.
+        _co = st["co"]
+        _capX = _fu_mask(sub, np.asarray(inc, bool), np.empty_like(sub))
+        _seg = np.add.reduceat(_capX, scs, axis=1)
+        _ap = bool((_seg > 0).all())
+        _NC_STAT["skip" if _ap else "select"] += 1
+        _bl = _fu_blend(_capX, sub, _seg, _co, np.asarray(wf, float)[rows], _capX, _ap)
+        Y = np.array(X, float, copy=True)
+        Y[:, rows] = _bl
+        return _renorm_pop(Y, cs, cc, co)
     base_sum = np.repeat(np.add.reduceat(sub, scs, axis=1), scc, axis=1)
     capX = sub * (~inc)[None, :]
     _sub_seg = np.add.reduceat(capX, scs, axis=1)
@@ -680,18 +804,23 @@ def _blend_pop_rx(X, incap, wf, cs, cc, st):
 
 
 def _apply_elig_pop_rx(Xa, op, cs, cc, rx):
-    """Same three stages, same order, blends restricted where the index says it is safe."""
+    """Same three stages, same order, blends restricted where the index says it is safe.
+
+    19bs: `rx["co"]` is the row->cell map for the full layout, built once when the index was.
+    Passing it in is what switches the helpers to the fused elementwise passes; passing None
+    leaves them on the 19bm numpy chain, which is the revert path."""
+    _co = rx.get("co")
     if op.get("has_ban"):
         Xa = Xa * (~op["ban"])[None, :]
-        Xa = _renorm_pop(Xa, cs, cc)
+        Xa = _renorm_pop(Xa, cs, cc, _co)
     if op.get("has_w"):
         _st = rx["stages"].get("w")
-        Xa = (_blend_pop_rx(Xa, op["w_incap"], op["w_wf"], cs, cc, _st) if _st is not None
-              else _blend_pop(Xa, op["w_incap"], op["w_wf"], cs, cc))
+        Xa = (_blend_pop_rx(Xa, op["w_incap"], op["w_wf"], cs, cc, _st, _co) if _st is not None
+              else _blend_pop(Xa, op["w_incap"], op["w_wf"], cs, cc, _co))
     if op.get("has_u"):
         _st = rx["stages"].get("u")
-        Xa = (_blend_pop_rx(Xa, op["u_incap"], op["u_wf"], cs, cc, _st) if _st is not None
-              else _blend_pop(Xa, op["u_incap"], op["u_wf"], cs, cc))
+        Xa = (_blend_pop_rx(Xa, op["u_incap"], op["u_wf"], cs, cc, _st, _co) if _st is not None
+              else _blend_pop(Xa, op["u_incap"], op["u_wf"], cs, cc, _co))
     return Xa
 
 
@@ -702,7 +831,7 @@ def _rx_verdict(ref, got, rx, P, N):
     if not same_val:
         return False, (f"\u26a0 max|\u0394| {float(np.abs(ref - got).max()):.3e}")
     nbits = int(np.count_nonzero(ref.view(np.int64) != got.view(np.int64)))
-    _why = "; ".join(rx["why"]) or "no stage restricted"
+    _why = "; ".join(list(rx["why"]) + [_FU_OK["why"]]) or "no stage restricted"
     if nbits == 0:
         return True, (f"\u2713 bit-identical to the reference on the live operator "
                       f"(int64 bit-pattern comparison on {P}x{N:,}, stricter than array_equal). "
@@ -882,13 +1011,17 @@ def apply_elig_pop(X: np.ndarray, op: dict) -> np.ndarray:
                                          + _why + " ROUTING_ELIG_RESTRICT=0 reverts.")
                     else:
                         _RX_OK["use"] = False
+                        _FU_OK["use"] = False      # 19bs: revert BOTH, then say which were on
                         out = ref
                         _RX_OK["msg"] = (
                             "[eligibility] restricted blends SELF-CHECK FAILED \u2014 " + _why
                             + ". REVERTING to the full-width blend for this process, so what "
                             "ships is the known-good answer. The premise (wf == 0 in every row "
                             "of a cell => that cell's blend is the identity) does not hold on "
-                            "this data. Do not treat this as cosmetic: report it.")
+                            "this data. Do not treat this as cosmetic: report it. Both the "
+                            "hit-cell restriction AND the 19bs fused elementwise passes were in "
+                            "play, so both are now off; re-run with ROUTING_ELIG_FUSE=0 to tell "
+                            "them apart.")
                     print(_RX_OK["msg"])
                 return out[0] if single else out
         out = _apply_elig_pop_alloc(Xa, op, cs, cc)

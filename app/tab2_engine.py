@@ -6501,6 +6501,28 @@ def render():
                                         _Y[:, _rows] = np.where(_has, _capd + _add, _sub)
                                         return _Y
 
+                                    def _fm_block_into(_X, _blk, _fl, _rows, _scs, _scc):
+                                        """`_fm_block_narrow` writing INTO `_X` instead of a copy.
+
+                                        The arithmetic is character-for-character the same; the
+                                        only difference is where the result lands. This is NOT a
+                                        drop-in for `_fm_block_narrow` and must never be called
+                                        through rowpar — rowpar runs a transform twice on the same
+                                        input to verify threading, and a second in-place run does
+                                        not reproduce the first. It has exactly one caller:
+                                        `_fm_deliv_full`, on a buffer it filled itself."""
+                                        _sub = np.ascontiguousarray(_X[:, _rows])
+                                        _bm = np.asarray(_blk)[None, _rows]
+                                        _capd = np.where(_bm, np.minimum(_sub, _fl), _sub)
+                                        _freed = _sub - _capd
+                                        _recip = np.where(_bm, 0.0, _capd)
+                                        _fc = np.repeat(np.add.reduceat(_freed, _scs, axis=1), _scc, axis=1)
+                                        _rc = np.repeat(np.add.reduceat(_recip, _scs, axis=1), _scc, axis=1)
+                                        _has = _rc > 1e-12
+                                        _add = np.where(_has, _recip * _fc / np.where(_has, _rc, 1.0), 0.0)
+                                        _X[:, _rows] = np.where(_has, _capd + _add, _sub)
+                                        return _X
+
                                     def _fm_block(_farr, _blk=_fm_blk_row, _cs=_fm_bcs, _cc=_fm_bcc,
                                                   _fl=_fm_bfloor, _st=_fm_blk_ok):
                                         if _blk is None:
@@ -6583,6 +6605,17 @@ def render():
                                         """THE REFERENCE. rowpar checks the threaded path against
                                         this, never the other way round."""
                                         return _el(_bl(_farr))
+
+                                    def _fm_elig_rp(_farr, _el=_fm_elig):
+                                        """Eligibility ALONE, threaded. A separate rowpar name from
+                                        "deliver": that state machine keys on the name, and feeding
+                                        two different transforms through one key would verify one
+                                        and thread the other."""
+                                        _a = np.asarray(_farr)
+                                        if _a.ndim != 2:
+                                            return _el(_farr)
+                                        return _fm_rowpar(_el, _a, "deliver(elig)",
+                                                          enabled=_fm_rp_ok)
 
                                     def _fm_deliv(_farr, _sr=_fm_deliv_serial):
                                         _a = np.asarray(_farr)
@@ -6818,6 +6851,36 @@ def render():
                                     # and bank auto-block flooring, since it IS the delivery transform.
                                     _fm_scatter = {"buf": None}
 
+                                    # 19ca: the fused scatter+cap. OFF unless every precondition
+                                    # holds: the switch, a blocked-row mask to apply, the restricted
+                                    # path in use, and — the one that could bite — the scatter
+                                    # writing EVERY column, so nothing stale can survive in the
+                                    # reused buffer. That last one is a property of THIS build's
+                                    # keep_idx, not a law, so it is tested here rather than
+                                    # inherited from the run that measured it.
+                                    _FUSE_DELIV = {
+                                        "use": bool(os.environ.get("ROUTING_DELIV_FUSE", "1") != "0"
+                                                    and _fm_blk_row is not None
+                                                    and _fm_blk_ok.get("use")
+                                                    and len(np.asarray(_fm_colmap).ravel())
+                                                    == int(_fm_nrow)),
+                                        "checked": False, "msg": ""}
+                                    if not _FUSE_DELIV["use"]:
+                                        _FUSE_DELIV["msg"] = (
+                                            "[deliv-fuse] OFF \u2014 "
+                                            + ("ROUTING_DELIV_FUSE=0"
+                                               if os.environ.get("ROUTING_DELIV_FUSE", "1") == "0"
+                                               else ("no blocked rows to cap, so there is nothing to "
+                                                     "fuse" if _fm_blk_row is None
+                                                     else ("the restricted blocked-caps path is not in "
+                                                           "use" if not _fm_blk_ok.get("use")
+                                                           else "the scatter does not write every "
+                                                                "column, so an in-place cap could leave "
+                                                                "stale values behind"))))
+
+                                    if _FUSE_DELIV.get("msg"):
+                                        log("   " + _FUSE_DELIV["msg"])
+
                                     def _fm_deliv_full(_srt_sh, _dv=_fm_deliv, _cm=_fm_colmap,
                                                        _nr=_fm_nrow, _sc=_fm_scatter):
                                         _X = np.asarray(_srt_sh, float)
@@ -6831,6 +6894,47 @@ def render():
                                             _sc["buf"] = _b
                                         _f = _b[:_P]
                                         _f[:, _cm] = _X                # non-mapped cols stay 0 (never written)
+                                        # 19ca: THE SCATTER IS THE COPY. blocked-caps would copy
+                                        # this buffer to honour "returns a NEW array"; the scatter
+                                        # has just written it privately, so blocked-caps edits it
+                                        # in place and one full-width read + write disappears.
+                                        # rowpar is left wrapping ELIGIBILITY only, which is pure,
+                                        # so its verify-by-running-twice is still valid. See 19ca.
+                                        if _FUSE_DELIV["use"]:
+                                            if not _FUSE_DELIV["checked"]:
+                                                _FUSE_DELIV["checked"] = True
+                                                _ref = _dv(np.array(_f, float, copy=True))
+                                                _fm_block_into(_f, _fm_blk_row, _fm_bfloor,
+                                                               _fm_blk_rows, _fm_blk_scs,
+                                                               _fm_blk_scc)
+                                                _got = _fm_elig_rp(_f)
+                                                if np.array_equal(np.asarray(_ref).view(np.int64),
+                                                                  np.asarray(_got).view(np.int64)):
+                                                    _FUSE_DELIV["msg"] = (
+                                                        "[deliv-fuse] \u2713 SELF-CHECK PASSED on the live "
+                                                        "population: scattering straight into the array "
+                                                        "blocked-caps edits is bit-identical to "
+                                                        "scatter \u2192 copy \u2192 cap (int64 bit-pattern "
+                                                        f"comparison on {_P}x{_nr:,}, stricter than "
+                                                        "array_equal). One full-width read and write "
+                                                        "removed per delivery; [deliv-cost] measured the "
+                                                        "copy at 93% of the 18.1 ms blocked-caps row. "
+                                                        "ROUTING_DELIV_FUSE=0 reverts.")
+                                                    _d = _got
+                                                else:
+                                                    _FUSE_DELIV["use"] = False
+                                                    _FUSE_DELIV["msg"] = (
+                                                        "[deliv-fuse] \u26a0 SELF-CHECK FAILED \u2014 max|\u0394| "
+                                                        f"{float(np.abs(np.asarray(_ref) - np.asarray(_got)).max()):.3e}"
+                                                        ". DISABLED for this process; the unfused delivery "
+                                                        "is what ships. Report this.")
+                                                    _d = _ref
+                                                log("   " + _FUSE_DELIV["msg"])
+                                                return _d[0] if _one else _d
+                                            _fm_block_into(_f, _fm_blk_row, _fm_bfloor,
+                                                           _fm_blk_rows, _fm_blk_scs, _fm_blk_scc)
+                                            _d = _fm_elig_rp(_f)
+                                            return _d[0] if _one else _d
                                         _d = _dv(_f)                    # full-grain delivered (a NEW array)
                                         return _d[0] if _one else _d
 
@@ -8223,6 +8327,33 @@ def render():
                                         log("   ── [kernel-ab] kernel speed-up ideas, measured "
                                             f"on THIS run's scaffold (P={_kP}, nR={_knR:,}, "
                                             f"cells={_knc:,}) ──")
+                                        # 19bt: SAY WHAT ROW A IS NOW. This block calls
+                                        # `_pop_band_kernel` — the FLAT kernel — directly, and
+                                        # since 19bt the shipped path is the CELL-BLOCKED one
+                                        # (measured 1.96x on the flat kernel at the live shape,
+                                        # bit-identical, self-checked live). So row A is a
+                                        # reference baseline, not this run's projector cost, and
+                                        # every ratio below is measured against that baseline
+                                        # rather than against what shipped. A block that quietly
+                                        # measured a path the run no longer takes would be worse
+                                        # than no block at all.
+                                        try:
+                                            import routing_optimiser.band_projection as _kbcb
+                                            if getattr(_kbcb, "_PROJ_CB_ON", False) and \
+                                                    _kbcb._CB_OK.get("use"):
+                                                log("      NOTE: row A is the FLAT kernel, which "
+                                                    "is no longer the shipped path — 19bt ships "
+                                                    "the CELL-BLOCKED kernel (1.96x on the flat "
+                                                    "one at this shape, bit-identical). Read A "
+                                                    "and every ratio below it as a comparison "
+                                                    "BETWEEN IDEAS on a common baseline, NOT as "
+                                                    "this run's projector cost. "
+                                                    "ROUTING_PROJ_CELLBLOCK=0 makes A the shipped "
+                                                    "path again.")
+                                        except Exception as _kbe:  # noqa: BLE001
+                                            log(f"      NOTE: could not tell whether the shipped "
+                                                f"projector is cell-blocked "
+                                                f"({type(_kbe).__name__}: {_kbe}).")
                                         log(f"      LIVE PATH: pop {_fm_pop} - elite {_kEl} = "
                                             f"{_kP} children per generation ⇒ "
                                             + ("CHUNKED PARALLEL" if _kchunked
@@ -9013,13 +9144,50 @@ def render():
                                         _gc_sh = _gc_sm(_gc_pop, _gc_cs, _gc_cl)
                                         _gc_fd = _fm_deliv_full(_gc_sh)
 
+                                        # 19cb: MODEL WHAT THE SEARCH ACTUALLY BUILDS. Two ways this
+                                        # row was wrong, and both inflated it:
+                                        #   (a) it used the UNFUSED crossover+mutate pair while 19bx
+                                        #       ships the fused child — the same defect 19bq fixed
+                                        #       for _mutate vs _mutate_fast, reintroduced by
+                                        #       shipping a fusion without repointing the row;
+                                        #   (b) it built every child by crossover+mutate, while the
+                                        #       search builds HALF by the REFINE branch: mutate
+                                        #       only, quarter rate, 0.6 strength, and NO crossover
+                                        #       draw. 35 crossovers modelled where the run does ~17.
+                                        # `_gc_whole` calls this, so the WHOLE GENERATION row and the
+                                        # coverage verdict inherited both errors.
+                                        try:
+                                            from routing_optimiser.genetic_fullmatrix import (
+                                                _child_fused as _gc_cf, _mutate_fused as _gc_mf,
+                                                _FX_OK as _gc_fx)
+                                            _gc_fuse = bool(_gc_fx.get("use")
+                                                            and _gc_mu is _gc_mu_fast)
+                                        except Exception:                # noqa: BLE001
+                                            _gc_cf = _gc_mf = None
+                                            _gc_fuse = False
+                                        _gc_nref = _gc_P // 2            # matches `_n_refine` in the GA
+
                                         def _gc_gen():
                                             _o = np.empty_like(_gc_pop)
                                             for _c in range(_gc_P):
+                                                if _c < _gc_nref:        # REFINE: mutate only
+                                                    _bs = _gc_pop[_gc_rng.integers(_gc_P)]
+                                                    if _gc_fuse:
+                                                        _o[_c] = _gc_mf(_bs, 0.0025, 0.6, _gc_cs,
+                                                                        _gc_cl, _gc_rng)
+                                                    else:
+                                                        _o[_c] = _gc_mu(_bs, 0.0025, 0.6, _gc_cs,
+                                                                        _gc_cl, _gc_rng)
+                                                    continue
                                                 _pa = _gc_pop[_gc_rng.integers(_gc_P)]
                                                 _pb = _gc_pop[_gc_rng.integers(_gc_P)]
-                                                _ch = _gc_x(_pa, _pb, _gc_cs, _gc_cl, _gc_rng)
-                                                _o[_c] = _gc_mu(_ch, 0.01, 1.0, _gc_cs, _gc_cl, _gc_rng)
+                                                if _gc_fuse:             # EXPLORE: crossover+mutate
+                                                    _o[_c] = _gc_cf(_pa, _pb, 0.01, 1.0, _gc_cs,
+                                                                    _gc_cl, _gc_rng)
+                                                else:
+                                                    _ch = _gc_x(_pa, _pb, _gc_cs, _gc_cl, _gc_rng)
+                                                    _o[_c] = _gc_mu(_ch, 0.01, 1.0, _gc_cs, _gc_cl,
+                                                                    _gc_rng)
                                             return _o
 
                                         # THE WHOLE GENERATION, end to end — everything the loop does
@@ -9055,7 +9223,13 @@ def render():
                                              lambda: _fm_bpf(_gc_fd)),
                                             ("fitness", "eval_pop: vwsr + engineering violation",
                                              lambda: _gc_ev(_gc_pop)),
-                                            ("genetic", f"{_gc_P} x (crossover + {_gc_mu_name})", _gc_gen),
+                                            ("genetic",
+                                             (f"{_gc_nref} refine (mutate only, quarter rate) + "
+                                              f"{_gc_P - _gc_nref} explore (crossover + mutate)"
+                                              + (" \u2014 FUSED into one pass per child (19bx)"
+                                                 if _gc_fuse else
+                                                 f" \u2014 unfused, {_gc_mu_name}")),
+                                             _gc_gen),
                                             ("GENERATION", "ALL OF THE ABOVE end-to-end, plus rank + "
                                                            "elite/child re-assembly — one whole "
                                                            "generation", _gc_whole),
@@ -9269,6 +9443,716 @@ def render():
                                             "discarded. Nothing here reaches the split, the bands or the "
                                             "export. ROUTING_GEN_COST=0 skips it, ROUTING_GEN_COST_REPS "
                                             "sets the rounds.)")
+                                        # ── [stage-ab] ARE THE FOUR REMAINING IDEAS WORTH ADOPTING? ──
+                                        # EVERY name bound below is prefixed `_sa_`, and that is not
+                                        # style — it is the fix for a bug this block shipped with.
+                                        # 19bu's verdict loop used `_stage` as its loop variable.
+                                        # This code is INSIDE `render`, so the loop rebound render's
+                                        # own `_stage()` helper to the string "deliver", and the run
+                                        # died 4,000 lines later with
+                                        #     TypeError: 'str' object is not callable
+                                        # at `_stage("\u2464 Pre-calculate impact frames")` — a
+                                        # crash with no visible connection to the diagnostic that
+                                        # caused it. A read-only measurement block must not be able
+                                        # to touch the run at all, and a shared scope is how it can.
+                                        # test_19bu asserts the prefix with an AST walk, so any name
+                                        # added here without it fails a test rather than a run.
+                                        # Estimates on this project have been wrong by 4x in both
+                                        # directions, so nothing here is adopted on an estimate. Every
+                                        # row is measured on THIS run's data at THIS run's width, in
+                                        # paired interleaved rounds, and every bit-identity claim is
+                                        # checked on int64 patterns. See the 19bu patch note.
+                                        if os.environ.get("ROUTING_STAGE_AB", "1") != "0":
+                                            try:
+                                                import math as _sa_m
+                                                from numba import njit as _sa_nj
+                                                import routing_optimiser.band_projection as _sa_bp
+                                                from routing_optimiser.genetic_fullmatrix import (
+                                                    _segment_softmax_serial as _sa_ref_sm)
+                                                # 19cc: 7 -> 11. At 7 rounds the only sign-test
+                                                # scores that clear p<=0.10 are 7/7 and 0/7, so one
+                                                # unlucky round kills a real effect — which is
+                                                # exactly what happened to the lanes row on
+                                                # 2026-08-24 22:42 (+5.0%, size well clear of its
+                                                # own 1.5% floor, 6/7, p=0.125). At 11, 10/11 gives
+                                                # p=0.012 and 9/11 p=0.065, so a real effect with a
+                                                # noisy round or two still resolves.
+                                                _sa_R = max(3, int(os.environ.get(
+                                                    "ROUTING_STAGE_AB_REPS", "11") or 11))
+                                                _sa_cl64 = np.asarray(_gc_cl, np.int64)
+                                                _sa_co = np.repeat(
+                                                    np.arange(_sa_cl64.size, dtype=np.int32), _sa_cl64)
+                                                _sa_cst = np.ascontiguousarray(
+                                                    np.asarray(_gc_cs, np.int32))
+                                                _sa_ccn = np.ascontiguousarray(
+                                                    np.asarray(_gc_cl, np.int32))
+
+                                                def _sa_bits(a):
+                                                    a = np.asarray(a)
+                                                    return (a.view(np.int64)
+                                                            if a.dtype == np.float64 else a)
+
+                                                def _sa_same(x, y):
+                                                    return bool(np.array_equal(_sa_bits(x),
+                                                                               _sa_bits(y)))
+
+                                                def _sa_p(w, n):
+                                                    """Two-sided sign test against p=0.5."""
+                                                    k = max(int(w), int(n) - int(w))
+                                                    s = sum(_sa_m.factorial(n)
+                                                            // (_sa_m.factorial(i)
+                                                                * _sa_m.factorial(n - i))
+                                                            for i in range(k, n + 1))
+                                                    return min(1.0, 2.0 * s / float(2 ** n))
+
+                                                def _sa_med(v):
+                                                    v = sorted(v)
+                                                    n = len(v)
+                                                    if not n:
+                                                        return float("nan")
+                                                    return (v[n // 2] if n % 2 else
+                                                            0.5 * (v[n // 2 - 1] + v[n // 2]))
+
+                                                def _sa_run(name, base_fn, cands, reps):
+                                                    """Paired interleaved rounds. Returns
+                                                    {label: (median ratio, wins, reps, ms)}."""
+                                                    base_fn()                       # warm / compile
+                                                    for _l, _f in cands:
+                                                        _f()
+                                                    _rat = {_l: [] for _l, _ in cands}
+                                                    _abs = {_l: [] for _l, _ in cands}
+                                                    _bms = []
+                                                    for _sa_x in range(reps):
+                                                        _sa_t0 = _gct.perf_counter()
+                                                        base_fn()
+                                                        _tb = _gct.perf_counter() - _sa_t0
+                                                        _bms.append(_tb * 1000.0)
+                                                        for _l, _f in cands:
+                                                            _t1 = _gct.perf_counter()
+                                                            _f()
+                                                            _tv = _gct.perf_counter() - _t1
+                                                            _abs[_l].append(_tv * 1000.0)
+                                                            _rat[_l].append(_tb / _tv if _tv > 0
+                                                                            else float("nan"))
+                                                    return ({_l: (_sa_med(_rat[_l]),
+                                                                  sum(1 for _sa_r2 in _rat[_l]
+                                                                      if _sa_r2 > 1.0),
+                                                                  reps, _sa_med(_abs[_l]))
+                                                             for _l, _ in cands},
+                                                            _sa_med(_bms), _bms)
+
+                                                def _sa_verdict(lbl, what, res, floor, ident):
+                                                    _r, _w, _n, _ms = res
+                                                    _pv = _sa_p(_w, _n)
+                                                    _gain = (_r - 1.0) * 100.0
+                                                    # 19by: the two tests are SEPARATE and a failure
+                                                    # must name the one that failed. On 2026-08-24
+                                                    # the L row passed the sign test 7/7 at p=0.016
+                                                    # and printed "direction not consistent enough",
+                                                    # which is the opposite of what happened.
+                                                    _okp = (_pv <= 0.10)
+                                                    _okz = (abs(_gain) >= floor)
+                                                    _sa_sig = (_okp and _okz)
+                                                    log(f"      {lbl}  {what:<42.42s} "
+                                                        f"{_ms:8.1f} ms  med {_r:5.3f}x  "
+                                                        f"faster in {_w:2d}/{_n} (p={_pv:.3f})  "
+                                                        + ("bit-identical \u2713" if ident is True
+                                                           else ("BIT-IDENTITY FAILED \u2717"
+                                                                 if ident is False else "")))
+                                                    return (_sa_sig, _gain, _pv,
+                                                            _okp, _okz, floor)
+
+                                                log("   == [stage-ab] THE FOUR REMAINING IDEAS, measured on "
+                                                    f"THIS run at P={_gc_P} ({_sa_R} paired interleaved "
+                                                    "round(s), read-only) ==")
+                                                if _sa_R < 5:
+                                                    # A two-sided sign test over n rounds cannot go
+                                                    # below 2/2^n, so at 3 rounds the smallest p
+                                                    # obtainable is 0.250 and NOTHING can clear the
+                                                    # 0.10 bar however consistent it is. Say so,
+                                                    # rather than printing a page of rows that were
+                                                    # never able to reach a verdict.
+                                                    log(f"      \u26a0 ROUTING_STAGE_AB_REPS={_sa_R}: with "
+                                                        f"fewer than 5 rounds the smallest two-sided "
+                                                        f"sign-test p is "
+                                                        f"{2.0 / float(2 ** _sa_R):.3f}, so no row can "
+                                                        "reach ADOPTABLE no matter how consistent it "
+                                                        "is. Raise it to 7 or more for a verdict; "
+                                                        "these rows are timings only.")
+
+                                                # ── S: fused softmax ────────────────────────────────
+                                                @_sa_nj(cache=False, fastmath=False)
+                                                def _sa_sub(lg, seg, co, out):
+                                                    for _p in range(lg.shape[0]):
+                                                        for _i in range(lg.shape[1]):
+                                                            out[_p, _i] = lg[_p, _i] - seg[_p, co[_i]]
+                                                    return out
+
+                                                @_sa_nj(cache=False, fastmath=False)
+                                                def _sa_div(ex, seg, co, out):
+                                                    for _p in range(ex.shape[0]):
+                                                        for _i in range(ex.shape[1]):
+                                                            out[_p, _i] = ex[_p, _i] / seg[_p, co[_i]]
+                                                    return out
+
+                                                def _sa_soft(lg):
+                                                    # SAME two reduceat calls, in the same places. Only
+                                                    # the elementwise steps between them are fused, and
+                                                    # np.exp stays in numpy — numba's exp differs in the
+                                                    # last bit, which is why it is not in here.
+                                                    _sm = np.maximum.reduceat(lg, _gc_cs, axis=1)
+                                                    _tt = _sa_sub(lg, _sm, _sa_co, np.empty_like(lg))
+                                                    _ex = np.exp(_tt, out=_tt)
+                                                    _ss = np.add.reduceat(_ex, _gc_cs, axis=1)
+                                                    return _sa_div(_ex, _ss, _sa_co, np.empty_like(lg))
+
+                                                # 19by: the control's twin is built ONCE, here. It
+                                                # used to be `.copy()` INSIDE the timed lambda — a
+                                                # 68 MB allocation the baseline never pays, which is
+                                                # why the "same computation" row read 0.935x and the
+                                                # floor came out at 6.5% instead of ~1%.
+                                                _sa_pop2 = np.array(_gc_pop, float, copy=True)
+                                                _sa_id_s = _sa_same(_sa_ref_sm(_gc_pop, _gc_cs, _gc_cl),
+                                                                    _sa_soft(_gc_pop))
+                                                _sa_sres, _sa_sbase, _sa_x = _sa_run(
+                                                    "softmax",
+                                                    lambda: _sa_ref_sm(_gc_pop, _gc_cs, _gc_cl),
+                                                    [("S", lambda: _sa_soft(_gc_pop)),
+                                                     ("S'", lambda: _sa_ref_sm(_sa_pop2,
+                                                                               _gc_cs, _gc_cl))],
+                                                    _sa_R)
+                                                _sa_floor_s = abs((_sa_sres["S'"][0] - 1.0) * 100.0)
+                                                log(f"      A  softmax as shipped (serial reference)     "
+                                                    f"{_sa_sbase:8.1f} ms  1.000x   "
+                                                    f"(the [gen-cost] `softmax` row is this, threaded)")
+                                                _sa_verdict("S'", "SAME computation, fresh copy = THE FLOOR",
+                                                            _sa_sres["S'"], 0.0, None)
+                                                _sa_sig_s, _sa_g_s, _sa_pv_s, _sa_kp_s, _sa_kz_s, _sa_fl_s = _sa_verdict(
+                                                    "S ", "fused: repeat+sub / repeat+div in numba",
+                                                    _sa_sres["S"], _sa_floor_s, _sa_id_s)
+
+                                                # ── X: fused crossover + mutate ─────────────────────
+                                                if _gc_mu is _gc_mu_fast:
+                                                    @_sa_nj(cache=False, fastmath=False)
+                                                    def _sa_kid(a, b, pick, hit, noise, strength,
+                                                                cstart, ccnt, out):
+                                                        _k = 0
+                                                        for _ci in range(cstart.shape[0]):
+                                                            _s = cstart[_ci]
+                                                            _e = _s + ccnt[_ci]
+                                                            _sa_pa = pick[_ci]
+                                                            if hit[_ci]:
+                                                                for _i in range(_s, _e):
+                                                                    _v = a[_i] if _sa_pa else b[_i]
+                                                                    out[_i] = _v + noise[_k] * strength
+                                                                    _k += 1
+                                                            else:
+                                                                for _i in range(_s, _e):
+                                                                    out[_i] = a[_i] if _sa_pa else b[_i]
+                                                        return out
+
+                                                    def _sa_child(a, b, rate, strength, rng, out):
+                                                        # THE DRAWS ARE UNCHANGED in count and order:
+                                                        # crossover's random(n_cells), then mutate's
+                                                        # random(n_cells), then standard_normal(n_hit).
+                                                        # Only where the results are APPLIED moves.
+                                                        _nc = _sa_cst.shape[0]
+                                                        _pk = rng.random(_nc) < 0.5
+                                                        _ht = rng.random(_nc) < rate
+                                                        _rh = np.repeat(_ht, _sa_cl64)
+                                                        _nh = int(_rh.sum())
+                                                        if not _nh:
+                                                            return np.where(np.repeat(_pk, _sa_cl64),
+                                                                            a, b)
+                                                        _nz = rng.standard_normal(_nh)
+                                                        return _sa_kid(a, b, _pk, _ht, _nz,
+                                                                       float(strength), _sa_cst,
+                                                                       _sa_ccn, out)
+
+                                                    def _sa_gen():
+                                                        _o = np.empty_like(_gc_pop)
+                                                        for _sa_c in range(_gc_P):
+                                                            _sa_pa = _gc_pop[_gc_rng.integers(_gc_P)]
+                                                            _sa_pb = _gc_pop[_gc_rng.integers(_gc_P)]
+                                                            _sa_child(_sa_pa, _sa_pb, 0.01, 1.0, _gc_rng,
+                                                                      _o[_sa_c])
+                                                        return _o
+
+                                                    # bit-identity on the SAME seed, one child at a time
+                                                    _sa_g1 = np.random.default_rng(20260824)
+                                                    _sa_g2 = np.random.default_rng(20260824)
+                                                    _sa_id_x = True
+                                                    for _sa_c in range(min(8, _gc_P)):
+                                                        _sa_pa = _gc_pop[_sa_g1.integers(_gc_P)]
+                                                        _sa_pb = _gc_pop[_sa_g1.integers(_gc_P)]
+                                                        _sa_r1 = _gc_mu(_gc_x(_sa_pa, _sa_pb, _gc_cs, _gc_cl, _sa_g1),
+                                                                     0.01, 1.0, _gc_cs, _gc_cl, _sa_g1)
+                                                        _sa_qa = _gc_pop[_sa_g2.integers(_gc_P)]
+                                                        _sa_qb = _gc_pop[_sa_g2.integers(_gc_P)]
+                                                        _sa_r2 = _sa_child(_sa_qa, _sa_qb, 0.01, 1.0, _sa_g2,
+                                                                        np.empty_like(_sa_r1))
+                                                        if not _sa_same(_sa_r1, _sa_r2):
+                                                            _sa_id_x = False
+                                                            break
+                                                    # 19cc: NO TIMING ROW. The fused child SHIPPED in
+                                                    # 19bx, and 19cb repointed `_gc_gen` — this row's
+                                                    # baseline — at that same shipped path. So the row
+                                                    # became fused-against-fused and its ratio stopped
+                                                    # meaning anything adoptable. [kernel-ab] retired
+                                                    # `G int32` for exactly this reason. The
+                                                    # BIT-IDENTITY check above is kept, because that is
+                                                    # a live re-verification on this run's population
+                                                    # and it is cheap; only the stopwatch goes.
+                                                    _sa_sig_x = False
+                                                    _sa_g_x = 0.0
+                                                    _sa_kp_x = True
+                                                    _sa_floor_x = 0.0
+                                                    log("      X  ADOPTED 19bx \u2014 crossover + mutate are ONE "
+                                                        "pass per child in the shipped search. Measured "
+                                                        "127.1 \u2192 73.5 ms at P=35 before adoption (7/7 "
+                                                        "paired rounds, p=0.016). No timing row: "
+                                                        "[gen-cost]'s `genetic` row IS the fused path since "
+                                                        "19cb, so timing it here would compare it with "
+                                                        "itself. "
+                                                        + ("Bit-identity RE-VERIFIED on this run's "
+                                                           "population \u2713" if _sa_id_x else
+                                                           "\u26a0 BIT-IDENTITY FAILED on this run \u2014 "
+                                                           "report this.")
+                                                        + " ROUTING_CHILD_FUSE=0 reverts.")
+                                                else:
+                                                    _sa_sig_x = False
+                                                    _sa_g_x = 0.0
+                                                    log("      X  NOT MEASURED: ROUTING_MUT_FAST=0, so the "
+                                                        "shipped mutation is the legacy full-width one and "
+                                                        "the fused twin is not its equivalent.")
+
+                                                # ── L: the projector at 16 lanes vs the shipped 8 ───
+                                                _sa_l0 = int(getattr(_sa_bp, "_PROJ_LANE_CAP", 8))
+                                                # 19cb: the variant is DOUBLE the shipped cap, not a
+                                                # hardcoded 16. 19by adopted 16, and this row went on
+                                                # comparing 16 against 16 — on 2026-08-24 22:05 it
+                                                # printed "the shipped 16 lane(s)" against
+                                                # "16 lane(s)" and read +0.3% at 4/7, which is
+                                                # exactly what comparing a thing to itself reads.
+                                                _sa_l1 = max(1, _sa_l0 * 2)
+                                                try:
+                                                    def _sa_set(n):
+                                                        setattr(_sa_bp, "_PROJ_LANE_CAP", int(n))
+
+                                                    def _sa_proj():
+                                                        return np.asarray(_fm_bpf(_gc_fd), float)
+
+                                                    _sa_set(_sa_l0)
+                                                    _sa_v8 = _sa_proj().copy()
+                                                    _sa_set(_sa_l1)
+                                                    _sa_v16 = _sa_proj().copy()      # UNTIMED: pays the
+                                                    _sa_id_l = _sa_same(_sa_v8, _sa_v16)   # realloc
+                                                    _sa_lr = []
+                                                    _sa_lc = []
+                                                    _sa_l8ms = []
+                                                    _sa_l16ms = []
+                                                    for _sa_x in range(_sa_R):
+                                                        # 19by: TWO 8-lane timings per round. The
+                                                        # second is this experiment's OWN control —
+                                                        # the same computation, so its ratio is
+                                                        # 1.000 and its spread is this row's floor.
+                                                        # It used to borrow the softmax floor, which
+                                                        # on 2026-08-24 buried a 7/7 result at
+                                                        # p=0.016 under a 6.5% threshold that had
+                                                        # nothing to do with the projector.
+                                                        _sa_set(_sa_l0)
+                                                        _sa_proj()                   # warm the 8-lane buffers
+                                                        _sa_t0 = _gct.perf_counter()
+                                                        _sa_proj()
+                                                        _sa_d8 = _gct.perf_counter() - _sa_t0
+                                                        _sa_t0 = _gct.perf_counter()
+                                                        _sa_proj()
+                                                        _sa_d8b = _gct.perf_counter() - _sa_t0
+                                                        _sa_set(_sa_l1)
+                                                        _sa_proj()                   # warm the wide buffers
+                                                        _sa_t0 = _gct.perf_counter()
+                                                        _sa_proj()
+                                                        _sa_d16 = _gct.perf_counter() - _sa_t0
+                                                        _sa_l8ms.append(_sa_d8 * 1000.0)
+                                                        _sa_l16ms.append(_sa_d16 * 1000.0)
+                                                        _sa_lc.append(_sa_d8 / _sa_d8b if _sa_d8b > 0
+                                                                      else float("nan"))
+                                                        _sa_lr.append(_sa_d8 / _sa_d16 if _sa_d16 > 0
+                                                                      else float("nan"))
+                                                    _sa_lmed = _sa_med(_sa_lr)
+                                                    _sa_lw = sum(1 for _sa_r2 in _sa_lr if _sa_r2 > 1.0)
+                                                    _sa_lp = _sa_p(_sa_lw, _sa_R)
+                                                    _sa_lfl = abs((_sa_med(_sa_lc) - 1.0) * 100.0)
+                                                    _sa_lcw = sum(1 for _sa_r2 in _sa_lc
+                                                                  if _sa_r2 > 1.0)
+                                                    log(f"      A  projector at the shipped {_sa_l0} lane(s) "
+                                                        f"              {_sa_med(_sa_l8ms):8.1f} ms  1.000x")
+                                                    log(f"      L  projector at {_sa_l1} lane(s)"
+                                                        + " " * max(0, 34 - len(str(_sa_l1)))
+                                                        + f"  {_sa_med(_sa_l16ms):8.1f} ms  med {_sa_lmed:5.3f}x  "
+                                                        f"faster in {_sa_lw:2d}/{_sa_R} (p={_sa_lp:.3f})  "
+                                                        + ("bit-identical \u2713" if _sa_id_l
+                                                           else "BIT-IDENTITY FAILED \u2717"))
+                                                    log("         (each side gets an UNTIMED warm call "
+                                                        "after the switch, so neither number carries the "
+                                                        f"buffer reallocation. {_sa_l1} lanes costs "
+                                                        f"{_sa_l1 / max(_sa_l0, 1):.0f}x the scratch of the "
+                                                        f"shipped {_sa_l0}.)")
+                                                    log(f"      L' the SAME {_sa_l0} lane(s) twice = THIS "
+                                                        f"row's floor            "
+                                                        f"med {_sa_med(_sa_lc):5.3f}x  "
+                                                        f"faster in {_sa_lcw:2d}/{_sa_R} "
+                                                        f"\u21d2 floor \u00b1{_sa_lfl:.1f}%")
+                                                    _sa_kp_l = (_sa_lp <= 0.10)
+                                                    _sa_kz_l = (abs((_sa_lmed - 1.0) * 100.0)
+                                                                >= _sa_lfl)
+                                                    _sa_sig_l = bool(_sa_kp_l and _sa_kz_l
+                                                                     and _sa_id_l)
+                                                finally:
+                                                    setattr(_sa_bp, "_PROJ_LANE_CAP", _sa_l0)
+                                                    try:
+                                                        _fm_bpf(_gc_fd)     # restore the shipped buffers
+                                                    except Exception:       # noqa: BLE001
+                                                        pass
+
+                                                # ── E: the elite ceiling (arithmetic, not a timing) ─
+                                                _sa_pop = int(_fm_pop)
+                                                _sa_el = _sa_pop - _gc_P
+                                                _sa_per = _sa_sbase / max(_gc_P, 1)
+                                                log(f"      E  elite reuse CEILING: softmax runs over pop "
+                                                    f"{_sa_pop} while only {_gc_P} are new children, so "
+                                                    f"{_sa_el} elite row(s) are recomputed every generation "
+                                                    f"\u2014 about {_sa_per * _sa_el:.1f} ms "
+                                                    f"({_sa_el / max(_sa_pop, 1):.1%} of the stage). "
+                                                    "ASSUMPTION THIS BLOCK CANNOT CHECK: that the elite "
+                                                    "genome is byte-identical between generations. If it "
+                                                    "is, caching its softmax output is exact and free; if "
+                                                    "the GA re-derives elites, the ceiling is 0 and the "
+                                                    "idea is dead. Only the GA can answer that.")
+
+                                                # ── D: the three deliver-side ideas ────────────────
+                                                _sa_sig_d1 = False
+                                                _sa_g_d1 = 0.0
+                                                _sa_id_d1 = None
+                                                try:
+                                                    _sa_op = _fm_elig_op
+                                                except NameError:
+                                                    _sa_op = None
+                                                if _sa_op is not None:
+                                                    import routing_optimiser.eligibility as _sa_e
+                                                    _sa_ecs = np.asarray(_sa_op["cell_starts"], np.intp)
+                                                    _sa_ecc = np.asarray(_sa_op["cell_counts"], np.intp)
+                                                    _sa_eco = _sa_e._co_build(_sa_ecc)
+                                                    _sa_nrow = int(_fm_nrow)
+                                                    _sa_buf = np.zeros((_gc_P, _sa_nrow))
+                                                    _sa_buf[:, _fm_colmap] = _gc_sh
+                                                    _sa_X0 = np.ascontiguousarray(
+                                                        np.asarray(_fm_block(_sa_buf), float))
+
+                                                    # ── D1 ──────────────────────────────────
+                                                    @_sa_nj(cache=False, fastmath=False)
+                                                    def _sa_rnmask(X, seg, co, incap, ox, oc):
+                                                        """renormalise AND emit the masked copy in
+                                                        one pass. Identical elementwise to
+                                                        `fu_renorm` followed by `fu_mask`: same
+                                                        divisor, and the mask stays a MULTIPLY so a
+                                                        negative value still yields -0.0."""
+                                                        for _p in range(X.shape[0]):
+                                                            for _i in range(X.shape[1]):
+                                                                _s = seg[_p, co[_i]]
+                                                                _v = X[_p, _i] / (_s if _s > 0.0
+                                                                                  else 1.0)
+                                                                ox[_p, _i] = _v
+                                                                oc[_p, _i] = _v * (0.0 if incap[_i]
+                                                                                   else 1.0)
+                                                        return ox, oc
+
+                                                    def _sa_blend_from(capX, base, wf, co, cs):
+                                                        """the 19bs blend, given capX ALREADY built
+                                                        by the previous stage's fused renormalise."""
+                                                        _sg = np.add.reduceat(capX, cs, axis=1)
+                                                        _ap2 = bool((_sg > 0).all())
+                                                        return _sa_e._fu_blend(capX, base, _sg, co,
+                                                                               np.asarray(wf, float),
+                                                                               capX, _ap2)
+
+                                                    def _sa_elig_d1(X):
+                                                        _Xa = np.asarray(X, float)
+                                                        _cap = None
+                                                        if _sa_op.get("has_ban"):
+                                                            _Xa = _sa_e._fu_mask(
+                                                                _Xa, np.asarray(_sa_op["ban"], bool),
+                                                                np.empty_like(_Xa))
+                                                            _sg = np.add.reduceat(_Xa, _sa_ecs, axis=1)
+                                                            if _sa_op.get("has_w"):
+                                                                _Xa, _cap = _sa_rnmask(
+                                                                    _Xa, _sg, _sa_eco,
+                                                                    np.asarray(_sa_op["w_incap"], bool),
+                                                                    np.empty_like(_Xa),
+                                                                    np.empty_like(_Xa))
+                                                            else:
+                                                                _Xa = _sa_e._fu_renorm(
+                                                                    _Xa, _sg, _sa_eco,
+                                                                    np.empty_like(_Xa))
+                                                        if _sa_op.get("has_w"):
+                                                            if _cap is None:
+                                                                _cap = _sa_e._fu_mask(
+                                                                    _Xa,
+                                                                    np.asarray(_sa_op["w_incap"], bool),
+                                                                    np.empty_like(_Xa))
+                                                            _bl = _sa_blend_from(_cap, _Xa,
+                                                                                 _sa_op["w_wf"],
+                                                                                 _sa_eco, _sa_ecs)
+                                                            _sg = np.add.reduceat(_bl, _sa_ecs, axis=1)
+                                                            if _sa_op.get("has_u"):
+                                                                _Xa, _cap = _sa_rnmask(
+                                                                    _bl, _sg, _sa_eco,
+                                                                    np.asarray(_sa_op["u_incap"], bool),
+                                                                    np.empty_like(_bl),
+                                                                    np.empty_like(_bl))
+                                                            else:
+                                                                _Xa = _sa_e._fu_renorm(
+                                                                    _bl, _sg, _sa_eco,
+                                                                    np.empty_like(_bl))
+                                                                _cap = None
+                                                        if _sa_op.get("has_u"):
+                                                            if _cap is None:
+                                                                _cap = _sa_e._fu_mask(
+                                                                    _Xa,
+                                                                    np.asarray(_sa_op["u_incap"], bool),
+                                                                    np.empty_like(_Xa))
+                                                            _bl = _sa_blend_from(_cap, _Xa,
+                                                                                 _sa_op["u_wf"],
+                                                                                 _sa_eco, _sa_ecs)
+                                                            _sg = np.add.reduceat(_bl, _sa_ecs, axis=1)
+                                                            _Xa = _sa_e._fu_renorm(_bl, _sg, _sa_eco,
+                                                                                   np.empty_like(_bl))
+                                                        return _Xa
+
+                                                    # 19by: twin built once, outside the timing.
+                                                    _sa_X0b = np.array(_sa_X0, float, copy=True)
+                                                    _sa_id_d1 = _sa_same(_fm_elig(_sa_X0),
+                                                                         _sa_elig_d1(_sa_X0))
+                                                    _sa_dres, _sa_dbase, _sa_x = _sa_run(
+                                                        "eligibility", lambda: _fm_elig(_sa_X0),
+                                                        [("D1", lambda: _sa_elig_d1(_sa_X0)),
+                                                         ("D1'", lambda: _fm_elig(_sa_X0b))],
+                                                        _sa_R)
+                                                    _sa_fl_d1 = abs((_sa_dres["D1'"][0] - 1.0) * 100.0)
+                                                    log("      A  eligibility as shipped (19bs fused)     "
+                                                        f"  {_sa_dbase:8.1f} ms  1.000x")
+                                                    _sa_verdict("D1'", "SAME computation, fresh copy = FLOOR",
+                                                                _sa_dres["D1'"], 0.0, None)
+                                                    _sa_sig_d1, _sa_g_d1, _sa_pv_d1, _sa_kp_d1, _sa_kz_d1, _sa_fl_dd = _sa_verdict(
+                                                        "D1", "+ renorm fused into the NEXT stage's mask",
+                                                        _sa_dres["D1"], _sa_fl_d1, _sa_id_d1)
+
+                                                    # ── D4: the 19ca delivery fuse, TIMED ───
+                                                    # It passed its bit-identity self-check but
+                                                    # `deliver` did not visibly move (258.4 -> 255.2
+                                                    # ms on 2026-08-24 22:04). "Measured safe, not
+                                                    # measured beneficial" is not a verdict, so time
+                                                    # the two paths against each other.
+                                                    try:
+                                                        _sa_bufA = np.zeros((_gc_P, _sa_nrow))
+                                                        _sa_bufB = np.zeros((_gc_P, _sa_nrow))
+
+                                                        def _sa_unfused():
+                                                            _sa_bufA[:, _fm_colmap] = _gc_sh
+                                                            return _fm_elig(_fm_block(_sa_bufA))
+
+                                                        def _sa_fused():
+                                                            _sa_bufB[:, _fm_colmap] = _gc_sh
+                                                            _fm_block_into(_sa_bufB, _fm_blk_row,
+                                                                           _fm_bfloor, _fm_blk_rows,
+                                                                           _fm_blk_scs, _fm_blk_scc)
+                                                            return _fm_elig(_sa_bufB)
+
+                                                        _sa_id_d4 = _sa_same(_sa_unfused(),
+                                                                             _sa_fused())
+                                                        _sa_d4, _sa_b4, _sa_x = _sa_run(
+                                                            "deliv-fuse", _sa_unfused,
+                                                            [("D4", _sa_fused),
+                                                             ("D4'", _sa_unfused)], _sa_R)
+                                                        _sa_fl_d4 = abs(
+                                                            (_sa_d4["D4'"][0] - 1.0) * 100.0)
+                                                        log("      A  scatter \u2192 COPY \u2192 cap \u2192 elig "
+                                                            f"(pre-19ca)      {_sa_b4:8.1f} ms  1.000x")
+                                                        _sa_verdict("D4'",
+                                                                    "SAME computation again = THIS row's FLOOR",
+                                                                    _sa_d4["D4'"], 0.0, None)
+                                                        _sa_verdict("D4",
+                                                                    "scatter INTO the capped array (19ca, shipped)",
+                                                                    _sa_d4["D4"], _sa_fl_d4, _sa_id_d4)
+                                                    except Exception as _sa_e4:   # noqa: BLE001
+                                                        log(f"      D4 not measured "
+                                                            f"({type(_sa_e4).__name__}: {_sa_e4}).")
+
+                                                    # ── D2: the blocked-caps copy ───────────
+                                                    _sa_cov = (len(np.asarray(_fm_colmap).ravel())
+                                                               == _sa_nrow)
+                                                    _sa_cpms = []
+                                                    _sa_bkms = []
+                                                    np.array(_sa_buf, float, copy=True)
+                                                    _fm_block(_sa_buf)
+                                                    for _sa_x in range(_sa_R):
+                                                        _sa_t0 = _gct.perf_counter()
+                                                        np.array(_sa_buf, float, copy=True)
+                                                        _sa_cpms.append(
+                                                            (_gct.perf_counter() - _sa_t0) * 1000.0)
+                                                        _sa_t0 = _gct.perf_counter()
+                                                        _fm_block(_sa_buf)
+                                                        _sa_bkms.append(
+                                                            (_gct.perf_counter() - _sa_t0) * 1000.0)
+                                                    _sa_cp = _sa_med(_sa_cpms)
+                                                    _sa_bk = _sa_med(_sa_bkms)
+                                                    log(f"      D2 blocked-caps {_sa_bk:6.1f} ms, of which a bare "
+                                                        f"full-array copy is {_sa_cp:6.1f} ms "
+                                                        f"({_sa_cp / max(_sa_bk, 1e-9):.0%}). Scattering "
+                                                        "STRAIGHT INTO the array blocked-caps returns "
+                                                        "(i.e. capping in place) would recover up to that "
+                                                        "copy, and no more.")
+                                                    if _sa_cov:
+                                                        log("         PRECONDITION HOLDS on this run: the "
+                                                            f"scatter writes all {_sa_nrow:,} column(s) every "
+                                                            "call, so nothing stale can survive in the "
+                                                            "buffer. It is a PRECONDITION, not a property — "
+                                                            "on a build where keep_idx drops columns, "
+                                                            "in-place capping would leave last "
+                                                            "generation's values in the gaps, so any "
+                                                            "adoption must re-check this, not inherit it.")
+                                                    else:
+                                                        log("         \u26a0 PRECONDITION FAILS: the scatter "
+                                                            f"writes {len(np.asarray(_fm_colmap).ravel()):,} "
+                                                            f"of {_sa_nrow:,} column(s), so an in-place cap "
+                                                            "would leave stale values in the rest. DEAD on "
+                                                            "this build regardless of the milliseconds.")
+
+                                                    # ── D3: the restriction cut-off ─────────
+                                                    for _sa_sk, _sa_wfk, _sa_ick in (("w", "w_wf", "w_incap"),
+                                                                            ("u", "u_wf", "u_incap")):
+                                                        if not _sa_op.get("has_" + _sa_sk):
+                                                            continue
+                                                        _sa_wf = np.asarray(_sa_op[_sa_wfk], float)
+                                                        _sa_ic = np.asarray(_sa_op[_sa_ick], bool)
+                                                        _sa_hit = np.maximum.reduceat(_sa_wf, _sa_ecs) > 0.0
+                                                        _sa_rws, _sa_scs, _sa_scc = _sa_e._rx_rows(
+                                                            _sa_ecs, _sa_ecc, _sa_hit)
+                                                        _sa_frac = (_sa_rws.size / float(max(_sa_wf.size, 1)))
+                                                        _sa_st = {"rows": _sa_rws, "scs": _sa_scs, "scc": _sa_scc,
+                                                               "co": _sa_e._co_build(_sa_scc),
+                                                               "cells": int(_sa_hit.sum()), "frac": _sa_frac}
+                                                        _sa_idr = _sa_same(
+                                                            _sa_e._blend_pop(_sa_X0, _sa_ic, _sa_wf, _sa_ecs,
+                                                                             _sa_ecc, _sa_eco),
+                                                            _sa_e._blend_pop_rx(_sa_X0, _sa_ic, _sa_wf,
+                                                                                _sa_ecs, _sa_ecc, _sa_st,
+                                                                                _sa_eco))
+                                                        _sa_r3, _sa_b3, _sa_x = _sa_run(
+                                                            "blend-" + _sa_sk,
+                                                            lambda _i=_sa_ic, _w=_sa_wf: _sa_e._blend_pop(
+                                                                _sa_X0, _i, _w, _sa_ecs, _sa_ecc,
+                                                                _sa_eco),
+                                                            [("D3" + _sa_sk,
+                                                              lambda _i=_sa_ic, _w=_sa_wf, _s=_sa_st:
+                                                              _sa_e._blend_pop_rx(_sa_X0, _i, _w,
+                                                                                  _sa_ecs, _sa_ecc,
+                                                                                  _s, _sa_eco))],
+                                                            _sa_R)
+                                                        log(f"      A  {_sa_sk} blend FULL-WIDTH (what runs, "
+                                                            f"{_sa_frac:.1%} hit)      {_sa_b3:8.1f} ms  1.000x")
+                                                        _sa_sg3, _sa_gg3, _sa_pp3, _sa_kp3, _sa_kz3, _sa_fl3 = _sa_verdict(
+                                                            "D3" + _sa_sk,
+                                                            f"RESTRICTED to the {_sa_frac:.1%} that can change",
+                                                            _sa_r3["D3" + _sa_sk], _sa_fl_d1, _sa_idr)
+                                                        _sa_cut = float(getattr(_sa_e, "_RX_MAXHIT", 0.25))
+                                                        if _sa_sg3 and _sa_gg3 > 0 and _sa_frac > _sa_cut:
+                                                            log(f"         \u21d2 RAISE THE CUT-OFF: this stage "
+                                                                f"is at {_sa_frac:.1%}, above "
+                                                                f"ROUTING_ELIG_RESTRICT_MAXHIT={_sa_cut:.0%}, so "
+                                                                "it is being REFUSED — yet restricting it "
+                                                                f"measures {_sa_gg3:+.1f}% here. The cut-off was "
+                                                                "measured against the pre-19bs numpy blends "
+                                                                "and is stale.")
+                                                        elif _sa_frac > _sa_cut:
+                                                            log(f"         \u21d2 THE CUT-OFF IS RIGHT to refuse "
+                                                                f"this stage at {_sa_frac:.1%}: restricting it "
+                                                                f"measures {_sa_gg3:+.1f}% "
+                                                                + ("and the direction is not consistent"
+                                                                   if not _sa_sg3 else "") + ".")
+
+                                                # ── verdicts ────────────────────────────────────────
+                                                log("      VERDICTS \u2014 a row is ADOPTABLE only if the sign "
+                                                    "test agrees AND the size clears the measured floor AND "
+                                                    "bit-identity held. Any 'no' kills it.")
+                                                # 19cc: the two ADOPTED ideas get standing verdicts, not
+                                                # recommendations. A block that keeps advising you to
+                                                # adopt what is already running teaches you to skim it.
+                                                log("        S softmax fused: ADOPTED 19bx \u2014 the row above "
+                                                    "is a live RE-VERIFICATION against the untouched "
+                                                    "reference, not a proposal. "
+                                                    + ("bit-identical on this run \u2713" if _sa_id_s
+                                                       else "\u26a0 BIT-IDENTITY FAILED \u2014 report this."))
+                                                log("        X genetic fused: ADOPTED 19bx \u2014 see the X line "
+                                                    "above.")
+                                                log("        D4 delivery fuse: ADOPTED 19ca \u2014 the D4 row "
+                                                    "above times it against the pre-19ca path every run, "
+                                                    "which is what turned it from 'measured safe' into "
+                                                    "'measured beneficial'.")
+                                                def _sa_share(_sa_st):
+                                                    # the stage's share of a generation, taken from
+                                                    # [gen-cost]'s OWN medians measured moments ago on
+                                                    # this machine - so a % here is never a remembered
+                                                    # figure from another run.
+                                                    try:
+                                                        return 100.0 * _gc_all[_sa_st][0] / _gc_sum
+                                                    except Exception:      # noqa: BLE001
+                                                        return None
+                                                for (_sa_lb, _sa_sig, _sa_gn, _sa_idok, _sa_stage,
+                                                     _sa_kp, _sa_fl) in (
+                                                        ("L lanes (double the shipped cap)", _sa_sig_l,
+                                                         (_sa_lmed - 1.0) * 100.0, _sa_id_l,
+                                                         "project", _sa_kp_l, _sa_lfl),
+                                                        ("D1 cross-stage fusion", _sa_sig_d1,
+                                                         _sa_g_d1, _sa_id_d1, "deliver",
+                                                         _sa_kp_d1, _sa_fl_d1)):
+                                                    _sa_sh = _sa_share(_sa_stage)
+                                                    _sa_wm = (f" \u21d2 worth {_sa_gn * (_sa_sh or 0) / 100.0:.1f}% "
+                                                           f"of a generation ({_sa_stage} is "
+                                                           f"{(_sa_sh or 0):.1f}% of it)"
+                                                           if _sa_sh else "")
+                                                    if _sa_idok is False:
+                                                        log(f"        {_sa_lb}: DEAD \u2014 it is NOT "
+                                                            "bit-identical on this run's data. Speed is "
+                                                            "not the question once that fails.")
+                                                    elif _sa_sig:
+                                                        log(f"        {_sa_lb}: ADOPTABLE \u2014 "
+                                                            f"{abs(_sa_gn):.1f}% "
+                                                            + ("faster" if _sa_gn > 0 else "SLOWER")
+                                                            + ", consistent, and bit-identical." + _sa_wm)
+                                                    elif not _sa_kp:
+                                                        log(f"        {_sa_lb}: NOT MEASURABLE \u2014 "
+                                                            f"{_sa_gn:+.1f}%, but the DIRECTION is not "
+                                                            "consistent across rounds (the sign test "
+                                                            "did not clear p<=0.10). Raise "
+                                                            "ROUTING_STAGE_AB_REPS or run on a quiet "
+                                                            "machine.")
+                                                    else:
+                                                        log(f"        {_sa_lb}: NOT ADOPTED \u2014 the "
+                                                            "direction IS consistent across every "
+                                                            f"round, but {abs(_sa_gn):.1f}% sits inside "
+                                                            f"this row's own measured floor of "
+                                                            f"\u00b1{_sa_fl:.1f}%, so the size cannot be "
+                                                            "told from noise. More rounds would "
+                                                            "settle it.")
+                                                log("      (read-only: copies, timed and discarded. Nothing "
+                                                    "here reaches the split, the bands or the export. "
+                                                    "ROUTING_STAGE_AB=0 skips it, ROUTING_STAGE_AB_REPS "
+                                                    "sets the rounds.)")
+                                            except Exception as _saE:       # noqa: BLE001
+                                                log(f"   [stage-ab] skipped ({type(_saE).__name__}: "
+                                                    f"{_saE}) \u2014 MEASUREMENT ONLY, nothing shipped "
+                                                    "depends on it.")
                                         if os.environ.get("ROUTING_DELIV_COST", "1") != "0":
                                             # ── [deliv-cost] SPLIT THE `deliver` ROW, AND TEST THE FIX ─────────
                                             # `deliver` was 51.6% of a generation on 2026-08-23 14:09 — the
@@ -9584,18 +10468,14 @@ def render():
                                     except Exception as _rce:  # noqa: BLE001
                                         log(f"   [full-matrix] in-search per-RPGT breakdown skipped "
                                             f"({type(_rce).__name__}: {_rce}).")
-                                # 19bl: the in-place eligibility twin self-checks on its FIRST
-                                # call and stashes the verdict. 19bk print()ed it, so it went to the
-                                # terminal and could not be confirmed from this log. Read it here —
-                                # an empty msg means the twin never ran (ROUTING_ELIG_INPLACE=0, or
-                                # no eligibility operator was built at all).
-                                try:
-                                    _nc_note = str(_elig_mod_bl.nocap_note())
-                                    if _nc_note:
-                                        log("   " + _nc_note)
-                                except Exception as _ncnE:  # noqa: BLE001
-                                    log(f"   [elig-nocap] note unavailable "
-                                        f"({type(_ncnE).__name__}: {_ncnE}) \u2014 MEASUREMENT ONLY.")
+                                # 19br: this reads the 19bq NO-CAPABLE-GATEWAY GUARD counter, not
+                                # the in-place twin (the comment here used to say the latter — it
+                                # was copy-pasted from that block, and it was wrong). eligibility's
+                                # _blend_pop skips a full-width np.where whenever every cell has at
+                                # least one capable gateway, and counts skip vs select. An empty
+                                # string means no blend ran at all, so there is nothing to report.
+                                # PRINTED ONCE: 19bq inserted this block twice by accident and the
+                                # 2026-08-24 07:16 log carries the line twice. Do not re-add it.
                                 try:
                                     _nc_note = str(_elig_mod_bl.nocap_note())
                                     if _nc_note:

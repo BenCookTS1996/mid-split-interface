@@ -79,7 +79,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -398,6 +398,197 @@ def _segments(sorted_ids):
 # ---------------------------------------------------------------------------
 # Vectorised scoring primitives  (population = (P, R) logit matrices)
 # ---------------------------------------------------------------------------
+# ── FUSED ELEMENTWISE KERNELS (2026-08-19bx) ──────────────────────────────────────────────────
+# Adopted from [stage-ab] rows S and X, measured on the live machine at the live width: 7 of 7
+# paired rounds each, p=0.016, bit-identical on int64 patterns. See the 19bx patch note.
+try:
+    from numba import njit as _fx_njit
+    _FX_HAVE_NB = True
+except Exception:                                   # noqa: BLE001 - numba absent is not an error
+    _FX_HAVE_NB = False
+
+    def _fx_njit(*_a, **_k):                        # so the bodies stay valid python
+        def _deco(f):
+            return f
+        return _deco
+
+
+_SM_FUSE = (os.environ.get("ROUTING_SOFTMAX_FUSE", "1") != "0") and _FX_HAVE_NB
+_CH_FUSE = (os.environ.get("ROUTING_CHILD_FUSE", "1") != "0") and _FX_HAVE_NB
+_SM_OK = {"use": _SM_FUSE, "checked": False, "msg": ""}
+_FX_OK = {"use": _CH_FUSE, "checked": False, "msg": ""}
+# Layout arrays (row->cell map, int32 starts/counts) built ONCE per layout. Keyed on the identity
+# of `cell_len` AND holding a reference to it, so the id cannot be recycled onto a different array
+# while the entry lives — a mis-keyed cell map is a silent wrong answer, not a slow one.
+_FX_LAYOUT = {}
+
+
+def _fx_layout(cell_start, cell_len):
+    _k = id(cell_len)
+    _e = _FX_LAYOUT.get(_k)
+    if _e is not None and _e[0] is cell_len:
+        return _e[1], _e[2], _e[3]
+    _cl = np.asarray(cell_len, np.int64)
+    _co = np.repeat(np.arange(_cl.size, dtype=np.int32), _cl)
+    _cs32 = np.ascontiguousarray(np.asarray(cell_start, np.int32))
+    _cc32 = np.ascontiguousarray(np.asarray(cell_len, np.int32))
+    _FX_LAYOUT[_k] = (cell_len, _co, _cs32, _cc32)
+    return _co, _cs32, _cc32
+
+
+def _fx_bits(a):
+    a = np.asarray(a)
+    return a.view(np.int64) if a.dtype == np.float64 else a
+
+
+def _fx_same(x, y):
+    return bool(np.array_equal(_fx_bits(x), _fx_bits(y)))
+
+
+@_fx_njit(cache=False, fastmath=False)
+def _fx_sub(lg, seg, co, out):
+    """logits - repeat(seg_max, cell_len), in one pass."""
+    for _p in range(lg.shape[0]):
+        for _i in range(lg.shape[1]):
+            out[_p, _i] = lg[_p, _i] - seg[_p, co[_i]]
+    return out
+
+
+@_fx_njit(cache=False, fastmath=False)
+def _fx_div(ex, seg, co, out):
+    """ex / repeat(seg_sum, cell_len), in one pass."""
+    for _p in range(ex.shape[0]):
+        for _i in range(ex.shape[1]):
+            out[_p, _i] = ex[_p, _i] / seg[_p, co[_i]]
+    return out
+
+
+@_fx_njit(cache=False, fastmath=False)
+def _fx_child(a, b, pick, hit, noise, strength, cstart, ccnt, out):
+    """crossover + mutate for ONE child, in one pass.
+
+    `noise` is consumed in increasing ROW order, which is exactly the order numpy's
+    `out[row_hit] += noise` assigns it, and `v + noise[k] * strength` is the same two operations
+    in the same order as numpy's `noise * strength` then add."""
+    _k = 0
+    for _ci in range(cstart.shape[0]):
+        _s = cstart[_ci]
+        _e = _s + ccnt[_ci]
+        _pa = pick[_ci]
+        if hit[_ci]:
+            for _i in range(_s, _e):
+                _v = a[_i] if _pa else b[_i]
+                out[_i] = _v + noise[_k] * strength
+                _k += 1
+        else:
+            for _i in range(_s, _e):
+                out[_i] = a[_i] if _pa else b[_i]
+    return out
+
+
+@_fx_njit(cache=False, fastmath=False)
+def _fx_mut(a, hit, noise, strength, cstart, ccnt, out):
+    """mutate only — the REFINE branch, which must not draw the crossover's random(n_cells)."""
+    _k = 0
+    for _ci in range(cstart.shape[0]):
+        _s = cstart[_ci]
+        _e = _s + ccnt[_ci]
+        if hit[_ci]:
+            for _i in range(_s, _e):
+                out[_i] = a[_i] + noise[_k] * strength
+                _k += 1
+        else:
+            for _i in range(_s, _e):
+                out[_i] = a[_i]
+    return out
+
+
+def _segment_softmax_fast(logits, cell_start, cell_len):
+    """`_segment_softmax_serial`, with the elementwise steps fused. Bit-identical.
+
+    Measured 206.6 -> 126.9 ms at P=35 x 245,409 on the live machine, 7/7 paired rounds. np.exp
+    stays in numpy on purpose: numba's exp is slower AND differs in the last bit."""
+    _lg = np.atleast_2d(logits)
+    _co, _, _ = _fx_layout(cell_start, cell_len)
+    _sm = np.maximum.reduceat(_lg, cell_start, axis=1)
+    _t = _fx_sub(_lg, _sm, _co, np.empty_like(_lg))
+    _ex = np.exp(_t, out=_t)                       # numpy's exp, in place: no extra full array
+    _ss = np.add.reduceat(_ex, cell_start, axis=1)
+    return _fx_div(_ex, _ss, _co, np.empty_like(_lg))
+
+
+def _mutate_fused(logits, rate, strength, cell_start, cell_len, rng, cell_w=None):
+    """`_mutate_fast` in one pass. IDENTICAL draws: random(n_cells), then standard_normal(n_hit)."""
+    _n = len(cell_start)
+    _thr = rate if cell_w is None else np.minimum(np.asarray(cell_w, float) * rate, 1.0)
+    _hit = rng.random(_n) < _thr
+    if not _hit.any():
+        return logits.copy()
+    _rh = np.repeat(_hit, cell_len)
+    _nh = int(_rh.sum())
+    _nz = rng.standard_normal(_nh)
+    _, _cs32, _cc32 = _fx_layout(cell_start, cell_len)
+    return _fx_mut(logits, _hit, _nz, float(strength), _cs32, _cc32, np.empty_like(logits))
+
+
+def _child_fused(a, b, rate, strength, cell_start, cell_len, rng, cell_w=None):
+    """`_crossover` then `_mutate_fast` in one pass. IDENTICAL draws, in the same order."""
+    _n = len(cell_start)
+    _pk = rng.random(_n) < 0.5
+    _thr = rate if cell_w is None else np.minimum(np.asarray(cell_w, float) * rate, 1.0)
+    _hit = rng.random(_n) < _thr
+    if not _hit.any():
+        return np.where(np.repeat(_pk, cell_len), a, b)
+    _rh = np.repeat(_hit, cell_len)
+    _nh = int(_rh.sum())
+    _nz = rng.standard_normal(_nh)
+    _, _cs32, _cc32 = _fx_layout(cell_start, cell_len)
+    return _fx_child(a, b, _pk, _hit, _nz, float(strength), _cs32, _cc32, np.empty_like(a))
+
+
+def _fx_selfcheck(a, b, rate, strength, cell_start, cell_len, rng, cell_w, refine):
+    """Run BOTH paths from the same generator state and compare the arrays AND the end state.
+
+    The end-state comparison is the part that matters: it proves the fused wrapper consumed the
+    same draws in the same order, which is the only way the fused child can be the SAME child
+    rather than a similar one. On any mismatch the fused path is disabled for the process and the
+    reference result is returned, so what ships is the known-good child."""
+    _st0 = rng.bit_generator.state
+    if refine:
+        _got = _mutate_fused(a, rate, strength, cell_start, cell_len, rng, cell_w=cell_w)
+    else:
+        _got = _child_fused(a, b, rate, strength, cell_start, cell_len, rng, cell_w=cell_w)
+    _st_new = rng.bit_generator.state
+    rng.bit_generator.state = _st0
+    if refine:
+        _ref = _mutate_fast(a, rate, strength, cell_start, cell_len, rng, cell_w=cell_w)
+    else:
+        _ref = _mutate_fast(_crossover(a, b, cell_start, cell_len, rng),
+                            rate, strength, cell_start, cell_len, rng, cell_w=cell_w)
+    _st_ref = rng.bit_generator.state
+    _same_v = _fx_same(_ref, _got)
+    _same_s = (repr(_st_new) == repr(_st_ref))
+    _FX_OK["checked"] = True
+    if _same_v and _same_s:
+        _FX_OK["msg"] = (
+            "[fullmatrix-ga] \u2713 fused child SELF-CHECK PASSED on the live population: "
+            "bit-identical to crossover + _mutate_fast (int64 bit-pattern comparison, not "
+            "array_equal) AND the generator's end state matches, so the draw order is unchanged "
+            "and the child is the SAME child. Measured 127.1 -> 73.5 ms per generation at P=35 "
+            "([stage-ab], 7/7 paired rounds, p=0.016). ROUTING_CHILD_FUSE=0 reverts.")
+        rng.bit_generator.state = _st_new
+        return _got
+    _FX_OK["use"] = False
+    _FX_OK["msg"] = (
+        "[fullmatrix-ga] \u26a0 fused child SELF-CHECK FAILED \u2014 "
+        + ("the arrays differ" if not _same_v else "the arrays match but the GENERATOR STATE "
+           "differs, so the fused path consumed different draws")
+        + ". DISABLED for this process; the reference crossover + _mutate_fast is what ships. "
+          "Report this: it means the fused twin is not the same operator on this data.")
+    rng.bit_generator.state = _st_ref
+    return _ref
+
+
 def _segment_softmax_serial(logits, cell_start, cell_len):
     """Per-cell softmax over contiguous row segments. THE REFERENCE.
 
@@ -423,8 +614,30 @@ def _segment_softmax(logits, cell_start, cell_len):
     population is split across threads; `rowpar` verifies bit-identity on its second call and
     reverts to serial on any mismatch. ROUTING_ROW_PARALLEL=0 disables it."""
     _lg = np.atleast_2d(logits)
-    return _rowpar(lambda _sub: _segment_softmax_serial(_sub, cell_start, cell_len),
-                   _lg, "softmax")
+    # 19bx: the FUSED path, self-checked once against the untouched reference on the live
+    # population. `_segment_softmax_serial` is never edited — it stays the thing this is compared
+    # against, and ROUTING_SOFTMAX_FUSE=0 puts it back in the hot path.
+    if _SM_OK["use"] and not _SM_OK["checked"]:
+        _SM_OK["checked"] = True
+        _r = _segment_softmax_serial(_lg, cell_start, cell_len)
+        _f = _segment_softmax_fast(_lg, cell_start, cell_len)
+        if _fx_same(_r, _f):
+            _SM_OK["msg"] = (
+                "[fullmatrix-ga] \u2713 fused softmax SELF-CHECK PASSED on the live population: "
+                "bit-identical to the reference (int64 bit-pattern comparison on "
+                f"{_lg.shape[0]}x{_lg.shape[1]:,}, stricter than array_equal). Five full-width "
+                "temporaries become two; the two reduceat calls are untouched and np.exp stays in "
+                "numpy (numba's differs in the last bit). Measured 206.6 -> 126.9 ms at P=35 "
+                "([stage-ab], 7/7 paired rounds, p=0.016). ROUTING_SOFTMAX_FUSE=0 reverts.")
+        else:
+            _SM_OK["use"] = False
+            _SM_OK["msg"] = (
+                "[fullmatrix-ga] \u26a0 fused softmax SELF-CHECK FAILED \u2014 max|\u0394| "
+                f"{float(np.abs(np.asarray(_r) - np.asarray(_f)).max()):.3e}. DISABLED for this "
+                "process; the reference softmax is what ships. Report this.")
+        print(_SM_OK["msg"])
+    _fn = _segment_softmax_fast if _SM_OK["use"] else _segment_softmax_serial
+    return _rowpar(lambda _sub: _fn(_sub, cell_start, cell_len), _lg, "softmax")
 
 
 def _vwsr(shares, vol, succ, total_vol):
@@ -1426,19 +1639,49 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 _kid = (_child_streams(seed, _s, _r, gen, children.shape[0])
                         if _MUT_FAST else None)
                 _mut = _mutate_fast if _MUT_FAST else _mutate
+                # 19bx: FUSE crossover and mutate into one pass per child. Only valid against the
+                # 19bp fast mutation — with ROUTING_MUT_FAST=0 the shipped operator is the legacy
+                # full-width one and the fused twin is not its equivalent, so the fusion turns
+                # itself off rather than quietly changing what that revert reverts to.
+                _fuse = bool(_FX_OK["use"] and _MUT_FAST)
                 for c in range(children.shape[0]):
                     _crng = _kid[c] if _kid is not None else _rng
                     if c < _n_refine:
                         base = pop[order[_crng.integers(0, max(1, _el))]]
-                        child = _mut(base, _base_rate * 0.25, mutation_strength * 0.6,
-                                     p.cell_start, p.cell_len, _crng, cell_w=_cw)
+                        if _fuse:
+                            child = (_fx_selfcheck(base, None, _base_rate * 0.25,
+                                                   mutation_strength * 0.6, p.cell_start,
+                                                   p.cell_len, _crng, _cw, True)
+                                     if not _FX_OK["checked"] else
+                                     _mutate_fused(base, _base_rate * 0.25,
+                                                   mutation_strength * 0.6, p.cell_start,
+                                                   p.cell_len, _crng, cell_w=_cw))
+                            _fuse = bool(_FX_OK["use"])
+                        else:
+                            child = _mut(base, _base_rate * 0.25, mutation_strength * 0.6,
+                                         p.cell_start, p.cell_len, _crng, cell_w=_cw)
                     else:
                         pa = pop[_crng.choice(pool)]
                         pb = pop[_crng.choice(pool)]
-                        child = _crossover(pa, pb, p.cell_start, p.cell_len, _crng)
-                        child = _mut(child, _base_rate, mutation_strength,
-                                     p.cell_start, p.cell_len, _crng, cell_w=_cw)
+                        if _fuse:
+                            child = (_fx_selfcheck(pa, pb, _base_rate, mutation_strength,
+                                                   p.cell_start, p.cell_len, _crng, _cw, False)
+                                     if not _FX_OK["checked"] else
+                                     _child_fused(pa, pb, _base_rate, mutation_strength,
+                                                  p.cell_start, p.cell_len, _crng, cell_w=_cw))
+                            _fuse = bool(_FX_OK["use"])
+                        else:
+                            child = _crossover(pa, pb, p.cell_start, p.cell_len, _crng)
+                            child = _mut(child, _base_rate, mutation_strength,
+                                         p.cell_start, p.cell_len, _crng, cell_w=_cw)
                     children[c] = child
+                # 19bx: the two self-check verdicts belong in the RUN LOG, not the terminal. Each
+                # says whether the fused path is bit-identical on THIS run's population; a verdict
+                # only Ben's terminal saw is a verdict he cannot check later.
+                for _fxk in (_FX_OK, _SM_OK):
+                    if _fxk.get("msg") and not _fxk.get("said"):
+                        _fxk["said"] = True
+                        log("   " + _fxk["msg"])
                 child_vwsr, child_other, child_band = _eval_with_bands(children)
                 evaluated += children.shape[0]
                 pop = np.vstack([elites, children])

@@ -50,6 +50,36 @@ if ! command -v gcloud >/dev/null 2>&1; then
   echo ""
 fi
 
+# 4b. Optional switches file (2026-08-19cc).
+#
+# The engine has ~25 ROUTING_* switches — every optimisation ships behind one so it can be
+# reverted without a code change. This file is double-clicked, and a double-click has nowhere to
+# put an environment variable, so: if a file named `routing.env` sits beside this script, its
+# lines are loaded before the app starts. One switch per line, `NAME=value`, `#` for comments.
+#
+# It ECHOES what it loaded. That matters: at least one switch (ROUTING_PROJ_FLOAT32) CHANGES THE
+# ANSWER, so a run whose configuration is invisible is a run you cannot interpret later. The app's
+# own log announces that one too, in a banner it cannot be missed in.
+if [ -f "routing.env" ]; then
+  echo ""
+  echo "Loading switches from routing.env:"
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    case "$_line" in
+      ''|'#'*) continue ;;
+    esac
+    _line="${_line%%#*}"                                  # strip trailing comments
+    _line="$(printf '%s' "$_line" | sed -e 's/[[:space:]]*$//' -e 's/^[[:space:]]*//')"
+    [ -z "$_line" ] && continue
+    case "$_line" in
+      *=*) export "${_line?}" ; echo "   • $_line" ;;
+      *)   echo "   ⚠ ignored (not NAME=value): $_line" ;;
+    esac
+  done < "routing.env"
+  echo ""
+else
+  echo "(no routing.env beside this script — running with every switch at its default)"
+fi
+
 # 5. Launch the app.
 echo "✅ Ready — starting the app. A browser tab will open at http://localhost:8501"
 echo "   (Leave this window open while you use the app; close it or press Ctrl+C to stop.)"
