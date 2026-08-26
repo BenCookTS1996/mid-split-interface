@@ -22,7 +22,7 @@ from impact_calcs import (_c_prepost_granular, _c_read_parquet, _mtime, build_ki
 
 from app_common import (load_mid_list, _norm_cols, _map_to_bank, _renorm_share,
                         _fid2vamp_from)  # memoised MID reader + shared helpers
-from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, DEFAULT_GATEWAY_FIDS,
+from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, DEFAULT_GATEWAY_FIDS, active_gateway_fids,
                         HAS_PLOTLY, _ensure_base_30d_metrics, _impact_eval_frame, _ink_caption,
                         _switched_off_gateways, _locked_panel, _split_df_to_xlsx_bytes)
 
@@ -166,7 +166,8 @@ def render():
                 _sqlp = {"START_DATE": _vpr.get("attempts_start"), "END_DATE": _vpr.get("attempts_end"),
                          "COMPANY": _vpr.get("company"), "CARD_SCHEME": _scheme_v,
                          "BIN_PREFIX": "4" if _scheme_v == "visa" else "5",
-                         "GATEWAY_FIDS": DEFAULT_GATEWAY_FIDS}
+                         "GATEWAY_FIDS": active_gateway_fids(
+                             os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"))}
                 _sqlf = os.path.join(SQL_DIR, "attempts_success.sql")
                 if not os.path.exists(_sqlf):
                     raise FileNotFoundError("attempts_success.sql not found.")
@@ -803,17 +804,6 @@ def render():
                                                    ss["_split_export_zip"], file_name="split_templates.zip",
                                                    mime="application/zip", key="export_splits_dl",
                                                    use_container_width=True)
-                        # RAW pre-enforcement split (the GA's ideal split BEFORE build_split_exports
-                        # cap / wallet / USA / <2-gateway back-fill). Distinct from Export Templates,
-                        # which is the ENFORCED output. Used to diagnose scored-vs-delivered: this is
-                        # the exact input the GA scored. Always available (no heavy build).
-                        _raw_split = ss.get("split")
-                        if _raw_split is not None and not getattr(_raw_split, "empty", True):
-                            st.download_button(
-                                "⬇ Download raw split (pre-enforcement) CSV",
-                                _raw_split.to_csv(index=False).encode("utf-8"),
-                                file_name="raw_split_pre_enforcement.csv", mime="text/csv",
-                                key="export_raw_split_dl", use_container_width=True)
 
                     if hasattr(st, "fragment"):
                         st.fragment(_export_ui)()

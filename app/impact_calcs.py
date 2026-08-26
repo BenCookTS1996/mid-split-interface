@@ -179,10 +179,10 @@ def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mid
     # VAMP conserved & redistributed by the volume share (pipeline-faithful). This legacy
     # non-prorata fallback has no fcp data, so the movable slice is the go-live fraction only.
     t0["_move"] = np.where(t0["_prop_sum"] > 0, t0["f"], 0.0)
-    # VAMP redistribution only across MIDs that carry baseline VAMP (zero-VAMP MIDs stay 0).
-    _midv = tp.groupby(["Currency", "BIN", "vampMid"])["VAMP_Pre"].sum().rename("_midv").reset_index()
-    t0 = t0.merge(_midv, on=["Currency", "BIN", "vampMid"], how="left")
-    t0["_vprop"] = t0["prop_eff"] * (t0["_midv"].fillna(0.0) > 0).astype(float)
+    # VAMP follows the volume: the moved VAMP pool is redistributed by the SAME post-volume
+    # share as the moved transactions (prop_eff), so grown MIDs pick up VAMP at the cell's
+    # blended rate and Σ VAMP_Post == Σ VAMP_Pre (the cell's VAMP total is conserved).
+    t0["_vprop"] = t0["prop_eff"]
     t0["_vpsum"] = t0.groupby(["Currency", "BIN", "period"])["_vprop"].transform("sum")
     t0["_vshare"] = np.where(t0["_vpsum"] > 0, t0["_vprop"] / t0["_vpsum"], 0.0)
     tp["orig_m"] = tp["period"] - tp["t"]
@@ -294,9 +294,10 @@ def _vamp_post_core(pp, prop_items, excluded_mids=frozenset(), kill_eff=(), mont
     # cell takes the proposed share; the rest (pre-go-live + FCP2+/retries) stays baseline.
     # PER-MID movable fraction (fcp1_frac is per-vampMid now): move_mid = pro_rata × fcp1_frac.
     t0["_move"] = np.where(t0["prop_sum"] > 0, t0["pro_rata"] * t0["fcp1_frac"], 0.0)
-    # VAMP redistribution share: proposed share renormalised over MIDs that CARRY baseline
-    # VAMP, so zero-VAMP MIDs never receive VAMP and the cell's VAMP total is conserved.
-    t0["_vprop"] = t0["prop_raw"] * (t0["vampCount"] > 0).astype(float)
+    # VAMP follows the volume: the moved VAMP pool is redistributed by the SAME post-volume
+    # share as the moved transactions (prop_raw, renormalised below to prop_share), so grown
+    # MIDs pick up VAMP at the cell's blended rate and the cell's VAMP total is conserved.
+    t0["_vprop"] = t0["prop_raw"]
     t0["_vpsum"] = t0.groupby(grp)["_vprop"].transform("sum")
     t0["_vshare"] = np.where(t0["_vpsum"] > 0, t0["_vprop"] / t0["_vpsum"], 0.0)
 
@@ -955,7 +956,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
 
 
 # [FN-259]
-def _inject_backfill_rows(pp, prop):
+def _inject_backfill_rows(pp, prop, prop_name_map=None):
     """#3 ZERO-BASELINE BACK-FILL: build_split_exports can route to gateways (e.g. <2-gateway
     back-fill fallbacks) that have NO baseline row in a cell. The LEFT merge drops them, so their
     routed volume wrongly redistributes to present MIDs. Re-inject them into `pp` as zero-baseline
@@ -991,6 +992,14 @@ def _inject_backfill_rows(pp, prop):
     # Global _vml -> proper-case vampMid, so a MID that exists elsewhere in the export keeps its
     # display name and merges cleanly (no lower-case twin) on the final collapse.
     name_map = b.drop_duplicates("_vml").set_index("_vml")["vampMid"].to_dict()
+    # Truly zero-baseline recipients have NO row anywhere in the export, so `b` can't supply a
+    # proper-case name and they'd otherwise fall back to the lower-case merge key as their display
+    # name. Fill those gaps from the proposed items' proper-case vampMid (sourced from the Master
+    # MID list, captured by the caller before `vampMid` is dropped); baseline names keep priority
+    # via setdefault so no present MID is renamed.
+    if prop_name_map:
+        for _k, _v in prop_name_map.items():
+            name_map.setdefault(_k, _v)
     # Representative RPGT / go-live pro_rata / fcp1 per (sub-cell, period), lowest-t row.
     reps = (b.sort_values("t").drop_duplicates(subk + ["period"])
             [subk + ["RPGT", "period", "pro_rata", "fcp1_frac"]])
@@ -1067,6 +1076,10 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     prop["Currency"] = prop["Currency"].astype(str).str.strip().str.lower()
     prop["BIN"] = prop["BIN"].astype(str).str.strip()
     prop["_vml"] = prop["vampMid"].astype(str).str.strip().str.lower()
+    # Proper-case display name per _vml, captured BEFORE `vampMid` is dropped, so back-fill
+    # injection can name truly zero-baseline recipients (which have no row in the export).
+    _prop_name_map = (prop.dropna(subset=["vampMid"]).drop_duplicates("_vml")
+                      .set_index("_vml")["vampMid"].to_dict())
     prop = prop.drop(columns=["vampMid"])
     if _by_rpgt:
         prop["_rpgtl"] = prop["RPGT"].astype(str).str.strip().str.lower()
@@ -1074,7 +1087,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     if _enforced:
         prop["_pmp"] = prop["_pmp"].astype(str).str.strip().str.lower()
         prop["_ctry"] = prop["_ctry"].astype(str).str.strip().str.lower()
-        pp = _inject_backfill_rows(pp, prop)   # #3 add zero-baseline back-fill target rows
+        pp = _inject_backfill_rows(pp, prop, _prop_name_map)   # #3 add zero-baseline back-fill target rows
 
     grp = ["Currency", "BIN", "RPGT", "_pmp", "_ctry", "period"]
     if _enforced:
@@ -1175,9 +1188,9 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # Movable fraction = go-live pro-rata × fcp1 cohort fraction (see _vamp_post_core).
     _p = t0["pro_rata"] * t0["fcp1_frac"]
     t0["post_txn"] = t0["cell_tot"] * ((1 - _p) * t0["base_share"] + _p * t0["prop_share"])
-    # PER-MID movable fraction + VAMP-carrying redistribution share (see _vamp_post_core).
+    # PER-MID movable fraction + VAMP-follows-the-volume redistribution share (see _vamp_post_core).
     t0["_move"] = np.where(t0["prop_sum"] > 0, t0["pro_rata"] * t0["fcp1_frac"], 0.0)
-    t0["_vprop"] = t0["prop_raw"] * (t0["vampCount"] > 0).astype(float)
+    t0["_vprop"] = t0["prop_raw"]
     t0["_vpsum"] = t0.groupby(grp)["_vprop"].transform("sum")
     t0["_vshare"] = np.where(t0["_vpsum"] > 0, t0["_vprop"] / t0["_vpsum"], 0.0)
 
@@ -1497,6 +1510,11 @@ def _c_vamp_post_prorata(pp_path, m, prop_items, excluded_mids, kill_eff=(), mon
 
 
 # [FN-266b]
+_PROJ_CODE_VER = "2026-08-26a-vamp-follows-volume+backfill-name"  # bump on ANY projection-logic
+# change so the in-memory st.cache_data entries bust on the next rerun (the data signature alone
+# can't see code edits: a re-used outputs folder + unchanged split => identical key => stale result).
+
+
 def projection_cache_sig(pp_path, prop_items, exploration_floor=0.0, extra=""):
     """Stable cache-key SIGNATURE for the granular projection.
 
@@ -1514,7 +1532,7 @@ def projection_cache_sig(pp_path, prop_items, exploration_floor=0.0, extra=""):
     h = _hl.blake2b(digest_size=16)
     for t in (prop_items or ()):
         h.update(repr(t).encode("utf-8"))
-    h.update(f"|floor={float(exploration_floor or 0.0):.8g}|{extra}".encode("utf-8"))
+    h.update(f"|floor={float(exploration_floor or 0.0):.8g}|{extra}|cv={_PROJ_CODE_VER}".encode("utf-8"))
     return f"{mt:.0f}:{len(prop_items or ()):d}:{h.hexdigest()}"
 
 
@@ -1877,6 +1895,8 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
                      if "Country" in allm.columns else "_all_")
     allm["vampMid"] = (allm["_gw"].astype(str).str.strip().str.lower().map(fid2vamp)
                        .fillna(allm["_gw"].astype(str).str.strip()))
+    # Canonicalise vampMid casing back to Master_MID_List (fixes lowercased back-fill labels, e.g. woodforest/adyen-na/paysafe).
+    allm["vampMid"] = allm["vampMid"].map({str(v).strip().lower(): v for v in fid2vamp.values()}).fillna(allm["vampMid"])
     _subk = ["Currency", "BIN", "RPGT", "_pmp", "_ctry"]
     _pos = allm[allm["prop_raw"] > 0].copy()
     # ── CASE A: ZERO-CELL PLACEHOLDERS ────────────────────────────────────────────────────
