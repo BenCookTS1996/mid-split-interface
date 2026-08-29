@@ -57,6 +57,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import os as _os
+import time as _time
 import numpy as np
 
 # scipy is a HARD requirement (2026-08-19aa) — see band_scoring.py for the reasoning. NOTE this
@@ -119,6 +120,10 @@ class ExactBandModel:
         self.excl = np.asarray(pj._excl, bool)
         self.emask = np.asarray(pj._emask, bool)
         self.mask = self.excl | self.emask
+        # 19dt - the same per-row proposal weight the projector applies. A seed scored by
+        # different rules than the fitness is exactly the `[seed-basis] RAW vs DELIVERED
+        # disagree` failure. Falls back to the old boolean if an older projector is loaded.
+        self.pw = np.asarray(getattr(pj, "_pw", np.where(self.mask, 0.0, 1.0)), float)
         self.vcpos = np.asarray(pj._vcpos, float)
         # movable-fraction factors (mv = pr · fcp), kept separately for diagnostics
         self.pr = np.asarray(getattr(pj, "_pr", np.ones(self.gcode.shape[0])), float)
@@ -153,7 +158,7 @@ class ExactBandModel:
     def _forward_pr(self, prop_raw: np.ndarray):
         """(K,) prop_raw → (vamp[B], txn[B]) + the intermediates the Jacobian needs.
         Mirrors PopulationBandProjector.project_pop for a single candidate."""
-        pr = np.where(self.mask, 0.0, prop_raw[self.propidx])
+        pr = prop_raw[self.propidx] * self.pw          # 19dt: weight, not mask
         psum_c = np.bincount(self.gcode, pr, minlength=self.ngc)
         psum = psum_c[self.gcode]
         act = psum > 0.0
@@ -346,10 +351,13 @@ class ExactBandModel:
             Jpr_rows[i] = Jm[sp.cols, :].sum(axis=0)
         # chain pr → prop_raw: prop_raw[k] feeds row r iff propidx[r]==k and r not masked
         Jprop = np.zeros((S, self.K))
-        live = ~self.mask
+        # 19dt: d pr[r] / d prop_raw[k] is now pw[r], not 1 - the chain must carry the
+        # weight or the Jacobian describes a forward pass the solver no longer runs.
+        live = self.pw > 0.0
         # scatter-add each row's sensitivity onto its prop-key column
         for i in range(S):
-            np.add.at(Jprop[i], self.propidx[live], Jpr_rows[i, live])
+            np.add.at(Jprop[i], self.propidx[live],
+                      Jpr_rows[i, live] * self.pw[live])
         return vals, Jprop
 
     # [FN-386]
@@ -431,7 +439,7 @@ def floor_catchall_shares(shares, floor_mask, share_floor, cell_starts, cell_cou
 def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_counts, elig,
                        *, max_share=1.0, max_outer=40, tol=1e-7, tr_init=0.25, tr_min=1e-4,
                        weighted=False, verbose=False, log_fn=None,
-                       floor_mask=None, share_floor=0.0):
+                       floor_mask=None, share_floor=0.0, stall=None):
     """EXACT successive-LP solve of  min total band breach  s.t. per-cell simplex + max-share.
 
     Uses `ExactBandModel` (true projector value + analytic Jacobian). Each outer step linearises the
@@ -442,9 +450,20 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
     compliance certificate). Never raises: any failure returns the base split with info['ok']=False.
 
     Only gateways feeding a band move; all others stay at `base_shares` (exact for the band objective).
-    Local optimum only (fractional-VAMP nonconvexity + fixed active mask) — see module docstring."""
+    Local optimum only (fractional-VAMP nonconvexity + fixed active mask) — see module docstring.
+
+    `stall` (19ck): stop after this many CONSECUTIVE rejected steps. 0 (the default, and what
+    ROUTING_SEED_LP_STALL=0 means) keeps the pre-19ck behaviour exactly — the only exit from a
+    rejection stays `tr < tr_min`. `None` reads ROUTING_SEED_LP_STALL. A stall stop is
+    ANSWER-AFFECTING: a step rejected at `tr` may be accepted at `tr/2`, which is what the trust
+    region is FOR. The step ledger below (`info['steps']`, `info['stall_min_safe']`) is what decides
+    whether a given K is safe, and it is recorded whether or not the stop is armed."""
     info = {"ok": False, "build": __build__, "reason": "", "n_free": 0, "outer": 0,
-            "breach0": float("nan"), "breach": float("nan"), "feasible": False}
+            "breach0": float("nan"), "breach": float("nan"), "feasible": False,
+            # 19ck step ledger. `outer` is the last ACCEPTED step and always was; `ran` is how many
+            # actually executed, and the gap between the two is the thing no earlier log could show.
+            "ran": 0, "steps": [], "stall_k": 0, "stall_min_safe": 0,
+            "trailing_rejects": 0, "trailing_secs": 0.0, "secs": 0.0, "stopped": ""}
     try:
         s = np.asarray(base_shares, float).copy()
         N = s.shape[0]
@@ -480,14 +499,42 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
         cell_of = np.repeat(np.arange(len(cs)), cc)
         best_s = s.copy(); best_b = b0
         tr = float(tr_init)
+        # ── 19ck: STEP LEDGER (always) + STALL STOP (opt-in) ──────────────────────────────────
+        # `_rej` counts CONSECUTIVE rejections. `_rej_paid` is the longest such run that a LATER
+        # acceptance justified — the smallest K that would have cost this run nothing. Everything
+        # here is recording; with `stall == 0` the control flow is exactly the pre-19ck loop.
+        if stall is None:
+            try:
+                stall = int(_os.environ.get("ROUTING_SEED_LP_STALL", "0") or 0)
+            except Exception:  # noqa: BLE001 — a bad env value must not fail the seed
+                stall = 0
+        stall = max(0, int(stall))
+        info["stall_k"] = stall
+        _steps = info["steps"]
+        _rej = 0
+        _rej_paid = 0
+        _t_all = _time.perf_counter()
         if log_fn:
             log_fn(f"      exact projector: {info['n_free']:,} band-feeding gateways free of {N:,} "
                    f"(base breach {b0:.4g}); successive-LP, up to {int(max_outer)} steps. One-time solve — "
-                   "at BIN grain each step is a large sparse LP, so this can take a few minutes.")
+                   "at BIN grain each step is a large sparse LP, so this can take a few minutes."
+                   + (f" Stall stop ARMED at {stall} consecutive rejected step(s) "
+                      "(ROUTING_SEED_LP_STALL) — this CAN change the seed."
+                      if stall else ""))
         for outer in range(int(max_outer)):
             if log_fn:
                 log_fn(f"      exact projector: step {outer + 1}/{int(max_outer)} "
                        f"(best breach {best_b:.4g}, tr={tr:.3g})…")
+            _t_step = _time.perf_counter()
+            info["ran"] = outer + 1
+
+            def _ledger(_verdict, _tr=None, _b=None):
+                """Record one step. Called on EVERY exit path, so `ran` == len(steps) always."""
+                _steps.append({"step": outer + 1,
+                               "tr": float(tr if _tr is None else _tr),
+                               "verdict": str(_verdict),
+                               "breach": float(best_b if _b is None else _b),
+                               "secs": float(_time.perf_counter() - _t_step)})
             vals, J = model.spec_jacobian_shares(best_s)          # exact value + exact gradient
             # LP variables: Δs over ALL N (bounded 0 for non-free), then slacks per active band side.
             # Build only the constraint rows that are ceil/floor for a spec with columns.
@@ -503,6 +550,8 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
                 if sp.floor is not None and sp.floor > 0:
                     rows_meta.append(("floor", i, sp.floor, vi, gi)); n_slack += 1
             if n_slack == 0:
+                _ledger("no-active-bands")
+                info["stopped"] = "no-active-bands"
                 break
             nvar = N + n_slack
             # objective: minimise Σ slack (relative), slacks are the last n_slack vars
@@ -540,8 +589,14 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
             res = _linprog(c_obj, A_ub=A_ub, b_ub=b_ub, A_eq=Aeq, b_eq=beq,
                            bounds=bounds, method="highs")
             if not res.success:
+                _ledger("lp-failed")
+                _rej += 1
                 tr *= 0.5
                 if tr < tr_min:
+                    info["stopped"] = "tr-below-min"
+                    break
+                if stall and _rej >= stall:
+                    info["stopped"] = "stall"
                     break
                 continue
             ds = res.x[:N]
@@ -552,20 +607,125 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
             if bc < best_b - max(1e-12, 1e-4 * best_b):
                 best_s = cand; best_b = bc
                 info["outer"] = outer + 1
+                # This acceptance JUSTIFIES the rejections that preceded it: a stall stop at any
+                # K <= _rej would have thrown this improvement away. That is the number the
+                # operator needs, and it is only knowable by running the rejections.
+                if _rej > _rej_paid:
+                    _rej_paid = _rej
+                _rej = 0
+                _ledger("accepted", _b=bc)
                 if verbose:
                     print(f"  [slp] outer {outer}: breach {best_b:.6g} (tr={tr:.3g}, free={info['n_free']})")
                 if best_b <= tol:
+                    info["stopped"] = "tol"
                     break
                 tr = min(tr * 1.5, 0.5)                             # grow on success
             else:
+                _ledger("rejected", _b=bc)
+                _rej += 1
                 tr *= 0.5
                 if tr < tr_min:
+                    info["stopped"] = "tr-below-min"
                     break
+                if stall and _rej >= stall:
+                    info["stopped"] = "stall"
+                    break
+        else:
+            info["stopped"] = info["stopped"] or "max-outer"
+        info["secs"] = float(_time.perf_counter() - _t_all)
+        info["stall_min_safe"] = int(_rej_paid)
+        info["trailing_rejects"] = int(_rej)
+        info["trailing_secs"] = float(sum(d["secs"] for d in _steps[len(_steps) - _rej:])) if _rej else 0.0
         info.update(ok=True, breach=best_b, feasible=bool(best_b <= tol))
+        if log_fn:
+            _lp_report(info, log_fn, tr_min=float(tr_min), max_outer=int(max_outer))
         return best_s, info
     except Exception as exc:  # noqa: BLE001 - a seed must never crash the run
         info["reason"] = f"{type(exc).__name__}: {exc}"
         return np.asarray(base_shares, float).copy(), info
+
+
+# [FN-390b]
+def _lp_report(info, log_fn, *, tr_min, max_outer):
+    """[lp-stall] — how many successive-LP steps RAN, how many moved the breach, and what a stall
+    stop would have cost as well as saved.
+
+    The existing line quotes `info['outer']`, the last ACCEPTED step. On 2026-08-25 20:35 that read
+    12 while 20 steps ran, so the log was simultaneously true and unreadable as a cost. This block
+    prints both, and — the part that decides anything — `stall_min_safe`: the longest run of
+    consecutive rejections THIS run that was followed by an acceptance. A stall stop at K is free on
+    this run iff K > stall_min_safe. Quoting the saving without that number would repeat 19cf's
+    error one level up: a ratio, or here a saving, presented without the quantity that bounds it."""
+    try:
+        _st = list(info.get("steps") or [])
+        if not _st:
+            return
+        _ran = int(info.get("ran", len(_st)))
+        _acc = [d for d in _st if d["verdict"] == "accepted"]
+        _rej = [d for d in _st if d["verdict"] != "accepted"]
+        _tacc = sum(d["secs"] for d in _acc)
+        _trej = sum(d["secs"] for d in _rej)
+        log_fn("      [lp-stall] successive-LP step ledger — what the 'in N LP step(s)' line above "
+               "does NOT say:")
+        log_fn(f"         RAN {_ran} step(s) in {info.get('secs', 0.0):.1f}s · "
+               f"{len(_acc)} ACCEPTED ({_tacc:.1f}s) · {len(_rej)} REJECTED ({_trej:.1f}s). "
+               f"The line above quotes the LAST ACCEPTED step ({int(info.get('outer', 0))}), not "
+               f"how many ran.")
+        log_fn(f"         stopped because: {info.get('stopped') or 'unknown'} "
+               + {"tr-below-min": f"(trust region fell under tr_min={tr_min:g}; it halves on every "
+                                  "rejection, so each further rejection is one more large sparse LP)",
+                  "tol": "(breach reached the tolerance — the good exit)",
+                  "stall": f"(ROUTING_SEED_LP_STALL={int(info.get('stall_k', 0))} consecutive "
+                           "rejections; THIS TRUNCATED THE SOLVE — see the safety line below)",
+                  "max-outer": f"(hit max_outer={max_outer} while still stepping — the solve was "
+                               "CUT OFF, not finished)"}.get(str(info.get("stopped")), ""))
+        _tr = int(info.get("trailing_rejects", 0))
+        if _tr:
+            log_fn(f"         TRAILING: the last {_tr} step(s) all failed to improve and cost "
+                   f"{float(info.get('trailing_secs', 0.0)):.1f}s. That is the time a stall stop "
+                   "would have RECLAIMED on this run.")
+        else:
+            log_fn("         TRAILING: none — the solve ended on an accepted step or at tolerance, "
+                   "so a stall stop would have saved nothing here.")
+        _ms = int(info.get("stall_min_safe", 0))
+        _k = int(info.get("stall_k", 0))
+        log_fn(f"         WHAT IT WOULD HAVE COST: the longest run of consecutive rejections that a "
+               f"LATER step then justified was stall_min_safe={_ms}. A rejected step is not waste — "
+               f"the trust region halves, so the SAME direction can be accepted at half the size, "
+               f"which is what the region is FOR. A stall stop is free only at K > {_ms}"
+               + (f"; K={_k} is armed." if _k else "; it is currently OFF."))
+        if _k:
+            # THE MEASUREMENT IS CENSORED WHEN THE STOP IS ARMED. The loop breaks at K consecutive
+            # rejections, so a justified run of K or more can no longer be observed:
+            # stall_min_safe is bounded above by K-1 BY CONSTRUCTION. An armed run therefore cannot
+            # be used as evidence that its own K was safe — which is precisely the reading a bare
+            # "stall_min_safe=0, K=2, fine" line would invite.
+            log_fn(f"         \u26a0 ARMED, so this run's stall_min_safe is CENSORED: the loop "
+                   f"stops at {_k} consecutive rejections, so any justified run of {_k} or longer "
+                   f"could not have been seen (stall_min_safe \u2264 {_k - 1} by construction). "
+                   "This run is NOT evidence that K is safe — only an UNARMED run "
+                   "(ROUTING_SEED_LP_STALL=0) can measure that.")
+            if str(info.get("stopped")) == "stall":
+                log_fn(f"         \u26a0 AND IT BIT: the solve stopped at the stall, not at "
+                       f"convergence, so the seed handed to the GA may be worse than an unarmed "
+                       f"solve would give. Final breach {float(info.get('breach', float('nan'))):.4g} "
+                       f"after {int(info.get('outer', 0))} accepted step(s).")
+            if _k <= _ms:
+                log_fn(f"         \u26a0 ROUTING_SEED_LP_STALL={_k} is at or below stall_min_safe="
+                       f"{_ms}: this setting discarded an improvement the solver went on to find. "
+                       "Raise K or set it to 0.")
+        elif _tr:
+            log_fn(f"         Not armed, so nothing was truncated and this run is bit-identical to "
+                   f"pre-19ck. To claim the {float(info.get('trailing_secs', 0.0)):.1f}s, set "
+                   f"ROUTING_SEED_LP_STALL to a K above the stall_min_safe seen across SEVERAL "
+                   "UNARMED runs — one run is one sample, and the trailing steps are exactly the "
+                   "ones with the least evidence behind them.")
+    except Exception as _exc:  # noqa: BLE001 — a report must never break a seed
+        try:
+            log_fn(f"      [lp-stall] ledger report skipped ({type(_exc).__name__}: {_exc}). The "
+                   "solve itself is unaffected.")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # [FN-391]
@@ -1635,6 +1795,56 @@ def solve_global_linear_lp(exact_bands, incidence, base_shares, cell_starts, cel
         return np.asarray(base_shares, float).copy(), info
 
 
+# [FN-396b]
+def _tmove_cost(cost, secs, log_fn, *, fastls):
+    """[tmove-cost] — seconds beside the projection counts, and the occupancy of the move batches.
+
+    The counts were already printed; without time next to them they could not rank this stage
+    against the two before it in the seed chain. The occupancy line is here to decide ONE specific
+    idea and to stop it being decided from intuition: the fast line-search projects `delta`, a
+    vector that is zero everywhere except one breached MID's rows and their recipients, through
+    `incidence @ delta`. A sparse matrix times a DENSE vector costs O(nnz(incidence)) no matter how
+    empty the vector is, so a column-restricted product would be cheaper in proportion to the
+    occupancy — which is therefore worth measuring rather than eyeballing.
+
+    NOT a budget: the seconds here are the projections only. The stage also spends time in the
+    per-cell Python loops that BUILD each batch, and that remainder is stated rather than left as a
+    silent gap."""
+    try:
+        _mv_s = float(cost.get("mv_s", 0.0))
+        _pen_s = float(cost.get("pen_s", 0.0))
+        _tot = float(secs)
+        _oth = _tot - _mv_s - _pen_s
+        log_fn(f"      [tmove-cost] stage {_tot:.1f}s total \u2014 "
+               f"{_mv_s:.1f}s ({_mv_s / max(_tot, 1e-9):.0%}) in {int(cost.get('mv', 0)):,} sparse "
+               f"matvec(s) at {1000.0 * _mv_s / max(int(cost.get('mv', 0)), 1):.1f} ms each; "
+               f"{_pen_s:.1f}s ({_pen_s / max(_tot, 1e-9):.0%}) in {int(cost.get('pen', 0)):,} "
+               f"penalty pass(es); {_oth:.1f}s ({_oth / max(_tot, 1e-9):.0%}) elsewhere \u2014 the "
+               "per-cell Python loops that BUILD each batch, which no counter here covers.")
+        _n = int(cost.get("occ_n", 0))
+        if _n and fastls:
+            _mean = float(cost.get("occ_sum", 0.0)) / _n
+            _rows = int(cost.get("N", 0))
+            log_fn(f"         MOVE-BATCH OCCUPANCY: the {_n:,} line-search projection(s) were of a "
+                   f"vector {_mean:.2%} non-zero on average (worst {float(cost.get('occ_max', 0.0)):.2%}) "
+                   f"over {_rows:,} rows. `incidence @ delta` costs the same whatever that number "
+                   f"is, because the vector is dense in memory; restricting the product to delta's "
+                   f"non-zero columns would scale with it. At {_mean:.2%} that is the whole of "
+                   f"those {_mv_s * _n / max(int(cost.get('mv', 0)), 1):.1f}s minus a small "
+                   "remainder \u2014 but it is a CHANGE TO THE ARITHMETIC, so it needs a "
+                   "bit-identity check against this path before it can be believed, not an "
+                   "argument that dropping zero terms cannot matter.")
+        elif _n:
+            log_fn("         MOVE-BATCH OCCUPANCY: not measured \u2014 the fast line-search is off, "
+                   "so no batch is projected on its own.")
+    except Exception as _exc:  # noqa: BLE001 — a report must never break a seed
+        try:
+            log_fn(f"      [tmove-cost] skipped ({type(_exc).__name__}: {_exc}). The seed itself is "
+                   "unaffected.")
+        except Exception:  # noqa: BLE001
+            pass
+
+
 # [FN-396]
 def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_counts, elig,
                          *, mid_id, risk, cell_vol, mid_names, max_share=1.0,
@@ -1695,11 +1905,28 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
 
         # Projection counters, so "is this efficient?" is answerable with a number. `_nmv` counts
         # SPARSE MATVECS (the dominant cost); `_npen`/`_nrep` count the cheap elementwise passes.
-        _cost = {"mv": 0, "pen": 0, "rep": 0}
+        # 19ck adds SECONDS beside the counts (a count with no time cannot rank a stage) and the
+        # OCCUPANCY of the vectors being projected — see [tmove-cost] at the end of the stage.
+        _cost = {"mv": 0, "pen": 0, "rep": 0, "mv_s": 0.0, "pen_s": 0.0,
+                 "occ_n": 0, "occ_sum": 0.0, "occ_max": 0.0, "N": int(np.asarray(base_shares).size)}
+        _t_stage = _time.perf_counter()
 
-        def _pr(_s):
+        def _pr(_s, _occ=False):
+            # `_occ` marks the calls that project a MOVE BATCH rather than a whole split. Those are
+            # the ones that are nearly all zeros, and the ones a column-restricted product would
+            # make cheaper — so their occupancy is recorded rather than assumed.
+            if _occ:
+                _a = np.asarray(_s)
+                _cost["occ_n"] += 1
+                _f = float(np.count_nonzero(_a)) / max(_a.size, 1)
+                _cost["occ_sum"] += _f
+                if _f > _cost["occ_max"]:
+                    _cost["occ_max"] = _f
+            _t = _time.perf_counter()
             _cost["mv"] += 1
-            return _s2pr(_s, incidence)
+            _out = _s2pr(_s, incidence)
+            _cost["mv_s"] += _time.perf_counter() - _t
+            return _out
 
         def _rep(_s):
             # 19be: return report()'s LIST. It is one row per SPEC, and the old midl-keyed dict
@@ -1710,8 +1937,11 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
 
         def _breach_pr(_prop):
             """Breach from an ALREADY-PROJECTED prop_raw — no matvec."""
+            _t = _time.perf_counter()
             _cost["pen"] += 1
-            return float(exact_bands.penalty(_prop)[0])
+            _out = float(exact_bands.penalty(_prop)[0])
+            _cost["pen_s"] += _time.perf_counter() - _t
+            return _out
 
         def _breach(_s):
             return _breach_pr(_pr(_s))
@@ -1921,7 +2151,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                 if _FASTLS:
                     if _pr_s is None:
                         _pr_s = _pr(s)
-                    _pr_d = _pr(delta)
+                    _pr_d = _pr(delta, _occ=True)
                     for f in (1.0, 0.66, 0.4, 0.2):
                         bt = _breach_pr(_pr_s + f * _pr_d)
                         if _FASTLS_VERIFY:
@@ -2028,6 +2258,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                        f"{_cost['pen']:,} penalty + {_cost['rep']:,} report pass(es)"
                        + ("  (fast line-search ON — 1 matvec per MID instead of 4)"
                           if _FASTLS else "  (fast line-search OFF — 4 matvecs per MID)"))
+                _tmove_cost(_cost, _time.perf_counter() - _t_stage, log_fn, fastls=_FASTLS)
             return s, info
         info.update(ok=False, breach=b0, reason="no exact-breach improvement (breach only relocates)")
         if log_fn:

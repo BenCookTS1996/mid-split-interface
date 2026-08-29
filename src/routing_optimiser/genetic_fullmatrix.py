@@ -1131,8 +1131,49 @@ def make_fused_eval(problem, *, use_numba=False, verify=True, rng=None):
 # ---------------------------------------------------------------------------
 # GA operators (act on the logit genome)
 # ---------------------------------------------------------------------------
-def _shares_to_logits(shares, eps=1e-6):
-    return np.log(np.clip(shares, eps, None))
+def _shares_to_logits(shares, eps=1e-6, hard_zero=False, cell_start=None,
+                      cell_len=None, info=None):
+    """Shares -> the logit genome. `hard_zero` (19cm) encodes an exact zero as -inf.
+
+    WHY -inf AND NOT A SMALLER eps. The damage this repairs is the vshare cliff, and vshare
+    SELF-NORMALISES: where a breached MID is the only VAMP-positive gateway in a cell, its vshare is
+    s/s = 1 for any s > 0. The cliff is scale-invariant, so 1e-30 is exactly as bad as 1e-6 and only
+    a TRUE zero changes anything.
+
+    WHY -inf AND NOT A MASK. A mask would have to be threaded through both softmax implementations —
+    `_segment_softmax` and the numba `_fused_eval_kernel` — and any divergence between those two is
+    a scored-vs-delivered bug. Both are the standard max-subtract stable softmax, so a -inf logit
+    gives exp(-inf - m) = 0 EXACTLY in both with no kernel change at all. The zero lives in the DATA,
+    so the two paths cannot disagree about it.
+
+    IT SURVIVES THE OPERATORS FOR FREE: -inf + noise is -inf, and `_crossover` moves whole cell
+    segments, so a seed's zeros are inherited by its descendants. `_init_pop`'s unanchored
+    exploration children carry no -inf, so the search space is NOT permanently narrowed — the seed's
+    structure merely becomes representable.
+
+    THE ONE WAY IT COULD PRODUCE nan: a cell with every row masked has max = -inf, and
+    -inf - (-inf) is nan. A valid seed sums to 1 in every cell so this cannot arise, but it is
+    checked rather than assumed, and such a cell is left un-masked with the count reported."""
+    _sh = np.asarray(shares, float)
+    _out = np.log(np.clip(_sh, eps, None))
+    if not hard_zero:
+        return _out
+    _z = (_sh <= 0.0)
+    if cell_start is not None and cell_len is not None and _z.any():
+        # never empty a cell: that is the only input that turns the stable softmax into nan
+        _cs = np.asarray(cell_start, np.intp)
+        _cl = np.asarray(cell_len, np.intp)
+        _live = np.add.reduceat((~_z).astype(np.int64), _cs) if _cs.size else np.zeros(0, np.int64)
+        _dead = np.repeat(_live <= 0, _cl)
+        _skipped = int((_z & _dead).sum())
+        _z = _z & (~_dead)
+        if isinstance(info, dict):
+            info["cells_all_zero"] = int((_live <= 0).sum())
+            info["rows_unmasked_to_avoid_nan"] = _skipped
+    _out = np.where(_z, -np.inf, _out)
+    if isinstance(info, dict):
+        info["rows_hard_zeroed"] = int(_z.sum())
+    return _out
 
 
 def _greedy_reference(p: "FullMatrixProblem"):
@@ -1391,7 +1432,21 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         seed_shares = _greedy_reference(p)
     else:
         seed_shares = np.asarray(reference_shares, dtype=float)[p.order]
-    seed_logits = _shares_to_logits(seed_shares)
+    # 19cm: ROUTING_SEED_ZEROS=1 encodes the seed's exact zeros as -inf logits, so the decode can
+    # reproduce them. DEFAULT OFF: it is a BEHAVIOUR change (the seed's descendants inherit those
+    # zeros), and [decode-loss] below is what prices it. `_compress_on` runs k-means on the logit
+    # genome, which -inf would poison, so the two are refused together rather than silently mixed.
+    _hz_want = _os_gf.environ.get("ROUTING_SEED_ZEROS", "0") != "0"
+    _hz_info = {}
+    _hz_on = bool(_hz_want and not _compress_on)
+    seed_logits = _shares_to_logits(
+        seed_shares, hard_zero=_hz_on, cell_start=p.cell_start, cell_len=p.cell_len,
+        info=_hz_info)
+    if _hz_want and _compress_on:
+        log("[fullmatrix-ga] \u26a0 ROUTING_SEED_ZEROS=1 REFUSED this run: the compressibility "
+            "regulariser is on and it runs k-means over the LOGIT genome, which -inf would turn "
+            "into nan centroids. The seed is encoded the old way; [decode-loss] below still "
+            "prices what that costs. Turn the regulariser off to use it.")
 
     # remember the elite seed's key for the never-worse guarantee (bands included)
     s0 = _segment_softmax(seed_logits[None, :], p.cell_start, p.cell_len)
@@ -1417,6 +1472,105 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             f"({'eligibility-aware' if (_have_full or callable(deliver_fn)) else 'raw — no deliver_fn'}) "
             "— VWSR −= λ·volume-weighted VQ distortion; pushes cells to route ALIKE so the split "
             "compresses into fewer configs; trades a little conversion.")
+    # ── [decode-loss] 19cm: WHAT THE SEED LOSES ON THE WAY INTO THE GENOME ───────────────────
+    # The [never-worse] block has named this mechanism for several builds without ever pricing it.
+    # On 2026-08-26 the seed's breach was 0.6419 and the GA's first generation read 0.6461, so the
+    # search began BEHIND the thing it was seeded from and spent 288 s climbing back. This block
+    # measures that gap directly instead of leaving it to be inferred from two blocks a thousand
+    # lines apart.
+    try:
+        _dl_seed = np.asarray(seed_shares, float)[None, :]
+        _dl_dec = np.asarray(s0, float)
+        _dl_z = (_dl_seed[0] <= 0.0)
+        _dl_res = _dl_z & (_dl_dec[0] > 0.0)
+        _dl_nres = int(_dl_res.sum())
+        _dl_mass = float(_dl_dec[0][_dl_res].sum())
+        _dl_vw = float(_vwsr(_dl_seed, p.vol, p.succ, total_vol)[0])
+        _dl_bd = None
+        if band_penalty_fn is not None:
+            _dl_fd = _deliver_full(_dl_seed) if (_have_full or _compress_on) else None
+            _dl_bd = float(np.asarray(band_penalty_fn(
+                _dl_fd if _have_full else _dl_seed), dtype=float)[0])
+        log("[fullmatrix-ga] == [decode-loss] WHAT THE SEED LOSES ENTERING THE LOGIT GENOME "
+            "(read-only) ==")
+        log(f"[fullmatrix-ga]    {_dl_nres:,} of {int(_dl_z.sum()):,} EXACTLY-ZERO seed row(s) come "
+            f"back NON-ZERO, carrying {_dl_mass:.4g} of share invented from nothing. A logit "
+            "genome has no finite value for zero, so softmax(log(clip(s, 1e-6))) cannot express "
+            "one.")
+        if _dl_bd is not None:
+            _dl_gap = seed_band - _dl_bd
+            log(f"[fullmatrix-ga]    EXACT M5 BREACH: the seed itself {_dl_bd:.6g} \u2192 the "
+                f"decoded seed the GA actually starts from {seed_band:.6g} "
+                f"({_dl_gap:+.6g}). THIS IS THE HANDICAP THE SEARCH BEGINS WITH \u2014 compare it "
+                "with how much the whole search then gains, in the final vwsr/breach line.")
+            if _dl_gap > 0:
+                log("[fullmatrix-ga]    \u26a0 THE ENCODING MADE THE SEED WORSE BEFORE A SINGLE "
+                    "GENERATION RAN. Whatever the search gains has to cover this first. This is "
+                    "why [never-worse] can ship the SEED after a full search: the seed it "
+                    "re-scores at the end is the TRUE one, not the decoded copy the GA optimised.")
+        log(f"[fullmatrix-ga]    vwsr: seed {_dl_vw:.6f} \u2192 decoded {seed_vwsr:.6f} "
+            f"({seed_vwsr - _dl_vw:+.6f}).")
+        # WHERE THE INVENTED SHARE WENT. This one IS measurable here, and it identifies the
+        # mechanism exactly: if the per-row figure comes out at the clip floor, every resurrected
+        # row was pinned at eps and then normalised, which is the encoding and nothing else.
+        if _dl_nres:
+            log(f"[fullmatrix-ga]    THAT IS {_dl_mass / max(_dl_nres, 1):.3g} of share PER "
+                f"RESURRECTED ROW, against a clip floor of 1e-06 \u2014 so each zero came back at "
+                "the floor and was then normalised. That is the encoding, not the search.")
+        # THE CLIFF POPULATION, AND WHY IT IS NOT PRINTED AS A NUMBER ON THIS PIPELINE.
+        # The count wants "rows that are the ONLY VAMP-positive gateway in their cell", and the
+        # only VAMP-positive signal reachable from here is `p.risk`. But the run's risk-seeding
+        # step gives every gateway-cell with no VAMP data the weighted-average rate rather than 0
+        # ("so 0-VAMP gateways aren't treated as risk-free"), which makes `p.risk` DENSE and the
+        # count structurally zero whatever the truth is. The 2026-08-26 20:28 run printed that
+        # zero beside a VAMP-POSITIVE SIBLING block reporting 13,425 sole-VAMP cells for braintree
+        # usa alone. A measured zero and an unmeasurable one must not print alike (19ce D4, 19cj).
+        if _dl_nres:
+            _dl_pos = (np.asarray(p.risk, float) > 0.0)
+            _dl_dense = float(_dl_pos.mean())
+            if _dl_dense > 0.99:
+                log(f"[fullmatrix-ga]    THE CLIFF COUNT IS NOT AVAILABLE FROM HERE and is "
+                    f"therefore NOT PRINTED: {_dl_dense:.1%} of rows carry a positive VAMP rate, "
+                    "because risk-seeding gives gateway-cells with no VAMP data the weighted-"
+                    "average rate rather than 0. On that vector no cell can have exactly one "
+                    "VAMP-positive gateway, so any count computed here would be a structural "
+                    "zero and would read as 'the cliff is not the mechanism'. It is measured "
+                    "properly, on the projector scaffold's vcpos, by the VAMP-POSITIVE SIBLING "
+                    "block above \u2014 read the count there.")
+            else:
+                _dl_cnt = np.add.reduceat(_dl_pos.astype(np.int64),
+                                          np.asarray(p.cell_start, np.intp))
+                _dl_sole = np.repeat(_dl_cnt <= 1, np.asarray(p.cell_len, np.intp)) & _dl_pos
+                log(f"[fullmatrix-ga]    OF THOSE, {int((_dl_res & _dl_sole).sum()):,} sit in a "
+                    "cell where they are the ONLY VAMP-positive gateway. vshare self-normalises, "
+                    "so there a resurrected share of ANY size returns the WHOLE cell's VAMP "
+                    "\u2014 which is why a smaller clip than 1e-6 fixes nothing: the cliff is "
+                    "scale-invariant. (APPROXIMATE: counted on the GA's per-row risk, not the "
+                    "projector scaffold's vcpos, so it is NOT the same number as the "
+                    "VAMP-POSITIVE SIBLING block's and must not be quoted as one.)")
+        if _hz_on:
+            log(f"[fullmatrix-ga]    ROUTING_SEED_ZEROS=1 IS ON: "
+                f"{int(_hz_info.get('rows_hard_zeroed', 0)):,} row(s) encoded as -inf logits, "
+                "which the stable softmax turns into exact zeros in BOTH the numpy and numba "
+                "kernels with no code change to either. The figures above are what remains AFTER "
+                "that, so they should read ~0; anything else is a defect in this fix. -inf + noise "
+                "is -inf, so the seed's descendants inherit the zeros, while `_init_pop`'s "
+                "unanchored exploration children do not \u2014 the search space is not narrowed.")
+            if int(_hz_info.get("rows_unmasked_to_avoid_nan", 0)):
+                log(f"[fullmatrix-ga]    \u26a0 {int(_hz_info['rows_unmasked_to_avoid_nan']):,} "
+                    f"row(s) in {int(_hz_info.get('cells_all_zero', 0)):,} ALL-ZERO cell(s) were "
+                    "left un-masked: masking every row of a cell makes the stable softmax nan. A "
+                    "cell of a valid seed sums to 1, so this should not happen \u2014 report it.")
+        else:
+            log("[fullmatrix-ga]    ROUTING_SEED_ZEROS=0 (default): the seed is encoded the old "
+                "way and the gap above is being PAID this run. Setting it to 1 encodes exact "
+                "zeros as -inf logits. That is a BEHAVIOUR change \u2014 the seed's descendants "
+                "inherit its zeros \u2014 so it is off until this block has priced it on a run "
+                "that matters.")
+    except Exception as _dl_e:                       # noqa: BLE001 — a measurement must not break a search
+        log(f"[fullmatrix-ga]    [decode-loss] skipped ({type(_dl_e).__name__}: {_dl_e}). The "
+            "search itself is unaffected.")
+
     seed_key = _key_of(seed_vwsr, seed_other, seed_band)
     best_logits = seed_logits.copy()
     best_key = seed_key
@@ -1425,6 +1579,9 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     history = []
     evaluated = 0                              # cumulative candidate splits scored
     _t0 = time.perf_counter()
+    # [gen-gap] 19ct — see the patch note. Segments SUM to the real generation by construction.
+    _gg = {"gen": [], "refresh": 0.0, "rank": 0.0, "build": 0.0, "beat": 0.0,
+           "eval": 0.0, "tail": 0.0, "init": 0.0, "beats": 0}
     _PROG_EVERY_S = 15.0                        # throttle for the live progress line (like the tilt poller)
     _last_prog = _t0
 
@@ -1499,11 +1656,14 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             if str(restart_mode).lower() == "ipop":
                 _pn = min(pop_size * (2 ** _r), pop_size * 4)     # IPOP: grow each restart
             _el = min(elite, max(1, _pn // 8))
+            _gg_i0 = time.perf_counter()
             pop = _init_pop(best_logits, _pn, _rng)
             vwsr, other, band = _eval_with_bands(pop)
+            _gg["init"] += time.perf_counter() - _gg_i0
             evaluated += pop.shape[0]
             stale = 0
             for gen in range(generations):
+                _gg_g0 = time.perf_counter()
                 # Periodic codebook refit: re-learn the ≈pool-target centroid shapes from the
                 # current global best (its delivered shape), then RE-SCORE the live pop + best
                 # under the new codebook so the moving objective stays self-consistent. Only the
@@ -1517,7 +1677,9 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     best_vwsr = float(_rescore_compress(
                         best_logits[None, :], np.asarray([best_other]), np.asarray([best_band]))[0][0])
                     best_key = _key_of(best_vwsr, best_other, best_band)
+                _gg_t1 = time.perf_counter()
                 order = _rank(vwsr, other, band)
+                _gg_t2 = time.perf_counter()
                 top = order[0]
                 top_key = _key_of(vwsr[top], other[top], band[top])
                 if top_key > best_key:
@@ -1536,7 +1698,9 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 # LIVE PROGRESS: throttled per-generation heartbeat so a long BIN-grain search isn't
                 # silent for ~an hour (the tilt engine streams via its poller; this engine didn't).
                 _now = time.perf_counter()
+                _gg_b0 = _now
                 if _now - _last_prog >= _PROG_EVERY_S:
+                    _gg["beats"] += 1
                     _last_prog = _now
                     _rate = evaluated / max(_now - _t0, 1e-9)
                     # Optional per-MID-constraint readout at the current best (from the caller's exact
@@ -1568,9 +1732,19 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                         f"best vwsr {best_vwsr:.5f} · viol {best_band + best_other:,.4f}"
                         f"{_mid_extra} · {'feasible' if best_band <= _FEAS_EPS else 'infeasible'} "
                         f"· {_rate:,.0f}/s")
+                _gg["beat"] += time.perf_counter() - _gg_b0
                 if stale >= patience:
                     log(f"[fullmatrix-ga] seed {_s + 1}/{n_seeds} restart {_r + 1}/"
                         f"{restarts}: converged at gen {gen} (no gain in {patience})")
+                    # [gen-gap] the early-stop path still SPENT refresh/rank/build, so it must be
+                    # recorded or the segments stop summing to Σ generations. A block that
+                    # mis-sums on a path this run does not exercise (early-stop is DISABLED here)
+                    # is exactly the defect that ships unnoticed and is read as fact later.
+                    _gg_tb = time.perf_counter()
+                    _gg["refresh"] += _gg_t1 - _gg_g0
+                    _gg["rank"] += _gg_t2 - _gg_t1
+                    _gg["build"] += _gg_tb - _gg_t2
+                    _gg["gen"].append(_gg_tb - _gg_g0)
                     break
                 # elitism + local refinement + exploration
                 elites = pop[order[:_el]].copy()
@@ -1682,12 +1856,21 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     if _fxk.get("msg") and not _fxk.get("said"):
                         _fxk["said"] = True
                         log("   " + _fxk["msg"])
+                _gg_t3 = time.perf_counter()
                 child_vwsr, child_other, child_band = _eval_with_bands(children)
+                _gg_t4 = time.perf_counter()
                 evaluated += children.shape[0]
                 pop = np.vstack([elites, children])
                 vwsr = np.concatenate([elite_vwsr, child_vwsr])
                 other = np.concatenate([elite_other, child_other])
                 band = np.concatenate([elite_band, child_band])
+                _gg_t5 = time.perf_counter()
+                _gg["refresh"] += _gg_t1 - _gg_g0
+                _gg["rank"] += _gg_t2 - _gg_t1
+                _gg["build"] += _gg_t3 - _gg_t2
+                _gg["eval"] += _gg_t4 - _gg_t3
+                _gg["tail"] += _gg_t5 - _gg_t4
+                _gg["gen"].append(_gg_t5 - _gg_g0)
 
     best_shares_sorted = _segment_softmax(best_logits[None, :], p.cell_start, p.cell_len)[0]
     # restore original row order
@@ -1717,6 +1900,59 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         "note": ("compliance is SOFT/adaptive in-search; apply the caller's "
                  "exact enforcement pass to the returned split before shipping."),
     }
+    if os.environ.get("ROUTING_GEN_GAP", "1") != "0" and _gg["gen"]:
+        _gv = np.sort(np.asarray(_gg["gen"], float)) * 1000.0
+        _raw = np.asarray(_gg["gen"], float) * 1000.0
+        _tot = float(_raw.sum()) / 1000.0
+        _n = len(_raw)
+        log("   == [gen-gap] THE REAL GENERATION, TIMED IN SITU — the segments below SUM to it, "
+            "so there is no residual to argue about (read-only; [gen-cost] times COPIES of five "
+            "stages, warm and repeated, and its 'whole generation' is built from them) ==")
+        log(f"      median {float(np.median(_gv)):,.1f} ms · p05 {float(_gv[int(0.05 * (_n - 1))]):,.1f}"
+            f" · p95 {float(_gv[int(0.95 * (_n - 1))]):,.1f} · over {_n:,} generation(s)")
+        _f10 = float(np.median(_raw[:min(10, _n)]))
+        _l10 = float(np.median(_raw[-min(10, _n):]))
+        log(f"      first-10 median {_f10:,.1f} ms · last-10 median {_l10:,.1f} ms "
+            f"({(_l10 / _f10 - 1.0) * 100.0:+.1f}%) — a LEVEL difference between two runs is a "
+            "different fault from a DRIFT within one, and averaging the run cannot tell them apart")
+        for _k, _lbl in (("eval", "eval      _eval_with_bands(children) — the five stages "
+                                  "[gen-cost] models"),
+                         ("build", "build     history, heartbeat, elites, mut_weight_fn, "
+                                   "the per-child loop"),
+                         ("rank", "rank      _rank"),
+                         ("refresh", "refresh   codebook refit + re-score (0 unless compression "
+                                     "is on)"),
+                         ("tail", "tail      vstack / concatenate re-assembly")):
+            _v = float(_gg[_k])
+            log(f"      {_lbl.split(chr(32))[0]:<9} {1000.0 * _v / _n:>8,.1f} ms/gen "
+                f"({100.0 * _v / max(_tot, 1e-9):>5.1f}% · {_v:,.1f}s total)  "
+                f"{_lbl.split(chr(32), 1)[1].strip()}")
+        log(f"      of `build`, the throttled HEARTBEAT was {1000.0 * _gg['beat'] / _n:,.1f} ms/gen "
+            f"({_gg['beat']:,.1f}s over {_gg['beats']:,} call(s), {1000.0 * _gg['beat'] / max(_gg['beats'], 1):,.0f} "
+            "ms each) — it runs a FULL _deliver_full plus a band report, and the generations that "
+            "do NOT fire it pay none of it")
+        log(f"      OUTSIDE the generation loop entirely: per-restart _init_pop + _eval_with_bands "
+            f"{_gg['init']:,.1f}s over the run — charged to no stage anywhere else, and it scales "
+            "with RESTARTS, not generations")
+        # SELF-CHECK. "The segments SUM to it" is the block's whole claim over [gen-cost]; it is
+        # true by the interval algebra only while every EXIT from the loop records what it spent.
+        # There are two (fall-through and the patience break), so the claim is checked rather than
+        # asserted — an unchecked invariant is how the 'several times smaller' line survived.
+        _ssum = sum(float(_gg[_x]) for _x in ("refresh", "rank", "build", "eval", "tail"))
+        if abs(_ssum - _tot) > max(0.005 * max(_tot, 1e-9), 1e-6):
+            log(f"      \u26a0 THE SEGMENTS DO NOT SUM TO THE GENERATIONS: "
+                f"\u03a3 segments {_ssum:,.2f}s vs \u03a3 generations {_tot:,.2f}s "
+                f"(gap {_ssum - _tot:+,.2f}s). Some exit from the generation loop is spending time "
+                "it does not record, so the percentages above are NOT a partition and this block "
+                "is reporting a smaller run than it timed. Read the rows as a ranking only.")
+        _acct = _tot + float(_gg["init"])
+        _secs = float(time.perf_counter() - _t0)
+        log(f"      ⇒ Σ generations {_tot:,.1f}s + init {_gg['init']:,.1f}s = {_acct:,.1f}s of the "
+            f"search's {_secs:,.1f}s ({100.0 * _acct / max(_secs, 1e-9):.1f}%). The remainder is "
+            "outside both loops (seed setup, the one-off self-checks, numba compiles). COMPARE THE "
+            "`eval` ROW WITH [gen-cost]'s WHOLE GENERATION: [gen-cost] models only what `eval` "
+            "does, so if the two agree while this block's median does not, the gap it reports was "
+            "never in the five stages.")
     log(f"[fullmatrix-ga] evaluated {evaluated:,} candidate splits over "
         f"{len(history)} generations ({n_seeds} seed(s) × {restarts} restart(s), "
         f"pop {pop_size}) in {info['seconds']:.1f}s = {info['splits_per_s']:,.0f} splits/s")

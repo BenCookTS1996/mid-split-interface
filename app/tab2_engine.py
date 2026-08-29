@@ -24,10 +24,17 @@ from impact_calcs import _mtime, pool_targeted_compression, process_wallet_incap
 
 from app_common import load_mid_list, _norm_cols  # memoised MID reader + column-normaliser
 from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, StreamlitLogHandler,
+
                         _switched_off_gateways, APP_BUILD, DEFAULT_GATEWAY_FIDS, _GA_N_SEED,
                         _apply_blocked_caps, _ensure_base_30d_metrics, _fmt_secs,
                         _impact_eval_frame, _ink_caption, _load_ga_perf, _physical_cpu_count,
                         _save_ga_perf, _variance_gap_temp)
+
+
+# 19dv — raised by `_settled_skip` to leave a retired diagnostic WITHOUT tripping that
+# block's own `except Exception` handler, which would report the skip as a crash.
+class _SettledSkip(Exception):
+    pass
 
 
 def _m5_moveable_budget(m5_by_mid, constraints, min_vamp_by_mid=None):
@@ -1077,9 +1084,14 @@ def render():
                 # ROUTING_LOG_ALL=1 restores the full log. ROUTING_LOG_MUTE="a,b" overrides the
                 # family list; ROUTING_LOG_MUTE="" mutes nothing.
                 _LOG_SETTLED = {
-                    # the reconciliation microscopes — RECONCILIATION ERROR is 0 on all 15 bands
-                    "terms": "per-MID HELD/MOVED-OUT/MOVED-IN/POOL table; every Δ is 0 while the "
-                             "chain reconciles",
+                    # THE RECONCILIATION MICROSCOPES. This comment read "RECONCILIATION ERROR
+                    # is 0 on all 15 bands" until 19co, and [terms]'s own description said "every
+                    # Δ is 0 while the chain reconciles". Both ASSERTED a condition rather than
+                    # reporting one: on 2026-08-26 20:28 the error was 1,393 and all six of these
+                    # families were held anyway, each because its own checks passed on its own
+                    # terms. That is why the run-level release below exists.
+                    "terms": "per-MID HELD/MOVED-OUT/MOVED-IN/POOL table — the term-level "
+                             "view of the scored↔delivered chain",
                     "vterms": "VAMP-side counterfactuals (renormalise-to-1, no-recipient "
                               "passthrough, capped vshare); all ~0 since the 19aq conservation gate",
                     "denom": "which rows each side sums over — the membership/back-fill "
@@ -1185,6 +1197,36 @@ def render():
                     else:
                         _log_held.setdefault(_f, []).append(msg)
 
+                # [FN-304c2]
+                # THE FAMILIES WHOSE WHOLE SUBJECT IS THE SCORED-vs-DELIVERED GAP. Each one's
+                # internal checks can pass on their own terms while the run-level reconciliation
+                # error is large — that is exactly what happened on 2026-08-26 20:28, where all six
+                # stayed muted beside a 1,393-unit error they were written to explain.
+                _LOG_RECON_FAMS = ("vterms", "terms", "rung2", "conservation", "denom",
+                                   "baseline-split", "step1", "step2", "ca-reach", "nw-attrib")
+
+                # [FN-304c3]
+                def _log_release(reason, fams):
+                    """Flush held families because of a RUN-LEVEL fact, not a line-level marker.
+
+                    The line-by-line gate cannot hear a number computed a thousand lines after the
+                    lines it muted. This is the second release condition, and it names the number
+                    that opened the gate so a reader never has to guess why a family appeared."""
+                    _rel = [_f for _f in fams if _log_held.get(_f)]
+                    if not _rel:
+                        return
+                    _log_emit(f"   ── [muted] RUN-LEVEL RELEASE: {reason} Releasing "
+                              + ", ".join(f"[{_f}]" for _f in _rel)
+                              + " IN FULL below. These stayed quiet under the line-by-line rule "
+                                "because each of their own checks passed on its own terms \u2014 "
+                                "which is precisely how the blocks that explain a run-level "
+                                "number can all fall silent at once. ROUTING_RECON_RELEASE=0 "
+                                "disables this. ──")
+                    for _f in _rel:
+                        _log_open.add(_f)
+                        for _h in _log_held.pop(_f, []):
+                            _log_emit(_h)
+
                 # [FN-304d]
                 def _log_flush_muted():
                     """One line per family that stayed quiet. Called from the run's finally, so it
@@ -1193,10 +1235,13 @@ def render():
                         return
                     _log_emit("   ── [muted] settled diagnostics held back this run. Each family "
                               "below stayed QUIET because none of its own lines carried a ⚠ / STOP "
-                              "/ DIVERGE / ✗ / crashed-skip marker — that is the release "
-                              "condition, and it is checked line by line, so a regression prints "
-                              "the whole family including the run-up. ROUTING_LOG_ALL=1 shows "
-                              "everything. ──")
+                              "/ DIVERGE / ✗ / crashed-skip marker — that is the LINE-BY-LINE "
+                              "release condition, checked line by line, so a regression prints "
+                              "the whole family including the run-up. There is a SECOND, "
+                              "RUN-LEVEL condition since 19co: a reconciliation error above the "
+                              "bar releases the families that explain it, because a line-by-line "
+                              "gate cannot hear a number computed long after the lines it muted. "
+                              "ROUTING_LOG_ALL=1 shows everything. ──")
                     for _f in sorted(_log_held):
                         _h = _log_held[_f]
                         if not _h:
@@ -1225,6 +1270,31 @@ def render():
                         log(f"   ✓ {_stage_state['name']} — finished in {_pt.time() - _stage_state['t']:.1f}s")
                         _stage_state["name"] = None
 
+                # 19dv — RETIRING A SETTLED MEASUREMENT. A block whose question is decided prints its
+                # verdict in one line and skips. NOT deleted: a retired block with a visible verdict can
+                # be revived, while a deleted one gets re-invented from scratch by whoever next wonders.
+                # Same pattern [kernel-ga] has used since 19bn. ROUTING_SETTLED_DIAG=1 runs them all.
+                _settled_on = os.environ.get("ROUTING_SETTLED_DIAG", "0") == "1"
+                _settled_said = set()
+                
+                # [FN-306b]
+                def _settled_skip(tag, verdict):
+                    """True when `tag` should be skipped; logs its standing verdict once."""
+                    if _settled_on:
+                        return False
+                    if tag not in _settled_said:
+                        _settled_said.add(tag)
+                        log(f"   {tag} NOT RUN (settled). {verdict} ROUTING_SETTLED_DIAG=1 restores it.")
+                    return True
+                
+                # [FN-306c]
+                def _substep(label):
+                    """A named division INSIDE a stage. Stage ④ is 95% of the run and contains the
+                    scaffold, the seed, the search, delivery and every diagnostic; without these a
+                    reader has no way to tell which part they are looking at."""
+                    log("")
+                    log(f"── {label} " + "─" * max(4, 74 - len(label)))
+                
                 # [FN-307]
                 def _diag(msg):
                     """Verbose diagnostic line (same sink as log). Wrapped so a diagnostics
@@ -1319,7 +1389,29 @@ def render():
                                       f"(ABSENT ⇒ pre-19aq module: the in-search VAMP conservation "
                                       f"gate is NOT running)")
                                 _diag(f"   [loaded]   staleness sentinel = {_lsent}   "
-                                      f"(expected 19av or later; ABSENT ⇒ pre-19av module)")
+                                      f"(expected 19dd or later; ABSENT ⇒ pre-19av module)")
+                                # 19de — STATE THE BEHAVIOURAL SWITCHES. Four of them landed in
+                                # 19cu..19dd and none announced itself, so a run could not be read:
+                                # the 2026-08-28 20:44 and 21:03 runs were numerically identical
+                                # and nothing in the log said whether that was the same config
+                                # twice or a stale import. A switch that changes the answer and
+                                # does not appear in the log is not testable.
+                                _diag(f"   [loaded]   _VSHARE_ALLROWS = "
+                                      f"{getattr(_lm, '_VSHARE_ALLROWS', 'ABSENT')}   "
+                                      f"(19cu: vshare denominator over ALL rows, minus MIDs with "
+                                      f"an apply_to:'vamp' override. ABSENT ⇒ pre-19cu module)")
+                                _diag(f"   [loaded]   _AGE_RENORM = "
+                                      f"{getattr(_lm, '_AGE_RENORM', 'ABSENT')}   "
+                                      f"(19cy: age-by-age renormalise in-search. ABSENT ⇒ pre-19cy "
+                                      f"module — the search does NOT re-base per (cell, period, t))")
+                                if _lsent in ("ABSENT", "19av", "19bi"):
+                                    _diag("   [loaded] ⚠⚠ THE LOADED band_projection PREDATES "
+                                          "19cu. The reconciliation changes (19cu mask, 19cy age "
+                                          "renormalise, 19cz/19dd hoist) are NOT running, whatever "
+                                          "the file on disk says. Streamlit reloads app/ on a "
+                                          "rerun but does NOT re-import src/ — which is why an "
+                                          "[inject] line can appear (app-side) while the projector "
+                                          "is stale. STOP run.command (Ctrl+C) and start it again.")
                                 if _lvc == "ABSENT" or _lsent == "ABSENT":
                                     _diag("   [loaded] ⚠⚠ THE LOADED MODULE IS OLDER THAN THE "
                                           "SOURCE ON DISK. A long-lived Streamlit process reloads "
@@ -1346,7 +1438,13 @@ def render():
                         _pk = {k: params.get(k) for k in ("temperature", "temp_method", "n_variations")
                                if isinstance(params, dict) and k in params}
                         _diag(f"      engine_params={_pk}")
-                        _diag(f"      auto_explore={_gv('_auto_explore')} · RPGT_scope={('ALL' if not _gv('_sel_rpgts', None) else _gv('_sel_rpgts'))} · "
+                        # 19dv: `_sel_rpgts` is not bound until ~line 1600, so this read None and printed
+                        # ALL on EVERY run — including runs scoped to 4 of 8 RPGTs, where [rpgt-scope]
+                        # says the opposite twelve minutes later. `_rpgt_selected` IS bound by here.
+                        _rs_cfg = _gv('_rpgt_selected', None)
+                        _rs_txt = ("ALL" if not _rs_cfg
+                              else f"{len(_rs_cfg)} selected: " + ", ".join(sorted(str(_r) for _r in _rs_cfg)))
+                        _diag(f"      auto_explore={_gv('_auto_explore')} · RPGT_scope={_rs_txt} · "
                               f"hold_unselected_at_baseline={ss.get('eng_rpgt_hold_others')}")
                         _diag(f"      gateway auto-block={'ON' if ss.get('block_gw_cb', False) else 'off'}"
                               + (f" · >={int(ss.get('block_min_inp', 100) or 100)} consecutive failed attempts"
@@ -2765,6 +2863,7 @@ def render():
                             _g = _pp.groupby(["Currency", "parent", "vampMid"]).agg(vc=("vampCount", "sum"), vt=("VI_Txn_Count", "sum"))
                             _g["rate"] = _g["vc"] / _g["vt"].replace(0, np.nan)
                             mid_rate = _g["rate"].dropna().to_dict()
+                            _substep("④·1  BUILD THE PROJECTION SCAFFOLD")
                             log(f"   MID VAMP rates from pro-rata export ({len(mid_rate):,} MID×cell rates).")
                         except Exception as e:
                             log(f"   [Warning] pro-rata rate load failed ({e}); using period-0 rates.")
@@ -2928,6 +3027,76 @@ def render():
                                 float(_rec.get("target") or 0.0), _rec.get("tol"),
                                 str(_rec.get("direction", "range"))))
                     _pp_full = pd.read_csv(_ppf) if (_mid_month_rules and os.path.exists(_ppf)) else None
+                    # 19da — COMPLETE THE MOVABLE LAYERS, with the SAME capability the delivered
+                    # projection is given. This is the whole point of doing it here rather than in
+                    # each projector: both sides then read one identical frame, the aged shares sum
+                    # to 1 by construction, and the age renormalise (19cy) becomes a no-op guard
+                    # instead of the mechanism. Kill-switch: ROUTING_INJECT_CAPABLE=0.
+                    import io as _io
+                    import json as _json
+                    import impact_calcs as _ic
+                    _capability = None
+                    if (_pp_full is not None
+                            and os.environ.get("ROUTING_INJECT_CAPABLE", "1") != "0"):
+                        try:
+                            _rjp = os.path.join(PROJECT_ROOT, "config", "inputs",
+                                                "routing_restrictions.json")
+                            _rj = {}
+                            if os.path.exists(_rjp):
+                                with _io.open(_rjp, encoding="utf-8") as _rfh:
+                                    _rj = _json.load(_rfh)
+                            _capability = _ic.build_capability(restrictions=_rj, brand=sr_company)
+                            _n0 = len(_pp_full)
+                            _pp_full, _ninj = _ic.inject_capable_rows(
+                                _pp_full, _capability,
+                                [_c for _c in ("Currency", "BIN", "RPGT",
+                                               "paymentMethodProvider", "Country")
+                                 if _c in _pp_full.columns])
+                            log(f"   [inject] aged frame {_n0:,} → {len(_pp_full):,} row(s) "
+                                f"(+{_ninj:,}, {len(_pp_full) / max(_n0, 1):.2f}x): every MOVABLE "
+                                f"(t ≤ period) layer now carries a zero-VAMP row for each of the "
+                                f"{_capability.n_mids} CAPABLE MID(s) ({_capability.n_gateways} "
+                                "gateway(s)) that had none. Frozen layers (t > period, pro_rata 0) "
+                                "are untouched — their pool is 0, so a row there would receive "
+                                "nothing. Σ vampCount is asserted unchanged. ROUTING_INJECT_CAPABLE=0 "
+                                "reverts, which restores the OLD forecast: without it the movable "
+                                "pool is shared only across MIDs that already had fraud at that age, "
+                                "so it circulates back to the incumbents and volume routed elsewhere "
+                                "cannot pick up the VAMP it causes.")
+                        except Exception as _ije:  # noqa: BLE001
+                            _capability = None
+                            log(f"   [inject] SKIPPED ({type(_ije).__name__}: {_ije}) — the aged "
+                                "frame is unchanged and the age renormalise carries the shortfall "
+                                "as before. Not silent: the delivered projection must be given the "
+                                "same treatment or the two sides will disagree.")
+                    # 19du - GIVE DELIVERY THE SAME INJECTED FRAME. The [inject] block above expands the
+                    # search's aged frame 3.95x by adding a zero-VAMP row for every CAPABLE MID in every
+                    # movable layer, and the comment two lines up has said since 19da that `the delivered
+                    # projection must be given the same treatment or the two sides will disagree`. It never
+                    # was. `compute_vamp_prepost_granular` injects only when it is handed a `capability`,
+                    # tab3_impact passes one (:4221), and all THREE call sites in this file do not - so the
+                    # reconciliation, never-worse and attribution numbers were computed on the RAW export
+                    # while the GA scored the injected one. Same shape as 19df: wired into tab 3, missed on
+                    # the measurement path, and reproducing the headline number exactly.
+                    #
+                    # The injected rows carry vampCount 0, so PRE is unchanged (which is why [conservation]
+                    # reads BASELINE GAP -0 and this stayed invisible) - but they change WHO CAN RECEIVE, so
+                    # they move POST. That is the `different rows in the group` mechanism Part A is looking
+                    # for, and it is now testable rather than argued.
+                    #
+                    # ROUTING_DELIV_INJECT=0 reverts delivery to the raw export.
+                    _deliv_cap = (_capability
+                                  if os.environ.get("ROUTING_DELIV_INJECT", "1") != "0" else None)
+                    log("   [deliv-inject] delivery-side projections "
+                        + ("will be given the SAME capability the search used, so both sides project the "
+                           "identical frame. Before 19du the reconciliation, never-worse and attribution "
+                           "calls read the RAW export while the GA scored the injected one."
+                           if _deliv_cap is not None else
+                           "get NO capability, so delivery projects the RAW export while the search "
+                           "projects the injected frame. The two sides are NOT comparing the same rows - "
+                           "read the reconciliation error with that in mind.")
+                        + f" (capability={_deliv_cap.n_mids if _deliv_cap is not None else 0} MID(s)). "
+                          "ROUTING_DELIV_INJECT=0 reverts.")
                     # vampMids fully switched off in overrides — excluded from the projection,
                     # matching the tab-4 VAMP impact table. (Defined before the scaffold below,
                     # which references it.)
@@ -2942,6 +3111,22 @@ def render():
                     for _f, _v in fid2vamp.items():
                         _v2f.setdefault(str(_v).strip(), set()).add(str(_canon_gw(_f)).strip().lower())
                     _excluded_mids = frozenset(v for v, fids in _v2f.items() if fids and fids <= _off2)
+                    # 19dw — apply_to:"vamp" (target 0). A DIFFERENT set from _excluded_mids above and a
+                    # different consequence: these MIDs keep their transactions and are barred from holding
+                    # or receiving VAMP. tab 3 has honoured it since 19cv; the search and every measurement
+                    # call in this file did not, so both sat ~11 units per band BELOW what tab 3 ships and
+                    # agreed with each other while doing it — four bands the 15:28 run called compliant are
+                    # over their ceiling on tab 3.
+                    # ROUTING_VAMP_OFF=0 reverts BOTH sides at once, never one, which is the state this fixes.
+                    _vamp_off_mids = (_ic.build_vamp_off_mids(fid2vamp, ss.get("gateway_volume_overrides"))
+                                      if os.environ.get("ROUTING_VAMP_OFF", "1") != "0" else frozenset())
+                    log(f"   [vamp-off] {len(_vamp_off_mids):,} vampMid(s) carry apply_to:'vamp' target 0 "
+                        "and are barred from holding OR receiving redistributed VAMP — in the SEARCH and in "
+                        "every delivered figure this run prints: "
+                        + (", ".join(sorted(_vamp_off_mids)) if _vamp_off_mids else "(none configured)")
+                        + ". Before 19dw only tab 3 applied this, so the log read ~11 units per band LOW "
+                          "against tab 3 while reporting a reconciliation error of 0. ROUTING_VAMP_OFF=0 "
+                          "reverts.")
                     # Precompute the STATIC projection scaffold ONCE (restricted to the cells
                     # containing a capped MID — a capped MID's projected VAMP depends only on
                     # its own cells, so this is EXACT). Each feedback iteration then only
@@ -3045,6 +3230,115 @@ def render():
                             _vi=("_vi", "sum"), _vc=("_vc", "sum"), _pr=("_pr", "first"), _fcp=("_fcp", "first"))
                         # Cell key on the LOWER-CASED rpgt so it matches the prop-key grain
                         # (band_projection._prop_key lower-cases rpgt) and the candidate-door set.
+                        # 19dq — RPGT SCOPE, EXPLICITLY, IN THE SEARCH. Delivery holds unscoped RPGTs at
+                        # baseline; the search never read the scope selection and only avoided moving them
+                        # because an unscoped cell gets no proposed share (psum == 0 -> not routed). That is
+                        # a coincidence, not a rule, and it breaks the moment anything puts share into one
+                        # of those cells. `_fcp` is upstream of all three movable factors — mv_static (TXN),
+                        # the projector's _fcp[origin] (VAMP), and _fcp_orig_map -> _mvraw (the POOL) — so
+                        # zeroing it here gates exactly the set delivery's two lines gate. Gating the
+                        # movable fraction WITHOUT the pool would make fraud arrive that never left.
+                        # ROUTING_SEARCH_RPGT_SCOPE=0 reverts.
+                        if os.environ.get("ROUTING_SEARCH_RPGT_SCOPE", "1") != "0" and _sel_rpgts:
+                            from routing_optimiser import band_projection as _bpsc
+                            _scfn = getattr(_bpsc, "rpgt_scope_mask", None)
+                            if _scfn is None:
+                                log("   [rpgt-scope] \u26a0 band_projection has no rpgt_scope_mask, which means a "
+                                    "PRE-19dq module is loaded: Streamlit does NOT re-import src/, so STOP "
+                                    "run.command and start it again. THE SEARCH IS RUNNING WITHOUT THE SCOPE "
+                                    "GATE and will move fraud on unscoped RPGTs that delivery holds.")
+                            else:
+                                _oosP = _scfn(_P["_rpgt"], _sel_rpgts)
+                                _fcp0P = _P["_fcp"].to_numpy(float)
+                                _hitP = _oosP & (_fcp0P > 0.0)
+                                _P["_fcp"] = np.where(_oosP, 0.0, _fcp0P)
+                                log(f"   [rpgt-scope] the SEARCH now reads 'RPGTs to include in this split' "
+                                    f"directly: {int(_hitP.sum()):,} of {len(_P):,} scaffold row(s) carried a "
+                                    f"non-zero movable fraction on an UNSCOPED RPGT and are now held at "
+                                    f"baseline, covering "
+                                    f"{float(np.asarray(_P['_vc'], float)[_hitP].sum()):,.1f} VAMP. "
+                                    + ("0 row(s) \u21d2 the gate is INERT on this run: the search was already "
+                                       "reaching the same answer through psum == 0, and this makes it a rule "
+                                       "instead of a coincidence. Nothing about this run's numbers changes."
+                                       if not _hitP.any() else
+                                       "NON-ZERO \u21d2 the search WAS treating unscoped fraud as movable while "
+                                       "delivery held it. The M5 band values and the reconciliation error will "
+                                       "MOVE, and that movement is this fix rather than a regression \u2014 "
+                                       "compare against the previous run before reading anything else.")
+                                    + " Scope: " + ", ".join(sorted(_sel_rpgts))
+                                    + ". ROUTING_SEARCH_RPGT_SCOPE=0 reverts.")
+                        # 19dr — SWITCHED-OFF GATEWAYS, EXPLICITLY, IN THE SEARCH. A gateway on a volume
+                        # override of target 0 gets no transactions, so fraud already on its books cannot
+                        # be rerouted — there is nothing to reroute it WITH. Delivery encodes that as
+                        # `_gf = 0 where _keep == 0`; the search only ever asked whether the CELL was
+                        # routed, so it moved that fraud onto the gateway's neighbours. Same landing spot
+                        # as the scope gate above, and for the same reason: `_fcp` is upstream of the TXN
+                        # movable fraction, the VAMP movable fraction AND the pool, so one zeroing covers
+                        # the set delivery's `_gf` covers. Gate the movable fraction without the pool and
+                        # fraud arrives in a group having never left it.
+                        #
+                        # The keep fraction is computed by CALLING delivery's own `_mid_keep_fraction` and
+                        # `build_kill_eff` — not re-derived here. A second copy of the mid-month pro-rate
+                        # rule is how this codebase has twice shipped a filter that silently matched
+                        # nothing.
+                        #
+                        # NOT INCLUDED, ON PURPOSE: delivery also SCALES prop_raw by the fractional
+                        # `_keep` for a gateway that switches off mid-month. The search's shares arrive
+                        # through enforcement and carry no such scaling. That is a separate, unmeasured
+                        # difference and is not being folded in silently.
+                        #
+                        # `_per` is the appearance month; for the t == 0 rows this gate actually reaches
+                        # (`_T0` and `_fcp_orig_map` are both built from `_P["_t"] == 0`) appearance IS
+                        # origination, which is the month delivery evaluates `_keep` on.
+                        #
+                        # ROUTING_SEARCH_KEEP=0 reverts.
+                        if os.environ.get("ROUTING_SEARCH_KEEP", "1") != "0":
+                            try:
+                                _keOv = ss.get("gateway_volume_overrides") or {}
+                                _feffK = {}
+                                for _gwK, _cfgK in (_keOv.items() if isinstance(_keOv, dict) else []):
+                                    if (isinstance(_cfgK, dict)
+                                            and pd.to_numeric(_cfgK.get("target"), errors="coerce") == 0
+                                            and str(_cfgK.get("apply_to", "")).strip().lower() in ("trx", "both")
+                                            and _cfgK.get("effective_date")):
+                                        _feffK[str(_canon_gw(_gwK)).strip().lower()] = str(_cfgK.get("effective_date"))
+                                _keK = _ic.build_kill_eff(_v2f, _feffK)
+                                _m0K = str(pd.to_datetime((ss.get("forecast_settings", {}) or {}).get("month_0")).date())
+                                _keepK = _ic._mid_keep_fraction(_P["_mid"], _P["_per"], _keK, _m0K)
+                                # `_apply_keep`'s binary rule: excluded AND not date-gated -> 0 outright.
+                                _datedK = {_m for _m, _ in (_keK or ())}
+                                _binK = _P["_mid"].isin(_excluded_mids) & ~_P["_mid"].isin(_datedK)
+                                _keepK = np.where(_binK.to_numpy(), 0.0, np.asarray(_keepK, float))
+                                _offK = _keepK <= 0.0
+                                _fcpK = _P["_fcp"].to_numpy(float)
+                                _hitK = _offK & (_fcpK > 0.0)
+                                _P["_fcp"] = np.where(_offK, 0.0, _fcpK)
+                                # 19dt - RETAIN THE FRACTION, not just the on/off verdict. Delivery scales
+                                # prop_raw by `_keep`, so a gateway part-way through switching off is proposed
+                                # part of its share, and its VAMP recipient share shrinks with it. Carried as a
+                                # column so `_T0` (and the back-fill rows concatenated into it) inherit it and
+                                # the projector slices it with every other per-row static.
+                                _P["_keepf"] = _keepK
+                                log(f"   [keep-gate] the SEARCH now holds SWITCHED-OFF gateways' fraud in place, "
+                                    f"as delivery does: {int(_hitK.sum()):,} of {len(_P):,} scaffold row(s) had a "
+                                    f"non-zero movable fraction on a gateway with a target-0 volume override, "
+                                    f"covering {float(np.asarray(_P['_vc'], float)[_hitK].sum()):,.1f} VAMP "
+                                    f"({len(_excluded_mids):,} switched-off vampMid(s), month_0={_m0K}). "
+                                    + ("0 row(s) \u21d2 INERT on this run, which matches the gate attribution "
+                                       "(`without _keep>0` read 5,630, identical to shipped). Nothing moves; the "
+                                       "rule now exists rather than being reached by accident."
+                                       if not _hitK.any() else
+                                       "NON-ZERO \u21d2 the search WAS rerouting fraud off gateways that receive no "
+                                       "transactions. The M5 values and the reconciliation error will MOVE, and that "
+                                       "is this fix rather than a regression.")
+                                    + " NOTE: delivery also SCALES prop_raw by the fractional _keep for a mid-month "
+                                      "switch-off; the search does not, and that difference is NOT addressed here. "
+                                      "ROUTING_SEARCH_KEEP=0 reverts.")
+                            except Exception as _keE:  # noqa: BLE001
+                                log(f"   [keep-gate] \u26a0 NOT APPLIED ({type(_keE).__name__}: {_keE}). The search is "
+                                    "running WITHOUT the switched-off-gateway gate and will reroute fraud from "
+                                    "gateways that receive no transactions \u2014 this is not a silent skip, and the "
+                                    "run's numbers are the pre-19dr ones.")
                         _P["_rkl"] = _P["_rpgt"].astype(str).str.strip().str.lower()
                         _cellk = _P["_cur"] + "|" + _P["_bin"] + "|" + _P["_rkl"]
                         _keep = set(_cellk[_P["_midl"].isin(_capped_l)].unique())
@@ -3124,6 +3418,14 @@ def render():
                                 _T0 = pd.concat([_T0, _newbf], ignore_index=True, sort=False)
                                 log(f"   back-fill sub-cell rows injected into cap scaffold: {len(_newbf):,}")
                         _T0 = _T0.drop(columns=["_rkl"], errors="ignore")
+                        # 19dt - back-fill rows are concatenated above and carry no `_keepf`; a NaN there
+                        # would silently zero a live gateway's proposal, the opposite of the bug being
+                        # fixed. They are zero-baseline recipients in cells that ARE routed, so 1.0 (fully
+                        # retained) is correct, and is what they had before 19dt.
+                        if "_keepf" not in _T0.columns:
+                            _T0["_keepf"] = 1.0
+                        _T0["_keepf"] = pd.to_numeric(
+                            _T0["_keepf"], errors="coerce").fillna(1.0).clip(0.0, 1.0)
                         _T0["_excl"] = _T0["_mid"].isin(_excluded_mids)
                         _T0["_ctot"] = _T0.groupby(_grpk)["_vi"].transform("sum")
                         _T0["_av"] = np.where(_T0["_excl"], 0.0, _T0["_vi"])
@@ -3306,6 +3608,12 @@ def render():
                         _mvp_map = _P.groupby(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per", "_t"],
                                               observed=True)["_mvraw"].sum().to_dict()
                         # per-_Pc appearance pro_rata (static) — reused by _project_capped's held term.
+                        # 19cw was tried here (key on `_per - _tt`) and is WRONG — see the
+                        # long note in band_projection._pc_prapp. Delivery takes fcp from the
+                        # ORIGIN and pro_rata from the APPEARANCE period, so this is correct as
+                        # written; the origin keying measured a 1.72 divergence where this
+                        # measures 0.000000. t > period is frozen by the missing origin row, not
+                        # by pro_rata.
                         _pc_prapp_a = np.fromiter(
                             (_prapp_map.get((_c, _b, _r, _pm, _ct, _p), 0.0)
                              for _c, _b, _r, _pm, _ct, _p in
@@ -3756,7 +4064,11 @@ def render():
                             "pr": _T0["_pr"].to_numpy(), "fcp": _T0["_fcp"].to_numpy(),
                             "bf": _T0["_bf"].to_numpy(), "excl": _T0["_excl"].to_numpy(),
                             "emask": np.asarray(_em, bool),
-                            "iscap": _T0["_midl"].isin(_capped_l).to_numpy(), "_av": _T0["_av"].to_numpy()})
+                            "iscap": _T0["_midl"].isin(_capped_l).to_numpy(),
+                            "_av": _T0["_av"].to_numpy(),
+                            # 19dt: the proposal weight delivery applies as prop_raw * _keep
+                            "keep": pd.to_numeric(_T0.get("_keepf", 1.0),
+                                                  errors="coerce").fillna(1.0).to_numpy()})
                         _Pca = pd.DataFrame({
                             "cur": _Pc["_cur"].to_numpy(), "bin": _Pc["_bin"].to_numpy(),
                             "rpgt": _Pc["_rpgt"].to_numpy(), "pmp": _Pc["_pmp"].to_numpy(),
@@ -3935,7 +4247,10 @@ def render():
                         # entire scored-vs-delivered VAMP residual).
                         _band_diag_state["pbp"] = _PBP(_T0a, _Pca, _poolarr, _bset, by_rpgt=_byr,
                                                        max_share=float(max_share),
-                                                       by_subcell=bool(_opt_subcell))
+                                                       by_subcell=bool(_opt_subcell),
+                                                       # 19dw: the GA must score the same
+                                                       # recipient set delivery ships.
+                                                       vamp_off_mids=_vamp_off_mids)
                         return _band_diag_state["pbp"]
 
                     # [FN-329]
@@ -4706,7 +5021,10 @@ def render():
                                         f"(prio1 1.0 · prio2 0.125 · prio3 0.015625; volume is NOT "
                                         f"in the weight). {len(_specs)} band(s), {_n_p1} at prio-1.")
                                     if _bf_now > 0:
-                                        log(f"   [breach-scale] ⚠ breach_fixed is {_bf_now:g}, NOT 0 "
+                                        # 19dv: a CONFIGURATION statement, not a warning — it
+                                        # fired on every healthy run, and a ⚠ that always fires
+                                        # teaches the reader to skip ⚠.
+                                        log(f"   [breach-scale] breach_fixed is {_bf_now:g}, NOT 0 "
                                             "— a band merely CROSSING its limit now costs "
                                             f"{_bf_now:g} × its priority weight before any "
                                             "overshoot term. So breach totals in this log are NOT "
@@ -5552,16 +5870,78 @@ def render():
                                 # start is the ~seconds greedy, so a handful is still tiny vs the GA.
                                 _feas_starts = max(1, int(ss.get("fm_feas_starts", 4) or 1))
                                 _bg_keys = []
+                                _bg_par = {}
                                 _band_greedy_G, _bg_key = _gg.band_greedy_shares_multi(
                                     np.asarray(_comp_share_G, float),
                                     ctx["cell_starts"], ctx["cell_counts"], ctx["elig"],
                                     ctx["mid_rows"], _mids_u,
                                     ctx["exact_bands"], ctx["_exact_bands_selfcheck"]["inc"],
                                     max_share=float(ctx.get("max_share", 1.0) or 1.0),
-                                    n_starts=_feas_starts, rng_seed=0, keys_out=_bg_keys)
+                                    n_starts=_feas_starts, rng_seed=0, keys_out=_bg_keys,
+                                    par_info=_bg_par)
                                 if _feas_starts > 1:
                                     log(f"   feasibility projection: {_feas_starts} starts "
                                         f"(base + {_feas_starts - 1} jittered) — kept the fewest-unmet result.")
+                                # [feas-par] 19ck: the starts run CONCURRENTLY now. State the wall
+                                # time rather than assert a speed-up: `band_greedy_shares` alternates
+                                # a numpy pass that releases the GIL with a per-spec Python loop that
+                                # does not, so the gain is bounded by that mix and is a measurement,
+                                # not a property. Bit-identity is structural, not measured here —
+                                # the draws are taken in the old sequential order and the reduce is
+                                # still serial in index order with the same strict `<`.
+                                if _bg_par:
+                                    _fp_n = int(_bg_par.get("starts", 0) or 0)
+                                    _fp_t = float(_bg_par.get("secs", 0.0) or 0.0)
+                                    if _bg_par.get("parallel"):
+                                        log(f"   [feas-par] {_fp_n} start(s) ran CONCURRENTLY on "
+                                            f"{int(_bg_par.get('workers', 0) or 0)} worker(s) in "
+                                            f"{_fp_t:.1f}s wall. Serially this stage was ~"
+                                            f"{_fp_t / max(_fp_n, 1):.1f}s per start; compare against "
+                                            "a ROUTING_FEAS_PAR=0 run for the real serial figure "
+                                            "rather than multiplying that estimate out.")
+                                    else:
+                                        log(f"   [feas-par] ROUTING_FEAS_PAR=0 \u2014 {_fp_n} start(s) "
+                                            f"ran SERIALLY in {_fp_t:.1f}s wall. This is the control "
+                                            "for the concurrent path, and the result is identical "
+                                            "either way by construction.")
+                                    # 19cp: A CHECKSUM OF THE WINNING SEED, so run-to-run
+                                    # determinism is readable WITHOUT a special control run.
+                                    #
+                                    # WHY. On 2026-08-26 three runs with byte-identical inputs (same
+                                    # cells, rows, volume, scaffold, caps, incidence and attempts
+                                    # cache) produced band-aware breach 0.7159, 0.7157 and 0.7159.
+                                    # Everything upstream of this stage matched exactly, so the
+                                    # divergence starts HERE — and this stage has run its starts
+                                    # CONCURRENTLY since 19ck. The 19ck test pinned the RNG draw
+                                    # order and the index-ordered reduce against a DETERMINISTIC
+                                    # stub; it did NOT establish that `band_greedy_shares` is
+                                    # deterministic when four copies drive the live numba projector
+                                    # at once. Until that is settled this line is the cheapest way
+                                    # to see it: two runs, two checksums, no extra work.
+                                    try:
+                                        # zlib.crc32, NOT hash(). Python's hash() of bytes is
+                                        # SALTED PER PROCESS (PYTHONHASHSEED), so it prints a
+                                        # different value every run — which would have made every
+                                        # run look non-deterministic and buried the very signal
+                                        # this line exists to show. Caught before shipping by
+                                        # running it three times in one shell.
+                                        import zlib as _zlib_ck
+                                        _bg_ck = np.ascontiguousarray(
+                                            np.asarray(_band_greedy_G, float))
+                                        log("   [feas-par] WINNING SEED CHECKSUM "
+                                            f"{_zlib_ck.crc32(_bg_ck.tobytes()) & 0xFFFFFFFF:010d} "
+                                            f"\u00b7 \u03a3 {float(_bg_ck.sum()):.9f} \u00b7 "
+                                            f"nnz {int(np.count_nonzero(_bg_ck)):,} of "
+                                            f"{_bg_ck.size:,}. TWO RUNS ON THE SAME INPUTS MUST "
+                                            "PRINT THE SAME CHECKSUM. If they do not, this "
+                                            "concurrent stage is NOT deterministic and every "
+                                            "downstream seed figure differs for that reason "
+                                            "rather than any change you made \u2014 re-run with "
+                                            "ROUTING_FEAS_PAR=0, which is the serial control.")
+                                    except Exception as _bce:  # noqa: BLE001
+                                        log(f"   [feas-par] seed checksum skipped "
+                                            f"({type(_bce).__name__}: {_bce}) \u2014 measurement "
+                                            "only; the seed is unaffected.")
                                 # [feas-starts] DOES THE MULTI-START EARN ITS KEEP? Until 2026-08-19z
                                 # this block computed the winning key and threw it away (`_bg_key` was
                                 # assigned and never read), so no run log could say whether a jittered
@@ -5631,6 +6011,7 @@ def render():
                                                 or (_r["floor"] is not None and _nw < float(_r["floor"]) - 1e-6)):
                                             _unmet.append(_pretty.get(str(_r["midl"]), str(_r["midl"])))
                                     _nb = len(_rep_s)
+                                    _substep("④·2  BUILD THE WARM-START SEED")
                                     log("   ── FEASIBILITY CHECK (constrained projection: min band breach "
                                         "s.t. per-cell simplex + max-share) ──")
                                     if not _unmet:
@@ -5781,144 +6162,166 @@ def render():
                                     _move_G = None
                                     log(f"   targeted move-operator seed skipped: "
                                         f"{type(_me).__name__}: {_me}")
-                                # ── HELD-vs-MOVABLE DIAGNOSTIC (READ-ONLY) ──────────────────────────
-                                # How much of each breached MID's M5 value the routing decision can MOVE
-                                # (pool redistributed by share) vs HELD (baseline / FCP2+ / pre-go-live).
-                                # held < ceil ⇒ compliance reachable (any stuck solver = search bug);
-                                # held ≥ ceil ⇒ structurally stuck. This is the decisive movability test.
-                                # If 'held' is far larger than expected, mv = pro_rata × fcp1_frac is
-                                # understated upstream. Read-only; never breaks the run.
-                                try:
-                                    from routing_optimiser.exact_band_solver import held_movable_report as _hm
-                                    _hm_split = np.asarray(
-                                        locals().get("_exact_G") if locals().get("_exact_G") is not None
-                                        else locals().get("_risk_greedy_G", _comp_share_G), float)
-                                    for _ln in _hm(_hm_split, ctx["exact_bands"],
-                                                   ctx["_exact_bands_selfcheck"]["inc"]):
-                                        log(_ln)
-                                except Exception as _hme:  # noqa: BLE001 — a diagnostic must never break the run
-                                    log(f"   held-vs-movable check skipped ({type(_hme).__name__}: {_hme}).")
-                                # ── REACHABLE MINIMUM (READ-ONLY) ───────────────────────────────────
-                                # The full-matrix decode is a plain softmax with NO hard share floor, so
-                                # route each breached MID toward 0 wherever an eligible sibling can absorb
-                                # it and read the TRUE reachable minimum. reachable-min ≥ ceil ⇒ structurally
-                                # unreachable (held exceeds the cap); < ceil ⇒ reachable ⇒ a stuck solver is
-                                # the cause. The config exploration_floor is passed only as a clearly-labelled
-                                # "what-if" (it is NOT enforced by this engine). Read-only; never breaks the run.
-                                try:
-                                    from routing_optimiser.exact_band_solver import floor_min_report as _fmin
-                                    _fmin_split = np.asarray(
-                                        locals().get("_exact_G") if locals().get("_exact_G") is not None
-                                        else locals().get("_risk_greedy_G", _comp_share_G), float)
-                                    for _ln in _fmin(_fmin_split, ctx["exact_bands"],
-                                                     ctx["_exact_bands_selfcheck"]["inc"],
-                                                     mid_id=ctx["mid_id"], cell_starts=ctx["cell_starts"],
-                                                     cell_counts=ctx["cell_counts"], elig=ctx["elig"],
-                                                     mid_names=[str(m) for m in _mids_u],
-                                                     whatif_floor=float(ctx.get("floor", 0.0) or 0.0)):
-                                        log(_ln)
-                                except Exception as _fme:  # noqa: BLE001 — a diagnostic must never break the run
-                                    log(f"   reachable-minimum check skipped ({type(_fme).__name__}: {_fme}).")
-                                # ── VAMP-POSITIVE SIBLING (READ-ONLY) ───────────────────────────────
-                                # The cliff test: a breached VAMP MID's share only lowers its VAMP where a
-                                # co-located VAMP-positive (vcpos>0) gateway exists (vshare self-normalises).
-                                # Cells where it's the SOLE VAMP gateway are structurally immovable by the
-                                # softmax engine. Read-only; never breaks the run.
-                                try:
-                                    from routing_optimiser.exact_band_solver import vamp_sibling_report as _vsib
-                                    _vsib_split = np.asarray(
-                                        locals().get("_exact_G") if locals().get("_exact_G") is not None
-                                        else locals().get("_risk_greedy_G", _comp_share_G), float)
-                                    for _ln in _vsib(_vsib_split, ctx["exact_bands"],
-                                                     ctx["_exact_bands_selfcheck"]["inc"]):
-                                        log(_ln)
-                                except Exception as _vse:  # noqa: BLE001 — a diagnostic must never break the run
-                                    log(f"   vamp-positive-sibling check skipped ({type(_vse).__name__}: {_vse}).")
-                                # ── EXTRA ROOT-CAUSE DIAGNOSTICS (READ-ONLY): #1 incidence self-check,
-                                # #3 seed gradient, #4 vpsum, #5 usable-recipient. All one-shot at the seed;
-                                # never break the run.
-                                try:
-                                    from routing_optimiser.exact_band_solver import (
-                                        incidence_selfcheck_report as _isc,
-                                        seed_gradient_report as _sgr,
-                                        vpsum_report as _vpr,
-                                        usable_recipient_report as _urr,
-                                        breach_concentration_report as _bcr,
-                                        scoped_frozen_report as _sfr)
-                                    _dx_split = np.asarray(
-                                        locals().get("_exact_G") if locals().get("_exact_G") is not None
-                                        else locals().get("_risk_greedy_G", _comp_share_G), float)
-                                    _dx_eb = ctx["exact_bands"]; _dx_inc = ctx["_exact_bands_selfcheck"]["inc"]
-                                    _dx_names = [str(m) for m in _mids_u]
-                                    for _ln in _isc(_dx_split, _dx_eb, _dx_inc,
-                                                    mid_id=ctx["mid_id"], mid_names=_dx_names):
-                                        log(_ln)
-                                    for _ln in _sgr(_dx_split, _dx_eb, _dx_inc,
-                                                    mid_id=ctx["mid_id"], mid_names=_dx_names):
-                                        log(_ln)
-                                    for _ln in _vpr(_dx_split, _dx_eb, _dx_inc):
-                                        log(_ln)
-                                    for _ln in _urr(_dx_split, _dx_eb, _dx_inc):
-                                        log(_ln)
-                                    for _ln in _bcr(_dx_split, _dx_eb, _dx_inc):
-                                        log(_ln)
-                                    for _ln in _sfr(_dx_split, _dx_eb, _dx_inc,
-                                                    scoped_rpgts=(locals().get("_sel_rpgts") or set())):
-                                        log(_ln)
-                                except Exception as _dxe:  # noqa: BLE001 — a diagnostic must never break the run
-                                    log(f"   extra root-cause diagnostics skipped ({type(_dxe).__name__}: {_dxe}).")
-                                # ── CO-LOCATION DIAGNOSTIC (READ-ONLY) ──────────────────────────────
-                                # For every breached ceiling MID, at the engine's BIN×currency×RPGT grain:
-                                # in the exact cells where that MID carries share, is a headroom SIBLING
-                                # present as an eligible gateway-row? Answers "search failure vs true
-                                # cell-grain infeasibility". Changes NO share; never breaks the run.
-                                try:
-                                    from routing_optimiser.exact_band_solver import colocation_report as _colo
-                                    _dg_split = np.asarray(
-                                        locals().get("_exact_G") if locals().get("_exact_G") is not None
-                                        else locals().get("_risk_greedy_G", _comp_share_G), float)
-                                    _colcol = lambda _c: (G[_c].astype(str).to_numpy() if _c in G.columns else None)
-                                    for _ln in _colo(
-                                            _dg_split, ctx["exact_bands"],
-                                            ctx["_exact_bands_selfcheck"]["inc"],
-                                            mid_id=ctx["mid_id"], cell_starts=ctx["cell_starts"],
-                                            cell_counts=ctx["cell_counts"], risk=ctx["risk"],
-                                            cell_vol=ctx["cell_vol"], elig=ctx["elig"],
-                                            mid_names=[str(m) for m in _mids_u],
-                                            cell_cur=_colcol("currency"), cell_bank=_colcol("bank"),
-                                            cell_rpgt=_colcol("rpgt")):
-                                        log(_ln)
-                                except Exception as _dge:  # noqa: BLE001 — a diagnostic must never break the run
-                                    log(f"   co-location diagnostic skipped ({type(_dge).__name__}: {_dge}).")
-                                # ── SEED UNMET-BAND SUMMARY (consistent one-line comparison) ──────────
-                                # For every warm-start seed, log how many of the 15 bands it satisfies +
-                                # which it doesn't, in ONE format — so the seeds are directly comparable at
-                                # a glance (which one clears the most MIDs). Read-only; never breaks the run.
-                                try:
-                                    from routing_optimiser.exact_band_solver import unmet_summary as _unmet
-                                    _sinc = ctx["_exact_bands_selfcheck"]["inc"]
-                                    _seed_pairs = [("band-aware", locals().get("_risk_greedy_G")),
-                                                   ("exact-proj", locals().get("_exact_G")),
-                                                   ("revenue-greedy", locals().get("_comp_share_G"))]
-                                    _seed_pairs = [(_nm, _s) for _nm, _s in _seed_pairs if _s is not None]
-                                    if _seed_pairs:
-                                        log("   ── SEED unmet-band summary — RAW BASIS (how many of "
-                                            "the per-MID bands each warm-start satisfies) ──")
-                                        log("      ⚠ BASIS: these numbers score the seed's RAW shares. "
-                                            "`unmet_summary(seed, exact_bands, inc)` is called with no "
-                                            "delivery transform, so blocked-caps and eligibility are NOT "
-                                            "applied — unlike the seed SELECTION below, which scores "
-                                            "through `_fm_deliv`. A band can therefore look met here and "
-                                            "breach once delivered (measured 2026-08-20: woodforest raw "
-                                            "23,967 → +blocked-caps 24,082, i.e. +115 on a ceiling of "
-                                            "24,000, and no seed was listed as unmet on it). The "
-                                            "[seed-basis] block below prints BOTH bases.")
-                                        for _nm, _s in _seed_pairs:
-                                            _su = _unmet(np.asarray(_s, float), ctx["exact_bands"], _sinc)
-                                            if _su:
-                                                log(f"      {_nm:<22}: {_su}")
-                                except Exception as _use:  # noqa: BLE001 — a diagnostic must never break the run
-                                    log(f"   seed unmet-band summary skipped ({type(_use).__name__}: {_use}).")
+                                # ── READ-ONLY SEED DIAGNOSTICS (ROUTING_SEED_DIAG) ──────────────────
+                                # Eight report blocks that change NO share: held-vs-movable,
+                                # reachable minimum, VAMP-positive sibling, the four root-cause
+                                # reports, co-location, and the seed unmet-band summary. Measured
+                                # ~15.8s on the 2026-08-25 20:35 run. Worth that while a seed
+                                # question is open; worth nothing once it is closed — the same
+                                # shape as [kernel-ab] and [stage-ab], and switched the same way.
+                                _sd_on = os.environ.get("ROUTING_SEED_DIAG", "1") != "0"
+                                if not _sd_on:
+                                    # A SKIPPED diagnostic and a FAILED one must not read alike
+                                    # (19ce D4; 19cj's skipped ban stage). These blocks are the
+                                    # evidence for whether a band is genuinely unreachable, so
+                                    # their absence has to be stated, not inferred.
+                                    log("   [seed-diag] SKIPPED by ROUTING_SEED_DIAG=0 \u2014 the "
+                                        "held-vs-movable, reachable-minimum, VAMP-sibling, "
+                                        "incidence self-check, seed-gradient, vpsum, "
+                                        "usable-recipient, co-location and seed unmet-band blocks "
+                                        "did not run. They are READ-ONLY, so the seed and the "
+                                        "search are unaffected \u2014 but nothing below answers "
+                                        "'is this band reachable?'. Unset it to get them back "
+                                        "(~16s).")
+                                if _sd_on:
+                                    # ── HELD-vs-MOVABLE DIAGNOSTIC (READ-ONLY) ──────────────────────────
+                                    # How much of each breached MID's M5 value the routing decision can MOVE
+                                    # (pool redistributed by share) vs HELD (baseline / FCP2+ / pre-go-live).
+                                    # held < ceil ⇒ compliance reachable (any stuck solver = search bug);
+                                    # held ≥ ceil ⇒ structurally stuck. This is the decisive movability test.
+                                    # If 'held' is far larger than expected, mv = pro_rata × fcp1_frac is
+                                    # understated upstream. Read-only; never breaks the run.
+                                    try:
+                                        from routing_optimiser.exact_band_solver import held_movable_report as _hm
+                                        _hm_split = np.asarray(
+                                            locals().get("_exact_G") if locals().get("_exact_G") is not None
+                                            else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                        for _ln in _hm(_hm_split, ctx["exact_bands"],
+                                                       ctx["_exact_bands_selfcheck"]["inc"]):
+                                            log(_ln)
+                                    except Exception as _hme:  # noqa: BLE001 — a diagnostic must never break the run
+                                        log(f"   held-vs-movable check skipped ({type(_hme).__name__}: {_hme}).")
+                                    # ── REACHABLE MINIMUM (READ-ONLY) ───────────────────────────────────
+                                    # The full-matrix decode is a plain softmax with NO hard share floor, so
+                                    # route each breached MID toward 0 wherever an eligible sibling can absorb
+                                    # it and read the TRUE reachable minimum. reachable-min ≥ ceil ⇒ structurally
+                                    # unreachable (held exceeds the cap); < ceil ⇒ reachable ⇒ a stuck solver is
+                                    # the cause. The config exploration_floor is passed only as a clearly-labelled
+                                    # "what-if" (it is NOT enforced by this engine). Read-only; never breaks the run.
+                                    try:
+                                        from routing_optimiser.exact_band_solver import floor_min_report as _fmin
+                                        _fmin_split = np.asarray(
+                                            locals().get("_exact_G") if locals().get("_exact_G") is not None
+                                            else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                        for _ln in _fmin(_fmin_split, ctx["exact_bands"],
+                                                         ctx["_exact_bands_selfcheck"]["inc"],
+                                                         mid_id=ctx["mid_id"], cell_starts=ctx["cell_starts"],
+                                                         cell_counts=ctx["cell_counts"], elig=ctx["elig"],
+                                                         mid_names=[str(m) for m in _mids_u],
+                                                         whatif_floor=float(ctx.get("floor", 0.0) or 0.0)):
+                                            log(_ln)
+                                    except Exception as _fme:  # noqa: BLE001 — a diagnostic must never break the run
+                                        log(f"   reachable-minimum check skipped ({type(_fme).__name__}: {_fme}).")
+                                    # ── VAMP-POSITIVE SIBLING (READ-ONLY) ───────────────────────────────
+                                    # The cliff test: a breached VAMP MID's share only lowers its VAMP where a
+                                    # co-located VAMP-positive (vcpos>0) gateway exists (vshare self-normalises).
+                                    # Cells where it's the SOLE VAMP gateway are structurally immovable by the
+                                    # softmax engine. Read-only; never breaks the run.
+                                    try:
+                                        from routing_optimiser.exact_band_solver import vamp_sibling_report as _vsib
+                                        _vsib_split = np.asarray(
+                                            locals().get("_exact_G") if locals().get("_exact_G") is not None
+                                            else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                        for _ln in _vsib(_vsib_split, ctx["exact_bands"],
+                                                         ctx["_exact_bands_selfcheck"]["inc"]):
+                                            log(_ln)
+                                    except Exception as _vse:  # noqa: BLE001 — a diagnostic must never break the run
+                                        log(f"   vamp-positive-sibling check skipped ({type(_vse).__name__}: {_vse}).")
+                                    # ── EXTRA ROOT-CAUSE DIAGNOSTICS (READ-ONLY): #1 incidence self-check,
+                                    # #3 seed gradient, #4 vpsum, #5 usable-recipient. All one-shot at the seed;
+                                    # never break the run.
+                                    try:
+                                        from routing_optimiser.exact_band_solver import (
+                                            incidence_selfcheck_report as _isc,
+                                            seed_gradient_report as _sgr,
+                                            vpsum_report as _vpr,
+                                            usable_recipient_report as _urr,
+                                            breach_concentration_report as _bcr,
+                                            scoped_frozen_report as _sfr)
+                                        _dx_split = np.asarray(
+                                            locals().get("_exact_G") if locals().get("_exact_G") is not None
+                                            else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                        _dx_eb = ctx["exact_bands"]; _dx_inc = ctx["_exact_bands_selfcheck"]["inc"]
+                                        _dx_names = [str(m) for m in _mids_u]
+                                        for _ln in _isc(_dx_split, _dx_eb, _dx_inc,
+                                                        mid_id=ctx["mid_id"], mid_names=_dx_names):
+                                            log(_ln)
+                                        for _ln in _sgr(_dx_split, _dx_eb, _dx_inc,
+                                                        mid_id=ctx["mid_id"], mid_names=_dx_names):
+                                            log(_ln)
+                                        for _ln in _vpr(_dx_split, _dx_eb, _dx_inc):
+                                            log(_ln)
+                                        for _ln in _urr(_dx_split, _dx_eb, _dx_inc):
+                                            log(_ln)
+                                        for _ln in _bcr(_dx_split, _dx_eb, _dx_inc):
+                                            log(_ln)
+                                        for _ln in _sfr(_dx_split, _dx_eb, _dx_inc,
+                                                        scoped_rpgts=(locals().get("_sel_rpgts") or set())):
+                                            log(_ln)
+                                    except Exception as _dxe:  # noqa: BLE001 — a diagnostic must never break the run
+                                        log(f"   extra root-cause diagnostics skipped ({type(_dxe).__name__}: {_dxe}).")
+                                    # ── CO-LOCATION DIAGNOSTIC (READ-ONLY) ──────────────────────────────
+                                    # For every breached ceiling MID, at the engine's BIN×currency×RPGT grain:
+                                    # in the exact cells where that MID carries share, is a headroom SIBLING
+                                    # present as an eligible gateway-row? Answers "search failure vs true
+                                    # cell-grain infeasibility". Changes NO share; never breaks the run.
+                                    try:
+                                        from routing_optimiser.exact_band_solver import colocation_report as _colo
+                                        _dg_split = np.asarray(
+                                            locals().get("_exact_G") if locals().get("_exact_G") is not None
+                                            else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                        _colcol = lambda _c: (G[_c].astype(str).to_numpy() if _c in G.columns else None)
+                                        for _ln in _colo(
+                                                _dg_split, ctx["exact_bands"],
+                                                ctx["_exact_bands_selfcheck"]["inc"],
+                                                mid_id=ctx["mid_id"], cell_starts=ctx["cell_starts"],
+                                                cell_counts=ctx["cell_counts"], risk=ctx["risk"],
+                                                cell_vol=ctx["cell_vol"], elig=ctx["elig"],
+                                                mid_names=[str(m) for m in _mids_u],
+                                                cell_cur=_colcol("currency"), cell_bank=_colcol("bank"),
+                                                cell_rpgt=_colcol("rpgt")):
+                                            log(_ln)
+                                    except Exception as _dge:  # noqa: BLE001 — a diagnostic must never break the run
+                                        log(f"   co-location diagnostic skipped ({type(_dge).__name__}: {_dge}).")
+                                    # ── SEED UNMET-BAND SUMMARY (consistent one-line comparison) ──────────
+                                    # For every warm-start seed, log how many of the 15 bands it satisfies +
+                                    # which it doesn't, in ONE format — so the seeds are directly comparable at
+                                    # a glance (which one clears the most MIDs). Read-only; never breaks the run.
+                                    try:
+                                        from routing_optimiser.exact_band_solver import unmet_summary as _unmet
+                                        _sinc = ctx["_exact_bands_selfcheck"]["inc"]
+                                        _seed_pairs = [("band-aware", locals().get("_risk_greedy_G")),
+                                                       ("exact-proj", locals().get("_exact_G")),
+                                                       ("revenue-greedy", locals().get("_comp_share_G"))]
+                                        _seed_pairs = [(_nm, _s) for _nm, _s in _seed_pairs if _s is not None]
+                                        if _seed_pairs:
+                                            log("   ── SEED unmet-band summary — RAW BASIS (how many of "
+                                                "the per-MID bands each warm-start satisfies) ──")
+                                            log("      ⚠ BASIS: these numbers score the seed's RAW shares. "
+                                                "`unmet_summary(seed, exact_bands, inc)` is called with no "
+                                                "delivery transform, so blocked-caps and eligibility are NOT "
+                                                "applied — unlike the seed SELECTION below, which scores "
+                                                "through `_fm_deliv`. A band can therefore look met here and "
+                                                "breach once delivered (measured 2026-08-20: woodforest raw "
+                                                "23,967 → +blocked-caps 24,082, i.e. +115 on a ceiling of "
+                                                "24,000, and no seed was listed as unmet on it). The "
+                                                "[seed-basis] block below prints BOTH bases.")
+                                            for _nm, _s in _seed_pairs:
+                                                _su = _unmet(np.asarray(_s, float), ctx["exact_bands"], _sinc)
+                                                if _su:
+                                                    log(f"      {_nm:<22}: {_su}")
+                                    except Exception as _use:  # noqa: BLE001 — a diagnostic must never break the run
+                                        log(f"   seed unmet-band summary skipped ({type(_use).__name__}: {_use}).")
                             ctx["warm_shares"] = _seeds
                         except Exception as _bsE:
                             # NO FALLBACK as of 2026-08-19aa. This handler used to do
@@ -6992,6 +7395,21 @@ def render():
                                             elif _rr["floor"] is not None and _nw < float(_rr["floor"]) - 1e-6:
                                                 _un[str(_rr["midl"])] = f"{_rr['midl']} {_nw:,.0f}<{float(_rr['floor']):,.0f}"
                                         return len(_un), _pen, [_un[_k] for _k in sorted(_un)]
+                                    # 19ch: START OF A RUN. Streamlit keeps the process warm, so
+                                    # without this the float32 drift, the recorded dispatch paths
+                                    # and the [proj-par] notes all describe whichever RUN measured
+                                    # them first. The 2026-08-25 19:14 log reported a P=35 drift
+                                    # identical to four decimals to the 16:50 run's because it had
+                                    # never measured its own.
+                                    try:
+                                        from routing_optimiser import band_projection as _nr_bp
+                                        _nr_fn = getattr(_nr_bp, "proj_new_run", None)
+                                        if _nr_fn is not None:
+                                            _nr_fn()
+                                    except Exception as _nre:   # noqa: BLE001
+                                        log(f"   [proj-config] per-run reset skipped "
+                                            f"({type(_nre).__name__}: {_nre}) \u2014 the drift and "
+                                            "path figures below may be an EARLIER run's.")
                                     log("   [full-matrix] EXACT M5 band projector wired into the fitness "
                                         "(exact per-generation pro-rata M5 projection — no 30-day linear "
                                         "proxy). Bands: " + " · ".join(_fm_applied))
@@ -7015,6 +7433,7 @@ def render():
                                 _fm_nseeds = max(1, int(ss.get("ga_n_seeds", 1) or 1))
                                 _fm_restarts = max(1, int(ss.get("ga_restarts", 1) or 1))
                                 _fm_rmode = str(ss.get("ga_restart_mode", "lean") or "lean")
+                                _substep("④·3  RUN THE GENETIC SEARCH")
                                 log(f"   [full-matrix] search budget: {_fm_nseeds} seed(s) × "
                                     f"{_fm_restarts} restart(s) × {_fm_gens} generations · pop "
                                     f"{_fm_pop} · restart-mode {_fm_rmode}; "
@@ -7243,6 +7662,8 @@ def render():
                                         # rows — because a row's contribution is constant exactly
                                         # when its share cannot move.
                                         try:
+                                            if _settled_skip("[prop-reach]", "under 5% of scaffold rows are dead-inside-a-live-cell and a row filter costs a pass of its own, so the row-level reduction is NOT worth it (same verdict as [zero-rows])."):
+                                                raise _SettledSkip
                                             _pr_dead = ~_fs_live
                                             _pr_live_cell = ~_fs_cell_frozen[_fs_gc]
                                             _pr_walked = int((_pr_dead & _pr_live_cell).sum())
@@ -7307,6 +7728,8 @@ def render():
                                                     "restricted-vs-full test that proved the "
                                                     "blocked-caps and eligibility reductions. "
                                                     "Do NOT adopt on this count alone.")
+                                        except _SettledSkip:
+                                            pass
                                         except Exception as _prE:  # noqa: BLE001
                                             log(f"      [prop-reach] skipped "
                                                 f"({type(_prE).__name__}: {_prE}) — MEASUREMENT "
@@ -7381,6 +7804,8 @@ def render():
                                         # cells, where the share is forced to 1.0 and there is no choice to
                                         # make at all.
                                         try:
+                                            if _settled_skip("[zero-cells]", "every multi-row genome cell carries either forecast volume or a non-zero VAMP rate, so no part of the mutation budget is spent on a dimension that cannot move the objective."):
+                                                raise _SettledSkip
                                             _zc_st = np.asarray(ctx["cell_starts"], np.int64)
                                             _zc_ct = np.asarray(ctx["cell_counts"], np.int64)
                                             _zc_vol_r = np.asarray(ctx["cell_vol"], float)
@@ -7424,6 +7849,8 @@ def render():
                                                     "deliberately gives zero-VAMP gateway-cells the opt-grain weighted "
                                                     "average rate rather than 0 — which is WHY this can read 0% even "
                                                     "though many cells have no OBSERVED VAMP.")
+                                        except _SettledSkip:
+                                            pass
                                         except Exception as _zcE:  # noqa: BLE001
                                             log(f"   [zero-cells] skipped ({type(_zcE).__name__}: {_zcE}) — READ-ONLY, "
                                                 "nothing else is affected.")
@@ -7445,6 +7872,8 @@ def render():
                                         # arrays are already flattened per-j and no denominator is
                                         # recomputed.
                                         try:
+                                            if _settled_skip("[zero-rows]", "under 2% of nC/nA loop rows are provably zero and the filtering costs a pass, so the bit-identical row reduction is NOT worth pursuing on this scaffold."):
+                                                raise _SettledSkip
                                             _zr = _fsp._nb_arrays()
                                             _zr_pcvc = np.asarray(_zr[8], float)
                                             _zr_pcpl = np.asarray(_zr[9], float)
@@ -7489,6 +7918,8 @@ def render():
                                                     "qualify that variant C has something real to "
                                                     "remove. Read its row in [kernel-ab] against "
                                                     "the RESOLUTION FLOOR, not against A.")
+                                        except _SettledSkip:
+                                            pass
                                         except Exception as _zre:  # noqa: BLE001
                                             log(f"   [zero-rows] skipped ({type(_zre).__name__}: "
                                                 f"{_zre}) — READ-ONLY, the search is unaffected.")
@@ -7588,6 +8019,23 @@ def render():
                                 # bit-identical on THIS machine's data rather than in a container.
                                 try:
                                     from routing_optimiser import band_projection as _bpm
+                                    # 19ce: the CONFIGURATION first, unconditionally. The notes
+                                    # below are drained and deleted, so on a SECOND run in the same
+                                    # process they are empty and the log says nothing about the
+                                    # projector at all — which is how the 2026-08-25 07:39 run came
+                                    # to carry two [proj-par] lines and no verdict. proj_config()
+                                    # is rebuilt from the live globals every call, so it always
+                                    # reports THIS run. getattr, so an older band_projection that
+                                    # predates the function simply logs nothing extra.
+                                    _pcf = getattr(_bpm, "proj_config", None)
+                                    if _pcf is not None:
+                                        try:
+                                            for _pc_ln in (_pcf() or []):
+                                                log(f"   [proj-config] {_pc_ln}")
+                                        except Exception as _pce2:  # noqa: BLE001
+                                            log(f"   [proj-config] unavailable "
+                                                f"({type(_pce2).__name__}: {_pce2}) — this is the "
+                                                "REPORT only; the projector itself is unaffected.")
                                     _ppn = list(getattr(_bpm, "_PROJ_PAR_NOTES", []) or [])
                                     for _pn_msg in _ppn:
                                         log(f"   [proj-par] {_pn_msg}")
@@ -7717,10 +8165,18 @@ def render():
                                                 + ("enforced_prop_items returned nothing"
                                                    if not _ep else
                                                    f"pro-rata export missing at {_ppp}"))
+                                        # 19df — max_share, from `_wc`, the same dict the
+                                        # enforced_prop_items call at :7924 reads. Without it the
+                                        # never-worse guard scores candidates on an UNCAPPED
+                                        # delivery while the search caps, so the drift it reports
+                                        # carries the divergence rather than the candidate.
                                         _g5 = _nw_cvp(
                                             _ppp, _ep,
                                             frozenset(_nw_excl), (), None, tuple(_nw_scoped),
-                                            exploration_floor=_nw_floor)
+                                            exploration_floor=_nw_floor,
+                                            capability=_deliv_cap,   # 19du
+                                            vamp_off_mids=_vamp_off_mids,   # 19dw
+                                            max_share=float(_wc.get("max_share", 0.97)))
                                         _g5 = _g5[_g5["period"] == 5]
                                         _dv = {str(_k).strip().lower(): float(_v) for _k, _v in
                                                _g5.groupby("vampMid")["VAMP_Post"].sum().items()}
@@ -7798,6 +8254,7 @@ def render():
                                         _nw_kg = abs(_nw_dg - _nw_sg)      # GA drift, units
                                         _nw_ks = abs(_nw_ds - _nw_ss)      # seed drift, units
                                         _nw_gap = abs(_nw_dg - _nw_ds)
+                                        _substep("④·4  CHOOSE WHAT SHIPS")
                                         log("   ── [never-worse] GA output vs the seed it started "
                                             "from, decided on the DELIVERED breach ALONE (19an) ──")
                                         log(f"      {'candidate':<22}{'delivered':>11}"
@@ -8649,10 +9106,101 @@ def render():
                                             "bit-identity bar before the speed question is even asked.")
                                         log("        E fastmath   DEAD — same: not bit-identical, and "
                                             "0.2% from A. Retired once already (19ar).")
-                                        log("        F float32    REAL BUT UNADOPTABLE — the one variant "
-                                            "that consistently clears the floor, and it MOVES THE "
-                                            "ANSWER (max|Δ| txn ~2 transactions). Bit-identity is the "
-                                            "bar, so it cannot ship however fast it is.")
+                                        # 19cf: NO REMEMBERED DRIFT FIGURE. This line used to say
+                                        # "max|Δ| txn ~2 transactions", and that number — row F's,
+                                        # measured on a FLAT float32 kernel over a COPY of prop_raw
+                                        # at this block's width — was what the decision to accept
+                                        # the drift was made on. The SHIPPED float32 path is the
+                                        # CELL-BLOCKED kernel on the live scaffold and measured
+                                        # ~11.96 on the same run: a 7x gap between two numbers that
+                                        # read as the same quantity. Both now print together.
+                                        log("        F float32    REAL, and NOT bit-identical, so it "
+                                            "cannot be a DEFAULT. It is available as an explicit "
+                                            "OPT-IN (ROUTING_PROJ_FLOAT32=1) \u2014 a different "
+                                            "decision from adopting it, and one that has to be "
+                                            "made on the drift, not on the speed.")
+                                        try:
+                                            from routing_optimiser import band_projection as _kf_bp
+                                            _kf_all = getattr(_kf_bp, "_F32_OK", {}) or {}
+                                            _kf_m = _kf_all.get("live")
+                                            if not isinstance(_kf_m, dict):
+                                                _kf_m = _kf_all.get("first")
+                                            _kf_on = bool(_kf_all.get("use"))
+                                            _kf_row = (_kdelta(_ab_out["F"])
+                                                       if _ab_out.get("F") is not None else None)
+                                            if isinstance(_kf_m, dict):
+                                                # 19cg: COMPUTE the comparison, and refuse to draw
+                                                # one across widths. 19cf's version ended "it
+                                                # understated the shipped path by about 7x" — and
+                                                # that 7x was row F at P=35 against the shipped
+                                                # drift at P=1, two widths as well as two kernels.
+                                                # The 16:50 run, with 19cf's own live-width
+                                                # re-measurement in place, read 1.7 vs 2.413: they
+                                                # agree within 1.4x. A sentence written to stop a
+                                                # remembered number being quoted WAS a remembered
+                                                # number, and a wrong one. So: same width or no
+                                                # ratio.
+                                                _kf_same_w = (int(_kf_m.get("at_P", -1)) == int(_kP))
+                                                if _kf_row is None:
+                                                    _kf_cmp = ("Row F did not run this time, so "
+                                                               "there is nothing to compare — the "
+                                                               "shipped figures stand alone.")
+                                                elif not _kf_same_w:
+                                                    _kf_cmp = (
+                                                        "DIFFERENT WIDTHS (row F at P=%d, shipped "
+                                                        "at P=%d), so NO RATIO IS QUOTED. Comparing "
+                                                        "across widths is exactly what produced the "
+                                                        "'about 7x' claim on 2026-08-25 15:48 that "
+                                                        "the 16:50 run then disproved."
+                                                        % (int(_kP), int(_kf_m.get("at_P", -1))))
+                                                elif float(_kf_row[1]) > 0.0:
+                                                    _kf_r = float(_kf_m["dt"]) / float(_kf_row[1])
+                                                    _kf_cmp = (
+                                                        ("SAME WIDTH (P=%d), so directly comparable: "
+                                                         "on THIS run the shipped path is %.2fx row "
+                                                         "F on txn. " % (int(_kP), _kf_r))
+                                                        + ("They agree to within a factor of two "
+                                                           "here — a fact about this run, not a "
+                                                           "property to rely on next time."
+                                                           if 0.5 <= _kf_r <= 2.0 else
+                                                           "That is a real divergence: read the "
+                                                           "SHIPPED figures, not row F's."))
+                                                else:
+                                                    _kf_cmp = ("Row F's txn delta is 0, so no ratio "
+                                                               "is meaningful.")
+                                                log("        F drift      ROW F ABOVE AND THE SHIPPED "
+                                                    "PATH MEASURE DIFFERENT THINGS \u2014 row F is a "
+                                                    "FLAT float32 kernel on a COPY of prop_raw; the "
+                                                    "shipped path is the CELL-BLOCKED kernel on the "
+                                                    "live scaffold. ROW F at P="
+                                                    + str(int(_kP)) + ": "
+                                                    + ("%.4g txn / %.4g vamp. " % (_kf_row[1],
+                                                                                   _kf_row[0])
+                                                       if _kf_row is not None else "not run. ")
+                                                    + ("SHIPPED at P=%d: worst single band %.4g txn "
+                                                       "/ %.4g vamp, \u03a3 %.4g txn / %.4g vamp "
+                                                       "across all %d band(s). "
+                                                       % (int(_kf_m["at_P"]), _kf_m["dt"],
+                                                          _kf_m["dv"], _kf_m["dt_sum"],
+                                                          _kf_m["dv_sum"], int(_kf_m["nb"])))
+                                                    + _kf_cmp
+                                                    + " DECIDE ON THE SHIPPED FIGURES: row F is a "
+                                                      "variant timing, not the setting's cost. See "
+                                                      "[proj-config].")
+                                            else:
+                                                log("        F drift      float32 is "
+                                                    + ("ON but has not measured its drift yet"
+                                                       if _kf_on else
+                                                       "OFF this run, so row F is a HYPOTHETICAL: "
+                                                       "nothing shipped carries this \u0394")
+                                                    + ". Row F's max|\u0394| is a FLAT float32 kernel "
+                                                    "on a COPY of prop_raw, NOT the drift the "
+                                                    "cell-blocked float32 path would carry. Switch "
+                                                    "ROUTING_PROJ_FLOAT32=1 and read [proj-config] "
+                                                    "for the figure that matters.")
+                                        except Exception as _kfe:   # noqa: BLE001
+                                            log(f"        F drift      not available "
+                                                f"({type(_kfe).__name__}: {_kfe}) \u2014 REPORT only.")
                                         log("        G int32      ADOPTED 19bi — 4.1% on the projector, "
                                             "12/15 rounds, p=0.035, max|Δ| 0.0. [gen-cost] puts "
                                             "the projector at 23.6% of a generation, so ~1% of "
@@ -9735,85 +10283,106 @@ def render():
                                                 # "16 lane(s)" and read +0.3% at 4/7, which is
                                                 # exactly what comparing a thing to itself reads.
                                                 _sa_l1 = max(1, _sa_l0 * 2)
-                                                try:
-                                                    def _sa_set(n):
-                                                        setattr(_sa_bp, "_PROJ_LANE_CAP", int(n))
-
-                                                    def _sa_proj():
-                                                        return np.asarray(_fm_bpf(_gc_fd), float)
-
-                                                    _sa_set(_sa_l0)
-                                                    _sa_v8 = _sa_proj().copy()
-                                                    _sa_set(_sa_l1)
-                                                    _sa_v16 = _sa_proj().copy()      # UNTIMED: pays the
-                                                    _sa_id_l = _sa_same(_sa_v8, _sa_v16)   # realloc
-                                                    _sa_lr = []
-                                                    _sa_lc = []
-                                                    _sa_l8ms = []
-                                                    _sa_l16ms = []
-                                                    for _sa_x in range(_sa_R):
-                                                        # 19by: TWO 8-lane timings per round. The
-                                                        # second is this experiment's OWN control —
-                                                        # the same computation, so its ratio is
-                                                        # 1.000 and its spread is this row's floor.
-                                                        # It used to borrow the softmax floor, which
-                                                        # on 2026-08-24 buried a 7/7 result at
-                                                        # p=0.016 under a 6.5% threshold that had
-                                                        # nothing to do with the projector.
-                                                        _sa_set(_sa_l0)
-                                                        _sa_proj()                   # warm the 8-lane buffers
-                                                        _sa_t0 = _gct.perf_counter()
-                                                        _sa_proj()
-                                                        _sa_d8 = _gct.perf_counter() - _sa_t0
-                                                        _sa_t0 = _gct.perf_counter()
-                                                        _sa_proj()
-                                                        _sa_d8b = _gct.perf_counter() - _sa_t0
-                                                        _sa_set(_sa_l1)
-                                                        _sa_proj()                   # warm the wide buffers
-                                                        _sa_t0 = _gct.perf_counter()
-                                                        _sa_proj()
-                                                        _sa_d16 = _gct.perf_counter() - _sa_t0
-                                                        _sa_l8ms.append(_sa_d8 * 1000.0)
-                                                        _sa_l16ms.append(_sa_d16 * 1000.0)
-                                                        _sa_lc.append(_sa_d8 / _sa_d8b if _sa_d8b > 0
-                                                                      else float("nan"))
-                                                        _sa_lr.append(_sa_d8 / _sa_d16 if _sa_d16 > 0
-                                                                      else float("nan"))
-                                                    _sa_lmed = _sa_med(_sa_lr)
-                                                    _sa_lw = sum(1 for _sa_r2 in _sa_lr if _sa_r2 > 1.0)
-                                                    _sa_lp = _sa_p(_sa_lw, _sa_R)
-                                                    _sa_lfl = abs((_sa_med(_sa_lc) - 1.0) * 100.0)
-                                                    _sa_lcw = sum(1 for _sa_r2 in _sa_lc
-                                                                  if _sa_r2 > 1.0)
-                                                    log(f"      A  projector at the shipped {_sa_l0} lane(s) "
-                                                        f"              {_sa_med(_sa_l8ms):8.1f} ms  1.000x")
-                                                    log(f"      L  projector at {_sa_l1} lane(s)"
-                                                        + " " * max(0, 34 - len(str(_sa_l1)))
-                                                        + f"  {_sa_med(_sa_l16ms):8.1f} ms  med {_sa_lmed:5.3f}x  "
-                                                        f"faster in {_sa_lw:2d}/{_sa_R} (p={_sa_lp:.3f})  "
-                                                        + ("bit-identical \u2713" if _sa_id_l
-                                                           else "BIT-IDENTITY FAILED \u2717"))
-                                                    log("         (each side gets an UNTIMED warm call "
-                                                        "after the switch, so neither number carries the "
-                                                        f"buffer reallocation. {_sa_l1} lanes costs "
-                                                        f"{_sa_l1 / max(_sa_l0, 1):.0f}x the scratch of the "
-                                                        f"shipped {_sa_l0}.)")
-                                                    log(f"      L' the SAME {_sa_l0} lane(s) twice = THIS "
-                                                        f"row's floor            "
-                                                        f"med {_sa_med(_sa_lc):5.3f}x  "
-                                                        f"faster in {_sa_lcw:2d}/{_sa_R} "
-                                                        f"\u21d2 floor \u00b1{_sa_lfl:.1f}%")
-                                                    _sa_kp_l = (_sa_lp <= 0.10)
-                                                    _sa_kz_l = (abs((_sa_lmed - 1.0) * 100.0)
-                                                                >= _sa_lfl)
-                                                    _sa_sig_l = bool(_sa_kp_l and _sa_kz_l
-                                                                     and _sa_id_l)
-                                                finally:
-                                                    setattr(_sa_bp, "_PROJ_LANE_CAP", _sa_l0)
+                                                _sa_l_timed = False
+                                                # 19ch: STOP WHEN THERE IS NOTHING LEFT TO TEST. Lanes beyond the candidate
+                                                # width buy no parallelism — at P=35 a cap of 64 and a cap of 36 dispatch
+                                                # identically — so once the shipped cap covers P, doubling it allocates
+                                                # buffers nothing can use, and the row would read ~1.000x forever while still
+                                                # printing ADOPTABLE whenever noise leaned its way. Same retirement
+                                                # [kernel-ab] gave `G int32` for the same reason.
+                                                if _sa_l0 >= _gc_P:
+                                                    log("      L  NOT TIMED \u2014 the shipped cap (" + str(_sa_l0)
+                                                        + ") already covers this run's candidate width (" + str(_gc_P)
+                                                        + "), so every candidate already has its own lane and doubling the "
+                                                        "cap would allocate buffers nothing can use. ANSWERED at this "
+                                                        "population: the projector is not lane-limited. The row re-opens by "
+                                                        "itself if the population rises above the cap.")
+                                                    _sa_lmed = 1.0
+                                                    _sa_id_l = None
+                                                    _sa_kp_l = True
+                                                    _sa_lfl = 0.0
+                                                    _sa_sig_l = False
+                                                else:
                                                     try:
-                                                        _fm_bpf(_gc_fd)     # restore the shipped buffers
-                                                    except Exception:       # noqa: BLE001
-                                                        pass
+                                                        def _sa_set(n):
+                                                            setattr(_sa_bp, "_PROJ_LANE_CAP", int(n))
+
+                                                        def _sa_proj():
+                                                            return np.asarray(_fm_bpf(_gc_fd), float)
+
+                                                        _sa_set(_sa_l0)
+                                                        _sa_v8 = _sa_proj().copy()
+                                                        _sa_set(_sa_l1)
+                                                        _sa_v16 = _sa_proj().copy()      # UNTIMED: pays the
+                                                        _sa_id_l = _sa_same(_sa_v8, _sa_v16)   # realloc
+                                                        _sa_lr = []
+                                                        _sa_lc = []
+                                                        _sa_l8ms = []
+                                                        _sa_l16ms = []
+                                                        for _sa_x in range(_sa_R):
+                                                            # 19by: TWO 8-lane timings per round. The
+                                                            # second is this experiment's OWN control —
+                                                            # the same computation, so its ratio is
+                                                            # 1.000 and its spread is this row's floor.
+                                                            # It used to borrow the softmax floor, which
+                                                            # on 2026-08-24 buried a 7/7 result at
+                                                            # p=0.016 under a 6.5% threshold that had
+                                                            # nothing to do with the projector.
+                                                            _sa_set(_sa_l0)
+                                                            _sa_proj()                   # warm the 8-lane buffers
+                                                            _sa_t0 = _gct.perf_counter()
+                                                            _sa_proj()
+                                                            _sa_d8 = _gct.perf_counter() - _sa_t0
+                                                            _sa_t0 = _gct.perf_counter()
+                                                            _sa_proj()
+                                                            _sa_d8b = _gct.perf_counter() - _sa_t0
+                                                            _sa_set(_sa_l1)
+                                                            _sa_proj()                   # warm the wide buffers
+                                                            _sa_t0 = _gct.perf_counter()
+                                                            _sa_proj()
+                                                            _sa_d16 = _gct.perf_counter() - _sa_t0
+                                                            _sa_l8ms.append(_sa_d8 * 1000.0)
+                                                            _sa_l16ms.append(_sa_d16 * 1000.0)
+                                                            _sa_lc.append(_sa_d8 / _sa_d8b if _sa_d8b > 0
+                                                                          else float("nan"))
+                                                            _sa_lr.append(_sa_d8 / _sa_d16 if _sa_d16 > 0
+                                                                          else float("nan"))
+                                                        _sa_lmed = _sa_med(_sa_lr)
+                                                        _sa_lw = sum(1 for _sa_r2 in _sa_lr if _sa_r2 > 1.0)
+                                                        _sa_lp = _sa_p(_sa_lw, _sa_R)
+                                                        _sa_lfl = abs((_sa_med(_sa_lc) - 1.0) * 100.0)
+                                                        _sa_lcw = sum(1 for _sa_r2 in _sa_lc
+                                                                      if _sa_r2 > 1.0)
+                                                        log(f"      A  projector at the shipped {_sa_l0} lane(s) "
+                                                            f"              {_sa_med(_sa_l8ms):8.1f} ms  1.000x")
+                                                        log(f"      L  projector at {_sa_l1} lane(s)"
+                                                            + " " * max(0, 34 - len(str(_sa_l1)))
+                                                            + f"  {_sa_med(_sa_l16ms):8.1f} ms  med {_sa_lmed:5.3f}x  "
+                                                            f"faster in {_sa_lw:2d}/{_sa_R} (p={_sa_lp:.3f})  "
+                                                            + ("bit-identical \u2713" if _sa_id_l
+                                                               else "BIT-IDENTITY FAILED \u2717"))
+                                                        log("         (each side gets an UNTIMED warm call "
+                                                            "after the switch, so neither number carries the "
+                                                            f"buffer reallocation. {_sa_l1} lanes costs "
+                                                            f"{_sa_l1 / max(_sa_l0, 1):.0f}x the scratch of the "
+                                                            f"shipped {_sa_l0}.)")
+                                                        log(f"      L' the SAME {_sa_l0} lane(s) twice = THIS "
+                                                            f"row's floor            "
+                                                            f"med {_sa_med(_sa_lc):5.3f}x  "
+                                                            f"faster in {_sa_lcw:2d}/{_sa_R} "
+                                                            f"\u21d2 floor \u00b1{_sa_lfl:.1f}%")
+                                                        _sa_kp_l = (_sa_lp <= 0.10)
+                                                        _sa_kz_l = (abs((_sa_lmed - 1.0) * 100.0)
+                                                                    >= _sa_lfl)
+                                                        _sa_sig_l = bool(_sa_kp_l and _sa_kz_l
+                                                                         and _sa_id_l)
+                                                        _sa_l_timed = True
+                                                    finally:
+                                                        setattr(_sa_bp, "_PROJ_LANE_CAP", _sa_l0)
+                                                        try:
+                                                            _fm_bpf(_gc_fd)     # restore the shipped buffers
+                                                        except Exception:       # noqa: BLE001
+                                                            pass
 
                                                 # ── E: the elite ceiling (arithmetic, not a timing) ─
                                                 _sa_pop = int(_fm_pop)
@@ -9953,40 +10522,72 @@ def render():
                                                     # ms on 2026-08-24 22:04). "Measured safe, not
                                                     # measured beneficial" is not a verdict, so time
                                                     # the two paths against each other.
-                                                    try:
-                                                        _sa_bufA = np.zeros((_gc_P, _sa_nrow))
-                                                        _sa_bufB = np.zeros((_gc_P, _sa_nrow))
+                                                    # 19ce: DECLINE, do not crash. This row times the 19ca delivery fuse against the
+                                                    # pre-19ca path, and it can only do that when the fuse is IN USE: `_fm_block_into`
+                                                    # takes the blocked-row mask, the restricted row list and the segment offsets, and
+                                                    # on a run with nothing blocked those are None. On 2026-08-25 07:39 this row handed
+                                                    # None straight into it and printed 'D4 not measured (ValueError: object of too
+                                                    # small depth for desired array)', which reads as a defect in the shipped fuse. It
+                                                    # was nothing of the kind: that run had NO blocked rows, [deliv-fuse] had already
+                                                    # said so in those words, and there were never two different computations to time.
+                                                    _sa_d4_why = ""
+                                                    if _fm_blk_row is None:
+                                                        _sa_d4_why = ("no row is blocked on this run, so `_fm_block` is already the "
+                                                                      "identity and the fused and unfused paths are the SAME "
+                                                                      "computation \u2014 there is nothing to measure")
+                                                    elif not _fm_blk_ok.get("use"):
+                                                        _sa_d4_why = "the restricted blocked-caps path is not in use on this run"
+                                                    elif len(np.asarray(_fm_colmap).ravel()) != _sa_nrow:
+                                                        _sa_d4_why = ("the scatter does not write every column, so capping in place "
+                                                                      "would not be the same computation")
+                                                    elif not _FUSE_DELIV.get("use"):
+                                                        _sa_d4_why = ("the delivery fuse is not in use \u2014 ROUTING_DELIV_FUSE=0, or "
+                                                                      "its in-run self-check disabled it (see [deliv-fuse] above)")
+                                                    if _sa_d4_why:
+                                                        log("      D4 not timed \u2014 " + _sa_d4_why + ". This is the SHAPE OF THIS "
+                                                            "RUN, not a fault, and not a verdict on the fuse: re-read this row on a "
+                                                            "run where auto-block fires. The fuse itself is unaffected either way.")
+                                                    else:
+                                                        try:
+                                                            _sa_bufA = np.zeros((_gc_P, _sa_nrow))
+                                                            _sa_bufB = np.zeros((_gc_P, _sa_nrow))
 
-                                                        def _sa_unfused():
-                                                            _sa_bufA[:, _fm_colmap] = _gc_sh
-                                                            return _fm_elig(_fm_block(_sa_bufA))
+                                                            def _sa_unfused():
+                                                                _sa_bufA[:, _fm_colmap] = _gc_sh
+                                                                return _fm_elig(_fm_block(_sa_bufA))
 
-                                                        def _sa_fused():
-                                                            _sa_bufB[:, _fm_colmap] = _gc_sh
-                                                            _fm_block_into(_sa_bufB, _fm_blk_row,
-                                                                           _fm_bfloor, _fm_blk_rows,
-                                                                           _fm_blk_scs, _fm_blk_scc)
-                                                            return _fm_elig(_sa_bufB)
+                                                            def _sa_fused():
+                                                                _sa_bufB[:, _fm_colmap] = _gc_sh
+                                                                _fm_block_into(_sa_bufB, _fm_blk_row,
+                                                                               _fm_bfloor, _fm_blk_rows,
+                                                                               _fm_blk_scs, _fm_blk_scc)
+                                                                return _fm_elig(_sa_bufB)
 
-                                                        _sa_id_d4 = _sa_same(_sa_unfused(),
-                                                                             _sa_fused())
-                                                        _sa_d4, _sa_b4, _sa_x = _sa_run(
-                                                            "deliv-fuse", _sa_unfused,
-                                                            [("D4", _sa_fused),
-                                                             ("D4'", _sa_unfused)], _sa_R)
-                                                        _sa_fl_d4 = abs(
-                                                            (_sa_d4["D4'"][0] - 1.0) * 100.0)
-                                                        log("      A  scatter \u2192 COPY \u2192 cap \u2192 elig "
-                                                            f"(pre-19ca)      {_sa_b4:8.1f} ms  1.000x")
-                                                        _sa_verdict("D4'",
-                                                                    "SAME computation again = THIS row's FLOOR",
-                                                                    _sa_d4["D4'"], 0.0, None)
-                                                        _sa_verdict("D4",
-                                                                    "scatter INTO the capped array (19ca, shipped)",
-                                                                    _sa_d4["D4"], _sa_fl_d4, _sa_id_d4)
-                                                    except Exception as _sa_e4:   # noqa: BLE001
-                                                        log(f"      D4 not measured "
-                                                            f"({type(_sa_e4).__name__}: {_sa_e4}).")
+                                                            _sa_id_d4 = _sa_same(_sa_unfused(),
+                                                                                 _sa_fused())
+                                                            _sa_d4, _sa_b4, _sa_x = _sa_run(
+                                                                "deliv-fuse", _sa_unfused,
+                                                                [("D4", _sa_fused),
+                                                                 ("D4'", _sa_unfused)], _sa_R)
+                                                            _sa_fl_d4 = abs(
+                                                                (_sa_d4["D4'"][0] - 1.0) * 100.0)
+                                                            log("      A  scatter \u2192 COPY \u2192 cap \u2192 elig "
+                                                                f"(pre-19ca)      {_sa_b4:8.1f} ms  1.000x")
+                                                            _sa_verdict("D4'",
+                                                                        "SAME computation again = THIS row's FLOOR",
+                                                                        _sa_d4["D4'"], 0.0, None)
+                                                            _sa_verdict("D4",
+                                                                        "scatter INTO the capped array (19ca, shipped)",
+                                                                        _sa_d4["D4"], _sa_fl_d4, _sa_id_d4)
+                                                        except Exception as _sa_e4:   # noqa: BLE001
+                                                            log(f"      \u26a0 D4 not measured "
+                                                                f"({type(_sa_e4).__name__}: "
+                                                                f"{_sa_e4}) \u2014 UNEXPECTED. The "
+                                                                "preconditions above all held, so the "
+                                                                "fuse IS in use and this row should "
+                                                                "have been timeable. Report it. "
+                                                                "Measurement only \u2014 nothing that "
+                                                                "ships is affected.")
 
                                                     # ── D2: the blocked-caps copy ───────────
                                                     _sa_cov = (len(np.asarray(_fm_colmap).ravel())
@@ -10108,14 +10709,23 @@ def render():
                                                         return 100.0 * _gc_all[_sa_st][0] / _gc_sum
                                                     except Exception:      # noqa: BLE001
                                                         return None
-                                                for (_sa_lb, _sa_sig, _sa_gn, _sa_idok, _sa_stage,
-                                                     _sa_kp, _sa_fl) in (
+                                                # 19ch: an UNTIMED row gets NO VERDICT. When the L row
+                                                # declines (the cap already covers P) its placeholder
+                                                # numbers reached the verdict loop and printed
+                                                # "NOT ADOPTED \u2014 0.0% inside a \u00b10.0% floor",
+                                                # which reads as a measurement and is not one.
+                                                _sa_vrows = []
+                                                if _sa_l_timed:
+                                                    _sa_vrows.append(
                                                         ("L lanes (double the shipped cap)", _sa_sig_l,
                                                          (_sa_lmed - 1.0) * 100.0, _sa_id_l,
-                                                         "project", _sa_kp_l, _sa_lfl),
-                                                        ("D1 cross-stage fusion", _sa_sig_d1,
-                                                         _sa_g_d1, _sa_id_d1, "deliver",
-                                                         _sa_kp_d1, _sa_fl_d1)):
+                                                         "project", _sa_kp_l, _sa_lfl))
+                                                _sa_vrows.append(
+                                                    ("D1 cross-stage fusion", _sa_sig_d1,
+                                                     _sa_g_d1, _sa_id_d1, "deliver",
+                                                     _sa_kp_d1, _sa_fl_d1))
+                                                for (_sa_lb, _sa_sig, _sa_gn, _sa_idok, _sa_stage,
+                                                     _sa_kp, _sa_fl) in _sa_vrows:
                                                     _sa_sh = _sa_share(_sa_stage)
                                                     _sa_wm = (f" \u21d2 worth {_sa_gn * (_sa_sh or 0) / 100.0:.1f}% "
                                                            f"of a generation ({_sa_stage} is "
@@ -10408,6 +11018,603 @@ def render():
                                             except Exception as _dcE:  # noqa: BLE001
                                                 log(f"   [deliv-cost] skipped ({type(_dcE).__name__}: {_dcE}) — "
                                                     "MEASUREMENT ONLY, the run is unaffected.")
+
+                                            # ── [elig-cost] WHERE THE ELIGIBILITY STAGE GOES ────
+                                            # [deliv-cost] puts eligibility at ~83% of `deliver` and
+                                            # [gen-cost] puts `deliver` at ~38% of a generation, so
+                                            # this one stage is ~31% of the search — level with the
+                                            # whole band projector, which reached that share after
+                                            # five optimisations and a block that measures where its
+                                            # time goes. This stage has had one (19bs) and no such
+                                            # block, and the two ideas tried on it (D3 restriction,
+                                            # D1 cross-stage fusion) were both measured against the
+                                            # WHOLE stage.
+                                            #
+                                            # The rows group by KIND, not by stage, because the
+                                            # kinds have different CEILINGS:
+                                            #   REDUCE       5 np.add.reduceat calls. Permanently
+                                            #                un-fusable — reduceat is a SIMD
+                                            #                grouping that matches neither left- nor
+                                            #                right-association at n>=4 (measured,
+                                            #                19br), so a numba rewrite is not
+                                            #                bit-identical. THE FLOOR.
+                                            #   ELEMENTWISE  the fused mask/blend/renorm passes. The
+                                            #                only part any D1-style fusion touches.
+                                            #   ALLOC        the np.empty_like output buffers.
+                                            # REDUCE-dominated ⇒ the stage is near its floor and D1's
+                                            # +1.7% is close to all there is. ELEMENTWISE-dominated
+                                            # ⇒ there is room, and D1 is the first instance of it.
+                                            class _ec_Skip(Exception):
+                                                """DECLINING, not failing. A decline is a fact about
+                                                the run's shape (a restricted blend, the fuse off,
+                                                the block off); a failure is a defect, and they must
+                                                not print the same way — the lesson of the D4 row in
+                                                19ce. Defined HERE, not at module scope, so the
+                                                block is self-contained: an exec harness needs
+                                                nothing from outside it."""
+
+                                            try:
+                                                if os.environ.get("ROUTING_ELIG_COST", "1") == "0":
+                                                    raise _ec_Skip()
+                                                import routing_optimiser.eligibility as _ec_e
+                                                _ec_op = _fm_elig_op
+                                                _ec_cs = np.asarray(_ec_op["cell_starts"], np.intp)
+                                                _ec_cc = np.asarray(_ec_op["cell_counts"], np.intp)
+                                                _ec_co = _ec_e._co_build(_ec_cc)
+                                                _ec_P = int(_gc_P)
+                                                _ec_nr = int(_fm_nrow)
+                                                _ec_b0 = np.zeros((_ec_P, _ec_nr))
+                                                _ec_b0[:, _fm_colmap] = _gc_sh
+                                                _ec_X0 = np.ascontiguousarray(
+                                                    np.asarray(_fm_block(_ec_b0), float))
+                                                _ec_R = max(3, int(os.environ.get(
+                                                    "ROUTING_ELIG_COST_REPS", "7") or 7))
+                                                # which stages the shipped chain does not run on
+                                                # this data, so a missing row can be told from a
+                                                # forgotten one (19cj)
+                                                _ec_skipped = set()
+
+                                                # THE SHIPPED CHAIN, step by step. Mirrors
+                                                # _apply_elig_pop_rx -> _blend_pop with `co` set and
+                                                # both blends FULL-WIDTH, which is what this run
+                                                # takes (see the [eligibility] self-check line for
+                                                # the hit fractions and the 25% cut-off). If a blend
+                                                # is restricted instead, this block says so and
+                                                # declines rather than timing a path the run does
+                                                # not take.
+                                                _ec_rx = _ec_op.get("_rx")
+                                                _ec_restr = [_ec_k2 for _ec_k2 in ("w", "u")
+                                                             if _ec_rx is not None
+                                                             and (_ec_rx.get("stages")
+                                                                  or {}).get(_ec_k2) is not None]
+                                                if _ec_restr:
+                                                    log("   [elig-cost] NOT MEASURED \u2014 the "
+                                                        + "/".join(_ec_restr) + " blend(s) are "
+                                                        "RESTRICTED on this run, and this block "
+                                                        "walks the FULL-WIDTH chain. Timing the "
+                                                        "wrong one is the defect it exists to "
+                                                        "avoid. Re-read it on a run where the hit "
+                                                        "fraction is above the 25% cut-off, or set "
+                                                        "ROUTING_ELIG_RESTRICT=0.")
+                                                    raise _ec_Skip()
+                                                if not (_ec_co is not None
+                                                        and _ec_e._FU_OK.get("use")):
+                                                    log("   [elig-cost] NOT MEASURED \u2014 the "
+                                                        "fused elementwise passes are OFF "
+                                                        "(ROUTING_ELIG_FUSE=0), so the shipped "
+                                                        "chain is the 19bm numpy one and these "
+                                                        "steps do not describe it.")
+                                                    raise _ec_Skip()
+
+                                                def _ec_walk():
+                                                    """One pass of the shipped chain, timing every
+                                                    step. Allocation is HOISTED out of each fused
+                                                    call so it can be attributed — the same work,
+                                                    split, not extra work."""
+                                                    _t = {}
+
+                                                    def _tm(_k, _fn):
+                                                        _a = _gct.perf_counter()
+                                                        _r = _fn()
+                                                        _t[_k] = _t.get(_k, 0.0) + (
+                                                            _gct.perf_counter() - _a) * 1000.0
+                                                        return _r
+
+                                                    _X = np.array(_ec_X0, float, copy=True)
+                                                    if not _ec_op.get("has_ban"):
+                                                        # 19cj: RECORD the skip. On a run with no
+                                                        # ban rules the shipped chain skips this
+                                                        # stage and so does the walk — correctly —
+                                                        # but a missing row read exactly like a
+                                                        # forgotten one. A decline and an omission
+                                                        # must not look the same (19ce, D4).
+                                                        _ec_skipped.add("ban")
+                                                    if _ec_op.get("has_ban"):
+                                                        _bm = np.asarray(_ec_op["ban"], bool)
+                                                        _X = _tm("ban mask", (
+                                                            lambda _x=_X, _m=_bm:
+                                                            _x * (~_m)[None, :]))
+                                                        _sg = _tm("reduce", (
+                                                            lambda _x=_X:
+                                                            np.add.reduceat(_x, _ec_cs, axis=1)))
+                                                        _ob = _tm("alloc", (
+                                                            lambda _x=_X: np.empty_like(_x)))
+                                                        _X = _tm("ban renorm", (
+                                                            lambda _x=_X, _s=_sg, _o=_ob:
+                                                            _ec_e._fu_renorm(_x, _s, _ec_co, _o)))
+                                                    for _nm, _ic, _wf in (
+                                                            ("wallet", "w_incap", "w_wf"),
+                                                            ("USA-only", "u_incap", "u_wf")):
+                                                        if not _ec_op.get(
+                                                                "has_" + _ic.split("_")[0]):
+                                                            _ec_skipped.add(_nm)
+                                                            continue
+                                                        _in = np.asarray(_ec_op[_ic], bool)
+                                                        _wv = np.asarray(_ec_op[_wf], float)
+                                                        _oc = _tm("alloc", (
+                                                            lambda _x=_X: np.empty_like(_x)))
+                                                        _cp = _tm(_nm + " mask", (
+                                                            lambda _x=_X, _i=_in, _o=_oc:
+                                                            _ec_e._fu_mask(_x, _i, _o)))
+                                                        _sc = _tm("reduce", (
+                                                            lambda _c=_cp:
+                                                            np.add.reduceat(_c, _ec_cs, axis=1)))
+                                                        _ap = bool((_sc > 0).all())
+                                                        _bl = _tm(_nm + " blend", (
+                                                            lambda _c=_cp, _x=_X, _s=_sc,
+                                                            _w=_wv, _a=_ap:
+                                                            _ec_e._fu_blend(_c, _x, _s, _ec_co,
+                                                                            _w, _c, _a)))
+                                                        _s2 = _tm("reduce", (
+                                                            lambda _b=_bl:
+                                                            np.add.reduceat(_b, _ec_cs, axis=1)))
+                                                        _o2 = _tm("alloc", (
+                                                            lambda _x=_X: np.empty_like(_x)))
+                                                        _X = _tm(_nm + " renorm", (
+                                                            lambda _b=_bl, _s=_s2, _o=_o2:
+                                                            _ec_e._fu_renorm(_b, _s, _ec_co, _o)))
+                                                    return _t, _X
+
+                                                # ROUND-ROBIN: every step is timed once per round,
+                                                # in the same order, and the MEDIAN over rounds is
+                                                # reported. A machine that heats up over the block
+                                                # then moves every row together instead of loading
+                                                # it all onto whichever step ran last.
+                                                _ec_acc = {}
+                                                _ec_whole = []
+                                                _ec_out = None
+                                                for _ec_i in range(_ec_R):
+                                                    _ec_t, _ec_out = _ec_walk()
+                                                    for _ec_k, _ec_v in _ec_t.items():
+                                                        _ec_acc.setdefault(_ec_k, []).append(_ec_v)
+                                                    _ec_a = _gct.perf_counter()
+                                                    _ec_ref = _ec_e.apply_elig_pop(
+                                                        np.array(_ec_X0, float, copy=True), _ec_op)
+                                                    _ec_whole.append(
+                                                        (_gct.perf_counter() - _ec_a) * 1000.0)
+
+                                                def _ec_med(_v):
+                                                    _q = sorted(_v)
+                                                    _n = len(_q)
+                                                    return (_q[_n // 2] if _n % 2 else
+                                                            0.5 * (_q[_n // 2 - 1] + _q[_n // 2]))
+
+                                                # THE STEP-BY-STEP WALK MUST PRODUCE THE SHIPPED
+                                                # ANSWER, bit for bit. Otherwise it is timing
+                                                # something else and every row is worthless.
+                                                _ec_same = bool(np.array_equal(
+                                                    np.asarray(_ec_out).view(np.int64),
+                                                    np.asarray(_ec_ref).view(np.int64)))
+                                                _ec_tot = sum(_ec_med(_ec_v2) for _ec_v2 in _ec_acc.values())
+                                                _ec_w = _ec_med(_ec_whole)
+                                                log(f"   == [elig-cost] WHERE THE ELIGIBILITY STAGE "
+                                                    f"GOES \u2014 the largest single stage in the "
+                                                    f"search, split by KIND of work, at the live "
+                                                    f"width P={_ec_P} over {_ec_nr:,} row(s) and "
+                                                    f"{_ec_cc.size:,} cell(s) ({_ec_R} round-robin "
+                                                    f"round(s), read-only) ==")
+                                                if not _ec_same:
+                                                    log("      \u26a0 THE STEP WALK DID NOT REPRODUCE "
+                                                        "apply_elig_pop BIT FOR BIT, so it is timing "
+                                                        "something other than the shipped chain and "
+                                                        "every row below is void. Report this.")
+                                                # the three KINDS, which is the actionable split
+                                                _ec_kind = {"REDUCE": ["reduce"],
+                                                            "ELEMENTWISE": [
+                                                                _ec_k3 for _ec_k3 in _ec_acc
+                                                                if _ec_k3 not in ("reduce",
+                                                                                  "alloc")],
+                                                            "ALLOC": ["alloc"]}
+                                                _ec_kms = {}
+                                                for _ec_kn, _ec_ks in _ec_kind.items():
+                                                    _ec_kms[_ec_kn] = sum(
+                                                        _ec_med(_ec_acc[_ec_k]) for _ec_k in _ec_ks
+                                                        if _ec_k in _ec_acc)
+                                                for _ec_kn, _ec_why in (
+                                                        ("REDUCE", "5 np.add.reduceat call(s) \u2014 "
+                                                                   "the FLOOR: not bit-identically "
+                                                                   "re-implementable (19br)"),
+                                                        ("ELEMENTWISE", "the fused mask / blend / "
+                                                                        "renorm passes \u2014 the "
+                                                                        "only part a cross-stage "
+                                                                        "fusion can touch"),
+                                                        ("ALLOC", "np.empty_like output buffers "
+                                                                  "\u2014 a LOWER BOUND, not a "
+                                                                  "measurement: np.empty reserves "
+                                                                  "address space without touching "
+                                                                  "pages, so the first-touch faults "
+                                                                  "are paid by whichever pass first "
+                                                                  "WRITES the buffer. That cost is "
+                                                                  "inside ELEMENTWISE above")):
+                                                    _ec_v = _ec_kms.get(_ec_kn, 0.0)
+                                                    log(f"      {_ec_kn:<12}{_ec_v:8.1f} ms "
+                                                        f"({_ec_v / max(_ec_tot, 1e-9):6.1%} of the "
+                                                        f"stage)  {_ec_why}")
+                                                log("      \u2014 per step \u2014")
+                                                for _ec_k in sorted(
+                                                        _ec_acc, key=lambda _z: -_ec_med(_ec_acc[_z])):
+                                                    _ec_v = _ec_med(_ec_acc[_ec_k])
+                                                    log(f"      {_ec_k:<16}{_ec_v:8.1f} ms "
+                                                        f"({_ec_v / max(_ec_tot, 1e-9):6.1%})")
+                                                if _ec_skipped:
+                                                    log("      NOT PRESENT on this run's data: "
+                                                        + ", ".join(sorted(_ec_skipped))
+                                                        + " \u2014 the shipped chain skips "
+                                                        + ("that stage" if len(_ec_skipped) == 1
+                                                           else "those stages")
+                                                        + " here (no rule of that kind is "
+                                                        "configured), so the walk does too and "
+                                                        "there is no row for it. A MISSING row and "
+                                                        "a SKIPPED one are different facts; this "
+                                                        "line is which.")
+                                                log(f"      SUM OF PARTS {_ec_tot:8.1f} ms  vs a "
+                                                    f"SERIAL apply_elig_pop on the same input at "
+                                                    f"{_ec_w:.1f} ms \u2014 the walk accounts for "
+                                                    f"{_ec_tot / max(_ec_w, 1e-9):.1%} of it.")
+                                                # 19cj: STATE THE GAP EVERY RUN, and warn at 10%.
+                                                # The 20:35 run read 14.1% against a 15% bar, so the
+                                                # caveat stayed silent at the one moment it was
+                                                # wanted. A threshold a real run lands just under is
+                                                # the wrong threshold.
+                                                _ec_gap = (_ec_w - _ec_tot) / max(_ec_w, 1e-9)
+                                                log(f"      UNACCOUNTED {(_ec_w - _ec_tot):8.1f} ms "
+                                                    f"({_ec_gap:+.1%}) \u2014 the walk starts from a "
+                                                    "fresh copy the shipped call does not make, and "
+                                                    "the page faults for the output buffers land in "
+                                                    "the passes that write them, so a small gap is "
+                                                    "EXPECTED. WHICH WAY IT BIASES THE ANSWER: "
+                                                    "anything unaccounted here is elementwise or "
+                                                    "allocation, never a reduceat \u2014 so the "
+                                                    "ELEMENTWISE share above is a LOWER bound and "
+                                                    "the REDUCE floor an UPPER one.")
+                                                if abs(_ec_gap) > 0.10:
+                                                    log(f"      \u26a0 the walk and the whole "
+                                                        f"disagree by {abs(_ec_gap):.1%}, over the "
+                                                        "10% bar, so the rows above are a RANKING "
+                                                        "and not a budget until that is explained.")
+                                                log("      THESE ARE SERIAL MILLISECONDS: both "
+                                                    "sides of the comparison above are serial, so "
+                                                    "the split is internally consistent. What the "
+                                                    "shipped THREADED stage costs is NOT inferable "
+                                                    "from them \u2014 see [elig-par] below, which "
+                                                    "measures it. Until 19cl this line asserted "
+                                                    "that threading made it 'several times "
+                                                    "smaller'; the 2026-08-26 19:24 run printed "
+                                                    "276.9 ms serial here and 258.2 ms threaded in "
+                                                    "[deliv-cost] on the same page, so that claim "
+                                                    "was false and had never been measured on this "
+                                                    "stage.")
+                                                # ── [elig-par] 19cl: DOES THIS STAGE SCALE? ──────
+                                                # The question decides the direction of every
+                                                # remaining idea, and the two answers point
+                                                # opposite ways, so it cannot be reasoned out:
+                                                #   flat curve  -> MEMORY-BANDWIDTH bound. Each
+                                                #     full-width pass moves ~73 MB at this shape
+                                                #     and the chain makes ~10 of them. Only fewer
+                                                #     BYTES help; fused arithmetic and more threads
+                                                #     do not, and the 64.5% fusion ceiling above is
+                                                #     then optimistic rather than conservative.
+                                                #   rising curve -> the 19bo half-cores default is
+                                                #     running the search's largest stage at half
+                                                #     width, and ROUTING_ROW_PARALLEL_WORKERS is a
+                                                #     one-line win.
+                                                if os.environ.get("ROUTING_ELIG_PAR", "1") != "0":
+                                                    try:
+                                                        import routing_optimiser.rowpar as _ec_rp
+                                                        from concurrent.futures import (
+                                                            ThreadPoolExecutor as _ec_TPE)
+
+                                                        def _ec_elig1(_ec_a2):
+                                                            return _ec_e.apply_elig_pop(
+                                                                _ec_a2, _ec_op)
+
+                                                        def _ec_thr(_ec_k, _ec_ex):
+                                                            """rowpar's OWN slicing, run on a POOL
+                                                            OF OUR OWN so the shipped pool is not
+                                                            resized by a measurement."""
+                                                            _ec_sl = _ec_rp.bounds(_ec_P, _ec_k)
+                                                            _ec_o2 = np.empty_like(_ec_X0)
+
+                                                            def _ec_one(_ec_bd):
+                                                                _ec_a3, _ec_b3 = _ec_bd
+                                                                _ec_o2[_ec_a3:_ec_b3] = _ec_elig1(
+                                                                    _ec_X0[_ec_a3:_ec_b3])
+                                                            list(_ec_ex.map(_ec_one, _ec_sl))
+                                                            return _ec_o2
+
+                                                        _ec_ks = sorted({1, 2, 4, 8,
+                                                                         _ec_rp.cores()})
+                                                        _ec_ks = [_ec_k2 for _ec_k2 in _ec_ks
+                                                                  if 1 <= _ec_k2 <= _ec_P]
+                                                        _ec_reps = max(3, _ec_R // 2)
+                                                        # 19dy — TIME THE TWO SUB-PROBES, so their cost is a measurement and not my estimate.
+                                                        # MEASURED BY SCAN, not guessed: _ec_curve/_ec_bad here and _ec_wid below are read
+                                                        # ONLY by their own log lines (last reads at the [elig-par] verdict and the
+                                                        # [width-probe] ratio) and by nothing else in this file. That is what makes them
+                                                        # gateable at all. What was missing was the price, so record it.
+                                                        _ec_tp0 = _gct.perf_counter()
+                                                        _ec_curve = []
+                                                        _ec_bad = []
+                                                        with _ec_TPE(
+                                                                max_workers=max(2, max(_ec_ks)),
+                                                                thread_name_prefix="eligpar"
+                                                        ) as _ec_ex2:
+                                                            for _ec_k2 in _ec_ks:
+                                                                _ec_ts = []
+                                                                _ec_got = None
+                                                                for _ec_r2 in range(_ec_reps):
+                                                                    _ec_a4 = _gct.perf_counter()
+                                                                    _ec_got = _ec_thr(_ec_k2,
+                                                                                      _ec_ex2)
+                                                                    _ec_ts.append(
+                                                                        (_gct.perf_counter()
+                                                                         - _ec_a4) * 1000.0)
+                                                                # IDENTITY IS CHECKED, NOT
+                                                                # INHERITED. The candidate-
+                                                                # independence argument is why
+                                                                # rowpar exists and is almost
+                                                                # certainly right; this block's job
+                                                                # is to stop trusting that phrase.
+                                                                if not np.array_equal(
+                                                                        np.asarray(_ec_got).view(
+                                                                            np.int64),
+                                                                        np.asarray(_ec_ref).view(
+                                                                            np.int64)):
+                                                                    _ec_bad.append(_ec_k2)
+                                                                _ec_curve.append(
+                                                                    (_ec_k2, _ec_med(_ec_ts)))
+                                                        _ec_base = _ec_curve[0][1]
+                                                        log(f"      == [elig-par] DOES THE "
+                                                            f"ELIGIBILITY STAGE SCALE WITH THREADS? "
+                                                            f"rowpar's own row slicing at P="
+                                                            f"{_ec_P}, {_ec_reps} rep(s) each, on a "
+                                                            f"private pool ({_ec_rp.cores()} core(s) "
+                                                            f"visible) ==")
+                                                        for _ec_k2, _ec_ms in _ec_curve:
+                                                            _ec_sp = _ec_base / max(_ec_ms, 1e-9)
+                                                            log(f"         {_ec_k2:>3} worker(s): "
+                                                                f"{_ec_ms:8.1f} ms  \u00d7"
+                                                                f"{_ec_sp:5.2f}  "
+                                                                f"({_ec_sp / _ec_k2:.0%} per-worker "
+                                                                f"efficiency)"
+                                                                + ("   \u2190 SHIPPED"
+                                                                   if _ec_k2 == _ec_rp.workers()
+                                                                   else ""))
+                                                        if _ec_bad:
+                                                            log(f"         \u26a0 THREADED RESULT "
+                                                                f"DIFFERS from the serial one at "
+                                                                f"{_ec_bad} worker(s). rowpar's "
+                                                                "candidate-independence premise "
+                                                                "does not hold here and the "
+                                                                "SHIPPED threaded delivery is "
+                                                                "suspect, not just this block. "
+                                                                "Report it and set "
+                                                                "ROUTING_ROW_PARALLEL=0.")
+                                                        _ec_best = max(_ec_curve,
+                                                                       key=lambda _ec_t2:
+                                                                       _ec_base / max(_ec_t2[1],
+                                                                                      1e-9))
+                                                        _ec_bsp = _ec_base / max(_ec_best[1], 1e-9)
+                                                        _ec_mb = (_ec_P * _ec_nr * 8) / 1e6
+                                                        _ec_small = (_ec_P * _ec_nr) < getattr(
+                                                            _ec_rp, "_RP_MIN_CELLS", 1000000)
+                                                        if _ec_bsp < 1.30 and _ec_small:
+                                                            # TOO SMALL TO THREAD IS NOT THE SAME
+                                                            # FINDING AS DOES-NOT-SCALE. rowpar
+                                                            # refuses to thread below _RP_MIN_CELLS
+                                                            # at all, so on an array this size the
+                                                            # curve above describes work the
+                                                            # SHIPPED path never does, and a flat
+                                                            # result is the thread hand-off, not
+                                                            # the memory system.
+                                                            log(f"         \u21d2 INFORMATIONAL "
+                                                                f"ONLY at this size: the array is "
+                                                                f"{_ec_P}x{_ec_nr:,} "
+                                                                f"({_ec_mb:.1f} MB), below rowpar's "
+                                                                f"own "
+                                                                f"{getattr(_ec_rp, '_RP_MIN_CELLS', 1000000):,}"
+                                                                "-element threading floor \u2014 so "
+                                                                "the shipped path runs this SERIAL "
+                                                                "regardless and the flat curve is "
+                                                                "thread hand-off, NOT evidence "
+                                                                "about the memory system. Read this "
+                                                                "block on a LIVE-SHAPE run before "
+                                                                "concluding anything.")
+                                                        elif _ec_bsp < 1.30:
+                                                            log(f"         \u21d2 IT DOES NOT "
+                                                                f"SCALE: the best any thread count "
+                                                                f"reached was \u00d7{_ec_bsp:.2f} "
+                                                                f"at {_ec_best[0]} worker(s), on an "
+                                                                f"array well above rowpar's "
+                                                                "threading floor. This stage is "
+                                                                "MEMORY-BANDWIDTH bound, not CPU "
+                                                                "bound \u2014 each full-width pass "
+                                                                f"moves ~{_ec_mb:.0f} MB and the "
+                                                                "chain makes about ten of them. "
+                                                                "CONSEQUENCE FOR EVERY REMAINING "
+                                                                "IDEA: only things that move FEWER "
+                                                                "BYTES can help \u2014 a narrower "
+                                                                "dtype, or genuinely fewer passes. "
+                                                                "More threads cannot, and neither "
+                                                                "can fusing arithmetic that still "
+                                                                "reads and writes the same arrays. "
+                                                                "Read the fusion ceiling above as "
+                                                                "OPTIMISTIC, not conservative.")
+                                                        elif _ec_best[0] > _ec_rp.workers():
+                                                            log(f"         \u21d2 IT SCALES PAST "
+                                                                f"THE SHIPPED SETTING: "
+                                                                f"{_ec_best[0]} worker(s) reached "
+                                                                f"\u00d7{_ec_bsp:.2f} while the "
+                                                                f"search runs {_ec_rp.workers()}. "
+                                                                "The half-cores default (19bo) was "
+                                                                "set to stop numba's projector pool "
+                                                                "and this one descheduling each "
+                                                                "other, and that reason is about "
+                                                                "the WHOLE run, not this stage \u2014 "
+                                                                "so do NOT adopt from this block "
+                                                                "alone. Pin "
+                                                                "ROUTING_ROW_PARALLEL_WORKERS and "
+                                                                "compare END-TO-END splits/s, which "
+                                                                "is the number 19bo was defending.")
+                                                        else:
+                                                            log(f"         \u21d2 THE SHIPPED "
+                                                                f"SETTING IS ON THE KNEE: "
+                                                                f"{_ec_rp.workers()} worker(s) is "
+                                                                f"at or past the best of "
+                                                                f"\u00d7{_ec_bsp:.2f} "
+                                                                f"({_ec_best[0]} worker(s)). "
+                                                                "Nothing to gain from the thread "
+                                                                "count; the remaining ideas have to "
+                                                                "reduce the work or the bytes.")
+                                                        # ── [width-probe] 19cm ──────────────
+                                                        # [elig-par] says whether more THREADS can
+                                                        # help. If they cannot, the only lever left
+                                                        # is fewer BYTES — and the size of that
+                                                        # lever has never been measured on THIS
+                                                        # stage. Quoting the projector's float32
+                                                        # 1.598x here would be [elig-par]'s own
+                                                        # error one stage along: a ratio measured on
+                                                        # one kernel asserted about another.
+                                                        _ec_a5 = np.ascontiguousarray(_ec_X0)
+                                                        _ec_b5 = np.ascontiguousarray(
+                                                            np.asarray(_ec_X0, float) * 0.5 + 0.25)
+                                                        _ec_tp1 = _gct.perf_counter()
+                                                        _ec_wid = []
+                                                        for _ec_dt, _ec_nm2 in ((np.float64,
+                                                                                 "float64"),
+                                                                                (np.float32,
+                                                                                 "float32")):
+                                                            _ec_a6 = _ec_a5.astype(_ec_dt)
+                                                            _ec_b6 = _ec_b5.astype(_ec_dt)
+                                                            _ec_c6 = np.empty_like(_ec_a6)
+                                                            _ec_t6 = []
+                                                            for _ec_r6 in range(5):
+                                                                _ec_s6 = _gct.perf_counter()
+                                                                np.multiply(_ec_a6, _ec_b6,
+                                                                            out=_ec_c6)
+                                                                _ec_t6.append(
+                                                                    (_gct.perf_counter() - _ec_s6)
+                                                                    * 1000.0)
+                                                            _ec_wid.append(
+                                                                (_ec_nm2, _ec_med(_ec_t6),
+                                                                 3.0 * _ec_a6.nbytes / 1e6))
+                                                        log("      == [width-probe] WHAT HALVING "
+                                                            "THE BYTES COULD BUY \u2014 ONE "
+                                                            "full-width elementwise pass at the "
+                                                            "live shape, same operation, two "
+                                                            "dtypes ==")
+                                                        for _ec_nm2, _ec_ms2, _ec_gb in _ec_wid:
+                                                            log(f"         {_ec_nm2}: "
+                                                                f"{_ec_ms2:7.1f} ms for "
+                                                                f"{_ec_gb:,.0f} MB moved "
+                                                                f"(read+read+write) \u2192 "
+                                                                f"{_ec_gb / max(_ec_ms2, 1e-9):.1f}"
+                                                                " GB/s effective")
+                                                        _ec_wr = (_ec_wid[0][1]
+                                                                  / max(_ec_wid[1][1], 1e-9))
+                                                        log(f"         \u21d2 float32 is "
+                                                            f"\u00d7{_ec_wr:.2f} on this pass. "
+                                                            "READ IT AS A CEILING ON THE "
+                                                            "ELEMENTWISE PART ONLY, and not as a "
+                                                            "prediction: the reduceat calls do not "
+                                                            "halve with the dtype, the chain's "
+                                                            "masks and blends carry costs this "
+                                                            "single multiply does not, and "
+                                                            "`apply_elig_pop` currently coerces to "
+                                                            "float64 on entry, so a narrower stage "
+                                                            "is a real change and not a flag. AND "
+                                                            "IT WOULD CHANGE THE ANSWER \u2014 the "
+                                                            "same trade as the projector's "
+                                                            "ROUTING_PROJ_FLOAT32, which means the "
+                                                            "drift has to be measured on THIS side "
+                                                            "before it is worth anything.")
+                                                        if _ec_wr < 1.25:
+                                                            log("         \u21d2 AND ON THIS "
+                                                                "MACHINE IT IS NOT THE LEVER "
+                                                                "EITHER: a pass with half the bytes "
+                                                                "is barely faster, so this shape is "
+                                                                "not bandwidth-limited at the point "
+                                                                "a narrower dtype would help. If "
+                                                                "[elig-par] also read flat, the "
+                                                                "stage is limited by something "
+                                                                "neither threads nor width can "
+                                                                "reach and the next measurement "
+                                                                "should be per-pass, not "
+                                                                "per-stage.")
+                                                    except Exception as _ec_pe:  # noqa: BLE001
+                                                        log(f"      [elig-par] SKIPPED "
+                                                            f"({type(_ec_pe).__name__}: {_ec_pe}) "
+                                                            "\u2014 this is the MEASUREMENT only; "
+                                                            "the shipped stage is unaffected. But "
+                                                            "the falsified 'several times smaller' "
+                                                            "claim it replaces is gone either way, "
+                                                            "so nothing above asserts a threaded "
+                                                            "speed-up.")
+                                                else:
+                                                    log("      [elig-par] SKIPPED by "
+                                                        "ROUTING_ELIG_PAR=0 \u2014 so this run says "
+                                                        "NOTHING about whether the stage is "
+                                                        "bandwidth-bound or thread-bound, and the "
+                                                        "direction of every remaining eligibility "
+                                                        "idea is undecided here.")
+                                                _ec_floor = (_ec_kms.get("REDUCE", 0.0)
+                                                             + _ec_kms.get("ALLOC", 0.0))
+                                                _ec_ceil = 1.0 - _ec_floor / max(_ec_tot, 1e-9)
+                                                try:
+                                                    _ec_gen = 100.0 * _gc_all["deliver"][0] / _gc_sum
+                                                except Exception:      # noqa: BLE001
+                                                    _ec_gen = None
+                                                _ec_tp2 = _gct.perf_counter()
+                                                log(f"      [elig-cost] SUB-PROBE COST — [elig-par] "
+                                                    f"{(_ec_tp1 - _ec_tp0) * 1000.0:,.0f} ms · [width-probe] "
+                                                    f"{(_ec_tp2 - _ec_tp1) * 1000.0:,.0f} ms. Both are REPORTING ONLY: their "
+                                                    "results are read by their own log lines and by nothing else in the run, "
+                                                    "so gating them removes this cost and nothing else.")
+                                                log(f"      \u21d2 THE CEILING ON EVERY REMAINING "
+                                                    f"IDEA: if every elementwise pass became FREE, "
+                                                    f"this stage would still cost {_ec_floor:.1f} ms "
+                                                    f"of {_ec_tot:.1f} \u2014 so the most any "
+                                                    f"fusion can ever return is {_ec_ceil:.1%} of "
+                                                    "the stage"
+                                                    + ("" if _ec_gen is None else
+                                                       f", and `deliver` is {_ec_gen:.1f}% of a "
+                                                       f"generation with eligibility the bulk of "
+                                                       f"it. Multiply before believing any "
+                                                       f"proposal.")
+                                                    + " D1 cross-stage fusion measured +1.7% of the "
+                                                      "stage; read that against this ceiling, not "
+                                                      "against zero.")
+                                                log("      (read-only: run on a copy of the "
+                                                    "delivered split and discarded. Nothing here "
+                                                    "reaches the split, the bands or the export. "
+                                                    "ROUTING_ELIG_COST=0 skips it, "
+                                                    "ROUTING_ELIG_COST_REPS sets the rounds.)")
+                                            except _ec_Skip:
+                                                pass
+                                            except Exception as _ecE:  # noqa: BLE001
+                                                log(f"   [elig-cost] skipped ({type(_ecE).__name__}: "
+                                                    f"{_ecE}) \u2014 MEASUREMENT ONLY, the run is "
+                                                    "unaffected.")
 
                                     except Exception as _gcE:  # noqa: BLE001
                                         log(f"   [gen-cost] skipped ({type(_gcE).__name__}: {_gcE}) — "
@@ -10851,6 +12058,7 @@ def render():
                                                       f"({type(_ke2).__name__}) — switch-off gating defaulted")
                                 _rec_notes.append(f"{len(_rec_excl)} switched-off vampMid(s), "
                                                   f"month_0={_rec_m0}, scoped_rpgts={len(_rec_scoped)}")
+                                _substep("④·5  DELIVER AND RECONCILE")
                                 log("   [reconcile] tab-3 parity: " + " · ".join(_rec_notes))
                                 # Ask impact_calcs to stash the per-row numerator / per-cell
                                 # denominator for the banded TXN MIDs (see the [denom] block).
@@ -10864,9 +12072,20 @@ def render():
                                 except Exception:  # noqa: BLE001
                                     pass
                                 if _rec_ep and os.path.exists(_rec_pp):
+                                    # 19df — max_share. THIS is the call that produces the
+                                    # AUTHORITATIVE delivered M5 and therefore the RECONCILIATION
+                                    # ERROR; tab3_impact's three sites were wired first and this
+                                    # one was missed, so the 2026-08-29 07:45 run reproduced 829
+                                    # exactly while the log claimed the cap was on. Sourced from
+                                    # `_rec_wc`, the SAME dict the enforced_prop_items call at
+                                    # :11607 reads, so enforcement and delivery cannot disagree
+                                    # about what the cap is.
                                     _rec_g = _rec_cvp(_rec_pp, _rec_ep, _rec_excl, _rec_ke, _rec_m0,
                                                       _rec_scoped,
-                                                      exploration_floor=_rec_floor)
+                                                      exploration_floor=_rec_floor,
+                                                      capability=_deliv_cap,   # 19du
+                                                      vamp_off_mids=_vamp_off_mids,   # 19dw
+                                                      max_share=float(_rec_wc.get("max_share", 0.97)))
                                     _rec_p5 = _rec_g[_rec_g["period"] == 5]
                                     _rec_vl = {str(k).strip().lower(): float(v) for k, v in
                                                _rec_p5.groupby("vampMid")["VAMP_Post"].sum().items()}
@@ -11454,6 +12673,601 @@ def render():
                                                                  "difference is elsewhere."
                                                                  if _rn7 > 0.9 * max(_rc7, 1e-9)
                                                                  else "   ⇒ cap explains PART of it.")))
+                                            # ── [vterms-is] THE SAME DECOMPOSITION, ON THE VAMP BANDS ──
+                                            # 19dg. Everything above is gated on `metric == "txn"`
+                                            # (:12376) and [denom] below covers only the banded TXN
+                                            # MIDs. [rung] has read TXN 0% / VAMP 100% on every run
+                                            # since 19cu — so the only two blocks that diff the two
+                                            # projectors TERM BY TERM have only ever been pointed at
+                                            # the metric that already reconciles. The 829 has never
+                                            # been decomposed at all: it has only been RANKED by three
+                                            # whole-book counterfactuals, and that ranking is what sent
+                                            # 2026-08-29 after the max-share cap, which turned out to
+                                            # be worth 1.2 units at full scale because enforced_prop_items
+                                            # already caps the shares before delivery sees them.
+                                            #
+                                            # The DELIVERED side already existed — impact_calcs stashes
+                                            # _LAST_VAMP_TERMS (held/out/inn/pool per (midl, period)) on
+                                            # every call. What was missing is the IN-SEARCH side. This
+                                            # replays the kernel's VAMP path (band_projection 299-380)
+                                            # in numpy, from the SAME `_psh` the TXN replay above already
+                                            # built — so both sides are decomposed on identical proposed
+                                            # shares and any Δ is the projection, not the split.
+                                            #
+                                            # HOW TO READ IT, which is the whole point of building it:
+                                            #   MOVED-OUT Δ ≈ 0, MOVED-IN Δ large ⇒ the two sides agree
+                                            #     how much VAMP LEAVES and disagree where it LANDS: the
+                                            #     recipient share (vshare / age-renorm), not the movable
+                                            #     fraction.
+                                            #   MOVED-OUT Δ large ⇒ pro_rata x fcp1_frac itself differs
+                                            #     — a per-row INPUT, not a routing effect.
+                                            #   HELD Δ large with MOVED-OUT ≈ 0 ⇒ the conservation gate
+                                            #     (psum>0 AND vpsum>0) fires on different rows.
+                                            #   POOL Δ ⇒ the two sides disagree on the pool itself.
+                                            try:
+                                                import routing_optimiser.band_projection as _bpm_v
+                                                _dvt = getattr(_ic_t, "_LAST_VAMP_TERMS", None)
+                                                _vcp = np.asarray(getattr(_pj, "_vcpos", []), float)
+                                                _porg = np.asarray(getattr(_pj, "_pc_org", []), np.int64)
+                                                if _dvt is None or not _vcp.size or not _porg.size:
+                                                    log("      [vterms-is] skipped — in-search VAMP "
+                                                        "arrays or the delivered stash unavailable.")
+                                                else:
+                                                    # (1) vshare from the CAPPED routed share, over
+                                                    #     VAMP-ELIGIBLE rows only (19cu/19db `_vcpos`).
+                                                    _vok = (_psum[_gc] > 0.0) & (_vcp > 0.5)
+                                                    _vps = np.bincount(
+                                                        _gc, weights=np.where(_vok, _psh, 0.0),
+                                                        minlength=_nc)
+                                                    _vsh = np.where(
+                                                        _vok & (_vps[_gc] > 0.0),
+                                                        _psh / np.where(_vps[_gc] > 0.0, _vps[_gc], 1.0),
+                                                        0.0)
+                                                    # (2) 19cy age-by-age renormalise over (cell,per,t).
+                                                    _pgk = np.asarray(_pj._pc_gk, np.int64)
+                                                    _pvc = np.asarray(_pj._pc_vc, float)
+                                                    _ppl = np.asarray(_pj._pc_pool, float)
+                                                    # The held factor is NOT an attribute — `_heldfac`
+                                                    # is a LOCAL inside `_nbcache`
+                                                    # (band_projection:1435). Rebuild it the same way,
+                                                    # APPEARANCE-timed: fcp[ORIGIN] x
+                                                    # pro_rata[APPEARANCE], zero where the origin row
+                                                    # does not exist. 19cw keyed this on the origin
+                                                    # pro_rata and was reverted — do not "correct" it.
+                                                    _oiv = np.where(_porg >= 0, _porg, 0)
+                                                    _phf = np.where(
+                                                        _porg >= 0,
+                                                        np.asarray(_pj._fcp, float)[_oiv]
+                                                        * np.asarray(_pj._pc_prapp, float), 0.0)
+                                                    _lv = _porg >= 0
+                                                    _ngk = (int(_pgk.max()) + 1) if _pgk.size else 1
+                                                    _gks = np.bincount(
+                                                        _pgk[_lv], weights=_vsh[_porg[_lv]],
+                                                        minlength=_ngk)
+                                                    _aron = bool(getattr(_bpm_v, "_AGE_RENORM", True))
+                                                    # A group with no live recipient PASSES THROUGH:
+                                                    # the kernel sets o = -1, so held = vc and nothing
+                                                    # moves. Mirrored exactly, or HELD would be wrong
+                                                    # on precisely the rows the shortfall lives in.
+                                                    _okv = _lv & ((_gks[_pgk] > 1e-12) if _aron
+                                                                  else np.ones(len(_pgk), bool))
+                                                    _gsm = (np.where(_gks[_pgk] > 1e-12, _gks[_pgk], 1.0)
+                                                            if _aron else np.ones(len(_pgk), float))
+                                                    _sfo = np.where(_okv, _porg, 0)
+                                                    _cgv = np.asarray(_pj._gcode, np.int64)[_sfo]
+                                                    # 19aq conservation gate: move only if the ORIGIN
+                                                    # cell is routed AND has a VAMP recipient.
+                                                    _mpc = np.where(
+                                                        _okv & (_psum[_cgv] > 0.0) & (_vps[_cgv] > 0.0),
+                                                        _phf, 0.0)
+                                                    _pshv = np.where(_okv, _vsh[_sfo] / _gsm, 0.0)
+                                                    _vheld = _pvc * (1.0 - _mpc)
+                                                    _vout = _pvc * _mpc
+                                                    _vin = _ppl * _pshv
+                                                    _aggv = {}
+                                                    for _v19_q, _v19_bc in enumerate(
+                                                            np.asarray(_pj._pc_bandcol).tolist()):
+                                                        _bm, _bp = _pj.band_order[_v19_bc]
+                                                        _v19_k = (str(_bm).strip().lower(), int(_bp))
+                                                        _v19_a = _aggv.get(_v19_k) or [0.0, 0.0, 0.0, 0.0]
+                                                        _v19_a[0] += float(_vheld[_v19_q])
+                                                        _v19_a[1] += float(_vout[_v19_q])
+                                                        _v19_a[2] += float(_vin[_v19_q])
+                                                        _v19_a[3] += float(_ppl[_v19_q])
+                                                        _aggv[_v19_k] = _v19_a
+                                                    _dvm = {(str(_v19_r).strip().lower(), int(_p)): _row
+                                                            for (_v19_r, _p), _row in
+                                                            _dvt.set_index(["midl", "per"]).iterrows()}
+                                                    log("      [vterms-is] VAMP formula per MID, SAME "
+                                                        "proposed shares into both M5 models — the "
+                                                        "decomposition [terms] gives TXN, on the 100% "
+                                                        "of the reconciliation error that is VAMP:")
+                                                    _v19_hv = False
+                                                    # 19dh: accumulate both components so the
+                                                    # summary below MEASURES whether the recipient
+                                                    # term nets to zero rather than asserting it.
+                                                    _mv_tot = _rc_tot = 0.0
+                                                    _mv_abs = _rc_abs = 0.0
+                                                    for _sp8 in (getattr(_eb, "specs", []) or []):
+                                                        if str(getattr(_sp8, "metric", "")
+                                                               ).lower() == "txn":
+                                                            continue
+                                                        _ml8 = str(getattr(_sp8, "midl", "")
+                                                                   ).strip().lower()
+                                                        for _mo8 in (getattr(_sp8, "months", ()) or ()):
+                                                            _ai8 = _aggv.get((_ml8, int(_mo8)))
+                                                            _di8 = _dvm.get((_ml8, int(_mo8)))
+                                                            if _ai8 is None or _di8 is None:
+                                                                continue
+                                                            # SELF-CHECK, same rule as [terms]: the
+                                                            # replay must reproduce the band value the
+                                                            # projector itself reported, or the
+                                                            # decomposition is wrong and is suppressed
+                                                            # rather than printed and believed.
+                                                            _v19_ck8 = _enf_by_midl.get(_ml8)
+                                                            _rc8 = _ai8[0] + _ai8[2]
+                                                            if _v19_ck8 is not None and abs(
+                                                                    _rc8 - float(_v19_ck8)) > max(
+                                                                    2.0, 0.002 * abs(float(_v19_ck8))):
+                                                                log(f"      [vterms-is] ⚠ {_ml8} m{_mo8}: "
+                                                                    f"replay {_rc8:,.0f} != reported "
+                                                                    f"{float(_v19_ck8):,.0f} — the VAMP "
+                                                                    "reconstruction does NOT match the "
+                                                                    "projector, so it is suppressed for "
+                                                                    "this band rather than read as "
+                                                                    "evidence.")
+                                                                continue
+                                                            if not _v19_hv:
+                                                                log("      [vterms-is]   MID / month  "
+                                                                    "         HELD        MOVED-OUT"
+                                                                    "      MOVED-IN         POOL")
+                                                                _v19_hv = True
+                                                            _dh = float(_di8.get("held", 0.0))
+                                                            _do = float(_di8.get("out", 0.0))
+                                                            _dn8 = float(_di8.get("inn", 0.0))
+                                                            _dp = float(_di8.get("pool", 0.0))
+                                                            log(f"      [vterms-is]   {_ml8[:22]:<22} "
+                                                                f"m{_mo8}")
+                                                            log(f"      [vterms-is]     in-search "
+                                                                f"{_ai8[0]:>12,.0f} {_ai8[1]:>13,.0f} "
+                                                                f"{_ai8[2]:>13,.0f} {_ai8[3]:>13,.0f}")
+                                                            log(f"      [vterms-is]     delivered "
+                                                                f"{_dh:>12,.0f} {_do:>13,.0f} "
+                                                                f"{_dn8:>13,.0f} {_dp:>13,.0f}")
+                                                            log(f"      [vterms-is]     Δ         "
+                                                                f"{_dh - _ai8[0]:>+12,.0f} "
+                                                                f"{_do - _ai8[1]:>+13,.0f} "
+                                                                f"{_dn8 - _ai8[2]:>+13,.0f} "
+                                                                f"{_dp - _ai8[3]:>+13,.0f}")
+                                                            # 19dh — REPORT THE SPLIT, DO NOT CLASSIFY IT.
+                                                            # The first version of this line was a chain of
+                                                            # patterns ending in an `else` whose TEXT read
+                                                            # "all three terms agree to <2 units". On the
+                                                            # 2026-08-29 09:06 run that else fired on bands
+                                                            # reading Δ HELD +39 / OUT -39 / IN +117 and
+                                                            # announced agreement — the fall-through was
+                                                            # doing double duty as a verdict, which is the
+                                                            # same class of defect as a guard that reports
+                                                            # intent instead of fact.
+                                                            #
+                                                            # POST = HELD + MOVED-IN, so ΔHELD + ΔMOVED-IN
+                                                            # IS this band's drift, exactly. Print the two
+                                                            # components and their sum, and let the reader
+                                                            # see the arithmetic close. The identity is
+                                                            # also self-checked below: if the two do not
+                                                            # sum to the drift, the decomposition is wrong
+                                                            # and says so rather than narrating.
+                                                            _mvf = _dh - _ai8[0]      # movable-fraction part
+                                                            _rcp = _dn8 - _ai8[2]     # recipient-share part
+                                                            _swap = abs((_do - _ai8[1]) + _mvf)
+                                                            log(f"      [vterms-is]     ⇒ drift {_mvf + _rcp:+,.0f} "
+                                                                f"= MOVABLE-FRACTION {_mvf:+,.0f} "
+                                                                f"+ RECIPIENT-SHARE {_rcp:+,.0f}")
+                                                            log("      [vterms-is]       " + (
+                                                                "HELD and MOVED-OUT are EQUAL AND OPPOSITE "
+                                                                f"(±{abs(_mvf):,.0f}), which can only mean "
+                                                                "the two sides use a DIFFERENT movable "
+                                                                "fraction (pro_rata x fcp1_frac) on the "
+                                                                "same rows — delivery holds what the "
+                                                                "search moves. A per-row INPUT, not "
+                                                                "routing."
+                                                                if abs(_mvf) > 2.0 and _swap <= max(1.0, 0.05 * abs(_mvf))
+                                                                else
+                                                                "HELD and MOVED-OUT do NOT offset "
+                                                                f"(residual {_swap:,.0f}), so this is not a "
+                                                                "clean movable-fraction difference — read "
+                                                                "the raw terms above, not this line."
+                                                                if abs(_mvf) > 2.0
+                                                                else
+                                                                "the movable fraction agrees on this band "
+                                                                "(<2 units); the drift is entirely in WHERE "
+                                                                "the pool lands."))
+                                                            # NOT self-checked against `_enf_by_midl` here:
+                                                            # ΔHELD + ΔMOVED-IN == delivered POST − scored
+                                                            # POST is an ALGEBRAIC IDENTITY, so such a check
+                                                            # can never fail and would be decoration. The
+                                                            # real check is the replay-vs-projector test
+                                                            # above, which CAN fail and suppresses the band.
+                                                            _mv_tot += _mvf
+                                                            _rc_tot += _rcp
+                                                            _mv_abs += abs(_mvf)
+                                                            _rc_abs += abs(_rcp)
+                                                    # 19di — WHICH GATE. The movable-fraction column says
+                                                    # delivery holds what the search moves; this says WHY.
+                                                    # impact_calcs re-derives the movable VAMP with ONE
+                                                    # gate lifted at a time (_LAST_MOVE_GATES), so the
+                                                    # variant that lands on the SEARCH's MOVED-OUT names
+                                                    # the gate. If several land, or none does, the cause is
+                                                    # not a gate — and this block says THAT rather than
+                                                    # nominating the nearest one, which is how the
+                                                    # max-share cap absorbed three runs.
+                                                    if _v19_hv:
+                                                        _mg = getattr(_ic_t, "_LAST_MOVE_GATES", None)
+                                                        if _mg is None or not len(_mg):
+                                                            log("      [vterms-is] gate attribution "
+                                                                "unavailable (impact_calcs pre-19di).")
+                                                        else:
+                                                            _mgi = _mg.set_index(["midl", "per"])
+                                                            _is_out = sum(_v19_a[1] for _v19_a in _aggv.values())
+                                                            log("      [vterms-is] WHICH GATE makes "
+                                                                "delivery's movable fraction smaller? Each "
+                                                                "row lifts ONE gate and changes nothing "
+                                                                "else; the one landing on the SEARCH's "
+                                                                "MOVED-OUT is the cause:")
+                                                            log(f"      [vterms-is]   SEARCH MOVED-OUT "
+                                                                f"{_is_out:12,.0f}   (the target)")
+                                                            _v19_rows = []
+                                                            for _cn, _v19_lbl in (
+                                                                    ("shipped", "delivery as shipped"),
+                                                                    ("no_keep", "without `_keep>0` (switched-"
+                                                                     "off vampMid)"),
+                                                                    ("no_scope", "without unscoped-RPGT "
+                                                                     "zeroing"),
+                                                                    ("no_pass", "without no-recipient "
+                                                                     "passthrough"),
+                                                                    ("no_gates", "without ALL THREE")):
+                                                                _v19_tv = 0.0
+                                                                for _v19_k in _aggv:
+                                                                    try:
+                                                                        _v19_tv += float(_mgi.loc[_v19_k, _cn])
+                                                                    except Exception:  # noqa: BLE001
+                                                                        pass
+                                                                _v19_rows.append((_cn, _v19_lbl, _v19_tv))
+                                                                log(f"      [vterms-is]   {_v19_lbl:<42} "
+                                                                    f"{_v19_tv:12,.0f}   "
+                                                                    f"(vs search {_v19_tv - _is_out:+,.0f})")
+                                                            _ship = dict((r[0], r[2]) for r in _v19_rows)["shipped"]
+                                                            _v19_tol = max(5.0, 0.10 * abs(_ship - _is_out))
+                                                            _v19_cands = [r for r in _v19_rows
+                                                                      if r[0] not in ("shipped", "no_gates")
+                                                                      and abs(r[2] - _is_out) <= _v19_tol]
+                                                            # 19dv: when the SHIPPED delivery figure already equals the search's, there is no
+                                                            # movable-fraction gap left and every variant trivially 'lands on the search'. The
+                                                            # old text then read 'MORE THAN ONE variant ... a per-row diff is needed', which
+                                                            # describes an unresolved problem on a run that has resolved it. Say nothing to
+                                                            # attribute, and say it FIRST.
+                                                            if abs(_ship - _is_out) <= max(2.0, 1e-6 * max(abs(_is_out), 1.0)):
+                                                                log("      [vterms-is]   ⇒ NOTHING TO ATTRIBUTE: delivery's shipped "
+                                                                    f"MOVED-OUT ({_ship:,.0f}) already equals the search's "
+                                                                    f"({_is_out:,.0f}). The gates below are listed for completeness; "
+                                                                    "none of them is closing a gap, because there is none.")
+                                                            else:
+                                                                log("      [vterms-is]   ⇒ " + (
+                                                                        f"{_v19_cands[0][1]} CLOSES IT — that gate is the "
+                                                                    "cause of the movable-fraction difference, "
+                                                                    "and giving the SEARCH the same gate is the "
+                                                                    "fix."
+                                                                    if len(_v19_cands) == 1 else
+                                                                    "MORE THAN ONE variant lands on the search ("
+                                                                    + ", ".join(c[0] for c in _v19_cands)
+                                                                    + ") — they overlap, so this cannot name a "
+                                                                    "single cause and a per-row diff is needed."
+                                                                    if len(_v19_cands) > 1 else
+                                                                    "NO single gate closes it — the movable-"
+                                                                    "fraction difference is NOT one of these "
+                                                                    "three, so do not attribute it to any of "
+                                                                    "them."))
+                                                        # 19dl — WHERE DO THE TWO PASSTHROUGHS
+                                                        # DISAGREE? Part A is proven to be this
+                                                        # gate; this names the groups. Both sides
+                                                        # hold when their per-group recipient sum
+                                                        # is zero, and they reach different sums.
+                                                        # "The origin row does not exist" is
+                                                        # already ELIMINATED (all 573,831 movable
+                                                        # groups have origins for every row), so
+                                                        # what is left is different ROWS or
+                                                        # different SHARES — and only the live run
+                                                        # has both sides to compare.
+                                                        _v19_pt = getattr(_ic_t, "_LAST_PASSTHRU", None)
+                                                        _gkeys = getattr(_pj, "_pc_gk_keys", None)
+                                                        if _v19_pt is None or _gkeys is None or not len(_gkeys):
+                                                            log("      [vterms-is] passthrough "
+                                                                "comparison unavailable — "
+                                                                + ("band_projection has no "
+                                                                   "_pc_gk_keys, which means a "
+                                                                   "PRE-19dl module is loaded: "
+                                                                   "Streamlit does NOT re-import "
+                                                                   "src/, so STOP run.command and "
+                                                                   "start it again"
+                                                                   if _gkeys is None or not len(_gkeys)
+                                                                   else "impact_calcs did not stash "
+                                                                   "_LAST_PASSTHRU"))
+                                                        else:
+                                                            # the SEARCH's own fired set, on the
+                                                            # same key strings delivery uses
+                                                            # NORMALISE BOTH SIDES' KEYS. The two
+                                                            # are built independently: the search
+                                                            # from Pc (per/t are ints -> "5"),
+                                                            # delivery from pp (period went through
+                                                            # to_numeric -> "5.0"), and the case of
+                                                            # rpgt/pmp/ctry differs between frames.
+                                                            # Compared raw they would share almost
+                                                            # NO keys, the block would report "they
+                                                            # never agree", and that would look like
+                                                            # a finding instead of a formatting bug.
+                                                            def _ptn(_v19_k):
+                                                                _pp7 = str(_v19_k).split("|")
+                                                                if len(_pp7) != 7:
+                                                                    return str(_v19_k).strip().lower()
+                                                                _o7 = [" ".join(str(_v19_x).strip().split()).lower()
+                                                                       for _v19_x in _pp7[:5]]
+                                                                for _v19_x in _pp7[5:7]:
+                                                                    try:
+                                                                        _o7.append(str(int(float(_v19_x))))
+                                                                    except Exception:  # noqa: BLE001
+                                                                        _o7.append(str(_v19_x).strip().lower())
+                                                                return "|".join(_o7)
+
+                                                            _sk = np.asarray([_ptn(_v19_x) for _v19_x in _gkeys],
+                                                                             dtype=object)
+                                                            # 19dp — THE TWO "MOVABLE" DEFINITIONS WERE NOT THE SAME, AND THAT IS MINE.
+                                                            # Delivery's universe is built from `_gf x _pr_app`, which is GATED: the origin
+                                                            # cell routed, the vampMid switched on, the RPGT in scope. The search's was
+                                                            # built from `_phf` alone — fcp[origin] x pro_rata[appearance] with NO gate but
+                                                            # "an origin row exists". So the search's set contained rows it would never
+                                                            # actually move, and the 19dn field diff attributed that to the PROJECTORS when
+                                                            # it was an artefact of my two definitions: the 4 unscoped RPGTs and the 2,878
+                                                            # search-only BINs are exactly what an ungated definition picks up.
+                                                            #
+                                                            # Gate it on what the search ACTUALLY gates on (band_projection:2394, the 19aq
+                                                            # conservation gate): the origin cell is routed AND has a VAMP recipient. NOT on
+                                                            # the age renormalise — that IS the passthrough under test, and including it
+                                                            # would make the universe circular. Delivery avoids the same circularity by
+                                                            # computing `_pt_mv` before its passthrough line; this now matches that.
+                                                            #
+                                                            # `_keep` and RPGT scope stay UNGATED here on purpose: the search genuinely has
+                                                            # no such gates, and that is a real difference the comparison should keep showing.
+                                                            _v19_g0 = np.asarray(_pj._gcode, np.int64)[np.where(_lv, _porg, 0)]
+                                                            _v19_mvf = np.where(_lv & (_psum[_v19_g0] > 0.0) & (_vps[_v19_g0] > 0.0),
+                                                                                _phf, 0.0)
+                                                            _mv_s = np.bincount(
+                                                                _pgk, weights=_pvc * _v19_mvf,
+                                                                minlength=len(_sk))
+                                                            _gks_s = np.bincount(
+                                                                _pgk[_lv], weights=_vsh[_porg[_lv]],
+                                                                minlength=len(_sk))
+                                                            _s_mov = _mv_s > 0.0
+                                                            _s_fired = set(
+                                                                _sk[_s_mov & (_gks_s <= 1e-12)]
+                                                                .astype(str).tolist())
+                                                            _d_fired = {_ptn(_v19_x) for _v19_x
+                                                                        in (_v19_pt.get("fired") or ())}
+                                                            _both = _s_fired & _d_fired
+                                                            _d_only = _d_fired - _s_fired
+                                                            _s_only = _s_fired - _d_fired
+                                                            # 19dn — ARE THE TWO SIDES EVEN COMPARABLE? A key-format bug and a
+                                                            # real total disagreement produce the SAME counts, so the counts
+                                                            # cannot separate them. The movable UNIVERSES can: if those overlap,
+                                                            # the keys line up and the fired difference is substance. If they do
+                                                            # not, the field-by-field diff below names WHICH component differs,
+                                                            # which is the difference between "the keys do not match" and a
+                                                            # one-line fix.
+                                                            _v19_dsm = None      # 19do: set only when the restriction can be built
+                                                            _v19_dall = {_ptn(_v19_x) for _v19_x in (_v19_pt.get("all") or ())}
+                                                            _v19_sall = set(_sk[_s_mov].astype(str).tolist())
+                                                            if not _v19_dall:
+                                                                log("      [vterms-is] KEY COMPARABILITY unavailable — delivery "
+                                                                    "stashed no movable universe, which means a PRE-19dn "
+                                                                    "impact_calcs is loaded: restart run.command.")
+                                                            else:
+                                                                _v19_ub = len(_v19_dall & _v19_sall)
+                                                                log("      [vterms-is] KEY COMPARABILITY — movable universes: "
+                                                                    f"BOTH {_v19_ub:,} · delivery-only "
+                                                                    f"{len(_v19_dall - _v19_sall):,} · search-only "
+                                                                    f"{len(_v19_sall - _v19_dall):,}")
+                                                                log("      [vterms-is]   ⇒ " + (
+                                                                    "the two sides enumerate DIFFERENT groups entirely, so the "
+                                                                    "fired-set counts below compare nothing. The key has to be "
+                                                                    "fixed before any of this is evidence."
+                                                                    if not _v19_ub else
+                                                                    f"the keys DO line up on {_v19_ub:,} group(s), so a zero "
+                                                                    "fired-set overlap would be a REAL disagreement, not a "
+                                                                    "formatting bug."))
+
+                                                                def _v19_split(_v19_ks):
+                                                                    """Distinct values per key component, so a mismatch can be
+                                                                    attributed to ONE field instead of to 'the key'."""
+                                                                    _v19_o = [set() for _v19_j in range(7)]
+                                                                    for _v19_k9 in _v19_ks:
+                                                                        _v19_p9 = str(_v19_k9).split("|")
+                                                                        if len(_v19_p9) != 7:
+                                                                            continue
+                                                                        for _v19_j in range(7):
+                                                                            _v19_o[_v19_j].add(_v19_p9[_v19_j])
+                                                                    return _v19_o
+
+                                                                _v19_df = _v19_split(_v19_dall)
+                                                                _v19_sf = _v19_split(_v19_sall)
+                                                                _v19_any = False
+                                                                for _v19_i, _v19_nm in enumerate(("cur", "bin", "rpgt", "pmp",
+                                                                                                  "ctry", "per", "t")):
+                                                                    _v19_do = sorted(_v19_df[_v19_i] - _v19_sf[_v19_i])
+                                                                    _v19_so = sorted(_v19_sf[_v19_i] - _v19_df[_v19_i])
+                                                                    if not _v19_do and not _v19_so:
+                                                                        continue
+                                                                    _v19_any = True
+                                                                    log(f"      [vterms-is]   field {_v19_nm:<4} DIFFERS — "
+                                                                        f"delivery-only {len(_v19_do):,} value(s) "
+                                                                        f"{[str(_v19_v)[:18] for _v19_v in _v19_do[:4]]} · "
+                                                                        f"search-only {len(_v19_so):,} value(s) "
+                                                                        f"{[str(_v19_v)[:18] for _v19_v in _v19_so[:4]]}")
+                                                                if not _v19_any:
+                                                                    log("      [vterms-is]   every field's VALUE SET agrees on both "
+                                                                        "sides, so the mismatch is not a spelling of one component "
+                                                                        "— it is which COMBINATIONS each side carries.")
+                                                                log("      [vterms-is]   RAW — delivery "
+                                                                    f"{[str(_v19_v) for _v19_v in (_v19_pt.get('sample') or [])[:2]]}")
+                                                                log("      [vterms-is]   RAW — search   "
+                                                                    f"{[str(_v19_v) for _v19_v in list(_gkeys)[:2]]}")
+                                                                # 19do — THE ONLY POPULATION THE COMPARISON IS VALID ON. The
+                                                                # search scaffolds the BANDED months only (band_projection:1285,
+                                                                # pc_band filters Pc on (midl, per) in the band set), so every
+                                                                # other period of delivery's universe is out of scope by design.
+                                                                # Take the search's OWN period set rather than hard-coding M5, so
+                                                                # this stays right if a rule is ever written on another month.
+                                                                _v19_per = {str(_v19_k9).split("|")[5]
+                                                                            for _v19_k9 in _v19_sall
+                                                                            if len(str(_v19_k9).split("|")) == 7}
+                                                                _v19_d5 = {_v19_k9 for _v19_k9 in _v19_dall
+                                                                           if len(str(_v19_k9).split("|")) == 7
+                                                                           and str(_v19_k9).split("|")[5] in _v19_per}
+                                                                _v19_com = _v19_d5 & _v19_sall
+                                                                _v19_dh = {_v19_k9 for _v19_k9 in _d_fired if _v19_k9 in _v19_com}
+                                                                _v19_sh = {_v19_k9 for _v19_k9 in _s_fired if _v19_k9 in _v19_com}
+                                                                _v19_dsm = _v19_dh - _v19_sh
+                                                                log("      [vterms-is] RESTRICTED to the banded month(s) "
+                                                                    f"{sorted(_v19_per)} AND to groups BOTH sides carry "
+                                                                    f"({len(_v19_com):,} group(s)) — the only population where "
+                                                                    "'one side holds it, the other moves it' means what it says:")
+                                                                log(f"      [vterms-is]   BOTH hold                  {len(_v19_dh & _v19_sh):9,}")
+                                                                log(f"      [vterms-is]   DELIVERY holds, search MOVES {len(_v19_dsm):9,}")
+                                                                log(f"      [vterms-is]   SEARCH holds, delivery MOVES {len(_v19_sh - _v19_dh):9,}")
+                                                                # How much of each side's fired set survives the restriction? If a
+                                                                # side's holds live almost entirely OUTSIDE the common population,
+                                                                # then its count in the unrestricted block above is a description
+                                                                # of the universe difference and not a disagreement at all.
+                                                                log(f"      [vterms-is]   of the search's {len(_s_fired):,} held group(s), "
+                                                                    f"{len(_v19_sh):,} are in the common population and "
+                                                                    f"{len(_s_fired) - len(_v19_sh):,} are groups delivery has no "
+                                                                    "movable row for; of delivery's "
+                                                                    f"{len(_d_fired):,}, {len(_v19_dh):,} and "
+                                                                    f"{len(_d_fired) - len(_v19_dh):,} respectively")
+                                                                log("      [vterms-is]   ⇒ " + (
+                                                                    "on the common population the two passthroughs AGREE on every "
+                                                                    "group, so Part A is NOT which groups are held — it is the "
+                                                                    "SHARE each side attaches inside groups they both move. Look "
+                                                                    "at vshare, not the gate."
+                                                                    if not _v19_dsm else
+                                                                    f"{len(_v19_dsm):,} group(s) are held by delivery and moved by "
+                                                                    "the search while BOTH sides carry them. These are the only "
+                                                                    "candidates for Part A, and the examples below are drawn from "
+                                                                    "them."))
+                                                            # UNRESTRICTED, over each side's WHOLE movable universe. 19dn
+                                                            # measured those universes as largely disjoint, so these three
+                                                            # numbers describe the POPULATION difference and are not a
+                                                            # disagreement between the two passthroughs. The restricted
+                                                            # block above is the one to read.
+                                                            log("      [vterms-is] PASSTHROUGH "
+                                                                "AGREEMENT over movable groups "
+                                                                f"(delivery {_v19_pt.get('n_movable', 0):,} "
+                                                                f"· search {int(_s_mov.sum()):,}):")
+                                                            log(f"      [vterms-is]   BOTH hold        "
+                                                                f"{len(_both):9,}")
+                                                            log(f"      [vterms-is]   DELIVERY holds, "
+                                                                f"search MOVES   {len(_d_only):9,}")
+                                                            log(f"      [vterms-is]   SEARCH holds, "
+                                                                f"delivery MOVES {len(_s_only):9,}")
+                                                            _det = {_ptn(_k2): _v2 for _k2, _v2
+                                                                    in (_v19_pt.get("detail") or {}).items()}
+                                                            # 19do — draw examples from the RESTRICTED disagreement only. The
+                                                            # unrestricted _d_only is dominated by groups the search never
+                                                            # carries, and printing one of those under "the search moves
+                                                            # them" states something false about the search.
+                                                            _v19_ex = [k for k in _det if _v19_dsm is not None and k in _v19_dsm][:4]
+                                                            # 19do — this guard used to say a zero overlap was "probably a KEY
+                                                            # MISMATCH". 19dn measured the two universes overlapping, so the
+                                                            # keys demonstrably line up and that reading is retired. What a
+                                                            # zero overlap means NOW is that each side's held groups sit in
+                                                            # the part of its universe the other does not carry — which the
+                                                            # restricted block above quantifies.
+                                                            if _d_fired and _s_fired and not _both:
+                                                                log("      [vterms-is]   note: the two fired "
+                                                                    "sets share no key, but the universes DO "
+                                                                    f"overlap ({len(_v19_com) if _v19_dsm is not None else 0:,} group(s)) — "
+                                                                    "so this is the population difference, not a "
+                                                                    "key format problem. Read the RESTRICTED "
+                                                                    "block above, not these three counts.")
+                                                            # 19do — the AGREE verdict moved into the RESTRICTED block, where it
+                                                            # is tested on the population it is a claim about. What is left
+                                                            # here is only whether the sampled detail can NAME any of them.
+                                                            if not _v19_ex:
+                                                                # count the RESTRICTED disagreement — the unrestricted _d_only is
+                                                                # mostly groups the search never carries and is not what the
+                                                                # sample failed to name.
+                                                                log(f"      [vterms-is]   ⇒ "
+                                                                    + (f"{len(_v19_dsm):,} group(s) differ on the common "
+                                                                       "population but none is in the sampled detail (the "
+                                                                       "sample takes the largest by movable VAMP, and those "
+                                                                       "are dominated by out-of-scope months) — widen the "
+                                                                       "sample to name them."
+                                                                       if _v19_dsm else
+                                                                       "the common-population restriction could not be built "
+                                                                       "(no delivery universe stashed), so this run cannot say "
+                                                                       "whether the two sides disagree at all."
+                                                                       if _v19_dsm is None else
+                                                                       "no group on the common population is held by one side "
+                                                                       "and moved by the other, so there is nothing to name."))
+                                                            else:
+                                                                log("      [vterms-is]   ⇒ EXAMPLES "
+                                                                    "— delivery holds these, the "
+                                                                    "search moves them. Columns are "
+                                                                    "what DELIVERY sees: the rows in "
+                                                                    "the group and the recipient "
+                                                                    "share it attached to each.")
+                                                                for _v19_k in _v19_ex:
+                                                                    _v19_r = _det.get(_v19_k) or []
+                                                                    log(f"      [vterms-is]     {_v19_k}"
+                                                                        f"   ({len(_v19_r)} row(s) shown)")
+                                                                    for _mid_x, _ps_x, _mv_x in _v19_r[:8]:
+                                                                        log(f"      [vterms-is]       "
+                                                                            f"{_mid_x[:30]:<30} "
+                                                                            f"pshare={_ps_x:.6f}  "
+                                                                            f"movable={_mv_x:.3f}")
+                                                                log("      [vterms-is]     READ: every "
+                                                                    "pshare 0 with movable > 0 means "
+                                                                    "delivery found no recipient while "
+                                                                    "the search found one — compare "
+                                                                    "the MIDs listed against the ones "
+                                                                    "the search's scaffold carries for "
+                                                                    "the same key.")
+                                                        log(f"      [vterms-is] ACROSS ALL {len(_aggv):,} "
+                                                            "BANDED (MID, month) — the two components are "
+                                                            "DIFFERENT FAULTS and must be fixed separately:")
+                                                        log(f"      [vterms-is]   MOVABLE-FRACTION  net "
+                                                            f"{_mv_tot:+,.0f} · Σ|·| {_mv_abs:,.0f}  — a net "
+                                                            "term SHIFTS the total, so it is the "
+                                                            "[conservation] VAMP gap. Compare the two "
+                                                            "numbers: they should be the same object.")
+                                                        log(f"      [vterms-is]   RECIPIENT-SHARE   net "
+                                                            f"{_rc_tot:+,.0f} · Σ|·| {_rc_abs:,.0f}  — "
+                                                            # 19dv: the reallocation reading assumes a LARGE Σ|·|. On a reconciled run
+                                                        # Σ|·| is 0 and this printed 'net ~0 with a large Σ|·| means pure
+                                                        # REALLOCATION' about a term that is not moving anything at all.
+                                                        + ("this term is ZERO on every band — the two sides attach the same "
+                                                           "recipient share, so there is no reallocation to explain."
+                                                           if _rc_abs < 1.0 else
+                                                           "net ~0 with a large Σ|·| means pure "
+                                                               "REALLOCATION between MIDs: it inflates the "
+                                                               "RECONCILIATION ERROR without moving the "
+                                                               "total, so no conservation check can see it."
+                                                               if abs(_rc_tot) <= max(5.0, 0.05 * _rc_abs)
+                                                               else "this term does NOT net out, so it is "
+                                                               "shifting the total as well as reallocating "
+                                                               "— read it alongside the movable-fraction "
+                                                               "row rather than as a pure reallocation."))
+                                            except Exception as _evt:  # noqa: BLE001
+                                                log(f"      [vterms-is] skipped ({type(_evt).__name__}: "
+                                                    f"{_evt})")
                                             # ── DENOMINATOR / NUMERATOR PROBE ─────────────────
                                             try:
                                                 _ddD = getattr(_ic_t, "_LAST_TXN_DENOM", None)
@@ -12825,17 +14639,78 @@ def render():
                                                         f"  ·  moved-out {float(_vtd['out'].sum()):,.0f}"
                                                         f"  ·  moved-in {float(_vtd['inn'].sum()):,.0f}"
                                                         f"  ·  Σpost {float(_vtd['post'].sum()):,.0f}")
+                                                    # 19df — THIS LINE USED TO ASSERT "the in-search
+                                                    # kernel has NO equivalent pass, so every unit
+                                                    # here is pure scored-vs-delivered drift". True
+                                                    # when written, FALSE from 19cy, which put the
+                                                    # age renormalise into all three in-search
+                                                    # paths. Left standing it sends the reader after
+                                                    # a divergence that is already closed — the
+                                                    # 2026-08-28 21:25 run printed 3,561.9 here with
+                                                    # _AGE_RENORM True. A counterfactual measures
+                                                    # what a pass MOVES; only a pass ONE side runs
+                                                    # alone is drift. So state the switch, never a
+                                                    # fixed claim about the other projector.
+                                                    # `sys` is NOT imported at module level in this
+                                                    # file (only locally, at :1332), so import it
+                                                    # here. A bare `sys.modules` would raise
+                                                    # NameError inside this diagnostic block and
+                                                    # take the ENTIRE [vterms] section down with
+                                                    # it — silently, since the block is guarded.
+                                                    import sys as _sys_vt
+                                                    _bp_mod = _sys_vt.modules.get(
+                                                        "routing_optimiser.band_projection")
+                                                    _ar_on = bool(getattr(_bp_mod, "_AGE_RENORM", True))
+                                                    # 19df FIX — READ THE FACT, NOT THE INTENT.
+                                                    # This was `os.environ.get(
+                                                    # "ROUTING_DELIV_MAXSHARE","1") != "0"`, which
+                                                    # is the env var's DEFAULT and says nothing
+                                                    # about whether any caller actually passed a
+                                                    # max_share. On 2026-08-29 07:45 it printed
+                                                    # "the CAP is now applied on BOTH sides" while
+                                                    # three tab2_engine call sites passed nothing,
+                                                    # delivery ran uncapped, and the run reproduced
+                                                    # 829 exactly. `_LAST_DELIV_MAXSHARE` is set by
+                                                    # the branch that actually runs: None means the
+                                                    # cap was NOT applied, whatever the env says.
+                                                    _dc_ms = getattr(_ic_vt, "_LAST_DELIV_MAXSHARE",
+                                                                     None)
+                                                    _dc_on = _dc_ms is not None
                                                     log(f"      [vterms] aged-frame RENORMALISE-TO-1 "
                                                         f"is worth Σ|Δ| {_s_nr:,.1f} "
                                                         f"({100.0 * _s_nr / _s_post:.2f}% of Σpost)"
-                                                        "  ⇐ the in-search kernel has NO equivalent "
-                                                        "pass, so every unit here is pure "
-                                                        "scored-vs-delivered drift")
+                                                        + ("  ⇐ the SEARCH RUNS THIS PASS TOO (19cy, "
+                                                           "_AGE_RENORM=1), so this is what a SHARED "
+                                                           "pass is worth — it is NOT drift"
+                                                           if _ar_on else
+                                                           "  ⇐ _AGE_RENORM=0, so the search SKIPS "
+                                                           "this pass and every unit here IS "
+                                                           "scored-vs-delivered drift"))
                                                     log(f"      [vterms] no-recipient PASSTHROUGH "
                                                         f"override is worth Σ|Δ| {_s_np:,.1f}"
                                                         f"  ·  vshare from CAPPED prop_share "
                                                         f"instead of raw prop_raw is worth Σ|Δ| "
                                                         f"{_s_ps:,.1f}"
+                                                        # 19df: cf_ps flips TWO things at once —
+                                                        # prop_share carries the max-share cap AND
+                                                        # the 0.01 exploration floor — so it
+                                                        # OVERSTATED the cap 4-6x (5,128.8 against
+                                                        # an 829 recon error on 21:25). Delivery now
+                                                        # applies the cap itself, so what survives
+                                                        # here is mostly the floor. test_19df
+                                                        # measures the cap on its own.
+                                                        + (f"  (19df: delivery APPLIED the max-share "
+                                                           f"cap at {_dc_ms:.4g} on this projection, "
+                                                           "so the residue here is the 0.01 "
+                                                           "exploration floor, which the search does "
+                                                           "not apply — do NOT read it as the cap)"
+                                                           if _dc_on else
+                                                           "  ⚠ DELIVERY RAN UNCAPPED on this "
+                                                           "projection (no max_share reached "
+                                                           "compute_vamp_prepost_granular, or "
+                                                           "ROUTING_DELIV_MAXSHARE=0), so this "
+                                                           "carries the cap AND the floor together "
+                                                           "and the 19df fix is NOT in effect")
                                                         + ("" if float(_vtd.get("cfpsok",
                                                                                 _vtd["post"] * 0).sum())
                                                            else "  (cf_ps unavailable this run — "
@@ -12850,6 +14725,195 @@ def render():
                                                         f"max {float(_vp.get('max', float('nan'))):.4f}); "
                                                         f"{int(_vp.get('passthrough', 0)):,} group(s) had "
                                                         "NO valid recipient and passed through.")
+                                                    # ── PER-MID VAMP DECOMPOSITION (19cq) ──
+                                                    # The table [terms] gives TXN, on the VAMP
+                                                    # side. It has never existed, and the whole
+                                                    # RECONCILIATION ERROR lives on VAMP: [terms]
+                                                    # and [denom] decompose the three TXN bands,
+                                                    # which drift by exactly 0, while the twelve
+                                                    # VAMP bands carrying every unit of it get an
+                                                    # aggregate Σ|Δ| and nothing else. The stash
+                                                    # impact_calcs writes is ALREADY grouped by
+                                                    # (midl, per) with all four terms and all
+                                                    # three counterfactuals — only the printing
+                                                    # was missing, so this costs one groupby.
+                                                    try:
+                                                        _vt2 = _vtd.groupby("midl", as_index=False)[
+                                                            ["pre", "held", "out", "inn", "post",
+                                                             "cf_norenorm", "cf_nopass",
+                                                             "cf_ps"]].sum()
+                                                        for _vt2_c, _vt2_n in (
+                                                                ("cf_norenorm", "d_nr"),
+                                                                ("cf_nopass", "d_np"),
+                                                                ("cf_ps", "d_ps")):
+                                                            _vt2[_vt2_n] = _vt2["post"] - _vt2[_vt2_c]
+                                                        _vt2["worst"] = _vt2[
+                                                            ["d_nr", "d_np", "d_ps"]].abs().max(axis=1)
+                                                        _vt2 = _vt2.sort_values(
+                                                            "worst", ascending=False).head(14)
+                                                        log("      [vterms] PER-MID DECOMPOSITION "
+                                                            "\u2014 the table [terms] gives TXN, on "
+                                                            "the VAMP side. POST = HELD + MOVED-IN "
+                                                            "on every row. The three \u0394 columns "
+                                                            "are what POST would have been with "
+                                                            "that ONE pass undone, so the LARGEST "
+                                                            "\u0394 on a row is the pass carrying "
+                                                            "that MID's drift:")
+                                                        log(f"      [vterms]   {'MID':<28}"
+                                                            f"{'PRE':>10}{'HELD':>10}{'MV-OUT':>10}"
+                                                            f"{'MV-IN':>10}{'POST':>10}  |"
+                                                            f"{'no-renorm':>11}{'no-pass':>10}"
+                                                            f"{'cap-vshare':>12}")
+                                                        for _vt2_r in _vt2.itertuples(index=False):
+                                                            log(f"      [vterms]   "
+                                                                f"{str(_vt2_r.midl)[:28]:<28}"
+                                                                f"{_vt2_r.pre:>10,.0f}"
+                                                                f"{_vt2_r.held:>10,.0f}"
+                                                                f"{_vt2_r.out:>10,.0f}"
+                                                                f"{_vt2_r.inn:>10,.0f}"
+                                                                f"{_vt2_r.post:>10,.0f}  |"
+                                                                f"{_vt2_r.d_nr:>+11,.0f}"
+                                                                f"{_vt2_r.d_np:>+10,.0f}"
+                                                                f"{_vt2_r.d_ps:>+12,.0f}")
+                                                        _vt2_w = {"no-renorm": 0, "no-pass": 0,
+                                                                  "cap-vshare": 0}
+                                                        for _vt2_r in _vt2.itertuples(index=False):
+                                                            _vt2_k = max(
+                                                                (("no-renorm", abs(_vt2_r.d_nr)),
+                                                                 ("no-pass", abs(_vt2_r.d_np)),
+                                                                 ("cap-vshare", abs(_vt2_r.d_ps))),
+                                                                key=lambda _t: _t[1])[0]
+                                                            _vt2_w[_vt2_k] += 1
+                                                        log("      [vterms]   \u21d2 the pass with "
+                                                            "the largest \u0394 is "
+                                                            + ", ".join(f"{_k}: {_v} MID(s)"
+                                                                        for _k, _v in
+                                                                        sorted(_vt2_w.items(),
+                                                                               key=lambda _t: -_t[1])
+                                                                        if _v)
+                                                            + ". A \u0394 here is what that pass "
+                                                            "MOVES, not proof it is WRONG \u2014 "
+                                                            "the in-search projector runs none of "
+                                                            "the three, so each is a candidate for "
+                                                            "the scored-vs-delivered gap and the "
+                                                            "size ranks them. Compare a MID's row "
+                                                            "against its DELIVERY DRIFT in the "
+                                                            "RECONCILED delivered M5 block: a pass "
+                                                            "that explains a MID accounts for its "
+                                                            "drift in BOTH size and sign.")
+                                                    except Exception as _vt2_e:  # noqa: BLE001
+                                                        log(f"      [vterms] per-MID decomposition "
+                                                            f"skipped ({type(_vt2_e).__name__}: "
+                                                            f"{_vt2_e}) \u2014 the aggregate lines "
+                                                            "above are unaffected.")
+                                                    # ── WHY the shortfall exists (19cr) ────
+                                                    try:
+                                                        _pw = getattr(_ic_vt, "_LAST_PSHARE_WHY",
+                                                                      None)
+                                                    except Exception:  # noqa: BLE001
+                                                        _pw = None
+                                                    if isinstance(_pw, dict) and "error" in _pw:
+                                                        log(f"      [vterms] the Σ_pshare CAUSE split "
+                                                            f"failed ({_pw['error']}) \u2014 the "
+                                                            "shortfall above is real but "
+                                                            "UNATTRIBUTED, so it cannot yet decide "
+                                                            "where the renormalise belongs.")
+                                                    elif isinstance(_pw, dict):
+                                                        log("      [vterms] WHY THE SHORTFALL "
+                                                            "EXISTS \u2014 an intended recipient "
+                                                            "with no row in its group is either a "
+                                                            "MID that genuinely has no fraud of "
+                                                            "that AGE (STRUCTURAL) or one the aged "
+                                                            "frame never carries for that cell at "
+                                                            "ALL (ABSENT). \u03a3_pshare cannot "
+                                                            "tell those apart; this can:")
+                                                        log(f"      [vterms]   tested at the "
+                                                            f"REDISTRIBUTION GROUP "
+                                                            f"(cell,period,t): "
+                                                            f"{_pw.get('live_groups', 0):,} live "
+                                                            f"group(s) short by "
+                                                            f"{_pw.get('shortfall', 0.0):,.1f} "
+                                                            f"share, of which this accounts for "
+                                                            f"{_pw.get('found', 0.0):,.1f} "
+                                                            f"[{1000.0 * float(_pw.get('secs', 0.0)):,.0f} ms; "
+                                                            f"ROUTING_PSHARE_WHY=0 skips it]")
+                                                        log(f"      [vterms]   STRUCTURAL "
+                                                            f"{_pw.get('structural_share', 0.0):>10,.1f} "
+                                                            f"of {_pw.get('found', 0.0):,.1f} "
+                                                            f"MISSING share "
+                                                            f"({_pw.get('structural_pct', 0.0):.2f}%) "
+                                                            f"over {_pw.get('structural_rows', 0):,} "
+                                                            "recipient-row(s) \u2014 the MID is in "
+                                                            "the frame for that cell, just not at "
+                                                            "that age")
+                                                        log(f"      [vterms]   ABSENT     "
+                                                            f"{_pw.get('absent_share', 0.0):>10,.1f} "
+                                                            f"of {_pw.get('found', 0.0):,.1f} "
+                                                            f"MISSING share "
+                                                            f"({_pw.get('absent_pct', 0.0):.2f}%) "
+                                                            f"over {_pw.get('absent_rows', 0):,} "
+                                                            "recipient-row(s) \u2014 the MID never "
+                                                            "appears in the aged frame for that "
+                                                            "cell")
+                                                        for _pw_lbl, _pw_k in (("STRUCTURAL",
+                                                                                "structural_top"),
+                                                                               ("ABSENT",
+                                                                                "absent_top")):
+                                                            for _pw_m, _pw_v in (_pw.get(_pw_k)
+                                                                                 or [])[:4]:
+                                                                log(f"      [vterms]     {_pw_lbl:<11}"
+                                                                    f"{_pw_m[:34]:<36}{_pw_v:>10,.2f}")
+                                                        _pw_a = float(_pw.get("absent_pct", 0.0))
+                                                        if not _pw.get("reconciles", True):
+                                                            log(f"      [vterms]   \u21d2 NO "
+                                                                f"VERDICT. The share this block "
+                                                                f"accounts for "
+                                                                f"({_pw.get('found', 0.0):,.1f}) "
+                                                                f"does not match the shortfall the "
+                                                                f"groups actually show "
+                                                                f"({_pw.get('shortfall', 0.0):,.1f}"
+                                                                f", gap {_pw.get('gap', 0.0):,.1f})"
+                                                                ". Since 1-\u03a3_pshare on a live "
+                                                                "group IS the intended share that "
+                                                                "had no row, the two must agree; "
+                                                                "while they do not, the split above "
+                                                                "is measuring something other than "
+                                                                "this shortfall and cannot decide "
+                                                                "where the renormalise belongs. "
+                                                                "This is the guard 19cr did not "
+                                                                "have.")
+                                                        elif _pw.get("missing_rows", 0) == 0:
+                                                            log("      [vterms]   \u21d2 NOTHING is "
+                                                                "missing: every intended recipient "
+                                                                "has a row in its own group, and "
+                                                                "that agrees with \u03a3_pshare "
+                                                                "being 1.0 everywhere \u2014 the "
+                                                                "renormalise has nothing to repair.")
+                                                        elif _pw_a < 1.0:
+                                                            log("      [vterms]   \u21d2 the "
+                                                                "shortfall is almost ENTIRELY "
+                                                                "STRUCTURAL. Re-basing the pool "
+                                                                "onto the recipients that exist is "
+                                                                "then the CORRECT arithmetic, and "
+                                                                "the decision is to give the "
+                                                                "IN-SEARCH projector the same pass "
+                                                                "\u2014 not to remove it from "
+                                                                "delivery, which would make VAMP "
+                                                                "leak.")
+                                                        else:
+                                                            log(f"      [vterms]   \u21d2 "
+                                                                f"{_pw_a:.1f}% of the intended share "
+                                                                "belongs to MIDs the aged frame "
+                                                                "NEVER carries for their cell. That "
+                                                                "part is NOT a rounding repair: the "
+                                                                "renormalise is reassigning their "
+                                                                "slice to whoever is left, and BOTH "
+                                                                "projections are wrong by it. "
+                                                                "Copying the pass into the "
+                                                                "in-search projector would only "
+                                                                "make the two AGREE on a wrong "
+                                                                "number \u2014 fix what the aged "
+                                                                "frame carries first.")
                                                     if int(_vp.get("off_one", 0)) == 0:
                                                         log("      [vterms] Σ_pshare is 1.0 in every "
                                                             "group, so the renormalisation is a no-op "
@@ -12953,6 +15017,13 @@ def render():
                                                             f"({100.0 - _fs:.0f}%) · worst = {_w5[0]} "
                                                             f"(split {_w5[1]:,.0f} / projector {_w5[2]:,.0f})")
                                                     else:
+                                                        # 19dv: a percentage of a total that DISPLAYS as 0 reads as though the whole
+                                                        # error sits in one term. On the 15:28 run all three were ~0 and this
+                                                        # printed "PROJECTION MATH 0 (100%)". Below display resolution, say so.
+                                                        if _t5 < 0.5:
+                                                            log(f"      [rung] {_mt5.upper():4} over {_n5} band(s): all three terms are 0 "
+                                                                f"at display resolution (Σ {_t5:.3g}) — nothing to attribute.")
+                                                            continue
                                                         _fe5 = (100.0 * _p5x / _t5) if _t5 > 1e-9 else 0.0
                                                         _fm2 = (100.0 * _m5x / _t5) if _t5 > 1e-9 else 0.0
                                                         log(f"      [rung] {_mt5.upper():4} over {_n5} band(s): "
@@ -13061,6 +15132,23 @@ def render():
                                             f"{_n_band} band(s) · worst = {_worst_drift[0]} "
                                             f"({_worst_drift[1]:,.0f}). Until this is small, no breach "
                                             "figure and no feasibility verdict means anything.")
+                                        # 19co: THIS number is the one that should open the muted
+                                        # reconciliation families, and it is not knowable until
+                                        # here — a thousand lines after those families were
+                                        # written and held.
+                                        try:
+                                            _rc_bar = float(os.environ.get(
+                                                "ROUTING_RECON_BAR", "1") or 1)
+                                        except Exception:  # noqa: BLE001
+                                            _rc_bar = 1.0
+                                        if (os.environ.get("ROUTING_RECON_RELEASE", "1") != "0"
+                                                and float(_sum_absdrift) > _rc_bar):
+                                            _log_release(
+                                                f"RECONCILIATION ERROR is {_sum_absdrift:,.0f}, "
+                                                f"over the bar of {_rc_bar:,.0f}, so the chain "
+                                                f"does NOT reconcile and every block that could "
+                                                f"say WHERE is worth reading.",
+                                                _LOG_RECON_FAMS)
                                         if _n_breach:
                                             log(f"      ── of the {_n_breach} breached band(s): SEARCH "
                                                 f"SHORTFALL {_sum_short:+,.0f} · DELIVERY DRIFT "
@@ -13111,8 +15199,15 @@ def render():
                                         if not _ep:
                                             _at_m5[_stg] = {"vamp": {}, "txn": {}}
                                             continue
+                                        # 19df — max_share, from `_at_wc`: the SAME value the
+                                        # enforced_prop_items call on the line above already uses
+                                        # for this stage, so the attribution's five projections
+                                        # are capped exactly as the shipped one is.
                                         _g = _at_cvp(_at_pp, _ep, scoped_rpgts=_at_scoped,
-                                                     exploration_floor=_at_floor)
+                                                     exploration_floor=_at_floor,
+                                                     capability=_deliv_cap,   # 19du
+                                                     vamp_off_mids=_vamp_off_mids,   # 19dw
+                                                     max_share=float(_at_wc.get("max_share", 0.97)))
                                         _p5 = _g[_g["period"] == 5]
                                         _at_m5[_stg] = {
                                             "vamp": {str(k).strip().lower(): float(v) for k, v in

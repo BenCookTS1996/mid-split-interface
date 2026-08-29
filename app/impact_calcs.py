@@ -9,8 +9,11 @@ capability, back-fill) and reports the BEFORE→AFTER on VAMP risk and revenue �
 The cache wrappers just memoise the heavy replays so moving a slider stays snappy."""
 from __future__ import annotations
 
+import csv
+import io
 import os
 
+import time as _time
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -42,6 +45,34 @@ def _apply_keep(t0, excluded_mids, kill_eff, month_0):
 
 __build__ = ("2026-08-17b-count-only-pool-search+subcell-exporter+staged-enforcement"
              "+projection-mode-no-round+no-lt2-backfill+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zerocell+vamp-term-stash")
+
+
+# [FN-246b]
+def build_vamp_off_mids(fid2vamp, overrides):
+    """vampMids barred from HOLDING OR RECEIVING VAMP — every gatewayFid mapping to them carries
+    `apply_to: "vamp"` (or "both") with target 0.
+
+    ONE DEFINITION, called by both tabs. The rule has two halves that are easy to get subtly
+    different: gateway ids must be canonicalised the same way, and a vampMid is off only when
+    EVERY fid mapping to it is off (the same all-or-nothing rule `excluded_mids` uses). A private
+    copy in each caller is how the brand filter ended up comparing "Total AV" against "TotalAV"
+    and keeping nothing, twice.
+
+    Returns a frozenset, so it is hashable and stable as an st.cache_data key component.
+    """
+    from app_common import _vamp_off_gateways
+    from routing_optimiser.forecast_pipeline import _canonical_gateway
+
+    def _nf(x):
+        return str(_canonical_gateway(x)).strip().lower()
+
+    _off = {_nf(_f) for _f in _vamp_off_gateways(overrides if isinstance(overrides, dict) else {})}
+    if not _off:
+        return frozenset()
+    _v2f = {}
+    for _f, _v in (fid2vamp or {}).items():
+        _v2f.setdefault(_v, set()).add(_nf(_f))
+    return frozenset(_v for _v, _fids in _v2f.items() if _fids and _fids <= _off)
 
 
 # [FN-247]
@@ -1026,10 +1057,310 @@ def _inject_backfill_rows(pp, prop, prop_name_map=None):
 
 
 # [FN-260]
+# ============================ 19da — CAPABILITY + FRAME INJECTION ============================
+# WHY THIS EXISTS. The aged VAMP frame carries a row only where a MID actually had fraud
+# originating in that month. Redistribution then shares the movable pool across the rows that
+# exist — so in a sparse layer the pool comes OUT of the two MIDs that had fraud and goes straight
+# BACK to them, and volume routed to a MID with no row at that age has nowhere to land. Measured
+# on the live export: 9.14 CAPABLE MIDs per cell against 2.03 PRESENT per layer.
+#
+# Completing the movable layers fixes that at the source. It also makes the two projectors agree
+# WITHOUT the age renormalise: on the 19da fixture, injection alone takes
+# Sigma|delivered - in-search| to 0.000000 with ROUTING_AGE_RENORM=0, and turning the renormalise
+# back on leaves every delivered value identical — it is a genuine no-op on a complete frame, so
+# it stays in as a guard rather than as the mechanism.
+#
+# ONLY MOVABLE AGES (t <= period). A frozen layer's pro_rata is 0, so its pool is 0 and an injected
+# row there would receive exactly nothing — pure cost. Restricting to movable ages is also what
+# keeps injection affordable: 622,592 of 671,364 groups.
+#
+# THIS CHANGES THE FORECAST, deliberately. Fraud follows the routed volume instead of piling onto
+# whichever MID happened to have a row at that age.
+
+
+def _brand_key(s):
+    """Brand comparison key: strip ALL whitespace, then lower-case.
+
+    ONE helper, used by `build_capability` and by `enforced_prop_items`'s gatewayFid->vampMid
+    filter, because these two must never disagree about what "the same brand" means. The Master
+    MID List spells it "Total AV"; the run's company is "TotalAV" (tab3_impact:4178). A plain
+    strip().lower() matches NOTHING between those two, and BOTH call sites fail SILENTLY when the
+    match is empty — build_capability returned 0 capable gateways and injection did nothing on the
+    2026-08-28 20:44 run, and an empty fid2vamp would make every proposed share unmatchable and
+    report post == pre. Whitespace is not information here, so remove it before comparing.
+    """
+    return "".join(str(s or "").split()).lower()
+
+
+_MID_TRUTHY = {"1", "true", "t", "yes", "y"}
+
+
+def _mid_row_fid(fid, brand_val, is_active, brand_key_wanted):
+    """The THREE rules that decide whether a Master MID List row may be a routing RECIPIENT.
+
+    Returns the normalised gatewayFid, or None if the row is not admissible:
+
+      1. PAYPAL is never a recipient — the one `paypal-gbp-tav` row is excluded outright.
+      2. INACTIVE gateways are not recipients. This is NOT the same as deleting their history:
+         a decommissioned MID like Merrick (1,543 VAMPs) still has rows in the pro-rata export
+         and keeps every one of them. This rule only stops it being INJECTED as a zero-baseline
+         recipient it can never actually receive into.
+      3. The row must belong to the run's BRAND, compared on `_brand_key` (whitespace-stripped),
+         because the MID list says "Total AV" and the run says "TotalAV".
+
+    ONE function, used by `build_capability` AND by `enforced_prop_items`'s gatewayFid->vampMid
+    map. They had three separate copies of these rules and only build_capability had all three:
+    the map was brand-blind, kept inactive gateways, and let PayPal through, which is how 109
+    other-brand vampMids plus Paypal, Adyen_TotalCleaner, Braintree - Total AV and
+    TrustPayments - Total AV became phantom rows on tab 3. On this MID list the three rules
+    together select exactly the 38 gateways / 15 vampMids the run already calls the capable set.
+    """
+    _f = str(fid or "").strip().lower()
+    if not _f or _f in ("", "nan", "none") or "paypal" in _f:
+        return None
+    if str(is_active or "").strip().lower() not in _MID_TRUTHY:
+        return None
+    if brand_key_wanted and _brand_key(brand_val) != brand_key_wanted:
+        return None
+    return _f
+
+
+def build_capability(mid_list_path=None, restrictions=None, brand=None):
+    """Return `capable(cur, bin, rpgt, pmp, ctry) -> frozenset[vampMid]`, memoised.
+
+    A vampMid is CAPABLE in a cell when it has at least one gatewayFid that is
+      * IsActive in the Master MID List, of this brand, and not PayPal,
+      * of the cell's CURRENCY,
+      * not hit by a routing_restrictions `rules` entry for that rpgt / currency / bin,
+      * wallet-capable (processWallet) when the cell's pmp is googlepay / applepay,
+      * not in `usa_only_gateways` unless the cell is USA.
+    That reproduces the engine's own capable-set line exactly (34 gateways -> 15 vampMids on the
+    2026-08-28 run), which is the check that this is the SAME definition the router uses and not a
+    second one that will drift away from it.
+    """
+    # impact_calcs has no PROJECT_ROOT of its own (app_common owns it, and importing it here
+    # would be circular), so derive it from this file's location the same way app_common does.
+    _root = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    _p = mid_list_path or os.path.join(_root, "data", "mappings", "Master_MID_List.csv")
+    _res = restrictions if isinstance(restrictions, dict) else {}
+    _usa_only = {str(x).strip().lower() for x in (_res.get("usa_only_gateways") or [])}
+    _rules = _res.get("rules") or []
+    # 19de — NORMALISE OUT WHITESPACE. The Master MID List spells the brand "Total AV"; the run
+    # spells the company "TotalAV". A plain lower()/strip() comparison therefore matched NOTHING,
+    # build_capability returned 0 gateways, and injection silently did nothing on the 2026-08-28
+    # 20:44 run — the log read "0 CAPABLE MID(s) (0 gateway(s))" and the frame came back +0 rows.
+    # The Σ vampCount assertion did not catch it because injecting nothing conserves trivially.
+    _norm = _brand_key          # 19dj: the SHARED key, so the two call sites cannot drift
+    _brand = _norm(brand)
+    _truthy = {"1", "true", "t", "yes", "y"}
+
+    _gw = []
+    with io.open(_p, encoding="utf-8-sig", newline="") as _fh:
+        for _r in csv.DictReader(_fh):
+            # 19dk: the three admissibility rules now live in ONE place (`_mid_row_fid`), shared
+            # with enforced_prop_items' fid->vampMid map. Three copies is how the map ended up
+            # brand-blind, inactive-blind and PayPal-blind while this function had all three.
+            _fid = _mid_row_fid(_r.get("gatewayFid"), _r.get("brand"),
+                                _r.get("IsActive"), _brand)
+            if _fid is None:
+                continue
+            _gw.append((_fid, str(_r.get("vampMid") or "").strip(),
+                        str(_r.get("currency") or "").strip().lower(),
+                        str(_r.get("processWallet") or "").strip().lower() in _truthy,
+                        _fid in _usa_only))
+
+    def _banned(_mid, _fid, _rpgt, _cur, _bin):
+        for _ru in _rules:
+            _t = str(_ru.get("target") or "").strip().lower()
+            if _t not in (_mid.lower(), _fid):
+                continue
+            _m = _ru.get("match") or {}
+            _hit = True
+            for _k, _v in _m.items():
+                _vals = {str(x).strip().lower()
+                         for x in (_v if isinstance(_v, list) else [_v])}
+                _got = {"rpgt": _rpgt, "currency": _cur, "bin": _bin}.get(_k)
+                # `country` is not part of the routing grain — the config says so and the engine
+                # ignores such rules. A rule keyed on anything unrecognised must NOT silently
+                # match everything, so an unknown field fails the rule closed.
+                if _got is None or _got not in _vals:
+                    _hit = False
+                    break
+            if _hit:
+                return True
+        return False
+
+    _cache = {}
+
+    def capable(cur, bin_, rpgt, pmp, ctry):
+        _k = (cur, bin_, rpgt, pmp, ctry)
+        _hit = _cache.get(_k)
+        if _hit is not None:
+            return _hit
+        _wallet = pmp in ("googlepay", "applepay")
+        _out = set()
+        for _fid, _mid, _cur, _wok, _uonly in _gw:
+            if _cur != cur:
+                continue
+            if _wallet and not _wok:
+                continue
+            if _uonly and ctry != "usa":
+                continue
+            if _banned(_mid, _fid, rpgt, cur, bin_):
+                continue
+            _out.add(_mid)
+        _out = frozenset(_out)
+        _cache[_k] = _out
+        return _out
+
+    capable.n_gateways = len(_gw)
+    capable.n_mids = len({_g[1] for _g in _gw})
+    # An EMPTY capable set is never a legitimate answer — it means the brand did not match, or the
+    # MID list is not the file we think it is. Silently returning it makes injection a no-op that
+    # LOOKS like success, which is exactly what happened on 2026-08-28 20:44. Raise instead, so the
+    # caller's except-branch logs a SKIPPED line naming the cause.
+    if not _gw:
+        _brands = sorted({str(_r.get("brand") or "").strip()
+                          for _r in csv.DictReader(io.open(_p, encoding="utf-8-sig", newline=""))
+                          if str(_r.get("brand") or "").strip()})[:8]
+        raise ValueError(
+            f"build_capability found NO capable gateway for brand {brand!r} in {_p} — nothing "
+            f"would be injected. Brands present: {_brands}. Check the brand spelling (the MID "
+            "list uses a space, the run's company name may not).")
+    return capable
+
+
+def inject_capable_rows(pp, capable, cell_cols, mid_col="vampMid",
+                        period_col="period", t_col="t"):
+    """Complete every MOVABLE (t <= period) group of `pp` with a zero-VAMP row per absent capable
+    MID. Returns (frame, n_added). VECTORISED — a per-group Python loop over the live export's
+    622,592 movable groups is not viable.
+
+    The injected row carries vampCount 0 and VI_Txn_Count 0, and takes `pro_rata` / `fcp1_frac`
+    from its own layer (both are properties of the layer, not of the MID, so every row of a group
+    already shares them — asserted below rather than assumed). A zero-VAMP row therefore adds
+    NOTHING to the pool and changes no held term; its only effect is to give the layer a recipient
+    the split can route to.
+    """
+    _need = list(cell_cols) + [mid_col, period_col, t_col]
+    for _c in _need:
+        if _c not in pp.columns:
+            raise KeyError(f"inject_capable_rows: frame has no column {_c!r}")
+    # 19dd — the test is MOVABILITY, not age. A layer is worth a recipient only if it has a POOL
+    # to hand out: pool = Σ vampCount × fcp1_frac × pro_rata over the layer. That subsumes the age
+    # test (t > period carries pro_rata 0, so its pool is 0 and it drops out on its own) and it
+    # additionally excludes two cases the age test let through:
+    #   * fcp1_frac == 0 — the layer's fraud is all FCP 2+ (retries). The split does not route
+    #     retries, so none of it is movable. 32,537 movable layers on the live export.
+    #   * every MID has vampCount 0 — the layer exists because those MIDs had TRANSACTIONS that
+    #     month, but there is no fraud at that age to move. 15,930 layers.
+    # An injected row in either case receives pool × share = 0 × share = 0, for every candidate,
+    # forever. Measured: 48,761 layers, 424,674 rows that could only ever be zero.
+    _per = pd.to_numeric(pp[period_col], errors="coerce")
+    _t = pd.to_numeric(pp[t_col], errors="coerce")
+    _vc = pd.to_numeric(pp.get("vampCount"), errors="coerce").fillna(0.0)
+    _fc = pd.to_numeric(pp.get("fcp1_frac"), errors="coerce").fillna(0.0)
+    _prr = pd.to_numeric(pp.get("pro_rata"), errors="coerce").fillna(0.0)
+    _gkc = list(cell_cols) + [period_col, t_col]
+    _poolg = (pp.assign(_mvbl=_vc * _fc * _prr)
+              .groupby(_gkc, observed=True)["_mvbl"].transform("sum"))
+    _mov = pp[(_poolg > 0) & _per.notna() & _t.notna()]
+    if not len(_mov):
+        return pp, 0
+
+    _gk = list(cell_cols) + [period_col, t_col]
+    _layer = _mov.groupby(_gk, as_index=False, observed=True).agg(
+        pro_rata=("pro_rata", "first"), fcp1_frac=("fcp1_frac", "first"))
+
+    _cells = _mov[list(cell_cols)].drop_duplicates()
+    _cells["_cap"] = [sorted(capable(*[str(v).strip().lower() if i != 1 else str(v).strip()
+                                       for i, v in enumerate(row)]))
+                      for row in _cells.itertuples(index=False, name=None)]
+    _cellcap = _cells.explode("_cap").rename(columns={"_cap": mid_col})
+    _cellcap = _cellcap[_cellcap[mid_col].notna()]
+
+    _full = _layer.merge(_cellcap, on=list(cell_cols), how="inner")
+    # The anti-join key MUST include the MID. Keyed on the group alone every candidate row finds
+    # a match, `_seen` is never NaN and the function silently injects nothing — which looks exactly
+    # like "the frame was already complete" and would have shipped as a no-op.
+    _hk = _gk + [mid_col]
+    _have = _mov[_hk].drop_duplicates().assign(_seen=1)
+    _new = _full.merge(_have, on=_hk, how="left")
+    _new = _new[_new["_seen"].isna()].drop(columns=["_seen"])
+    if not len(_new):
+        return pp, 0
+    _new["vampCount"] = 0.0
+    _new["VI_Txn_Count"] = 0.0
+    for _c in pp.columns:
+        if _c not in _new.columns:
+            _new[_c] = pp[_c].iloc[0] if len(pp) else None
+    _new = _new[list(pp.columns)]
+    _out = pd.concat([pp, _new], ignore_index=True)
+    # INVARIANT: injection adds RECIPIENTS, never VAMP. Every injected row carries vampCount 0, so
+    # the frame total must be untouched — measured 94,265.00 -> 94,265.00 on the live export. If
+    # this ever moves, a row picked up a non-zero count from the column back-fill below and the
+    # forecast has silently gained fraud that nobody booked.
+    _b = pd.to_numeric(pp.get("vampCount"), errors="coerce").fillna(0.0).sum()
+    _a = pd.to_numeric(_out.get("vampCount"), errors="coerce").fillna(0.0).sum()
+    if abs(float(_a) - float(_b)) > 1e-6 * max(1.0, abs(float(_b))):
+        raise AssertionError(
+            f"inject_capable_rows CREATED VAMP: {_b:,.4f} -> {_a:,.4f}. Injected rows must carry "
+            "vampCount 0; check the column back-fill.")
+    return _out, int(len(_new))
+
+
+def _max_share_waterfill(shares, t0, grp, cap, live):
+    """Port of the search's per-cell max-share water-fill (`band_projection.py:317-347`).
+
+    Line-for-line the same algorithm, vectorised: everything over `cap` is cut back to it, and
+    the excess is handed to the under-cap rows of the SAME cell in proportion to the room each
+    has left. Repeated up to 50 sweeps, because handing excess out can push a recipient over the
+    cap in turn.
+
+    THE THREE THINGS THAT MUST MATCH THE KERNEL, and each of which silently changes the answer:
+
+      1. `_nzc` — the ">= 2 routed gateways" test — is computed ONCE, before the first sweep, and
+         is NOT refreshed as rows are capped. A cell with a single routed gateway is left alone
+         entirely (capping it would have nowhere to put the excess, so the kernel skips it).
+      2. The excess is measured BEFORE the rows are cut to the cap, and the room is measured
+         AFTER. Swapping either order changes the redistribution.
+      3. Accumulation is in row order within a cell, which is what `np.bincount` does, so the
+         floating-point summation order is the kernel's too.
+
+    `live` is the kernel's `_psum[c] > 0` — rows in an unrouted cell take no part.
+    """
+    _sh = np.asarray(shares, dtype=float).copy()
+    if _sh.size == 0:
+        return _sh
+    _g = t0.groupby(grp, sort=False, observed=True).ngroup().to_numpy()
+    _ng = int(_g.max()) + 1
+    _live = np.asarray(live, dtype=bool)
+    EPS = 1e-12
+    # (1) computed ONCE — the kernel does not refresh it between sweeps.
+    _nz = np.bincount(_g, weights=(_live & (_sh > EPS)).astype(float), minlength=_ng)
+    _multi = (_nz >= 2.0)[_g] & _live
+    for _ in range(50):
+        _over = _multi & (_sh > cap + EPS)
+        if not _over.any():
+            break
+        # (2) excess BEFORE the cut ...
+        _exc = np.bincount(_g, weights=np.where(_over, _sh - cap, 0.0), minlength=_ng)
+        _sh = np.where(_over, cap, _sh)
+        # ... room AFTER it.
+        _room = _multi & (_sh > EPS) & (_sh < cap - EPS)
+        _rsum = np.bincount(_g, weights=np.where(_room, cap - _sh, 0.0), minlength=_ng)
+        _ok = _room & (_rsum[_g] > EPS)
+        _sh = np.where(_ok,
+                       _sh + (cap - _sh) / np.where(_ok, _rsum[_g], 1.0) * _exc[_g],
+                       _sh)
+    return _sh
+
+
 def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset(),
                                   kill_eff=(), month_0=None, scoped_rpgts=(),
                                   wallet_incapable=frozenset(), usa_only=frozenset(),
-                                  exploration_floor=0.0):
+                                  exploration_floor=0.0, vamp_off_mids=frozenset(),
+                                  capability=None, max_share=1.0):
     """Per-ROW baseline vs proposed VAMP / VI-Txn from the pro-rata export.
 
     Routes at the (vampMid, RPGT, BIN, Currency, pmp, Country) sub-cell grain when the
@@ -1039,6 +1370,18 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     back to (vampMid, RPGT, BIN, Currency, period, t) for the filterable table.
     """
     pp = pd.read_csv(pp_path)
+    # 19da — COMPLETE THE MOVABLE LAYERS. Without this the pool of a sparse layer is shared only
+    # across the MIDs that happened to have fraud originating in that month, so volume routed to
+    # anyone else has no row to land in and the pool circulates back to the incumbents. `capability`
+    # is the SAME callable the search is given, so both sides project the identical frame; passing
+    # None leaves the frame untouched (every pre-19da caller).
+    if capability is not None:
+        _cellk = [c for c in ("Currency", "BIN", "RPGT", "paymentMethodProvider", "Country")
+                  if c in pp.columns]
+        if len(_cellk) >= 3:
+            pp, _n_inj = inject_capable_rows(pp, capability, _cellk)
+            if _n_inj:
+                globals()["_LAST_INJECTED"] = int(_n_inj)
     pp["Currency"] = pp["Currency"].astype(str).str.strip().str.lower()
     pp["BIN"] = pp["BIN"].astype(str).str.strip()
     pp["vampMid"] = pp["vampMid"].astype(str).str.strip()
@@ -1190,7 +1533,71 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     t0["post_txn"] = t0["cell_tot"] * ((1 - _p) * t0["base_share"] + _p * t0["prop_share"])
     # PER-MID movable fraction + VAMP-follows-the-volume redistribution share (see _vamp_post_core).
     t0["_move"] = np.where(t0["prop_sum"] > 0, t0["pro_rata"] * t0["fcp1_frac"], 0.0)
-    t0["_vprop"] = t0["prop_raw"]
+    # 19cv — VAMP-ELIGIBILITY. `apply_to:"vamp"` (target 0) IS honoured by the baseline pipeline
+    # (those MIDs carry vampPre 0 against real VI_Txn) but was NOT honoured here: the recipient
+    # share came straight from `prop_raw`, so an overridden MID held no VAMP of its own and was
+    # then handed a slice of the moved pool. WoodForest 690 and Authorize 227 on the 14:39 run,
+    # both from PRE 0. Zeroing `_vprop` removes them from the numerator AND the denominator, so
+    # the remaining recipients absorb the whole pool and the cell VAMP total still conserves.
+    #
+    # NOT the same as `_keep` above: `_keep` zeroes prop_raw itself, which would also remove the
+    # MID's TRANSACTIONS. apply_to:"vamp" must leave the transactions alone — that is the whole
+    # point of the value — so the mask belongs here, on the VAMP share only, and post_txn above
+    # is deliberately computed from the UNMASKED prop_share.
+    #
+    # The Bank x Currency `compute_vamp_prepost` above carries the SAME three lines unmasked. It
+    # is not on the shipped delivery path (tab 3 calls the granular one), so it is left alone
+    # rather than given a parameter no caller passes -- but if it is ever revived it needs this.
+    # 19df — THE MAX-SHARE CAP, WHICH THE SEARCH HAD AND DELIVERY DID NOT.
+    #
+    # `band_projection.py:299` is commented `vshare from the (capped) ROUTED share`: the search
+    # renormalises prop_raw to a cell share, runs the max-share water-fill, and THEN builds
+    # vshare from the capped value. Delivery built vshare from raw `prop_raw`, which carries no
+    # cap at all. Same shares in, two different recipients — and the difference favours exactly
+    # the MIDs the cap exists to restrain, so a capped incumbent is SCORED at the cap and
+    # DELIVERED above it. That is the sign pattern on the 2026-08-28 21:25 run: adyen_totalav
+    # +186, braintree usa +156, worldpay +87 (all capped incumbents, delivered high) against
+    # paysafe -156 and checkout -51 (small recipients, delivered low).
+    #
+    # Measured on the _19df fixture (one cell, adyen 99 vs 0.5 / 0.5, cap 0.97): Σ|delivered −
+    # in-search| is 0.000000 at max_share 1.0 and 8.384 at 0.97, with DELIVERY returning the
+    # identical numbers in both regimes — it never saw the cap. One variable, both shipped
+    # functions, no code patched to produce it.
+    #
+    # THIS CHANGES WHAT SHIPS. The delivered M5 is the authoritative number and this moves it.
+    # ROUTING_DELIV_MAXSHARE=0 reverts.
+    #
+    # NO-OP WHEN THE CAP DOES NOT BIND, by construction: with no row over the cap the capped
+    # share is prop_raw / prop_sum, so vshare = (prop_raw/prop_sum) / Σ(prop_raw/prop_sum) =
+    # prop_raw / Σ prop_raw — the previous line exactly. `test_19df` asserts that bit-identically
+    # rather than trusting the algebra.
+    #
+    # DELIBERATELY NOT `prop_share`: that column also carries the 0.01 exploration floor (applied
+    # at 1405-1408), which the search's water-fill does not apply. The `cf_ps` counterfactual uses
+    # it and therefore OVERSTATES this effect 4-6x — it flips two things at once. That is why
+    # cf_ps read 5,128.8 against an 829 reconciliation error and could not be taken at face value.
+    #
+    # `_LAST_DELIV_MAXSHARE` RECORDS WHAT ACTUALLY HAPPENED, not what was configured. The 19df
+    # log line first keyed off ROUTING_DELIV_MAXSHARE alone and so announced "the CAP is now
+    # applied on BOTH sides" on the 2026-08-29 07:45 run, where it was FALSE: three call sites in
+    # tab2_engine still passed no max_share, so `max_share` defaulted to 1.0, the guard below took
+    # the raw branch, and the run reproduced 829 exactly. The env var is INTENT; this global is
+    # FACT, and the log must only ever report the second. None = the cap was not applied.
+    _cap_ms = float(max_share) if max_share else 1.0
+    if os.environ.get("ROUTING_DELIV_MAXSHARE", "1") == "0" or not (0.0 < _cap_ms < 1.0):
+        globals()["_LAST_DELIV_MAXSHARE"] = None
+        t0["_vprop"] = t0["prop_raw"]
+    else:
+        globals()["_LAST_DELIV_MAXSHARE"] = _cap_ms
+        _psum_c = t0.groupby(grp)["prop_raw"].transform("sum")
+        _live = (_psum_c > 0).to_numpy()
+        _sh = np.where(_live, t0["prop_raw"].to_numpy(float)
+                       / np.where(_live, _psum_c.to_numpy(float), 1.0), 0.0)
+        t0["_vprop"] = _max_share_waterfill(_sh, t0, grp, _cap_ms, _live)
+    if len(vamp_off_mids):
+        _voff = {str(_m).strip().lower() for _m in vamp_off_mids}
+        _vmask = ~t0["vampMid"].astype(str).str.strip().str.lower().isin(_voff)
+        t0["_vprop"] = t0["_vprop"] * _vmask.astype(float)
     t0["_vpsum"] = t0.groupby(grp)["_vprop"].transform("sum")
     t0["_vshare"] = np.where(t0["_vpsum"] > 0, t0["_vprop"] / t0["_vpsum"], 0.0)
 
@@ -1296,12 +1703,227 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # valid VAMP recipient (Σ_pshare = 0) keep the VAMP in place (no move) rather than vanish it.
     _gk = _sub + ["period", "t"]
     _psum = pp.groupby(_gk)["_pshare"].transform("sum")
+    # 19di — WHICH GATE MAKES DELIVERY'S MOVABLE FRACTION SMALLER THAN THE SEARCH'S?
+    #
+    # [vterms-is] on the 2026-08-29 09:06 run showed Δ HELD and Δ MOVED-OUT EQUAL AND OPPOSITE on
+    # all twelve VAMP bands, always the same sign: identical PRE, and delivery holding +243 that
+    # the search moves. Same total, different line. `_gf` above carries THREE gates the search's
+    # `pc_heldfac` (band_projection:1435 = fcp[origin] x pro_rata[appearance]) does not have:
+    #
+    #     1. `_keep > 0`      switched-off vampMid (volume override target=0)
+    #     2. `_oos`           unscoped RPGT zeroing
+    #     3. the passthrough  Σ_pshare == 0 in the aged group  (below)
+    #
+    # Reading the code cannot rank them and neither can a whole-book counterfactual — that is
+    # exactly how three runs went into the max-share cap, which turned out to be worth 1.2 units.
+    # So MEASURE each gate on its own, one variable at a time, on the live data. Each variant
+    # below re-derives the movable VAMP with ONE gate lifted and nothing else changed; whichever
+    # closes the +243 IS the cause, and if none does, the cause is not a gate at all.
+    #
+    # Cost is four vectorised passes over a frame already in memory — no extra projection.
+    try:
+        _gk_v = _gk
+        _pra = pd.to_numeric(pp["_pr_app"], errors="coerce").fillna(0.0)
+        _om = pd.to_numeric(pp["orig_m"], errors="coerce").fillna(-1)
+        _vcv = pd.to_numeric(pp["vampCount"], errors="coerce").fillna(0.0)
+        _t0v = t0[_sub + ["vampMid", "period"]].copy()
+        _t0v["_ps"] = pd.to_numeric(t0["prop_sum"], errors="coerce").fillna(0.0)
+        _t0v["_kp"] = pd.to_numeric(t0["_keep"], errors="coerce").fillna(0.0)
+        _t0v["_fc"] = pd.to_numeric(t0["fcp1_frac"], errors="coerce").fillna(0.0)
+        _t0v["_oosf"] = 0.0
+        if scoped_rpgts:
+            _t0v.loc[_oos, "_oosf"] = 1.0
+        _t0v = _t0v.rename(columns={"period": "orig_m"})
+        _ppv = pp[_sub + ["vampMid", "orig_m"]].merge(
+            _t0v, on=_sub + ["vampMid", "orig_m"], how="left")
+        _ps = _ppv["_ps"].fillna(0.0).to_numpy()
+        _kp = _ppv["_kp"].fillna(0.0).to_numpy()
+        _fc = _ppv["_fc"].fillna(0.0).to_numpy()
+        _oo = _ppv["_oosf"].fillna(0.0).to_numpy() > 0.5
+        _live = (_om.to_numpy() >= 0) & (_ps > 0)
+        _pt = (_psum.to_numpy() > 1e-12)          # the passthrough test, as shipped
+
+        def _mv_of(keep_gate, scope_gate, pass_gate):
+            _g = np.where(_live & ((_kp > 0) if keep_gate else True), _fc, 0.0)
+            if scope_gate:
+                _g = np.where(_oo, 0.0, _g)
+            _m = _g * _pra.to_numpy()
+            if pass_gate:
+                _m = np.where(_pt, _m, 0.0)
+            return _vcv.to_numpy() * _m
+
+        _vg = pd.DataFrame({
+            "midl": pp["vampMid"].astype(str).str.strip().str.lower().to_numpy(),
+            "per": pd.to_numeric(pp["period"], errors="coerce").fillna(-1).astype(int).to_numpy(),
+            "shipped": _mv_of(True, True, True),
+            "no_keep": _mv_of(False, True, True),
+            "no_scope": _mv_of(True, False, True),
+            "no_pass": _mv_of(True, True, False),
+            "no_gates": _mv_of(False, False, False),
+        })
+        globals()["_LAST_MOVE_GATES"] = _vg.groupby(["midl", "per"], as_index=False).sum()
+    except Exception:  # noqa: BLE001
+        globals()["_LAST_MOVE_GATES"] = None
+
+    # 19dl — WHICH GROUPS DOES THE PASSTHROUGH FIRE ON? The gate attribution proved this line is
+    # the cause of Part A (delivery holds 251 VAMP the search moves), but not WHY the two sides'
+    # "is there a recipient?" test disagrees. Both sum a recipient share per aged group and hold
+    # when it is zero; they reach different totals. Two candidates were on the table and one is
+    # already dead: measured on the export, ALL 573,831 movable groups have an origin t0 row for
+    # every row, so "the origin does not exist" is NOT it. What survives is that the two sides sum
+    # over different ROWS, or attach different SHARES to the same rows — and only the live run has
+    # both sides, so the comparison has to happen here.
+    #
+    # Stash the FIRED SET only (not every group): the disagreement is set difference in both
+    # directions, and delivery-fired plus the search's own fired set is enough for both. Detail
+    # rows are capped so a diagnostic can never dominate the run.
+    try:
+        _pt_gf = pd.to_numeric(pp["_gf"], errors="coerce").fillna(0.0).to_numpy()
+        _pt_pra = pd.to_numeric(pp["_pr_app"], errors="coerce").fillna(0.0).to_numpy()
+        _pt_vc = pd.to_numeric(pp["vampCount"], errors="coerce").fillna(0.0).to_numpy()
+        _pt_om = pd.to_numeric(pp["orig_m"], errors="coerce").fillna(-1).to_numpy()
+        # movable BEFORE the passthrough zeroes it — otherwise the test is circular
+        _pt_mv = np.where(_pt_om >= 0, _pt_vc * _pt_gf * _pt_pra, 0.0)
+        _pt_key = (pp["Currency"].astype(str) + "|" + pp["BIN"].astype(str) + "|"
+                   + pp["RPGT"].astype(str) + "|" + pp["_pmp"].astype(str) + "|"
+                   + pp["_ctry"].astype(str) + "|" + pp["period"].astype(str) + "|"
+                   + pp["t"].astype(str))
+        _pt = pd.DataFrame({"k": _pt_key.to_numpy(), "mv": _pt_mv,
+                            "ps": pd.to_numeric(pp["_pshare"], errors="coerce")
+                            .fillna(0.0).to_numpy()})
+        _pg = _pt.groupby("k", observed=True).agg(mv=("mv", "sum"), ps=("ps", "sum"),
+                                                  n=("ps", "size"))
+        _pg = _pg[_pg["mv"] > 0.0]                       # movable groups only
+        _fired = _pg[_pg["ps"] <= 1e-12]
+        # 19do — 400, not 40. The sample is ordered by movable VAMP and the OUT-OF-SCOPE
+        # months dominate that ordering, so at 40 every group the 12:36 run printed was a
+        # month the search does not carry — the half that cannot be evidence. The block
+        # now filters to the common population and needs some to survive the filter, or
+        # it can only report a count and ask for another run.
+        _samp = _fired.sort_values("mv", ascending=False).head(400).index.tolist()
+        _det = {}
+        if _samp:
+            _sub_d = _pt[_pt["k"].isin(set(_samp))]
+            _mid_d = pp["vampMid"].astype(str).str.strip().to_numpy()
+            _sub_d = _sub_d.assign(mid=_mid_d[_sub_d.index.to_numpy()])
+            for _k, _grp in _sub_d.groupby("k", observed=True):
+                _det[str(_k)] = [(str(r.mid), float(r.ps), float(r.mv))
+                                 for r in _grp.head(16).itertuples()]
+        globals()["_LAST_PASSTHRU"] = {
+            "fired": set(_fired.index.astype(str)),
+            # 19dn — the MOVABLE UNIVERSE, not only the fired subset. Two fired sets that share
+            # no key are either a key-format bug or a total disagreement, and the counts cannot
+            # tell those apart; the universes can. `sample` keeps two RAW keys so the exact
+            # spelling is visible in the log rather than inferred from the code.
+            "all": set(_pg.index.astype(str)),
+            "sample": [str(_ks9) for _ks9 in _pg.index[:2]],
+            "n_movable": int(len(_pg)),
+            "mv_held": float(_fired["mv"].sum()),
+            "detail": _det}
+    except Exception:  # noqa: BLE001
+        globals()["_LAST_PASSTHRU"] = None
+
     pp["_move"] = np.where(_psum > 1e-12, pp["_move"], 0.0)               # no recipient → passthrough
     pp["_pshare"] = np.where(_psum > 1e-12, pp["_pshare"] / _psum, 0.0)   # recipients sum to exactly 1
     pp["VAMP_Pre"] = pp["vampCount"]
     pp["_moved_v"] = pp["vampCount"] * pp["_move"]
     pp["_moved_vpool"] = pp.groupby(_gk)["_moved_v"].transform("sum")
     pp["VAMP_Post"] = pp["vampCount"] * (1.0 - pp["_move"]) + pp["_moved_vpool"] * pp["_pshare"]
+
+    # ── WHY IS Σ_pshare < 1? (19cr, read-only) ─────────────────────────────────────────────
+    # The renormalise above repairs a shortfall. Whether it is the RIGHT repair depends entirely on
+    # why the shortfall exists, and Σ_pshare cannot tell you: an intended recipient missing from a
+    # group is either a MID that genuinely has no fraud of that age (STRUCTURAL — re-basing is
+    # correct, and the in-search projector should get the same pass) or a MID the aged frame never
+    # carries for that cell at all (ABSENT — the frame is short and both sides are wrong). This
+    # splits the missing share mass across those two classes and names who carries each.
+    if os.environ.get("ROUTING_PSHARE_WHY", "1") != "0":
+        _pw_t_0 = _time.perf_counter()
+        try:
+            # INTENDED recipients, at origination: the rows whose vshare made up the 1.0. This is
+            # keyed on `grp = _sub + ["period"]` (see above), which is exactly the key `_mv` is
+            # merged back on, so these shares sum to 1 over the cell-month by construction.
+            _pw_t0 = t0[_sub + ["vampMid", "period", "_vshare"]].copy()
+            _pw_t0["_vshare"] = pd.to_numeric(_pw_t0["_vshare"], errors="coerce").fillna(0.0)
+            _pw_t0 = _pw_t0[_pw_t0["_vshare"] > 0.0].rename(columns={"period": "orig_m"})
+
+            # THE GROUP IS `_gk = _sub + ["period", "t"]`, NOT `orig_m`. 19cs: the previous version
+            # tested membership at (cell, vampMid, orig_m), and orig_m = period - t is MANY-TO-ONE
+            # over _gk — every (period, t) on one diagonal shares an orig_m, so a MID present at any
+            # single age was scored present at every age. It found 0 missing on a frame with 168,945
+            # short groups. Membership must be asked of the group that has to sum to 1.
+            _pw_grp = pp.assign(_pw_s=_psum)[_gk + ["orig_m", "_pw_s"]].drop_duplicates(_gk)
+            _pw_grp = _pw_grp[_pw_grp["_pw_s"] > 1e-12]        # passthrough groups are not repaired
+            _pw_short = float((1.0 - _pw_grp["_pw_s"]).clip(lower=0.0).sum())
+
+            # COUNTED, NOT EXPANDED. Expanding groups x intended recipients cost 13.1 s at the live
+            # shape and was OOM-killed at 4x it. The expansion was only counting: an intended
+            # (cell, orig_m, mid) with share v misses  v x (live groups there - live groups there
+            # that carry a row for mid). Both are groupby sizes, so this is the same sum
+            # reassociated onto the 700k-row INTENDED table. The reconciliation guard below is what
+            # holds the reassociation honest.
+            _pw_ng = (_pw_grp.groupby(_sub + ["orig_m"], as_index=False)
+                      .size().rename(columns={"size": "_pw_nlive"}))
+            _pw_seen = (_pw_grp[_gk + ["orig_m"]]
+                        .merge(pp[_gk + ["vampMid"]].drop_duplicates(), on=_gk, how="inner")
+                        .groupby(_sub + ["orig_m", "vampMid"], as_index=False)
+                        .size().rename(columns={"size": "_pw_nseen"}))
+            _pw_miss = _pw_t0.merge(_pw_ng, on=_sub + ["orig_m"], how="inner")
+            _pw_miss = _pw_miss.merge(_pw_seen, on=_sub + ["orig_m", "vampMid"], how="left")
+            _pw_miss["_pw_nseen"] = _pw_miss["_pw_nseen"].fillna(0.0)
+            _pw_miss["_pw_ngap"] = (_pw_miss["_pw_nlive"] - _pw_miss["_pw_nseen"]).clip(lower=0.0)
+            _pw_miss = _pw_miss[_pw_miss["_pw_ngap"] > 0].copy()
+            # `_vshare` is now the SHARE MASS MISSED, not the per-group share: one intended row can
+            # be missing from many groups. The class totals below sum this, so they stay comparable
+            # with `_pw_short`, which is also summed over groups.
+            _pw_slots = float(_pw_miss["_pw_ngap"].sum())
+            _pw_miss["_vshare"] = _pw_miss["_vshare"] * _pw_miss["_pw_ngap"]
+
+            # Of the MISSING, which appear ANYWHERE in the aged frame for that cell? A MID that does
+            # appear elsewhere is known to the frame and merely has no fraud of this age; one that
+            # never appears cannot be represented at all.
+            _pw_any = pp[_sub + ["vampMid"]].drop_duplicates().assign(_pw_any=1)
+            _pw_miss = _pw_miss.merge(_pw_any, on=_sub + ["vampMid"], how="left")
+            _pw_struct = _pw_miss[_pw_miss["_pw_any"] == 1]
+            _pw_absent = _pw_miss[_pw_miss["_pw_any"].isna()]
+            _pw_found = float(_pw_miss["_vshare"].sum())
+            _pw_tot = _pw_found or 1.0
+
+            def _pw_top(_d):
+                if _d.empty:
+                    return []
+                _g = (_d.assign(_m=_d["vampMid"].astype(str).str.strip().str.lower())
+                      .groupby("_m")["_vshare"].sum().sort_values(ascending=False))
+                return [(str(_k), float(_v)) for _k, _v in _g.head(6).items()]
+
+            # THE GUARD. `1 - Σ_pshare` on a live group IS the intended share that had no row, so
+            # the two must agree. While they do not, this block has no standing to say anything
+            # about where the renormalise belongs, and `reconciles` is what stops it saying it.
+            _pw_gap = abs(_pw_found - _pw_short)
+            globals()["_LAST_PSHARE_WHY"] = {
+                "intended_share": float(_pw_t0["_vshare"].sum()),
+                "intended_rows": int(len(_pw_t0)),
+                "missing_rows": int(len(_pw_miss)),
+                "missing_slots": int(_pw_slots),
+                "live_groups": int(len(_pw_grp)),
+                "shortfall": _pw_short,
+                "found": _pw_found,
+                "gap": _pw_gap,
+                "reconciles": bool(_pw_gap <= 1e-6 * max(1.0, _pw_short)),
+                "structural_share": float(_pw_struct["_vshare"].sum()),
+                "structural_rows": int(len(_pw_struct)),
+                "absent_share": float(_pw_absent["_vshare"].sum()),
+                "absent_rows": int(len(_pw_absent)),
+                "structural_pct": 100.0 * float(_pw_struct["_vshare"].sum()) / _pw_tot,
+                "absent_pct": 100.0 * float(_pw_absent["_vshare"].sum()) / _pw_tot,
+                "structural_top": _pw_top(_pw_struct),
+                "absent_top": _pw_top(_pw_absent),
+                "secs": _time.perf_counter() - _pw_t_0,
+            }
+        except Exception as _pw_e:  # noqa: BLE001 — a diagnostic must never break the projection
+            globals()["_LAST_PSHARE_WHY"] = {"error": f"{type(_pw_e).__name__}: {_pw_e}"}
+    else:
+        globals()["_LAST_PSHARE_WHY"] = None
 
     # ── VAMP TERM STASH (read-only) ────────────────────────────────────────────────────────
     # VAMP_Post = vampCount*(1-move) + moved_vpool*_pshare, i.e. HELD + MOVED-IN, exactly the
@@ -1422,7 +2044,36 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
 
 
 # [FN-261]
-def mid_table_from_granular(gran):
+def brand_vamp_mids(mid_list_path=None, brand=None):
+    """vampMids belonging to `brand`, ACTIVE OR NOT.
+
+    Deliberately NOT `build_capability`'s set. That one answers "may this gateway RECEIVE routed
+    volume?" and so excludes inactive gateways and PayPal. This one answers "does this vampMid
+    belong to this company's book?", and an inactive gateway still does: Cardworks, EPX, Merrick
+    and Bancard take no transactions any more but carry historic VAMP that is real, is in the
+    baseline, and must keep its row.
+
+    Uses the shared `_brand_key`, so "Total AV" and "TotalAV" resolve together — the spelling that
+    has twice produced a filter matching nothing.
+
+    An empty result means the brand matched nothing, which is a FAILURE, not an empty book. The
+    caller must treat it as "filter unavailable" rather than "drop everything".
+    """
+    _bk = _brand_key(brand)
+    if not _bk:
+        return frozenset()
+    _mm = load_mid_list(mid_list_path)
+    _cc = _norm_cols(_mm)
+    _vx, _bx = _cc.get("vampmid"), _cc.get("brand")
+    if not _vx or not _bx:
+        return frozenset()
+    return frozenset(
+        str(_v).strip() for _v, _b in zip(_mm[_vx].astype(str), _mm[_bx].astype(str))
+        if _brand_key(_b) == _bk and str(_v).strip())
+
+
+# [FN-261b]
+def mid_table_from_granular(gran, keep_mids=None):
     """Per-vampMid VAMP / VI-Txn M0–5 (pre & post) table, derived by AGGREGATING the
     granular pre/post frame from compute_vamp_prepost_granular. This granular projection is the
     AUTHORITATIVE one — it adds go-live timing, zero-baseline back-fill and the exploration floor
@@ -1437,7 +2088,31 @@ def mid_table_from_granular(gran):
     _vq = gran.groupby(["vampMid", "period"])["VAMP_Post"].sum().unstack(fill_value=0.0)
     _tp = gran.groupby(["vampMid", "period"])["VI_Txn_Pre"].sum().unstack(fill_value=0.0)
     _tq = gran.groupby(["vampMid", "period"])["VI_Txn_Post"].sum().unstack(fill_value=0.0)
-    return _wide_by_mid(gran["vampMid"].unique(), _vp, _tp, _vq, _tq)
+    _mids = gran["vampMid"].unique()
+    # 19dx — DROP OFF-BRAND ROWS THAT ARE ENTIRELY ZERO. The row universe is every vampMid in the
+    # pro-rata export, which carries other brands (Stripe - VPN360, PaySafe - Total Cleaner,
+    # WorldPay - Total Drive, …). 19dj stopped enforced_prop_items INVENTING such rows; these come
+    # from the export itself, so they survived it.
+    #
+    # THE RULE IS DELIBERATELY TWO-PART: off-brand AND all-zero. A row with real numbers is never
+    # hidden, whatever brand it claims — if an off-brand MID has actual VAMP in this scope, that is
+    # a fact about the book and hiding it would understate it. So the worst this filter can do is
+    # leave a phantom row in, never remove a real one.
+    #
+    # An EMPTY keep set means the brand matched nothing (the "Total AV" vs "TotalAV" failure), and
+    # is treated as "filter unavailable" — every row is kept. Inverted, this would blank the table.
+    if keep_mids:
+        _keep = {str(_m).strip() for _m in keep_mids}
+        _zero = {}
+        for _m in _mids:
+            _z = True
+            for _fr in (_vp, _tp, _vq, _tq):
+                if _m in _fr.index and float(np.abs(_fr.loc[_m].to_numpy(float)).sum()) > 1e-9:
+                    _z = False
+                    break
+            _zero[_m] = _z
+        _mids = [_m for _m in _mids if str(_m).strip() in _keep or not _zero[_m]]
+    return _wide_by_mid(_mids, _vp, _tp, _vq, _tq)
 
 
 # [FN-262]
@@ -1540,15 +2215,28 @@ def projection_cache_sig(pp_path, prop_items, exploration_floor=0.0, extra=""):
 @_cache_data(show_spinner=False)
 def _c_prepost_granular(pp_path, m, prop_items, excluded_mids, kill_eff=(), month_0=None,
                         scoped_rpgts=(), wallet_incapable=frozenset(), usa_only=frozenset(),
-                        exploration_floor=0.0):
+                        exploration_floor=0.0, vamp_off_mids=frozenset(),
+                        cap_sig="", _capability=None, max_share=1.0):
     # `m` = cache-key SIGNATURE (callers now pass projection_cache_sig(): mtime + a content hash of
     # the actual split + floor). PLAIN (non-underscore) name so it participates in the st.cache_data
     # key (underscore args are excluded from the hash) — so the cache busts whenever the deployed
     # split OR the exploration floor changes, not just when the pipeline file's mtime changes (which
     # is frozen for a re-used outputs folder). Unused in the body — cache-key only.
+    # 19cv: `vamp_off_mids` is a PLAIN (non-underscore) arg on purpose, so it participates in the
+    # st.cache_data key — editing gateway_volume_overrides.json must bust this cache, and a
+    # frozenset of strings hashes stably.
+    # 19df: `max_share` is PLAIN for the same reason. It now CHANGES THE ANSWER (delivery applies
+    # the cap to the vshare numerator), so a cached frame computed at a different cap must not be
+    # served — changing max_gateway_share in the UI has to bust this cache, not survive it.
     return compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids, kill_eff,
                                          month_0, scoped_rpgts, wallet_incapable, usa_only,
-                                         exploration_floor=exploration_floor)
+                                         exploration_floor=exploration_floor,
+                                         vamp_off_mids=vamp_off_mids,
+                                         # `_capability` is UNDERSCORED so st.cache_data leaves it
+                                         # out of the hash (a function object is not hashable);
+                                         # `cap_sig` above carries its identity into the key.
+                                         capability=_capability,
+                                         max_share=max_share)
 
 
 # [FN-268]
@@ -1853,16 +2541,71 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
     # Ensure a gatewayFid -> vampMid map (build from Master_MID_List if the caller didn't pass
     # one) — otherwise the gateway columns stay as raw FIDs and never match the export's vampMid,
     # so the projection sees no proposed shares and shows post == pre.
+    # 19dj — BRAND-FILTER THIS MAP. It was built from EVERY row of the Master MID List: 539
+    # gatewayFids across 27 brands, of which only 145 are Total AV. The other 394 (Total Adblock
+    # 103, Total VPN 46, Total Password 36, Total Webshield 34, Total Drive 33, Cleaner 26, PC
+    # Protect 26, Hotspot Shield 13, BetterNet 11, VPN360 3, …) entered the map, became prop
+    # items, were back-filled as zero-baseline t0 rows by `_inject_backfill_rows`, and then
+    # appeared as rows in tab 3's per-MID table — which builds its row list from
+    # `gran["vampMid"].unique()` (mid_table_from_granular:1929). `brand` was already passed to
+    # build_split_exports on the next line; only this map was blind to it.
+    #
+    # NOT a mis-attribution: no gatewayFid in the list maps to more than one vampMid (measured,
+    # 0 of 539), and every injected row read 0 across VAMP / VI-Txn / both Post columns for
+    # M0-M5. So this removes PHANTOM ROWS, not numbers — but it is still a change to what
+    # enforced_prop_items returns. ROUTING_FID2VAMP_BRAND=0 reverts.
+    #
+    # THE SPELLING TRAP, which has already cost a day on this codebase: the MID list spells the
+    # brand "Total AV" and the run's company is "TotalAV" (tab3_impact:4178). A plain
+    # strip().lower() matches NOTHING and would silently drop every gateway, exactly as the
+    # 2026-08-28 20:44 run's `build_capability` did — injection reported success while doing
+    # nothing. Compare on whitespace-stripped keys, and RAISE rather than return an empty map.
+    _bkey = _brand_key(brand)
+    _brand_on = os.environ.get("ROUTING_FID2VAMP_BRAND", "1") != "0" and bool(_bkey)
     if mid_list_path and os.path.exists(mid_list_path):
         try:
             _mm = load_mid_list(mid_list_path)
             _cc = _norm_cols(_mm)
             _gx, _vx = _cc.get("gatewayfid"), _cc.get("vampmid")
+            _bx = _cc.get("brand")
             if _gx and _vx:
-                for _f, _v in zip(_mm[_gx].astype(str).str.strip().str.lower(),
-                                  _mm[_vx].astype(str).str.strip()):
-                    if _f and _f not in ("", "nan", "none"):
-                        fid2vamp.setdefault(_f, _v)
+                _ax = _cc.get("isactive")
+                _bs = (_mm[_bx].astype(str) if _bx
+                       else pd.Series([""] * len(_mm), index=_mm.index))
+                _as = (_mm[_ax].astype(str) if _ax
+                       else pd.Series(["true"] * len(_mm), index=_mm.index))
+                _kept = _drop = 0
+                for _f0, _v, _b, _a in zip(_mm[_gx].astype(str),
+                                           _mm[_vx].astype(str).str.strip(), _bs, _as):
+                    if _brand_on:
+                        # 19dk: PayPal, inactive and other-brand rows are all rejected here, by
+                        # the SAME predicate build_capability uses. An inactive gateway keeps
+                        # every row it already has in the export — this only stops it being
+                        # injected as a recipient it can never receive into.
+                        _f = _mid_row_fid(_f0, _b, _a, _bkey)
+                        if _f is None:
+                            _drop += 1
+                            continue
+                    else:
+                        _f = str(_f0 or "").strip().lower()
+                        if not _f or _f in ("", "nan", "none"):
+                            continue
+                    _kept += 1
+                    fid2vamp.setdefault(_f, _v)
+                if _brand_on and not _kept:
+                    _bl = sorted({str(_x).strip() for _x in _mm[_bx].astype(str)
+                                  if str(_x).strip()})[:8]
+                    raise ValueError(
+                        f"enforced_prop_items: filtering gatewayFid->vampMid on brand {brand!r} "
+                        f"(+ active, non-PayPal) kept NO gateway out of {len(_mm):,} row(s) in "
+                        f"{mid_list_path}. Brands "
+                        f"present: {_bl}. An empty map makes every proposed share unmatchable and "
+                        "the projection reports post == pre — refusing to return it silently.")
+                globals()["_LAST_FID2VAMP_BRAND"] = {
+                    "brand": str(brand), "kept": int(_kept), "dropped_other_brand": int(_drop),
+                    "enabled": bool(_brand_on and _bx)}
+        except ValueError:
+            raise
         except Exception:  # noqa: BLE001
             pass
     templates = build_split_exports(

@@ -22,9 +22,10 @@ from impact_calcs import (_c_prepost_granular, _c_read_parquet, _mtime, build_ki
 
 from app_common import (load_mid_list, _norm_cols, _map_to_bank, _renorm_share,
                         _fid2vamp_from)  # memoised MID reader + shared helpers
-from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, DEFAULT_GATEWAY_FIDS, active_gateway_fids,
+from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, DEFAULT_GATEWAY_FIDS,
                         HAS_PLOTLY, _ensure_base_30d_metrics, _impact_eval_frame, _ink_caption,
-                        _switched_off_gateways, _locked_panel, _split_df_to_xlsx_bytes)
+                        _switched_off_gateways, _vamp_off_gateways, _unknown_apply_to,
+                        _locked_panel, _split_df_to_xlsx_bytes)
 
 
 # [FN-347b] Scheme-normalisation shim. This whole tab is written against the VISA export schema
@@ -166,8 +167,7 @@ def render():
                 _sqlp = {"START_DATE": _vpr.get("attempts_start"), "END_DATE": _vpr.get("attempts_end"),
                          "COMPANY": _vpr.get("company"), "CARD_SCHEME": _scheme_v,
                          "BIN_PREFIX": "4" if _scheme_v == "visa" else "5",
-                         "GATEWAY_FIDS": active_gateway_fids(
-                             os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"))}
+                         "GATEWAY_FIDS": DEFAULT_GATEWAY_FIDS}
                 _sqlf = os.path.join(SQL_DIR, "attempts_success.sql")
                 if not os.path.exists(_sqlf):
                     raise FileNotFoundError("attempts_success.sql not found.")
@@ -804,6 +804,17 @@ def render():
                                                    ss["_split_export_zip"], file_name="split_templates.zip",
                                                    mime="application/zip", key="export_splits_dl",
                                                    use_container_width=True)
+                        # RAW pre-enforcement split (the GA's ideal split BEFORE build_split_exports
+                        # cap / wallet / USA / <2-gateway back-fill). Distinct from Export Templates,
+                        # which is the ENFORCED output. Used to diagnose scored-vs-delivered: this is
+                        # the exact input the GA scored. Always available (no heavy build).
+                        _raw_split = ss.get("split")
+                        if _raw_split is not None and not getattr(_raw_split, "empty", True):
+                            st.download_button(
+                                "⬇ Download raw split (pre-enforcement) CSV",
+                                _raw_split.to_csv(index=False).encode("utf-8"),
+                                file_name="raw_split_pre_enforcement.csv", mime="text/csv",
+                                key="export_raw_split_dl", use_container_width=True)
 
                     if hasattr(st, "fragment"):
                         st.fragment(_export_ui)()
@@ -1330,7 +1341,12 @@ def render():
                         _pp_r, projection_cache_sig(_pp_r, _prop_r, _floor_r), _prop_r, _excl_r, _kill_r, _m0_r, _scoped_rpgts,
                         frozenset(str(x).strip().lower() for x in (_wc_r.get("incapable") or set())),
                         frozenset(str(x).strip().lower() for x in (_wc_r.get("usa_only") or set())),
-                        exploration_floor=_floor_r)
+                        exploration_floor=_floor_r,
+                        # 19df — the same max-share cap the search applies, so this secondary
+                        # table cannot disagree with the primary one at :4205 about what the
+                        # delivered VAMP is. `_wc_rr` hands the identical value to
+                        # enforced_prop_items at :1308.
+                        max_share=float(_wc_r.get("max_share", 0.97)))
                     _tick_r = rpgt_avg_ticket(cache.get("cell_agg"))                 # RPGT fallback
                     _rc_tick_r = rpgt_currency_avg_ticket(cache.get("cell_agg"))     # RPGT × Currency
                     # VALIDATE MODE ONLY: source transactions from the pipeline's granular
@@ -3289,7 +3305,11 @@ def render():
                     pp_path, projection_cache_sig(pp_path, prop_items, _gr_floor3), prop_items, excluded_mids, _kill_eff, _m0s, _scoped_rpgts,
                     frozenset(str(x).strip().lower() for x in ((ss.get("wallet_ctx") or {}).get("incapable") or set())),
                     frozenset(str(x).strip().lower() for x in ((ss.get("wallet_ctx") or {}).get("usa_only") or set())),
-                    exploration_floor=_gr_floor3)
+                    exploration_floor=_gr_floor3,
+                    # 19df — the same max-share cap the search applies. This site usually reuses
+                    # `_gr_shared` from :4205 and only computes its own frame when that is None;
+                    # if the two disagreed on the cap, which branch ran would change the numbers.
+                    max_share=float((ss.get("wallet_ctx") or {}).get("max_share", 0.97)))
                 if _gr is None or getattr(_gr, "empty", True):
                     _ink_caption("No pro-rata rows available.")
                 else:
@@ -4099,6 +4119,43 @@ def render():
                         _vamp2fids.setdefault(_v, set()).add(_normfid(_f))
                     excluded_mids = frozenset(
                         v for v, fids in _vamp2fids.items() if fids and fids <= _off_fids)
+                    # 19cv — apply_to:"vamp" (target 0). Same all-fids-off rule as excluded_mids,
+                    # but a DIFFERENT consequence: these MIDs keep their transactions and are barred
+                    # only from RECEIVING redistributed VAMP. The baseline already zeroes the VAMP
+                    # they hold; this closes the flow half.
+                    # 19da — the SAME capability the search is given (tab2_engine builds it from
+                    # the same restrictions file and brand), so both sides complete the aged frame
+                    # identically. `_cap_sig` carries its identity into the st.cache_data key,
+                    # because the callable itself is excluded from the hash.
+                    import io as _io
+                    import json as _je
+                    import impact_calcs as _ic_cap
+                    _capability = None
+                    _cap_sig = "off"
+                    if os.environ.get("ROUTING_INJECT_CAPABLE", "1") != "0":
+                        try:
+                            _rjp = os.path.join(PROJECT_ROOT, "config", "inputs",
+                                                "routing_restrictions.json")
+                            _rj = {}
+                            if os.path.exists(_rjp):
+                                with _io.open(_rjp, encoding="utf-8") as _rfh:
+                                    _rj = _je.load(_rfh)
+                            _capability = _ic_cap.build_capability(restrictions=_rj,
+                                                                   brand=ss.get("company"))
+                            _cap_sig = (f"{_capability.n_gateways}:{_capability.n_mids}:"
+                                        f"{_mtime(_rjp) if os.path.exists(_rjp) else 0:.0f}")
+                        except Exception:  # noqa: BLE001
+                            _capability, _cap_sig = None, "off"
+                    # 19dw: the SHARED builder, so tab 3 and the engine cannot drift on the
+                    # all-fids-off rule or on gateway-id canonicalisation. Same value as the
+                    # inline version it replaces, so the cache key is unchanged.
+                    _vamp_off_mids = _ic_cap.build_vamp_off_mids(fid2vamp, _ovr)
+                    _bad_ap = _unknown_apply_to(_ovr if isinstance(_ovr, dict) else {})
+                    if _bad_ap:
+                        st.warning(
+                            "gateway_volume_overrides.json contains apply_to value(s) "
+                            f"{sorted(_bad_ap)} that are not one of trx / vamp / both — those "
+                            "entries are IGNORED, they are not applied to anything.")
                     # Effective-date-gated switch-off: only remove a switched-off vampMid
                     # from its effective month onward (mid-month pro-rated), not from M0.
                     _kill_eff = build_kill_eff(_vamp2fids, _fid_eff)
@@ -4158,8 +4215,24 @@ def render():
                                                          projection_cache_sig(pp_path, _proj_prop, _proj_floor),
                                                          _proj_prop, excluded_mids,
                                                          _kill_eff, _m0s, _scoped_rpgts, _wcin, _uonly,
-                                                         exploration_floor=_proj_floor)
-                        vp = mid_table_from_granular(_gr_shared)
+                                                         exploration_floor=_proj_floor,
+                                                         vamp_off_mids=_vamp_off_mids,
+                                                         cap_sig=_cap_sig,
+                                                         _capability=_capability,
+                                                         # 19df — delivery gets the SAME max-share
+                                                         # cap the search applies. `_wc0` already
+                                                         # hands this exact value to the enforcement
+                                                         # call at :4182, so the two now agree by
+                                                         # construction rather than by luck.
+                                                         max_share=float(_wc0.get("max_share", 0.97)))
+                        # 19dx: keep every Total AV vampMid, active or not (Cardworks, EPX,
+                        # Merrick and Bancard have real historic VAMP), and drop only
+                        # off-brand rows that are entirely zero.
+                        _brand_mids = _ic_cap.brand_vamp_mids(
+                            locals().get("_mid_list_e") or os.path.join(
+                                PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"),
+                            ss.get("company"))
+                        vp = mid_table_from_granular(_gr_shared, keep_mids=_brand_mids)
                     else:
                         vp = compute_vamp_post_by_mid(tp_path, prop_items_flat, str(_m0.date()), str(_gl),
                                                       excluded_mids, _kill_eff, _mtime(tp_path))
@@ -4171,7 +4244,8 @@ def render():
                     if ss.get("variations_engine") == "validate":
                         _gp_risk = _validate_granular_from_bin_rpgt(out_dir)
                         if _gp_risk is not None and not _gp_risk.empty:
-                            vp = mid_table_from_granular(_gp_risk)
+                            vp = mid_table_from_granular(_gp_risk,
+                                                         keep_mids=locals().get("_brand_mids"))
                     vp = vp.sort_values("VAMP M0", ascending=False)
 
                     col_groups, cols = [], ["vampMid"]

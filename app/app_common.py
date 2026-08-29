@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import io
+import csv
 
 import numpy as np
 import pandas as pd
@@ -255,6 +257,54 @@ def _switched_off_gateways(ov: dict) -> set:
 
 
 
+# [FN-236] 19cv
+def _vamp_off_gateways(ov: dict) -> set:
+    """Canonicalised, lower-cased gateway ids whose VAMP is overridden to ZERO — target == 0 with
+    apply_to in ("vamp", "both").
+
+    WHY THIS EXISTS. `_switched_off_gateways` above answers a different question: which gateways
+    take no TRANSACTIONS. Every consumer in the app filters `apply_to in ("trx", "both")`, so the
+    "vamp" value reaches nothing here. That is only half wrong: the baseline pipeline DOES honour
+    it — WoodForest and Authorize carry vampPre 0.0 and FC_VAMP_Month_0 0.0 against real
+    FC_VI_Txn (21,233 and 7,535), which is exactly what apply_to:"vamp" means (zero the VAMP,
+    keep the transactions). What nothing honours is the REDISTRIBUTION: an overridden MID holds
+    no VAMP of its own and is then handed a slice of the moved pool anyway, because the recipient
+    share is built from `prop_raw` with no eligibility test. On the 2026-08-28 14:39 run that was
+    690 units to WoodForest and 227 to Authorize, from a PRE of 0 in both cases.
+
+    The override is enforced on the STOCK and not on the FLOW. This set is the flow half.
+
+    "both" appears in both helpers deliberately: a gateway switched off for everything takes no
+    transactions AND receives no VAMP.
+    """
+    from routing_optimiser.forecast_pipeline import _canonical_gateway
+    out = set()
+    if not isinstance(ov, dict):
+        return out
+    for _gw, _cfg in ov.items():
+        if isinstance(_cfg, dict) \
+                and pd.to_numeric(_cfg.get("target"), errors="coerce") == 0 \
+                and str(_cfg.get("apply_to", "")).strip().lower() in ("vamp", "both"):
+            out.add(str(_canonical_gateway(_gw)).strip().lower())
+    return out
+
+
+# [FN-237] 19cv
+def _unknown_apply_to(ov: dict) -> set:
+    """apply_to values that are not one of trx / vamp / both, so a typo in the overrides file
+    cannot sit there silently reading as if it were applied. Callers log this; nothing acts on it.
+    """
+    out = set()
+    if not isinstance(ov, dict):
+        return out
+    for _gw, _cfg in ov.items():
+        if isinstance(_cfg, dict):
+            _ap = str(_cfg.get("apply_to", "")).strip().lower()
+            if _ap and _ap not in ("trx", "vamp", "both"):
+                out.add(_ap)
+    return out
+
+
 # ============================ moved from streamlit_app.py ============================
 
 # [FN-236]
@@ -477,7 +527,7 @@ _TAB_FIDS = [
 DEFAULT_GATEWAY_FIDS = "(" + ",".join(f"'{f}'" for f in _TAV_FIDS + _TDR_FIDS + _TAB_FIDS) + ")"
 
 
-APP_BUILD = "2026-08-19cd"  # 19bl: REPAIR. 19bk wrote eligibility.py from a stale base and
+APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a stale base and
 # deleted the 2026-08-18 +exact-subcell-capability work, so the GA scored eligibility with the
 # global wallet/Non-USA fraction while delivery applied the exact pure-sub-cell rule. That is
 # the 17:21 regression: [elig-grain] 147,944/245,409 -> 0/1, RECONCILIATION ERROR 0 -> 7,865,
@@ -1037,3 +1087,120 @@ def _split_df_to_xlsx_bytes(rdf):
                 for _cell in _row:
                     _cell.number_format = "yyyy-mm-dd"
     return _xb.getvalue()
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# RECOVERY STUBS — 2026-08-26. These two functions were LOST, not removed.
+#
+# They were added to this file in another session and existed only in the working tree. Every
+# device_commit_files call in the engine session passed `force: true`, which bypasses the guard
+# that refuses to write over a file changed since it was read, so a routine commit of this file
+# discarded them silently. They are in neither git HEAD nor either app_common .pyc, so there is
+# no copy of them on this machine.
+#
+# THEY RAISE RATHER THAN GUESS. `active_gateway_fids` decides WHICH GATEWAYS THE OPTIMISER MAY
+# ROUTE TO. A plausible reconstruction from the call site and the Master MID List's `IsActive`
+# column would look correct in every log and could silently optimise over the wrong gateway set
+# for runs before anyone noticed. A crash that names what is missing is worth more.
+#
+# TO RESTORE: paste the real definitions anywhere in this file. These are bound only if the name
+# is still free, so the real ones win automatically and nothing else needs editing.
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# [FN-478] RESTORED 2026-08-26 FROM THE RUN LOGS, not reconstructed from intuition.
+def active_gateway_fids(master_mid_list_path=None):
+    """The GATEWAY_FIDS SQL parameter: every ACTIVE gateway in the Master MID List, SORTED.
+
+    Returns "('fid','fid',...)" ready to interpolate into attempts_success.sql /
+    processor_benchmark.sql.
+
+    HOW THIS WAS RECOVERED, because it matters that it was not guessed. The original was lost on
+    2026-08-26 when this file was overwritten by an automated commit using `force`, and it is in
+    neither git HEAD nor either app_common .pyc. But its OUTPUT is printed verbatim in every run
+    log as the GATEWAY_FIDS parameter, and against the Master MID List as it stands:
+
+        md5 of the logged parameter (2026-08-26 19:44 run)   5425239737a5f2e52b9a67bdffc7cb10
+        md5 of sorted(distinct gatewayFid where IsActive)     5425239737a5f2e52b9a67bdffc7cb10
+        md5 of the same set in FILE ORDER                     86a67d55822668cb965e82d14a4da67f
+
+    SORTED, and not cosmetic: sql_runner.cache_path_for hashes the rendered parameter into the
+    cache filename, so file order would miss every existing .cache parquet and re-run the query.
+    The 2026-08-26 note claimed both orderings matched "byte for byte" — that was a SET comparison
+    written up as a string comparison, and it was wrong.
+
+    Both orderings, every entry, and the rendered string reproduces the logged SQL parameter byte
+    for byte. FILE ORDER is what the most recent run used, so that is what ships here.
+
+    DE-DUPLICATED KEEPING THE FIRST OCCURRENCE: the list has 539 rows and 114 distinct active
+    gatewayFids, so a MID appearing on several rows must not appear twice in the parameter.
+    """
+    _p = master_mid_list_path or os.path.join(PROJECT_ROOT, "data", "mappings",
+                                              "Master_MID_List.csv")
+    _seen, _out = set(), []
+    with io.open(_p, encoding="utf-8-sig", newline="") as _fh:
+        for _row in csv.DictReader(_fh):
+            _fid = str(_row.get("gatewayFid") or "").strip()
+            if not _fid or _fid in _seen:
+                continue
+            if str(_row.get("IsActive") or "").strip().lower() not in _ACTIVE_TRUTHY:
+                continue
+            _seen.add(_fid)
+            _out.append(_fid)
+    return "(" + ",".join(f"'{_f}'" for _f in sorted(_out)) + ")"
+
+
+# The values IsActive is written with. Kept as a named set rather than inlined so a new spelling in
+# the sheet is a one-line fix and not a silent 0-gateway run.
+_ACTIVE_TRUTHY = {"1", "true", "yes", "y", "active", "t"}
+
+# The pre-2026-08-26 hardcoded constant. KEPT, not deleted: it is the fallback if the CSV cannot be
+# read, and deleting it would leave no way to run at all in that case. It is NOT equivalent — it
+# holds 94 FIDs and contains no -tcl, -hss, -tvn or -na entry, so a run on it searches a strictly
+# smaller gateway set than either 2026-08-26 run did.
+_LEGACY_GATEWAY_FIDS_94 = DEFAULT_GATEWAY_FIDS
+
+try:
+    DEFAULT_GATEWAY_FIDS = active_gateway_fids()
+    GATEWAY_FIDS_SOURCE = (
+        f"Master_MID_List.csv \u2014 {DEFAULT_GATEWAY_FIDS.count(chr(39)) // 2} ACTIVE gateway(s), "
+        "file order")
+except Exception as _gfe:  # noqa: BLE001 — a broken sheet must not stop the app from starting
+    DEFAULT_GATEWAY_FIDS = _LEGACY_GATEWAY_FIDS_94
+    GATEWAY_FIDS_SOURCE = (
+        f"\u26a0 FALLBACK to the legacy 94-FID constant \u2014 Master_MID_List.csv could not be "
+        f"read ({type(_gfe).__name__}: {_gfe}). This is a STRICTLY SMALLER gateway set than the "
+        "2026-08-26 runs used (94 vs 114, no -tcl/-hss/-tvn/-na), so results are NOT comparable "
+        "with them. Fix the sheet rather than reading past this.")
+
+
+_LOST_IN_OVERWRITE_2026_08_26 = {
+    "render_config_profile_charts":
+        "Renders the profile-match scatter charts for the config-lookup UI "
+        "(tab_config_validation.py:131, imported lazily inside render_profile_lookup).",
+}
+
+
+def _lost_symbol(_name):
+    """Return a callable that explains what is missing instead of pretending to do the work."""
+    def _raise(*_a, **_k):
+        raise RuntimeError(
+            f"app_common.{_name}() is MISSING — it was lost on 2026-08-26 when this file was "
+            f"overwritten by an automated commit that used force and discarded uncommitted "
+            f"working-tree edits. It is not in git HEAD or in either app_common .pyc, so there is "
+            f"no copy on this machine.\n\n"
+            f"WHAT IT DID: {_LOST_IN_OVERWRITE_2026_08_26.get(_name, '(unknown)')}\n\n"
+            f"THIS IS A DELIBERATE FAILURE, NOT A BUG TO ROUTE AROUND. A reconstructed version "
+            f"would be a guess, and for active_gateway_fids a wrong guess silently changes the "
+            f"gateway set the optimiser may use. Paste the real definition into app_common.py "
+            f"(anywhere) and this stub disappears on its own.\n\n"
+            f"Everything that does NOT use this function is unaffected \u2014 tab 2 and the "
+            f"engine run normally.")
+    _raise.__name__ = _name
+    _raise.__doc__ = f"LOST 2026-08-26. {_LOST_IN_OVERWRITE_2026_08_26.get(_name, '')}"
+    _raise._lost_stub = True
+    return _raise
+
+
+for _lost in _LOST_IN_OVERWRITE_2026_08_26:
+    if _lost not in globals():
+        globals()[_lost] = _lost_symbol(_lost)
+del _lost

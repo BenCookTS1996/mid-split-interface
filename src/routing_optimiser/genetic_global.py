@@ -22,6 +22,8 @@ removed once the cross-cell per-MID tilt superseded them.)
 """
 from __future__ import annotations
 
+import os as _os
+import time as _time
 import numpy as np
 
 __build__ = "2026-08-11-band-aware-constrained-projection-seed+riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel+vol-weighted-viol+penalty-shape+repair-input+sigma-controls+fitness-trace+active-priority+viol-breakdown+capcell-detail+breach-tol+band-workings+no-maxiter-bandgreedy+stable-softmax+bandgreedy-count-aware-priority+bandgreedy-multistart"
@@ -1152,7 +1154,8 @@ def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mi
 # [FN-122b]
 def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_rows, mid_labels,
                              exact_bands, incidence, *, max_share=1.0, damping=0.5, tol=1e-6,
-                             patience=4, n_starts=1, rng_seed=0, jitter=0.5, keys_out=None):
+                             patience=4, n_starts=1, rng_seed=0, jitter=0.5, keys_out=None,
+                             par_info=None):
     """MULTI-START `band_greedy_shares`: run the constrained projection from the base split PLUS
     (n_starts − 1) log-normally-jittered starts, and keep the one with the LOWEST
     (priority-weighted unmet-band count, total breach). A single projection is a fast (~seconds)
@@ -1165,33 +1168,70 @@ def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_ro
     because the caller could not tell whether the jittered starts ever WON: only the best key was
     returned and tab2 discarded even that, so four runs of logs could not answer whether
     n_starts=4 bought anything over n_starts=1. Measurement only — it does not change which split
-    is chosen, and an unsupplied keys_out leaves behaviour byte-identical."""
+    is chosen, and an unsupplied keys_out leaves behaviour byte-identical.
+
+    CONCURRENT since 2026-08-19ck, and BIT-IDENTICAL to the serial loop it replaced. The starts are
+    independent — each is the same greedy on its own perturbed copy — so the 30.6 s this stage cost
+    on the 2026-08-25 20:35 run was mostly waiting. Two things had to be pinned for identity:
+    the RNG DRAWS are taken first, sequentially, in the old order and handed to the workers as data
+    (they were drawn inside the loop, so execution order WAS draw order); and the REDUCE is still
+    serial in index order with the same strict `<`, so a tie still goes to the earlier start.
+    `ROUTING_FEAS_PAR=0` restores the serial loop; `par_info` (a dict, optional) receives the timing
+    so a caller can log what the concurrency actually bought instead of assuming."""
     _kw = dict(max_share=max_share, damping=damping, tol=tol, patience=patience)
     base = np.asarray(base_shares, float)
-    best_s, best_key = band_greedy_shares(
-        base, cell_starts, cell_counts, elig, mid_rows, mid_labels, exact_bands, incidence,
-        return_key=True, **_kw)
-    if keys_out is not None:
-        keys_out.append((0, float(best_key[0]), float(best_key[1])))
-    if int(n_starts) <= 1:
+    _n = int(n_starts)
+
+    def _greedy(_x):
+        return band_greedy_shares(
+            _x, cell_starts, cell_counts, elig, mid_rows, mid_labels, exact_bands, incidence,
+            return_key=True, **_kw)
+
+    if _n <= 1:
+        best_s, best_key = _greedy(base)
+        if keys_out is not None:
+            keys_out.append((0, float(best_key[0]), float(best_key[1])))
         return best_s, best_key
-    _starts = np.asarray(cell_starts, np.intp)
+
+    _pstarts = np.asarray(cell_starts, np.intp)
     _counts = np.asarray(cell_counts, np.intp)
     _cap = float(max_share) if (max_share and float(max_share) > 0) else 1.0
     _elig = np.asarray(elig, float)
+    # ── the draws, SEQUENTIALLY, in the pre-19ck order ────────────────────────────────────────
     rng = np.random.default_rng(int(rng_seed))
-    for _i in range(1, int(n_starts)):
+    _inputs = [base]
+    for _i in range(1, _n):
         # jitter the base multiplicatively (log-normal), then project onto each cell's capped simplex so
         # every start is a VALID split before the greedy runs.
         _pert = base * np.exp(rng.normal(0.0, float(jitter), size=base.shape))
-        _pert = _project_capped_simplex_cells(_pert, _starts, _counts, _elig, _cap, 1.0)
-        _s, _k = band_greedy_shares(
-            _pert, cell_starts, cell_counts, elig, mid_rows, mid_labels, exact_bands, incidence,
-            return_key=True, **_kw)
+        _inputs.append(_project_capped_simplex_cells(_pert, _pstarts, _counts, _elig, _cap, 1.0))
+
+    _par = _os.environ.get("ROUTING_FEAS_PAR", "1") != "0"
+    _t0 = _time.perf_counter()
+    if _par:
+        from concurrent.futures import ThreadPoolExecutor
+        # One worker per start, capped: more threads than starts buys nothing, and the greedy holds
+        # the GIL through its per-spec Python loop so oversubscribing only adds contention.
+        _nw = max(1, min(_n, int(_os.environ.get("ROUTING_FEAS_PAR_WORKERS", "0") or 0) or _n))
+        with ThreadPoolExecutor(max_workers=_nw) as _ex:
+            _out = list(_ex.map(_greedy, _inputs))
+    else:
+        _nw = 1
+        _out = [_greedy(_x) for _x in _inputs]
+    _dt = _time.perf_counter() - _t0
+
+    # ── the reduce, SERIALLY, in index order, with the original strict `<` ────────────────────
+    best_s, best_key = _out[0]
+    if keys_out is not None:
+        keys_out.append((0, float(best_key[0]), float(best_key[1])))
+    for _i in range(1, _n):
+        _s, _k = _out[_i]
         if keys_out is not None:
             keys_out.append((int(_i), float(_k[0]), float(_k[1])))
         if _k < best_key:
             best_key, best_s = _k, _s
+    if isinstance(par_info, dict):
+        par_info.update(parallel=bool(_par), workers=int(_nw), starts=int(_n), secs=float(_dt))
     return best_s, best_key
 
 

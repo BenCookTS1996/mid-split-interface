@@ -81,6 +81,7 @@ Cell (`grpk`) = (cur,bin,rpgt,pmp,ctry,per); `ctot` = cell total VI at t0.
 from __future__ import annotations
 
 import os
+import threading as _threading
 
 import numpy as np
 import pandas as pd
@@ -132,16 +133,33 @@ _GRPK = ["cur", "bin", "rpgt", "pmp", "ctry", "per"]
 # a new kernel ARGUMENT would shift every positional index that [kernel-ab] and [kernel-ga]
 # derive from the signature. ROUTING_VAMP_CONSERVE=0 restores the pre-19aq gate for an A/B.
 _VAMP_CONSERVE = os.environ.get("ROUTING_VAMP_CONSERVE", "1") != "0"
+# 19cu — the vshare denominator. DELIVERY sums prop_raw over EVERY row of the cell-month;
+# in-search summed it over `vcpos` (vampCount > 0) rows only. Default 1 = match delivery.
+# ROUTING_VSHARE_ALLROWS=0 restores the vcpos-masked denominator for an A/B. Module-level, so
+# numba folds it at compile time — which is why these kernels must stay cache=False.
+_VSHARE_ALLROWS = os.environ.get("ROUTING_VSHARE_ALLROWS", "1") != "0"
+# 19cx — the AGE-BY-AGE renormalise. Delivery re-bases the redistribution share a SECOND time,
+# over the aged group (cell, period, t): compute_vamp_prepost_granular does
+#     _psum   = pp.groupby(_gk)["_pshare"].transform("sum")
+#     _move   = where(_psum > 1e-12, _move,   0.0)      <- the no-recipient PASSTHROUGH
+#     _pshare = where(_psum > 1e-12, _pshare / _psum, 0.0)
+# The in-search kernel normalises ONCE, over the origin cell, and has no equivalent pass — so
+# wherever a MID has no row at a given age (ordinary: VAMP arrives from cohorts that age out at
+# different rates) delivery re-bases the survivors up to 1 and the search does not, leaking the
+# absent MID's share. Removing it from DELIVERY is not an option: test_recon616 measures the leak
+# it prevents, so the pass is load-bearing and belongs in both. ROUTING_AGE_RENORM=0 reverts.
+_AGE_RENORM = os.environ.get("ROUTING_AGE_RENORM", "1") != "0"
+_BP_COLLAPSE_SAID = {}
 
 
 
 # [FN-010]
-def _pop_band_kernel_impl(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, ctot,
+def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                           pc_org, pc_vc, pc_pool, pc_band, pc_heldfac, cap_row, cap_band,
-                          cap_c, cap_ctot, cap_base, pc_gc,
+                          cap_c, cap_ctot, cap_base, pc_gc, pc_gk, vconst,
                           ncell, nband, cap, nlane, live_rows, live_cells,
                           vamp, txn, psum, vpsum, moved, pr, pshare, vshare, mvrow, nzc, exc,
-                          rsum):
+                          rsum, gks):
     """Bit-identical numba equivalent of PopulationBandProjector.project_pop: flat passes over
     the reduced scaffold with per-cell scratch (ncell), no dense (P × nR) arrays. ~7× faster on
     the real scaffold. cap_row is pre-filtered to non-excl rows (excl txn contributions are 0).
@@ -211,13 +229,22 @@ def _pop_band_kernel_impl(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, c
         q = p * lane_stride
         _psum = psum[q]; _vpsum = vpsum[q]; _moved = moved[q]
         _pr = pr[q]; _pshare = pshare[q]; _vshare = vshare[q]; _mvrow = mvrow[q]
+        _gks = gks[q]
+        # 19cz: the aged rows that are candidate-independent were summed once at build time and
+        # dropped from pc_*; seed the band totals with that constant instead of walking them.
+        for _b in range(nband):
+            vamp[p, _b] += vconst[_b]
         _nzc = nzc[q]; _exc = exc[q]; _rsum = rsum[q]
         for _ci in range(nLC):
             c = live_cells[_ci]
             _psum[c] = 0.0; _moved[c] = 0.0
         for _ri in range(nLR):
             r = live_rows[_ri]
-            v = 0.0 if masked[r] else prop_raw[p, propidx[r]]
+            # 19dt: `pw` is a per-row WEIGHT, not a mask - 0.0 where the row was masked,
+            # otherwise its `_keep` fraction (1.0 normally). Delivery scales prop_raw by
+            # the same factor, so a gateway part-way through switching off is proposed
+            # part of its share on BOTH sides.
+            v = prop_raw[p, propidx[r]] * pw[r]
             _pr[r] = v
             _psum[gcode[r]] += v
         for _ri in range(nLR):
@@ -280,7 +307,8 @@ def _pop_band_kernel_impl(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, c
         for _ri in range(nLR):
             r = live_rows[_ri]
             c = gcode[r]
-            if _psum[c] > 0.0 and vcpos[r] > 0.5:
+            # 19cu: ALLROWS matches delivery's unmasked denominator; else the historical vcpos gate.
+            if _psum[c] > 0.0 and vcpos[r] > 0.5:      # 19db: vcpos == VAMP-eligibility
                 _vpsum[c] += _pshare[r]
         for _ri in range(nLR):
             r = live_rows[_ri]
@@ -301,10 +329,37 @@ def _pop_band_kernel_impl(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, c
             r = cap_row[j]; c = cap_c[j]
             txn[p, cap_band[j]] += cap_ctot[j] * (cap_base[j] * (1.0 - _mvrow[r])
                                                   + _moved[c] * _pshare[r])
+        # ---- 19cy: AGE-BY-AGE RENORMALISE, three passes over the aged rows ----
+        # Delivery re-bases the redistribution share over the aged group (cell, period, t):
+        #     _psum   = pp.groupby(_gk)["_pshare"].transform("sum")
+        #     _move   = where(_psum > 1e-12, _move,   0.0)
+        #     _pshare = where(_psum > 1e-12, _pshare / _psum, 0.0)
+        # Without it, a MID with no row at a given age leaves its share unclaimed and the pool
+        # silently loses that fraction. Measured on the _19cw fixture: one absent MID in one
+        # movable age layer accounted for the ENTIRE 5.80 divergence, and this takes it to 0.
+        #
+        # Pass 0 zeroes only the groups this scaffold TOUCHES (O(nA)), not the whole gks array
+        # (O(n_gk)) — n_gk is ~671k on the live scaffold and would dominate at P candidates x
+        # 300 generations. Frozen ages need no special case: their rows have pc_org < 0, so they
+        # contribute nothing to the sum, the group reads 0, and both `mpc` and `psh` fall to 0 —
+        # which is exactly the hold that delivery produces when its orig_m merge finds nothing.
+        if _AGE_RENORM:
+            for j in range(nA):
+                _gks[pc_gk[j]] = 0.0
+            for j in range(nA):
+                o = pc_org[j]
+                if o >= 0:
+                    _gks[pc_gk[j]] += _vshare[o]
         for j in range(nA):
             o = pc_org[j]
             # APPEARANCE-MONTH timing: held move = fcp[origin]·pro_rata[appearance] (pc_heldfac),
             # gated on the ORIGIN cell being routed (psum>0). Pool is pre-built appearance-timed.
+            if _AGE_RENORM:
+                _gsum = _gks[pc_gk[j]]
+                if _gsum <= 1e-12:
+                    o = -1                      # no live recipient at this age -> PASS THROUGH
+            else:
+                _gsum = 1.0
             if o >= 0:
                 # pc_gc[j] == gcode[pc_org[j]], precomputed (see the nC loop above). Only
                 # read under `o >= 0`, so the value stored for o < 0 rows is never used — it is
@@ -319,7 +374,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, c
                     mpc = (pc_heldfac[j] if (_psum[_cg] > 0.0 and _vpsum[_cg] > 0.0) else 0.0)
                 else:
                     mpc = pc_heldfac[j] if _psum[_cg] > 0.0 else 0.0
-                psh = _vshare[o]
+                psh = _vshare[o] / _gsum
             else:
                 mpc = 0.0
                 psh = 0.0
@@ -380,11 +435,11 @@ _pop_band_kernel_fm_cache = {}
 # being materialised. The row-indexed arguments are CELL-MAJOR permutations of the originals
 # (built once per layout by _cb_arrays), so `_pshare[i]` here means the same row as `_pshare[r]`
 # there — only the label changed.
-def _cb_kernel_impl(prop_raw, propidx_c, masked_c, base_c, mv_c, vcpos_c,
+def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
                     cells, cstart, ccnt,
                     cap_rowc, cap_band, cap_c, cap_ctot, cap_base,
-                    pc_orgc, pc_vc, pc_pool, pc_band, pc_heldfac, pc_gc,
-                    cap, nlane, vamp, txn, psum, vpsum, moved, pr, pshare, sw):
+                    pc_orgc, pc_vc, pc_pool, pc_band, pc_heldfac, pc_gc, pc_gkc, vconst,
+                    cap, nlane, vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks):
     P = prop_raw.shape[0]
     nCl = cells.shape[0]; nC = cap_rowc.shape[0]; nA = pc_orgc.shape[0]
     vamp[:, :] = 0.0; txn[:, :] = 0.0
@@ -395,13 +450,16 @@ def _cb_kernel_impl(prop_raw, propidx_c, masked_c, base_c, mv_c, vcpos_c,
         q = p * lane_stride
         _psum = psum[q]; _vpsum = vpsum[q]; _moved = moved[q]
         _pr = pr[q]; _pshare = pshare[q]
+        _gks = gks[q]
+        for _b in range(vconst.shape[0]):        # 19cz — see the flat kernel
+            vamp[p, _b] += vconst[_b]
         for ci in range(nCl):
             c = cells[ci]
             s = cstart[ci]; e = s + ccnt[ci]
             # ---- pass 1: proposals + the cell sum, in the original row order ----
             ps = 0.0
             for i in range(s, e):
-                v = 0.0 if masked_c[i] else prop_raw[p, propidx_c[i]]
+                v = prop_raw[p, propidx_c[i]] * pw_c[i]      # 19dt: weight, not mask
                 _pr[i] = v
                 ps += v
             _psum[c] = ps
@@ -443,7 +501,7 @@ def _cb_kernel_impl(prop_raw, propidx_c, masked_c, base_c, mv_c, vcpos_c,
                 # ---- vpsum ----
                 vp = 0.0
                 for i in range(s, e):
-                    if vcpos_c[i] > 0.5:
+                    if vcpos_c[i] > 0.5:                 # 19db: vcpos == VAMP-eligibility
                         vp += _pshare[i]
                 _vpsum[c] = vp
             else:
@@ -458,9 +516,28 @@ def _cb_kernel_impl(prop_raw, propidx_c, masked_c, base_c, mv_c, vcpos_c,
             mvr = mv_c[r] if _psum[c] > 0.0 else 0.0
             txn[p, cap_band[j]] += cap_ctot[j] * (cap_base[j] * (1.0 - mvr)
                                                  + _moved[c] * _pshare[r])
+        # ---- 19cy: age-by-age renormalise — identical rule to the flat kernel ----
+        # vshare is DERIVED here rather than materialised, so the sum pass has to re-derive it
+        # under the same two guards the reader below uses; anything else would sum a different
+        # quantity from the one it divides.
+        if _AGE_RENORM:
+            for j in range(nA):
+                _gks[pc_gkc[j]] = 0.0
+            for j in range(nA):
+                o = pc_orgc[j]
+                if o >= 0:
+                    _cg0 = pc_gc[j]
+                    if _psum[_cg0] > 0.0 and vcpos_c[o] > 0.5 and _vpsum[_cg0] > 0.0:
+                        _gks[pc_gkc[j]] += _pshare[o] / _vpsum[_cg0]
         # ---- nA: vshare derived instead of read, under the SAME two guards ----
         for j in range(nA):
             o = pc_orgc[j]
+            if _AGE_RENORM:
+                _gsum = _gks[pc_gkc[j]]
+                if _gsum <= 1e-12:
+                    o = -1
+            else:
+                _gsum = 1.0
             if o >= 0:
                 _cg = pc_gc[j]
                 if _VAMP_CONSERVE:
@@ -468,7 +545,7 @@ def _cb_kernel_impl(prop_raw, propidx_c, masked_c, base_c, mv_c, vcpos_c,
                 else:
                     mpc = pc_heldfac[j] if _psum[_cg] > 0.0 else 0.0
                 if _psum[_cg] > 0.0 and vcpos_c[o] > 0.5 and _vpsum[_cg] > 0.0:
-                    psh = _pshare[o] / _vpsum[_cg]
+                    psh = _pshare[o] / _vpsum[_cg] / _gsum
                 else:
                     psh = 0.0
             else:
@@ -511,7 +588,17 @@ def pop_band_kernel_fastmath(parallel=True):
 # `_pop_band_kernel_fm` existed — a probe that inverts the moment that feature comes back, which is
 # exactly what happened in 19av. Bump this string on every change to this file instead: its meaning
 # does not depend on any other feature's presence.
-_LOADED_SENTINEL = "19bi"
+# 19de — BUMPED. This was left at "19bi" through 19cu/19cy/19cz/19da/19db/19dc/19dd, so the
+# [loaded] staleness guard in tab2_engine could not tell a module carrying those changes from one
+# that predates all of them: both printed "19bi" and the guard only tests for ABSENT. Two runs on
+# 2026-08-28 (20:44 and 21:03) came back BYTE-FOR-BYTE identical with the changes on disk, which is
+# the exact signature that warning describes — and nothing in the log could confirm or deny it.
+# BUMP THIS WITH EVERY BEHAVIOURAL CHANGE TO THIS MODULE. It is the only thing standing between a
+# stale long-lived Streamlit import and a run that looks like evidence.
+# 19dl: bumped — `_pc_gk_keys` added. Not behavioural, but the [vterms-is]
+# passthrough dump reads it, and a stale src import would silently skip the dump
+# rather than say why. The sentinel is how the log tells those two apart.
+_LOADED_SENTINEL = "19dt"
 
 # Lane cap. Per-lane scratch is 4 x (nR,) float64 per lane — 40.8 MB per lane at nR=1,275,348 — so
 # the parallel path is only taken for a SMALL population. The full-matrix engine runs pop 4 (P=3
@@ -538,7 +625,26 @@ _LOADED_SENTINEL = "19bi"
 # the flat kernel was memory-bandwidth-bound, so extra lanes bought nothing (530.7 vs 536.5 ms).
 # 19bt's cell-blocked kernel made the projector compute-bound, and that is exactly why the eight
 # idle cores now pay. Cost: 0.58 GB of scratch instead of 0.29 GB. ROUTING_PROJ_LANES=8 reverts.
-_PROJ_LANE_CAP = max(1, int(os.environ.get("ROUTING_PROJ_LANES", "16") or 16))
+# 19cg: 16 -> 32, ADOPTED ON TWO MEASUREMENTS THAT AGREE. [stage-ab] row L, which times the
+# projector at the shipped cap against DOUBLE it on the live scaffold at the live width:
+#   2026-08-25 15:48   +3.5%,  9 of 11 paired rounds, p=0.065, bit-identical
+#   2026-08-25 16:50   +3.6%, 11 of 11 paired rounds, p=0.001, bit-identical, floor +-0.7%
+# Worth ~1% of a generation ([gen-cost] put the projector at 28.3%).
+# COST: 1.16 GB of projector scratch instead of 0.58 GB. That is the whole downside and it is not a
+# speed one. ROUTING_PROJ_LANES=16 reverts.
+# WHAT DISAGREED, and why it does not count: 2026-08-25 07:39 read -3.3% at 3/11 — a scaffold of
+# 929,430 rows against these two's 1,128,484, on a machine whose [kernel-ab] floor read +-8.7% that
+# run against +-0.7% here. Different shape, worse measurement. The row auto-doubles the SHIPPED cap,
+# so the next run tests 64 against 32 and the question keeps answering itself.
+# 19ch: 32 -> 64, on [stage-ab] row L reading +3.4%, 11 of 11 paired rounds, p=0.001, against a
+# MEASURED floor of +-0.7%, bit-identical (2026-08-25 19:14). READ WHAT THAT ROW ACTUALLY
+# MEASURED: at P=35 a cap of 64 and a cap of 36 dispatch identically, so this is NOT "more
+# parallelism". It is "one parallel call over all 35 candidates" against "32 plus a ragged 3" —
+# the second parallel call for a 3-candidate tail is what cost the 3.4%. That is why the row now
+# DECLINES once the cap already covers the candidate width, instead of proposing 128.
+# COST: the scratch is P lanes' worth (~1.26 GB at P=35 on this scaffold) rather than the cap's.
+# ROUTING_PROJ_LANES=32 reverts.
+_PROJ_LANE_CAP = max(1, int(os.environ.get("ROUTING_PROJ_LANES", "64") or 64))
 _PROJ_PAR_ON = os.environ.get("ROUTING_PROJ_PARALLEL", "1") != "0"
 _PROJ_PAR_SAID = {}
 
@@ -573,6 +679,187 @@ def _pnote(msg):
     if len(_PROJ_PAR_NOTES) < 64:
         _PROJ_PAR_NOTES.append(str(msg))
     print(f"[band_projection] {msg}")
+
+
+# [FN-010d]
+def proj_config():
+    """The projector's configuration as PROSE — requested AND in effect — rebuilt on every call.
+
+    WHY THIS EXISTS. A banner that prints only when a setting is ON cannot tell "off" apart from
+    "on but broken" apart from "never asked for": all three look like silence. Two consecutive runs
+    were misread that way (2026-08-24 float32 on and killed by a crashed self-check; 2026-08-25
+    float32 genuinely never reaching the process). This states every case in words.
+
+    Rebuilt from the live globals each call ON PURPOSE: the `_PROJ_PAR_NOTES` drain deletes the
+    notes after printing them, so a SECOND run in one process would otherwise report nothing.
+
+    Returns a list of lines. The caller prefixes and logs them; nothing here prints.
+    """
+    _cb_eff = bool(_CB_OK.get("use"))
+    _f32_eff = bool(_F32_OK.get("use"))
+    _f32_word = ("ON \u2014 this run's answer is NOT exact" if _f32_eff
+                 else "off (float64, exact)")
+    out = ["PROJECTOR CONFIGURATION (stated every run, whether or not anything is unusual): "
+           "cell-blocked kernel " + ("ON" if _cb_eff else "OFF")
+           + " \u00b7 float32 " + _f32_word
+           + " \u00b7 lane cap " + str(_PROJ_LANE_CAP)
+           + " \u00b7 chunking " + ("ON" if _PROJ_CHUNK_ON else "off")
+           + " \u00b7 candidate-parallel " + ("ON" if _PROJ_PAR_ON else "off") + "."]
+
+    # REQUESTED vs IN EFFECT — a different sentence, because only one of the two is a bug.
+    if _PROJ_CB_ON and not _cb_eff:
+        out.append("*** cell-blocked was REQUESTED and is NOT IN EFFECT \u2014 something disabled "
+                   "it during this process; the [proj-par] line below says what. The flat kernel "
+                   "is running: correct, and roughly HALF SPEED. float32 lives inside the "
+                   "cell-blocked path, so it is off too regardless of its own switch.")
+    if _PROJ_F32 and not _f32_eff:
+        out.append("*** float32 was REQUESTED and is NOT IN EFFECT \u2014 the cell-blocked path it "
+                   "lives in is not running. Fix that first; the float32 switch alone cannot do "
+                   "anything.")
+
+    # THE ENVIRONMENT NOW vs WHAT THE MODULE READ AT IMPORT. These switches are read once, at
+    # import. Setting one after the app has started does nothing at all, and there was no way to
+    # see that from the log.
+    for _nm, _im in (("ROUTING_PROJ_FLOAT32", _PROJ_F32),
+                     ("ROUTING_PROJ_CELLBLOCK", _PROJ_CB_ON),
+                     ("ROUTING_PROJ_CHUNK", _PROJ_CHUNK_ON),
+                     ("ROUTING_PROJ_PARALLEL", _PROJ_PAR_ON)):
+        _raw = os.environ.get(_nm)
+        _dflt = _nm != "ROUTING_PROJ_FLOAT32"          # every switch but float32 defaults ON
+        _now = _dflt if _raw is None else (_raw != "0")
+        if bool(_now) != bool(_im):
+            out.append("*** " + _nm + " reads "
+                       + ("unset" if _raw is None else repr(_raw))
+                       + " in this process's environment NOW, but the module read "
+                       + ("ON" if _im else "off") + " AT IMPORT, and the import is what counts. "
+                       "These switches are read ONCE. Setting one after the app has started does "
+                       "nothing \u2014 quit the app fully and relaunch it.")
+
+    if not _PROJ_F32 and os.environ.get("ROUTING_PROJ_FLOAT32") is None:
+        out.append("float32 is off because ROUTING_PROJ_FLOAT32 is UNSET in this process. "
+                   "`routing.env` is read by run.command AT LAUNCH only, so if that file sets it "
+                   "to 1 then this app was not started by run.command (or was started before the "
+                   "file existed). Quit the app fully and relaunch \u2014 a browser refresh, or "
+                   "clicking Run again, will not pick it up.")
+
+    # 19ch: THE PATH ACTUALLY TAKEN, recorded rather than derived. [kernel-ab] restates the
+    # dispatch rule to describe the live path; on 2026-08-25 19:14 its answer and [proj-par]'s
+    # disagreed and the log could not say which was right.
+    _seen = (_PROJ_PATH.get("seen") or {})
+    if not _seen:
+        out.append("projection PATHS TAKEN: none recorded yet this run \u2014 the projector has "
+                   "not been called since the last reset. If the search has finished, that is "
+                   "itself the finding.")
+    else:
+        out.append("projection PATHS TAKEN this run, RECORDED at dispatch (not derived from the "
+                   "rule \u2014 compare with what [kernel-ab] says the live path is; they "
+                   "disagreed on 2026-08-25 19:14 and nothing could settle it): "
+                   + str(int(_PROJ_PATH.get("calls", 0))) + " call(s) over "
+                   + str(len(_seen)) + " distinct path(s), cap "
+                   + str(int(_PROJ_PATH.get("cap", _PROJ_LANE_CAP))) + ", numba threads "
+                   + str(int(_PROJ_PATH.get("nthr", 0))) + ".")
+        for _k, _n in sorted(_seen.items(), key=lambda kv: (-kv[1], str(kv[0]))):
+            out.append("   " + _k[0] + " \u00b7 P=" + str(_k[1])
+                       + " \u00b7 " + ("CHUNKED" if _k[3] else
+                                        ("candidate-parallel" if _k[2] else "serial"))
+                       + " \u00b7 lanes=" + str(_k[4]) + " \u00b7 nlane=" + str(_k[5])
+                       + "  \u2014 " + format(_n, ",") + " call(s)")
+
+    # WHAT IS ACTUALLY VERIFIED, as opposed to merely switched on.
+    if _cb_eff:
+        out.append("cell-blocked: "
+                   + ("VERIFIED against the flat kernel on this run's own scaffold"
+                      if _CB_OK.get("checked")
+                      else "NOT YET verified \u2014 the self-check runs on the first cell-blocked "
+                           "projection, so this line means none has happened yet")
+                   + "; water-fill high-water mark " + str(int(_CB_OK.get("sweeps", 0)))
+                   + " sweep(s) of 50.")
+    if _f32_eff:
+        # 19cf: the max AND the total. "max|Δtxn| 11.96" alone cannot answer "is that across all
+        # the MIDs?" — the question that decides whether the setting is acceptable.
+        _seen = [_m for _m in (_F32_OK.get("live"), _F32_OK.get("first"))
+                 if isinstance(_m, dict)]
+        if not _seen:
+            out.append("float32 drift NOT YET measured \u2014 the self-check runs on the first "
+                       "cell-blocked projection, so this line means none has happened yet.")
+        for _m in _seen:
+            out.append("float32 drift at P=" + str(_m["at_P"])
+                       + ("  (THE LIVE SEARCH WIDTH)" if _m is _F32_OK.get("live")
+                          else "  (the first projection's width)")
+                       + ": WORST SINGLE BAND max|\u0394vamp| " + format(_m["dv"], ".4g")
+                       + " on band column " + str(_m["dv_band"] + 1) + " of " + str(_m["nb"])
+                       + ", max|\u0394txn| " + format(_m["dt"], ".4g")
+                       + " on band column " + str(_m["dt_band"] + 1)
+                       + ". ACROSS ALL " + str(_m["nb"]) + " BANDS (same candidate): "
+                       + "\u03a3|\u0394vamp| " + format(_m["dv_sum"], ".4g") + " over "
+                       + str(_m["dv_nover"]) + " band(s), \u03a3|\u0394txn| "
+                       + format(_m["dt_sum"], ".4g") + " over " + str(_m["dt_nover"])
+                       + " band(s).")
+        if _F32_OK.get("live") is False:
+            out.append("float32 drift could not be re-measured at the live width this run "
+                       "(see [proj-par]); the figure above is the first projection's, at its own "
+                       "width. Nothing was disabled by that.")
+        if _seen:
+            out.append("what the drift costs: RECONCILIATION ERROR will read about it, by design "
+                       "\u2014 and stops being able to detect a REAL reconciliation bug at that "
+                       "size. ROUTING_PROJ_FLOAT32=0 restores exactness and the detector.")
+    return out
+
+
+# [FN-010e]
+# WHAT THE PROJECTOR ACTUALLY DISPATCHED, as opposed to what the rule says it should have.
+# `seen` maps (kernel, P, par, chunk, lanes, nlane) -> call count. Two blocks DERIVED the live path
+# from the same rule on 2026-08-25 19:14 and disagreed; nothing recorded what happened.
+_PROJ_PATH = {"seen": {}, "calls": 0}
+# 19ck: the recorder is now called from SEVERAL THREADS. The feasibility projection's starts run
+# concurrently since 19ck(b), and each drives the projector. `x = x + 1` is a read-modify-write, so
+# without this lock the counts would silently drift low. They change no result — which is the point:
+# [proj-config] exists to SETTLE arguments about what actually ran, and a diagnostic that is quietly
+# wrong is worse than one that is absent, because it is still believed. One uncontended acquire per
+# projector call, against calls measured in milliseconds.
+_PROJ_PATH_LOCK = _threading.Lock()
+
+
+def _path_note(kernel, P, par, chunk, lanes, nlane, nthr):
+    """Record one dispatch. Cheap enough for the inner loop: a tuple key and an int bump."""
+    _k = (str(kernel), int(P), bool(par), bool(chunk), int(lanes), int(nlane))
+    with _PROJ_PATH_LOCK:
+        _PROJ_PATH["calls"] = int(_PROJ_PATH.get("calls", 0)) + 1
+        _s = _PROJ_PATH.setdefault("seen", {})
+        _s[_k] = _s.get(_k, 0) + 1
+        _PROJ_PATH["last"] = _k
+        _PROJ_PATH["cap"] = int(_PROJ_LANE_CAP)
+        _PROJ_PATH["nthr"] = int(nthr)
+
+
+# [FN-010f]
+def proj_new_run():
+    """Reset the measurements that describe ONE RUN, so a warm process does not report the last
+    run's.
+
+    Streamlit keeps the process alive between runs. The float32 drift measures once per PROCESS,
+    so on 2026-08-25 19:14 the log printed a P=35 drift identical to four decimals to the 16:50
+    run's — it had never measured its own. `_PROJ_PAR_SAID` has the same shape of bug: its memo
+    suppresses any note whose configuration a PREVIOUS run already printed, so a warm process shows
+    whichever line happened to be novel rather than this run's configuration.
+
+    _CB_OK["checked"] is cleared too, because the self-check is what repopulates the drift AND it
+    should be re-verified on this run's scaffold. _CB_OK["use"] is NOT cleared: a path disabled for
+    cause stays disabled for the process, and proj_config() reports it as requested-but-not-in-
+    effect rather than silently retrying something that already failed.
+
+    Safe to call more than once, and safe to call when nothing has run yet.
+    """
+    _F32_OK["first"] = None
+    _F32_OK["live"] = None
+    _F32_OK["dv"] = None
+    _F32_OK["dt"] = None
+    _F32_OK["said"] = False
+    _CB_OK["checked"] = False
+    _PROJ_PATH.clear()
+    _PROJ_PATH.update({"seen": {}, "calls": 0})
+    _PROJ_PAR_SAID.clear()
+    del _PROJ_PAR_NOTES[:]
 
 
 # [FN-010c]
@@ -689,6 +976,29 @@ def _static(T0: pd.DataFrame):
     return gcode, ngc, base, ctot, mv_static
 
 
+# [FN-013b]
+def rpgt_scope_mask(rpgt_values, scoped_rpgts):
+    """OUT-OF-SCOPE mask: True where a row's RPGT is NOT in the split's scope.
+
+    The scope is the UI's "RPGTs to include in this split". Unselected products are held at
+    baseline (post == pre), which delivery implements by zeroing the movable fraction
+    (`compute_vamp_prepost_granular`: `t0.loc[_oos, "_move"] = 0.0`, and `_gf` beside it).
+
+    ONE definition, exported so the scaffold builder and this module cannot drift. Two copies of
+    a normalising rule is exactly how the brand filter ended up comparing "Total AV" against
+    "TotalAV" and keeping nothing — twice.
+
+    An EMPTY or None scope means every RPGT is in scope (all False), which is what "leave all
+    selected" means in the UI. It must NOT mean "nothing is in scope": that would zero every
+    movable fraction in the run and report a perfectly conserved, completely static book.
+    """
+    _v = pd.Series(rpgt_values).astype(str).str.strip().str.lower()
+    _s = {str(r).strip().lower() for r in (scoped_rpgts or ()) if str(r).strip()}
+    if not _s:
+        return np.zeros(len(_v), bool)
+    return (~_v.isin(_s)).to_numpy()
+
+
 # [FN-014]
 def _origin_map(T0: pd.DataFrame, Pc: pd.DataFrame) -> np.ndarray:
     """Each aged Pc row -> its ORIGIN t0 row index (om==per), excluding back-fill; -1 if none."""
@@ -704,6 +1014,18 @@ def _origin_map(T0: pd.DataFrame, Pc: pd.DataFrame) -> np.ndarray:
 
 
 # [FN-015]
+def _vok_rows(T0):
+    """19db — per-row VAMP eligibility for the two pandas paths (`_shares`, `project`). They get a
+    T0 frame rather than the projector, so they cannot read `self._vcpos`; a `_vok` column set by
+    the projector is used when present, and the historical vampCount>0 gate is the fallback so a
+    duck-typed caller keeps its old behaviour instead of silently unmasking."""
+    if "_vok" in getattr(T0, "columns", ()):
+        return pd.to_numeric(T0["_vok"], errors="coerce").fillna(0.0).to_numpy(float)
+    if _VSHARE_ALLROWS:
+        return np.ones(len(T0), float)
+    return (T0["vc"].to_numpy(float) > 0).astype(float)
+
+
 def _shares(T0, prop, by_rpgt, gcode, ngc, base, by_subcell=False):
     """Return (pshare, vshare, psum) for the candidate. `psum` is the per-row (broadcast
     per-cell) proposed-share sum; `psum>0` is the active mask that gates `mv`."""
@@ -711,7 +1033,11 @@ def _shares(T0, prop, by_rpgt, gcode, ngc, base, by_subcell=False):
     psum = np.bincount(gcode, weights=prop_raw, minlength=ngc)[gcode]
     pshare = np.array(base, dtype=float)
     np.divide(prop_raw, psum, out=pshare, where=psum > 0)
-    vprop = prop_raw * (T0["vc"].to_numpy(float) > 0)
+    # 19cu — ALLROWS drops the vampCount mask so the denominator matches delivery's, which sums
+    # prop_raw over EVERY row of the cell-month. This helper feeds `project()`, a path the kernels
+    # do not go through: it must move with them or the two in-search paths disagree, which
+    # test_vconserve.py detects and which is worse than either convention applied consistently.
+    vprop = prop_raw * np.asarray(_vok_rows(T0), float)
     vpsum = np.bincount(gcode, weights=vprop, minlength=ngc)[gcode]
     vshare = np.zeros_like(vprop)
     np.divide(vprop, vpsum, out=vshare, where=vpsum > 0)
@@ -761,6 +1087,24 @@ class BandProjector:
                   + Pc["per"].astype(str)).to_numpy()
         _pc_prapp = (_pr_by_cell.reindex(_pc_ck).fillna(0.0).to_numpy(float)
                      if len(Pc) else np.zeros(0, float))
+        # 19dc — the collapse now CARRIES the age renormalise. It used to aggregate the pool by
+        # ORIGIN row alone, which discarded the aged group (cell, period, t) the renormalise
+        # divides within, so this path silently returned a different answer from the kernels —
+        # test_vconserve.py caught it as "the in-search paths disagree with each other by 40.000",
+        # and an in-search path that is intermittently wrong is worse than one that is uniformly
+        # wrong. Keying the weights on (origin, GROUP) keeps the collapse exact: the group sum is
+        # still a per-candidate quantity, but it is a bincount over static indices, not a rebuild.
+        _pc_t = (pd.to_numeric(Pc["t"], errors="coerce").fillna(0).astype(int).to_numpy()
+                 if "t" in Pc.columns else np.zeros(len(Pc), int))
+        _gk_key = (_pc_ck + "|" + pd.Series(_pc_t).astype(str).to_numpy()) if len(Pc) \
+            else np.zeros(0, object)
+        _gcodes, _guniq = (pd.factorize(_gk_key) if len(Pc) else (np.zeros(0, np.int64), []))
+        self._bp_gk = np.asarray(_gcodes, np.int64)
+        self._bp_ngk = int(len(_guniq))
+        _bp_org = np.asarray([int(pc_to_t0[i]) for i in range(len(Pc))], np.int64) if len(Pc) \
+            else np.zeros(0, np.int64)
+        self._bp_org = _bp_org
+        self._bp_valid = _bp_org >= 0
         self._v_const = {}                       # key -> Σ vc over ALL aged rows in the band
         _v_hold = {}                             # key -> {origin_t0 -> Σ fcp[o]·prapp·vc}  (subtract if active)
         _v_pool = {}                             # key -> {origin_t0 -> Σ pool}          (× vshare[origin])
@@ -771,19 +1115,24 @@ class BandProjector:
             self._v_const[key] = self._v_const.get(key, 0.0) + pc_vc[i]
             o = int(pc_to_t0[i])
             if o >= 0:
+                _g = int(self._bp_gk[i])          # 19dc: (origin, GROUP), not origin alone
                 _v_hold.setdefault(key, {})
-                _v_hold[key][o] = _v_hold[key].get(o, 0.0) + _fcp_arr[o] * _pc_prapp[i] * pc_vc[i]
+                _v_hold[key][(o, _g)] = (_v_hold[key].get((o, _g), 0.0)
+                                         + _fcp_arr[o] * _pc_prapp[i] * pc_vc[i])
                 if pool[i] != 0.0:
                     _v_pool.setdefault(key, {})
-                    _v_pool[key][o] = _v_pool[key].get(o, 0.0) + pool[i]
+                    _v_pool[key][(o, _g)] = _v_pool[key].get((o, _g), 0.0) + pool[i]
         # freeze to arrays for vectorised eval
         self._v_hold_o, self._v_hold_w, self._v_pool_o, self._v_pool_w = {}, {}, {}, {}
+        self._v_hold_g, self._v_pool_g = {}, {}
         for key in self.bands:
             h = _v_hold.get(key, {})
-            self._v_hold_o[key] = np.array(list(h.keys()), dtype=np.int64)
+            self._v_hold_o[key] = np.array([k[0] for k in h], dtype=np.int64)
+            self._v_hold_g[key] = np.array([k[1] for k in h], dtype=np.int64)
             self._v_hold_w[key] = np.array(list(h.values()), dtype=float)
             p = _v_pool.get(key, {})
-            self._v_pool_o[key] = np.array(list(p.keys()), dtype=np.int64)
+            self._v_pool_o[key] = np.array([k[0] for k in p], dtype=np.int64)
+            self._v_pool_g[key] = np.array([k[1] for k in p], dtype=np.int64)
             self._v_pool_w[key] = np.array(list(p.values()), dtype=float)
 
         # ---- TXN: per capped t0 row, piecewise on the cell's active mask -----------------------
@@ -823,22 +1172,42 @@ class BandProjector:
         # branch falls back to `base`, so txn already conserves and must not change.
         _vact = np.zeros(len(active), dtype=bool)
         if _VAMP_CONSERVE:
-            _vpr = np.where(active, pshare, 0.0) * (self._T0["vc"].to_numpy(float) > 0)
+            # 19cu — same denominator rule as _shares / the kernels (see _shares).
+            _vpr = np.where(active, pshare, 0.0) * np.asarray(_vok_rows(self._T0), float)
             _vps = np.bincount(self._gcode, weights=_vpr,
                                minlength=self._ngc)[self._gcode]
             _v_active = active & (_vps > 0)
         else:
             _v_active = active
+        # 19dc — the aged-group sums, the one per-candidate quantity the renormalise needs. A
+        # bincount over STATIC indices, so the collapse stays a collapse: nothing is rebuilt per
+        # candidate, only re-summed. A group whose shares sum to ~0 has no live recipient, so its
+        # rows PASS THROUGH — move suppressed and share 0, exactly as delivery and the kernels do.
+        if _AGE_RENORM and self._bp_ngk:
+            _gv = self._bp_valid
+            _gs = np.bincount(self._bp_gk[_gv], weights=vshare[self._bp_org[_gv]],
+                              minlength=self._bp_ngk)
+            _glive = _gs > 1e-12
+        else:
+            _gs = None
+            _glive = None
         out = {}
         for key in self.bands:
             # VAMP
             ho = self._v_hold_o[key]
             vamp = self._v_const.get(key, 0.0)
             if len(ho):
-                vamp -= float((self._v_hold_w[key] * _v_active[ho]).sum())
+                _hact = _v_active[ho]
+                if _glive is not None:
+                    _hact = _hact & _glive[self._v_hold_g[key]]
+                vamp -= float((self._v_hold_w[key] * _hact).sum())
             po = self._v_pool_o[key]
             if len(po):
-                vamp += float((self._v_pool_w[key] * vshare[po]).sum())
+                _vs = vshare[po]
+                if _gs is not None:
+                    _g = self._v_pool_g[key]
+                    _vs = np.where(_glive[_g], _vs / np.where(_glive[_g], _gs[_g], 1.0), 0.0)
+                vamp += float((self._v_pool_w[key] * _vs).sum())
             # TXN
             ti = self._t_i[key]
             if len(ti):
@@ -912,7 +1281,8 @@ class PopulationBandProjector:
 
     # [FN-019]
     def __init__(self, T0: pd.DataFrame, Pc: pd.DataFrame, pool: np.ndarray, bands,
-                 by_rpgt: bool = False, max_share: float = 1.0, by_subcell: bool = False):
+                 by_rpgt: bool = False, max_share: float = 1.0, by_subcell: bool = False,
+                 vamp_off_mids=frozenset()):
         self.by_rpgt = by_rpgt
         # SUB-CELL decision grain: prop keys include pmp/ctry (cur|bin|rpgt|pmp|ctry|mid) so a
         # per-sub-cell share maps to exactly one scaffold row instead of broadcasting across sub-cells.
@@ -956,7 +1326,41 @@ class PopulationBandProjector:
         self._gcode, self._ngc, self._base, self._ctot, self._mv = _static(R)
         self._excl = R["excl"].to_numpy(bool)
         self._emask = R["emask"].to_numpy(bool)
-        self._vcpos = (R["vc"].to_numpy(float) > 0).astype(float)
+        # 19dt - PER-ROW PROPOSAL WEIGHT. Delivery multiplies prop_raw by `_keep` (the
+        # retained fraction of a gateway that is switching off) BEFORE the cell share, the
+        # cap and vshare are computed, so all three see the reduced proposal. The search had
+        # no equivalent. `keep` rides in as a T0 COLUMN so the scaffold reduction slices it
+        # with every other per-row static and it cannot fall out of alignment. An absent
+        # column means 1.0, which reproduces the pre-19dt behaviour exactly.
+        self._pkeep = (R["keep"].to_numpy(float) if "keep" in R.columns
+                       else np.ones(len(R), float))
+        # The weight the kernels apply: 0 where the row was masked (excl | emask), else the
+        # keep fraction. With keep == 1 this IS the old boolean, which is what makes the
+        # change bit-identical on data with no mid-month switch-off (test_19dt).
+        self._pw = np.where(self._excl | self._emask, 0.0,
+                            self._pkeep).astype(np.float64)
+        # 19db — `vcpos` is now the VAMP-ELIGIBILITY mask: may this row RECEIVE redistributed VAMP?
+        #   ROUTING_VSHARE_ALLROWS=1 (default): every row may, EXCEPT MIDs whose VAMP is overridden
+        #       to zero (gateway_volume_overrides `apply_to: "vamp"`). Delivery honours that
+        #       override (19cv); without the same mask here the search would hand those MIDs VAMP
+        #       that delivery refuses — the divergence 19cu removed, re-created in the opposite
+        #       direction. WoodForest 690 and Authorize 227 on the 2026-08-28 14:39 run.
+        #   ROUTING_VSHARE_ALLROWS=0: the historical `vampCount > 0` gate, kept for an A/B.
+        # ONE mask, threaded through all five in-search paths — a second one alongside it is how
+        # the vcpos gate and delivery's unmasked denominator drifted apart in the first place.
+        if _VSHARE_ALLROWS:
+            _vok = np.ones(len(R), float)
+        else:
+            _vok = (R["vc"].to_numpy(float) > 0).astype(float)
+        _voff = {str(_m).strip().lower() for _m in (vamp_off_mids or ())}
+        if _voff:
+            _vok = _vok * (~R["midl"].astype(str).str.strip().str.lower()
+                           .isin(_voff)).to_numpy().astype(float)
+        self._vcpos = _vok
+        try:
+            R = R.assign(_vok=_vok)          # so _shares / project() read the SAME mask
+        except Exception:                    # noqa: BLE001 — duck-typed frames fall back
+            pass
         # Retain the two movable-fraction FACTORS separately (mv = pr · fcp) so diagnostics can tell
         # whether a low movable fraction is driven by pro_rata (go-live phasing) or fcp1_frac (the
         # first-attempt reroutable slice). Default to 1.0 if a column is absent.
@@ -1000,11 +1404,48 @@ class PopulationBandProjector:
         _t0_pr = (T0["pr"].to_numpy(float) if "pr" in T0.columns else np.ones(len(T0)))
         _pr_by_cell = pd.Series(_t0_pr, index=_t0_cellkey)
         _pr_by_cell = _pr_by_cell[~_pr_by_cell.index.duplicated(keep="first")]
+        # 19cw WAS TRIED HERE AND IS WRONG — DO NOT "FIX" THIS AGAIN.
+        # The export's own pro_rata column IS origin-keyed (0.0 when t > period, 0.6774 at
+        # t == period, 1.0 below), which reads like this lookup should use `per - t`. It should
+        # not. Delivery does NOT read that column for aged rows: compute_vamp_prepost_granular
+        # takes fcp from the ORIGIN t0 row and pro_rata from the APPEARANCE period (`_pr_app`),
+        # which is what this line already does. Keying it on the origin makes the search DIVERGE.
+        # Measured on a fixture carrying a partial t == period layer, a frozen t > period layer and
+        # a MID missing from one age (see _19cw_child.py), with the age renormalise on:
+        #       appearance (this code)   Σ|delivered - in-search| = 0.000000
+        #       origin     (the "fix")   Σ|delivered - in-search| = 1.720533
+        # Rows with t > period are frozen anyway, on BOTH sides, and not by pro_rata: their origin
+        # month has no t0 row, so delivery's orig_m merge finds nothing and `pc_org` here is -1.
+        # That is the guard, and it already works.
         _pc_cellkey = (Pc["cur"].astype(str) + "|" + Pc["bin"].astype(str) + "|" + Pc["rpgt"].astype(str)
                        + "|" + Pc["pmp"].astype(str) + "|" + Pc["ctry"].astype(str) + "|"
                        + Pc["per"].astype(str)).to_numpy()[pc_keep]
         self._pc_prapp = (_pr_by_cell.reindex(_pc_cellkey).fillna(0.0).to_numpy(float)
                           if len(pc_keep) else np.zeros(0, float))
+
+        # 19cx — the AGED GROUP: (cell, APPEARANCE period, age). This is delivery's `_gk`
+        # (_sub + ["period", "t"]) and NOT the origin key above — the renormalise is taken across
+        # the MIDs present at one age of one cell-month, whereas pro_rata is a property of the
+        # month the transactions happened in. They differ by exactly `t`, which is why one key
+        # cannot serve both.
+        if len(pc_keep):
+            _gk_key = (Pc["cur"].astype(str) + "|" + Pc["bin"].astype(str) + "|"
+                       + Pc["rpgt"].astype(str) + "|" + Pc["pmp"].astype(str) + "|"
+                       + Pc["ctry"].astype(str) + "|" + Pc["per"].astype(str) + "|"
+                       + (Pc["t"].astype(str) if "t" in Pc.columns else "0")).to_numpy()[pc_keep]
+            _codes, _uniq = pd.factorize(_gk_key)
+            self._pc_gk = _codes.astype(np.int64)
+            self._n_gk = int(len(_uniq))
+            # 19dl — RETAIN THE KEY STRINGS. Diagnostic only; nothing in the kernels reads this.
+            # `_pc_gk` is a factorised CODE, so a group can be counted but never NAMED, and the
+            # passthrough-disagreement dump in [vterms-is] needs to print which (cell, period, t)
+            # the two projectors decide differently on. Without the strings it can report a count
+            # and nothing actionable.
+            self._pc_gk_keys = np.asarray(_uniq, dtype=object)
+        else:
+            self._pc_gk = np.zeros(0, np.int64)
+            self._n_gk = 0
+            self._pc_gk_keys = np.zeros(0, dtype=object)
 
         # band order + per-band groupings (vectorised map to band index)
         self.band_order = sorted(bandset)
@@ -1047,15 +1488,64 @@ class PopulationBandProjector:
             # margin is logged, not assumed.
             _ixs = {}
             _I = lambda _a: _ix32(_a, _ixs)     # noqa: E731
+
+            # ---- 19cz: HOIST THE CANDIDATE-INDEPENDENT AGED ROWS OUT OF THE LOOP ----
+            # An aged row whose ORIGIN t0 row does not exist (`pc_org < 0`) contributes, for every
+            # candidate, in every generation:
+            #       vamp += pc_vc[j] * (1 - 0) + pc_pool[j] * 0   ==   pc_vc[j]
+            # a constant. `pc_keep` filters aged rows on BANDEDNESS alone and has never tested the
+            # origin, so the kernel has always walked these. On the live export they are the
+            # cohorts with t > period — 237,589 rows, ~21% of the aged frame — whose transactions
+            # predate the split and which both projectors therefore hold intact.
+            #
+            # SAFE TO REMOVE FROM THE 19cy GROUP SUMS: the sum pass only accumulates rows with
+            # `o >= 0`, so these contribute exactly 0 to every aged-group total. Dropping them
+            # changes no group sum, no live row's share, and no delivered value.
+            # 19dd — SECOND STATIC CLASS: every row of a ZERO-POOL aged group. Its contribution is
+            # `pc_vc[j] * (1 - mpc) + pc_pool[j] * psh`, and the group pool being 0 forces it to a
+            # constant whichever way the zero arose:
+            #   pool = (Σ vc·fcp over the group) × prapp
+            #   * prapp == 0            -> heldfac = fcp × 0 = 0, so mpc = 0     -> contribution vc
+            #   * Σ vc·fcp == 0, prapp>0 -> per row either vc == 0 (contribution 0×(1−mpc) = 0)
+            #                               or fcp == 0 (heldfac = 0, mpc = 0)   -> contribution vc
+            # Either way it does not depend on the candidate. This is the FCP 2+ case Ben named:
+            # a layer whose fraud is all retries is not routed by the split, so it can neither give
+            # nor receive. 54,962 rows on the live export.
+            # SAFE FOR THE 19cy GROUP SUMS for the same reason the first class is: these rows are
+            # only ever divided by their OWN group's sum, and that whole group leaves together, so
+            # no surviving row's denominator changes.
+            _pool_arr = np.asarray(self._pc_pool, float)
+            _gk_arr = np.asarray(getattr(self, "_pc_gk", np.zeros(len(_pool_arr), np.int64)),
+                                 np.int64)
+            _ngk_l = int(getattr(self, "_n_gk", 0) or 0)
+            if _ngk_l and len(_gk_arr) == len(_pool_arr):
+                _gpool = np.bincount(_gk_arr, weights=np.abs(_pool_arr), minlength=_ngk_l)
+                _zero_pool = _gpool[_gk_arr] <= 0.0
+            else:
+                _zero_pool = np.zeros(len(_pool_arr), bool)
+            _pc_static = (np.asarray(self._pc_org) < 0) | _zero_pool
+            _n_static = int(_pc_static.sum())
+            _vconst = np.bincount(np.asarray(self._pc_bandcol)[_pc_static],
+                                  weights=np.asarray(self._pc_vc, float)[_pc_static],
+                                  minlength=int(self._B)).astype(np.float64) \
+                if _n_static else np.zeros(int(self._B), np.float64)
+            _lv = ~_pc_static
+            self._nb_hoist = {"static": _n_static, "live": int(_lv.sum()),
+                              "total": int(_pc_static.size),
+                              "no_origin": int((np.asarray(self._pc_org) < 0).sum()),
+                              "zero_pool": int((_zero_pool & (np.asarray(self._pc_org) >= 0)).sum())}
             self._nbcache = (
                 _I(self._propidx),
-                (self._excl | self._emask),
+                self._pw,                    # 19dt: float weight, was a bool mask
                 _I(self._gcode),
                 self._base.astype(np.float64), self._mv.astype(np.float64),
                 self._vcpos.astype(np.float64), self._ctot.astype(np.float64),
-                _I(self._pc_org), self._pc_vc.astype(np.float64),
-                self._pc_pool.astype(np.float64), _I(self._pc_bandcol),
-                _heldfac.astype(np.float64),
+                # 19cz: the aged arrays are TRUNCATED to the live rows here, so every downstream
+                # consumer (the flat kernel, _cb_arrays, the hoisted gathers below) sees the same
+                # shorter frame and nothing has to know about the split.
+                _I(np.asarray(self._pc_org)[_lv]), self._pc_vc.astype(np.float64)[_lv],
+                self._pc_pool.astype(np.float64)[_lv], _I(np.asarray(self._pc_bandcol)[_lv]),
+                _heldfac.astype(np.float64)[_lv],
                 _I(self._t_rows[keep]), _I(self._t_bandcol[keep]))
             # HOISTED STATIC GATHERS for the nC/nA accumulation loops (2026-08-19af). These are
             # pure functions of the scaffold, so they belong in this once-per-projector cache.
@@ -1065,13 +1555,27 @@ class PopulationBandProjector:
             # np.intp for the gather itself and narrow the RESULT — a fancy-index with an
             # int32 array is fine, but being explicit keeps the intent readable.
             _cr = np.asarray(self._nbcache[12], np.intp)
-            _po = np.asarray(self._nbcache[7], np.intp)
+            _po = np.asarray(self._nbcache[7], np.intp)   # already the LIVE subset (19cz)
             _gc = self._nbcache[2]
             self._nbcache = self._nbcache + (
                 _I(_gc[_cr]),                                           # cap_c
                 self._nbcache[6][_cr].astype(np.float64),               # cap_ctot
                 self._nbcache[3][_cr].astype(np.float64),               # cap_base
-                _I(_gc[np.where(_po >= 0, _po, 0)]))                    # pc_gc
+                _I(_gc[np.where(_po >= 0, _po, 0)]),                   # pc_gc
+                # 19cy: getattr, not attribute access. `_lift_arrays` and this cache are
+                # reached on DUCK-TYPED objects that compose the projector's methods without
+                # running __init__ (every projector test fixture does this — test_19bt.py is the
+                # one that caught it). A scaffold with no group codes falls back to one group per
+                # row, which makes the renormalise a no-op rather than an AttributeError.
+                # ZEROS, not arange: the `gks` buffer is sized from `_n_gk`, which falls back
+                # to 1 on the same objects. A per-row code would index past the end of a
+                # single-slot array and corrupt memory inside a numba kernel — silently, and
+                # nowhere near the line that caused it.
+                _I(np.asarray(getattr(self, "_pc_gk", None)
+                              if getattr(self, "_pc_gk", None) is not None
+                              else np.zeros(len(np.asarray(self._pc_org)), dtype=np.int64),
+                              dtype=np.int64)[_lv]),                 # pc_gk (19cy)
+                _vconst)                                              # vconst (19cz)
             self._ix32 = dict(_ixs)
             _n_nar = int(_ixs.get("narrowed", 0)); _n_ref = int(_ixs.get("refused", 0))
             print(f"[band_projection] index width: {_n_nar} array(s) narrowed to int32, "
@@ -1082,6 +1586,18 @@ class PopulationBandProjector:
                      "SOME ARRAY DID NOT FIT and was left int64 (correct, not a failure). ")
                   + "Values are unchanged, so the projection is bit-identical; only the bytes "
                     "moved per index change. Adopted 19bi from [kernel-ab] variant G.")
+            _h = self._nb_hoist
+            print(f"[band_projection] aged-row hoist (19cz/19dd): no-origin {_h['no_origin']:,} + "
+                  f"zero-pool {_h['zero_pool']:,} = {_h['static']:,} of {_h['total']:,} "
+                  f"banded aged row(s) ({100.0 * _h['static'] / max(_h['total'], 1):.1f}%) are "
+                  f"CANDIDATE-INDEPENDENT — `no-origin` are cohorts whose transactions "
+                  f"predate the split, `zero-pool` are layers with nothing movable to hand out "
+                  f"(fraud that is all FCP 2+ retries, or no fraud at that age at all). Both are "
+                  f"summed once into a per-band constant and dropped from the per-candidate loop; "
+                  f"{_h['live']:,} row(s) remain live. This shrinks the ONE "
+                  "pass the loop always made AND the two the 19cy age renormalise adds, so read "
+                  "[gen-gap]'s `eval` row against the previous run before concluding anything "
+                  "about what the renormalise cost.")
         return self._nbcache
 
     # [FN-022]
@@ -1115,7 +1631,12 @@ class PopulationBandProjector:
             fixed = (np.zeros((lanes, ncell)), np.zeros((lanes, ncell)), np.zeros((lanes, ncell)),
                      np.zeros((lanes, nR)), np.zeros((lanes, nR)),          # pr, pshare
                      np.zeros((lanes, nR)), np.zeros((lanes, nR)),          # vshare, mvrow
-                     np.zeros((lanes, ncell)), np.zeros((lanes, ncell)), np.zeros((lanes, ncell)))
+                     np.zeros((lanes, ncell)), np.zeros((lanes, ncell)), np.zeros((lanes, ncell)),
+                     # 19cy: per-lane aged-group sums. Sized n_gk (the (cell, period, t) groups),
+                     # and zeroed per candidate only at the codes the scaffold touches — see the
+                     # kernel note. max(1, ...) so a scaffold with no aged rows still allocates a
+                     # valid array rather than a zero-length one numba would have to type.
+                     np.zeros((lanes, max(1, int(getattr(self, "_n_gk", 0) or 0)))))
             self._nbbuf_fixed = fixed
             self._nbbuf_lanes = lanes
         vt = getattr(self, "_nbbuf_vt", None)
@@ -1199,7 +1720,13 @@ class PopulationBandProjector:
             if getattr(self, "_lift_primed", None) != key:
                 fr = self._lift_frozen_rows
                 fc = self._lift_frozen_cells
-                _, _, psum, vpsum, moved, pr, pshare, vshare, mvrow, nzc, exc, rsum = buffers
+                # 19cy: INDEXED, not star-unpacked. The buffer tuple grew a `gks` lane array
+                # and a fixed-width unpack turns every future addition into a ValueError raised
+                # here — a long way from the line that added it, and only on paths that prime the
+                # lift. Take the four this needs by position and ignore the rest.
+                (psum, vpsum, moved, pr, pshare, vshare, mvrow, nzc, exc, rsum) = (
+                    buffers[2], buffers[3], buffers[4], buffers[5], buffers[6],
+                    buffers[7], buffers[8], buffers[9], buffers[10], buffers[11])
                 bs = np.asarray(self._base, float)
                 for q in range(int(lanes)):
                     pshare[q][fr] = bs[fr]          # what the unlifted kernel's else-branch wrote
@@ -1335,7 +1862,8 @@ class PopulationBandProjector:
                 _vb = ((np.zeros((P, _B)), np.zeros((P, _B)))
                        + tuple(np.zeros((1, _nc)) for _ in range(3))
                        + tuple(np.zeros((1, _nR)) for _ in range(4))
-                       + tuple(np.zeros((1, _nc)) for _ in range(3)))
+                       + tuple(np.zeros((1, _nc)) for _ in range(3))
+                       + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),))   # 19cy gks
                 _lrv, _lcv = self._lift_arrays(1, _vb)
                 _vv, _vt = _pop_band_kernel(prop_raw, *a, _nc, _B, float(self._cap), 1,
                                             _lrv, _lcv, *_vb)
@@ -1358,6 +1886,8 @@ class PopulationBandProjector:
                              "vamp and txn, not allclose)"
                            + (f" over {-(-P // _lanes)} chunk(s) of at most {_lanes}." if chunk
                               else "."))
+                    _path_note("flat(self-check)", P, par, chunk, _lanes if chunk else P,
+                               nlane, nthr)
                     return _pv, _pt
                 globals()["_PROJ_PAR_ON"] = False
                 globals()["_PROJ_CHUNK_ON"] = False
@@ -1389,9 +1919,15 @@ class PopulationBandProjector:
         if _PROJ_CB_ON and _CB_OK["use"] and hasattr(self, "_project_cb"):
             _cbres = self._project_cb(prop_raw, a, P, par, chunk, _lanes, nlane, buf)
             if _cbres is not None:
+                # 19ch: RECORD what was dispatched. Two blocks derived this from the rule and
+                # disagreed on 2026-08-25 19:14; nothing wrote down what actually ran.
+                _path_note("cell-blocked", P, par, chunk, _lanes, nlane, nthr)
                 return _cbres
         if chunk:
+            _path_note("flat-chunked", P, par, chunk, _lanes, nlane, nthr)
             return self._project_chunked(prop_raw, a, buf, _lanes)
+        _path_note("flat-parallel" if par else "flat-serial",
+                   P, par, chunk, _lanes, nlane, nthr)
         _lr, _lc = self._lift_arrays(nlane, buf)
         _kern = _pop_band_kernel_par if par else _pop_band_kernel
         return _kern(prop_raw, *a, int(self._ngc), int(self._B), float(self._cap), nlane,
@@ -1448,7 +1984,7 @@ class PopulationBandProjector:
                 "key": key, "ok": True, "nLR": int(cm.size), "perm": perm, "pos": pos,
                 "cells": _ix32(cells), "cstart": _ix32(cstart[cells]), "ccnt": _ix32(cnt[cells]),
                 "propidx_c": _ix32(np.asarray(a[0], np.int64)[perm]),
-                "masked_c": np.ascontiguousarray(np.asarray(a[1], bool)[perm]),
+                "pw_c": np.ascontiguousarray(np.asarray(a[1], np.float64)[perm]),
                 "base_c": np.ascontiguousarray(np.asarray(a[3], np.float64)[perm]),
                 "mv_c": np.ascontiguousarray(np.asarray(a[4], np.float64)[perm]),
                 "vcpos_c": np.ascontiguousarray(np.asarray(a[5], np.float64)[perm]),
@@ -1492,6 +2028,9 @@ class PopulationBandProjector:
         _f = {
             "args": tuple(_n(_x) for _x in a),
             "base_c": _n(cb["base_c"]), "mv_c": _n(cb["mv_c"]), "vcpos_c": _n(cb["vcpos_c"]),
+            # 19dt: pw is a float now, so it must be narrowed with the other floats - left
+            # at float64 it would silently make the "float32" kernel mixed-dtype.
+            "pw_c": _n(cb["pw_c"]),
             "cap": np.float32(self._cap),
             "buf": None, "lanes": 0, "primed": None,
         }
@@ -1546,6 +2085,38 @@ class PopulationBandProjector:
             pshare[q][nLR:] = bc[nLR:]            # what the unlifted kernel's else-branch wrote
         cb["primed"] = key
 
+    # [FN-023d2]
+    def _f32_drift(self, prop_raw, a, ncell, P, v32, t32):
+        """How far the float32 projector's answer sits from the float64 one, AT THIS WIDTH.
+
+        Returns the worst single band, WHICH band that was, and the total across all bands on that
+        SAME candidate. A bare max cannot distinguish "one MID is out by 12" from "fifteen MIDs are
+        out by 12 between them", and that distinction is the whole basis on which the drift was
+        accepted, so both are measured.
+
+        Lane count changes the order the per-cell sums accumulate in, so a drift measured at P=1 is
+        not a statement about a search running at P=35. The caller measures at both.
+        """
+        _nR = len(self._gcode); _B = int(self._B)
+        _vb = ((np.zeros((P, _B)), np.zeros((P, _B)))
+               + tuple(np.zeros((1, ncell)) for _ in range(3))
+               + tuple(np.zeros((1, _nR)) for _ in range(4))
+               + tuple(np.zeros((1, ncell)) for _ in range(3))
+               + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),))   # 19cy gks
+        _lr, _lc = self._lift_arrays(1, _vb)
+        _rv, _rt = _pop_band_kernel(prop_raw, *a, ncell, _B, float(self._cap), 1, _lr, _lc, *_vb)
+        out = {"at_P": int(P), "nb": int(_B)}
+        for _nm, _ref, _got in (("v", _rv, v32), ("t", _rt, t32)):
+            _ad = np.abs(np.asarray(_ref, np.float64) - np.asarray(_got, np.float64))
+            _i = np.unravel_index(int(np.argmax(_ad)), _ad.shape)   # (candidate, band)
+            out["d" + _nm] = float(_ad[_i])
+            out["d" + _nm + "_band"] = int(_i[1])
+            # the SAME candidate's total, so "worst band" and "all bands" describe one split
+            out["d" + _nm + "_sum"] = float(_ad[_i[0]].sum())
+            out["d" + _nm + "_nover"] = int((_ad[_i[0]] > 0.0).sum())
+        return out
+
+
     # [FN-023e]
     def _project_cb(self, prop_raw, a, P, par, chunk, lanes, nlane, buf):
         """Cell-blocked projection. Returns None to decline, in which case the flat path runs."""
@@ -1561,16 +2132,17 @@ class PopulationBandProjector:
         ncell = int(self._ngc); cap = float(self._cap)
         vamp, txn = buf[0], buf[1]
         psum, vpsum, moved, pr, pshare = buf[2], buf[3], buf[4], buf[5], buf[6]
+        gks = buf[12]                      # 19cy: per-lane aged-group sums
         _lanes = int(lanes if chunk else (P if par else 1))
         if not _F32_OK["use"]:
             self._cb_prime(cb, buf, _lanes)
         sw = getattr(self, "_cb_sw", None)
         if sw is None or sw.size < max(_lanes, 1):
             sw = self._cb_sw = np.zeros(max(_lanes, 1), np.int64)
-        _args = (cb["propidx_c"], cb["masked_c"], cb["base_c"], cb["mv_c"], cb["vcpos_c"],
+        _args = (cb["propidx_c"], cb["pw_c"], cb["base_c"], cb["mv_c"], cb["vcpos_c"],
                  cb["cells"], cb["cstart"], cb["ccnt"],
                  cb["cap_rowc"], a[13], a[14], a[15], a[16],
-                 cb["pc_orgc"], a[8], a[9], a[10], a[11], a[17])
+                 cb["pc_orgc"], a[8], a[9], a[10], a[11], a[17], a[18], a[19])
         # 19bz: FLOAT32. Same kernel, a float32 specialisation of it. Every float the kernel
         # streams halves; the index arrays are untouched. This MOVES THE ANSWER — see the module
         # patch note and the banner this prints on its first pass.
@@ -1579,10 +2151,10 @@ class PopulationBandProjector:
         if _F32_OK["use"]:
             _f32 = self._f32_arrays(a, cb)
             _fa = _f32["args"]
-            _args = (cb["propidx_c"], cb["masked_c"], _f32["base_c"], _f32["mv_c"],
+            _args = (cb["propidx_c"], _f32["pw_c"], _f32["base_c"], _f32["mv_c"],
                      _f32["vcpos_c"], cb["cells"], cb["cstart"], cb["ccnt"],
                      cb["cap_rowc"], _fa[13], _fa[14], _fa[15], _fa[16],
-                     cb["pc_orgc"], _fa[8], _fa[9], _fa[10], _fa[11], _fa[17])
+                     cb["pc_orgc"], _fa[8], _fa[9], _fa[10], _fa[11], _fa[17], a[18], a[19])
             cap = _f32["cap"]
             vamp, txn, psum, vpsum, moved, pr, pshare = self._f32_buffers(
                 _f32, P, _lanes if chunk else (P if par else 1), cb)
@@ -1600,11 +2172,11 @@ class PopulationBandProjector:
                     _n = _s1 - _s0
                     _k = _cb_kernel if _n == 1 else _cb_kernel_par
                     _k(np.ascontiguousarray(_pr_in[_s0:_s1]), *_args, cap, _n,
-                       vamp[_s0:_s1], txn[_s0:_s1], psum, vpsum, moved, pr, pshare, sw)
+                       vamp[_s0:_s1], txn[_s0:_s1], psum, vpsum, moved, pr, pshare, sw, gks)
                 return vamp, txn
             _k = _cb_kernel_par if par else _cb_kernel
             return _k(_pr_in, *_args, cap, (P if par else 1),
-                      vamp, txn, psum, vpsum, moved, pr, pshare, sw)
+                      vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks)
 
         try:
             _v, _t = _run()
@@ -1624,7 +2196,8 @@ class PopulationBandProjector:
                 _vb = ((np.zeros((P, _B)), np.zeros((P, _B)))
                        + tuple(np.zeros((1, ncell)) for _ in range(3))
                        + tuple(np.zeros((1, _nR)) for _ in range(4))
-                       + tuple(np.zeros((1, ncell)) for _ in range(3)))
+                       + tuple(np.zeros((1, ncell)) for _ in range(3))
+                       + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),))   # 19cy gks
                 _lrv, _lcv = self._lift_arrays(1, _vb)
                 _rv, _rt = _pop_band_kernel(prop_raw, *a, ncell, _B, cap, 1, _lrv, _lcv, *_vb)
                 del _vb                      # the tuple name only; _rv/_rt still hold its arrays
@@ -1642,12 +2215,31 @@ class PopulationBandProjector:
                     # NOT a bit-identity check — float32 is EXPECTED to differ, and pretending
                     # otherwise would be the dishonest version. Measure the actual movement on
                     # THIS run's scaffold and say what it means for the reconciliation numbers.
-                    _dv = float(np.abs(_rv.astype(np.float64) - _v.astype(np.float64)).max())
-                    _dt2 = float(np.abs(_rt.astype(np.float64) - _t.astype(np.float64)).max())
+                    _ad_v = np.abs(_rv.astype(np.float64) - _v.astype(np.float64))
+                    _ad_t = np.abs(_rt.astype(np.float64) - _t.astype(np.float64))
+                    _dv = float(_ad_v.max()); _dt2 = float(_ad_t.max())
+                    _iv = np.unravel_index(int(np.argmax(_ad_v)), _ad_v.shape)
+                    _it = np.unravel_index(int(np.argmax(_ad_t)), _ad_t.shape)
+                    # 19cf: the TOTAL beside the max. A bare max cannot tell "one MID is out by 12"
+                    # from "fifteen MIDs are out by 12 between them" — and the drift was accepted on
+                    # the second reading of a number that only ever meant the first.
+                    _F32_OK["first"] = {
+                        "at_P": int(P), "nb": int(_B),
+                        "dv": _dv, "dv_band": int(_iv[1]),
+                        "dv_sum": float(_ad_v[_iv[0]].sum()),
+                        "dv_nover": int((_ad_v[_iv[0]] > 0.0).sum()),
+                        "dt": _dt2, "dt_band": int(_it[1]),
+                        "dt_sum": float(_ad_t[_it[0]].sum()),
+                        "dt_nover": int((_ad_t[_it[0]] > 0.0).sum())}
                     _F32_OK["dv"], _F32_OK["dt"] = _dv, _dt2
                     _pnote("*** FLOAT32 PROJECTOR IS ON (ROUTING_PROJ_FLOAT32=1). This is the one "
-                           "setting that CHANGES THE ANSWER, and it is on because a ~2-transaction "
-                           "drift was accepted, not because it is free. Measured on THIS run's "
+                           "setting that CHANGES THE ANSWER, and it is on because a drift was "
+                           "ACCEPTED, not because it is free \u2014 so read the size below rather "
+                           "than assuming the size it was accepted at. (The figure accepted on "
+                           "2026-08-24, '~2 transactions', came from [kernel-ab] row F, which "
+                           "times a FLAT float32 kernel on a copy of prop_raw. This path is the "
+                           "cell-blocked one on the live scaffold and on 2026-08-25 it measured "
+                           "about 7x that.) Measured on THIS run's "
                            f"scaffold against the float64 kernel: max|\u0394vamp| {_dv:.4g}, "
                            f"max|\u0394txn| {_dt2:.4g} at P={P}. TWO CONSEQUENCES. (1) "
                            "RECONCILIATION ERROR will no longer read 0: it is "
@@ -1690,6 +2282,45 @@ class PopulationBandProjector:
                        "speed. Report this line rather than reading the [gen-cost] split as the "
                        "engine's real cost profile.")
                 return None
+        # 19cf: RE-MEASURE THE DRIFT AT THE LIVE WIDTH, once. The self-check above runs on the
+        # FIRST cell-blocked projection, at whatever P that call happens to use — P=1 on
+        # 2026-08-25 15:48, while the search ran at P=35. Lane count changes the order the per-cell
+        # sums accumulate in, so a P=1 figure is not a claim about the search. This repeats the
+        # measurement at the first LARGER P and keeps both, so the width dependence is visible
+        # rather than assumed.
+        #
+        # A FAILURE HERE DISABLES NOTHING. This is a measurement, not a correctness check: the
+        # cell-blocked path was already verified above. 19cd is the lesson in the other direction —
+        # there, a broken measurement took the engine down with it.
+        if (_F32_OK["use"] and _F32_OK.get("live") is None
+                and int(P) > int((_F32_OK.get("first") or {}).get("at_P", 0))):
+            _F32_OK["live"] = False                      # claim it before trying, so one attempt only
+            try:
+                _lv = self._f32_drift(prop_raw, a, ncell, int(P), _v, _t)
+                _F32_OK["live"] = _lv
+                _F32_OK["dv"], _F32_OK["dt"] = _lv["dv"], _lv["dt"]
+                _fst = _F32_OK.get("first") or {}
+                _pnote("float32 drift RE-MEASURED at the live width P=" + str(int(P))
+                       + " (the first measurement was at P="
+                       + str(int(_fst.get("at_P", 0))) + ", which is not the width the search "
+                       "runs at). WORST SINGLE BAND max|\u0394vamp| "
+                       + format(_lv["dv"], ".4g") + " (band column " + str(_lv["dv_band"] + 1)
+                       + " of " + str(_lv["nb"]) + "), max|\u0394txn| " + format(_lv["dt"], ".4g")
+                       + " (band column " + str(_lv["dt_band"] + 1) + "). ACROSS ALL "
+                       + str(_lv["nb"]) + " BANDS on that same candidate: \u03a3|\u0394vamp| "
+                       + format(_lv["dv_sum"], ".4g") + " over " + str(_lv["dv_nover"])
+                       + " band(s), \u03a3|\u0394txn| " + format(_lv["dt_sum"], ".4g")
+                       + " over " + str(_lv["dt_nover"]) + " band(s). The MAX is one MID; the "
+                       "\u03a3 is every MID added together \u2014 read both before judging the "
+                       "setting. At P=" + str(int(_fst.get("at_P", 0))) + " the maxima were "
+                       + format(float(_fst.get("dv", 0.0)), ".4g") + " / "
+                       + format(float(_fst.get("dt", 0.0)), ".4g") + ".")
+            except Exception as _f32e:                 # noqa: BLE001
+                _pnote("float32 drift could not be re-measured at the live width ("
+                       + type(_f32e).__name__ + ": " + str(_f32e) + "). NOTHING IS DISABLED by "
+                       "this \u2014 it is a measurement, not a check, and the cell-blocked path "
+                       "was already verified. The drift figures reported are the first "
+                       "measurement's, at its own width.")
         if int(sw.max()) >= 50 and not _CB_OK.get("shouted"):
             _CB_OK["shouted"] = True
             _pnote("*** cell-blocked water-fill hit the 50-sweep cap. That is the one case where "
@@ -1770,7 +2401,9 @@ class PopulationBandProjector:
         if not len(self._gcode):                     # no constrained cells this build
             return np.zeros((P, self._B)), np.zeros((P, self._B))
         pr = prop_raw[:, self._propidx]                         # (P, nR)
-        pr = np.where((self._excl | self._emask)[None, :], 0.0, pr)
+        # 19dt: one multiply replaces the mask - pw is 0 on masked rows and carries the
+        # `_keep` fraction elsewhere, matching delivery's `prop_raw * _keep`.
+        pr = pr * self._pw[None, :]
         base = self._base[None, :]; mv_s = self._mv[None, :]
         ctot = self._ctot[None, :]
 
@@ -1782,7 +2415,10 @@ class PopulationBandProjector:
         mv = np.where(act, mv_s, 0.0)
         # vshare from the (capped) ROUTED share only — 0 in inactive cells so no pool leaks there.
         routed = np.where(act, pshare, 0.0)
-        vpr = routed * self._vcpos[None, :]
+        # 19cu — ALLROWS drops the vcpos mask so the denominator matches delivery's.
+        # `routed` is read-only from here on (vpsum/vshare both allocate their own output), so
+        # aliasing it is safe and avoids a full-width copy on the hot reference path.
+        vpr = routed * self._vcpos[None, :]          # 19db: vcpos == VAMP-eligibility
         vpsum = self._cellsum(vpr)[:, self._gcode]
         vact = vpsum > 0
         vshare = np.divide(vpr, vpsum, out=np.zeros_like(vpr), where=vact)
@@ -1804,10 +2440,27 @@ class PopulationBandProjector:
         _act_pc = (act & vact) if _VAMP_CONSERVE else act
         move_pc = np.where(ok[None, :], _act_pc[:, oi] * _heldfac[None, :], 0.0)
         psh_pc = np.where(ok[None, :], vshare[:, oi], 0.0)
+
+        # 19cx — age-by-age renormalise, taken BEFORE the division so the sum is of the raw
+        # per-origin shares, exactly as delivery sums `_pshare` before dividing by `_psum`.
+        if _AGE_RENORM and self._n_gk:
+            _P0 = prop_raw.shape[0]
+            _gs = np.zeros((_P0, self._n_gk), dtype=float)
+            np.add.at(_gs.T, self._pc_gk, psh_pc.T)
+            _gsr = _gs[:, self._pc_gk]
+            _live = _gsr > 1e-12
+            psh_pc = np.where(_live, psh_pc / np.where(_live, _gsr, 1.0), 0.0)
+            # a group with no live recipient PASSES THROUGH: the row keeps all of its own VAMP.
+            move_pc = np.where(_live, move_pc, 0.0)
+
         vp = self._pc_vc[None, :] * (1.0 - move_pc) + self._pc_pool[None, :] * psh_pc
 
         P = prop_raw.shape[0]
         vamp = np.zeros((P, self._B)); txn = np.zeros((P, self._B))
+        # 19cz: this path keeps the FULL aged frame (it is the reference), so the static rows are
+        # still walked here and their constant arrives through `vp` exactly as before. Nothing to
+        # add — which is precisely what makes it the right thing to diff the hoisted kernels
+        # against: reference and kernel reach the same total by different routes.
         if len(self._pc_bandcol):
             np.add.at(vamp.T, self._pc_bandcol, vp.T)
         if len(self._t_bandcol):
