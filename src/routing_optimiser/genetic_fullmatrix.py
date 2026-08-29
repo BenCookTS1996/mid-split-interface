@@ -79,7 +79,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19ee-maxshare-repair"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -1448,6 +1448,106 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             "into nan centroids. The seed is encoded the old way; [decode-loss] below still "
             "prices what that costs. Turn the regulariser off to use it.")
 
+    # ── [ms-repair] 19ee: MAKE A CHILD LEGAL INSTEAD OF THROWING IT AWAY ─────────────────
+    # The max-share cap is a HARD constraint on what ships and stays one. This changes only
+    # what happens to a candidate that breaks it: it is brought back inside the cap rather
+    # than binned. See the patch note for the four decisions this depends on.
+    _MSR_ON = _os_gf.environ.get("ROUTING_MAXSHARE_REPAIR", "1") != "0"
+    # A BILLIONTH of a percentage point under the cap. exp(log(0.97)) != 0.97 exactly, so
+    # clipping ON the cap decodes to a row a last-bit above or below it and the engineering
+    # key becomes a coin-toss on float dust — the very thing 19ed found blocking the search.
+    _MSR_BACKOFF = 1.0 - 1e-9
+    _MSR_SEED_NOTE = (
+        "[fullmatrix-ga] [ms-repair] the SEED itself carried row(s) at or above the max-share "
+        "cap and has been brought under it. This is REQUIRED, not incidental: if the seed kept "
+        "its float-dust violation while children repaired to exactly 0, every repaired child "
+        "would outrank it on the engineering key regardless of conversion, and the search would "
+        "go BACKWARDS on vwsr. ROUTING_MAXSHARE_REPAIR=0 reverts.")
+    _msr = {"cands": 0, "seen": 0, "cells": 0, "stuck_c": 0, "stuck_k": 0,
+            "moved": 0.0, "secs": 0.0, "worst": 0.0}
+
+    # [FN-ms-repair]
+    def _repair_maxshare(lg):
+        """(P,R) logits → (P,R) logits whose decode holds no row above p.max_share.
+
+        Per cell: clip the over-cap row(s) to the cap and give the excess to the siblings in
+        proportion to the share they ALREADY hold, so the cell still sums to 1 and no share is
+        invented anywhere. A candidate that needs no repair is returned BIT-IDENTICAL — its
+        logits are not round-tripped through the softmax at all."""
+        if not _MSR_ON:
+            return lg
+        _t0r = time.perf_counter()
+        _cap = np.asarray(p.max_share, float)
+        _live = np.isfinite(_cap) & (_cap > 0.0) & (_cap < 1.0)
+        if not _live.any():
+            return lg
+        _fn = _segment_softmax_fast if _SM_OK["use"] else _segment_softmax_serial
+        _lg2 = np.atleast_2d(lg)
+        _msr["seen"] += int(_lg2.shape[0])
+        _sh = np.array(_fn(_lg2, p.cell_start, p.cell_len), float)
+        _orig = _sh.copy()
+        _capr = np.where(_live, _cap, np.inf)
+        _tgt = _capr * _MSR_BACKOFF
+        _any = False
+        for _ in range(8):
+            # TRIGGER ON THE TARGET, NOT THE CAP. A row sitting at EXACTLY the cap is not
+            # `> cap`, so a cap-triggered repair would leave it alone — and `share/cap - 1`
+            # on such a row is float dust ABOVE zero, which is precisely the 2.38e-14 the
+            # seed carries on 96 gateways. Triggering at the backed-off target repairs those
+            # too, which is what puts every candidate at an exact 0.0 on the engineering key.
+            _over = _sh > _tgt
+            if not _over.any():
+                break
+            _exc = np.add.reduceat(np.where(_over, _sh - _tgt, 0.0), p.cell_start, axis=1)
+            _free = np.add.reduceat(np.where(_over, 0.0, _sh), p.cell_start, axis=1)
+            # A cell with excess but NO free mass cannot be repaired without inventing share.
+            _ok = (_exc > 0.0) & (_free > 0.0)
+            if not _ok.any():
+                break
+            _any = True
+            _msr["cells"] += int(_ok.sum())
+            _sc = np.where(_ok, 1.0 + _exc / np.where(_free > 0.0, _free, 1.0), 1.0)
+            _okr = np.repeat(_ok, p.cell_len, axis=1)
+            _scr = np.repeat(_sc, p.cell_len, axis=1)
+            _sh = np.where(_okr & _over, _tgt,
+                           np.where(_okr, _sh * _scr, _sh))
+        if not _any:
+            _msr["secs"] += time.perf_counter() - _t0r
+            return lg
+        # Cells still above the cap could not be repaired: revert them WHOLE, so the candidate
+        # is the one the ranking would have seen before rather than a half-repaired hybrid.
+        _bad = np.add.reduceat((_sh > _capr).astype(np.int64), p.cell_start, axis=1) > 0
+        if _bad.any():
+            _msr["stuck_c"] += int(_bad.any(axis=1).sum())
+            _msr["stuck_k"] += int(_bad.sum())
+            _sh = np.where(np.repeat(_bad, p.cell_len, axis=1), _orig, _sh)
+        _chg = np.any(_sh != _orig, axis=1)
+        if not _chg.any():
+            _msr["secs"] += time.perf_counter() - _t0r
+            return lg
+        _msr["cands"] += int(_chg.sum())
+        _d = np.abs(_sh - _orig)
+        _msr["moved"] += float(_d.sum())
+        _msr["worst"] = max(_msr["worst"], float(_d.max()))
+        _out = np.array(_lg2, float, copy=True)
+        # log(0) = -inf, which the stable softmax turns back into an EXACT zero in both the
+        # numpy and numba kernels — the same encoding ROUTING_SEED_ZEROS already relies on.
+        with np.errstate(divide="ignore"):
+            _out[_chg] = np.log(_sh[_chg])
+        _msr["secs"] += time.perf_counter() - _t0r
+        return _out if np.ndim(lg) > 1 else _out[0]
+
+    # The SEED gets the same treatment, and this is not optional. Its own violation is float
+    # dust from 96 gateways sitting at exactly 97.0000%; leaving it there while children repair
+    # to exactly 0 would let EVERY repaired child win the engineering key outright — including
+    # ones that convert WORSE, since key 2 is decided before conversion is read. Repaired, all
+    # candidates tie at 0.0 and the ranking falls through to vwsr, which is the whole point.
+    if _MSR_ON:
+        _sl0 = np.asarray(seed_logits, float)
+        seed_logits = np.asarray(_repair_maxshare(_sl0[None, :]), float)[0]
+        if not np.array_equal(seed_logits, _sl0):
+            log(_MSR_SEED_NOTE)
+
     # remember the elite seed's key for the never-worse guarantee (bands included)
     s0 = _segment_softmax(seed_logits[None, :], p.cell_start, p.cell_len)
     seed_vwsr = _vwsr(s0, p.vol, p.succ, total_vol)[0]
@@ -1576,6 +1676,133 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     best_key = seed_key
     best_vwsr, best_other, best_band = seed_vwsr, seed_other, seed_band
 
+    # ── [ga-census] 19eb + 19ed ───────────────────────────────────────────────────────
+    # Counts, per generation, WHY each child failed to displace the incumbent, and (19ed)
+    # HOW BIG the blocking violation was. Reads arrays the loop already computed; the one
+    # added computation is a single-candidate decomposition once per generation.
+    _cen_on = _os_gf.environ.get("ROUTING_GA_CENSUS", "1") != "0"
+    _cen_dec_on = _cen_on and _os_gf.environ.get("ROUTING_GA_CENSUS_DECOMP", "1") != "0"
+    _cen0 = {"kids": 0, "feas": 0, "vbet": 0, "feas_vbet": 0, "blocked_other": 0,
+             "won": 0, "won_eng": 0, "minband": float("inf"), "bestfeas": float("-inf")}
+    _cen = dict(_cen0)                      # run total
+
+    # 19ed: cumulative magnitude buckets for the BLOCKED group (compliant + converts better
+    # + rejected on `other`). Dust and real breaches produce identical COUNTS and completely
+    # different distributions, and only the distribution decides what the fix should be.
+    _CEN_CUTS = (1e-12, 1e-9, 1e-6, 1e-3, 1e-1)
+    _cen_mag = [0] * (len(_CEN_CUTS) + 1)
+    _cen_blocked_vals = []
+    # ... and the counterfactual: what a snap-to-zero at each eps WOULD have unlocked.
+    _cen_eps = {e: {"n": 0, "best": float("-inf")} for e in _CEN_CUTS}
+
+    # [FN-ga-census]
+    def _cen_add(dst, cb, cv, co, bv, bo, keep=False):
+        """Tally one batch against the incumbent (bv=best vwsr, bo=best engineering viol).
+
+        THE WINNER TEST IS THE RANKING'S OWN. `_rank` lexsorts on (band_eff, viol, -vwsr)
+        with NO tolerance on viol, so a child displaces the incumbent iff its band snaps to
+        0 and either its viol is STRICTLY smaller, or exactly equal and its vwsr higher.
+        19eb asked `co <= bo + 1e-12` against a bo of 2.38e-14 and manufactured 20 phantom
+        winners, which the verdict then read as an update fault."""
+        _f = cb <= _FEAS_EPS
+        _v = cv > bv
+        _win = _f & ((co < bo) | ((co == bo) & _v))
+        _blk = _f & _v & (co > bo)
+        dst["kids"] += int(cb.size)
+        dst["feas"] += int(_f.sum())
+        dst["vbet"] += int(_v.sum())
+        dst["feas_vbet"] += int((_f & _v).sum())
+        dst["blocked_other"] += int(_blk.sum())
+        dst["won"] += int((_win & _v).sum())
+        dst["won_eng"] += int((_win & ~_v).sum())      # displaces on viol alone, worse vwsr
+        if cb.size:
+            dst["minband"] = min(dst["minband"], float(cb.min()))
+        if _f.any():
+            dst["bestfeas"] = max(dst["bestfeas"], float(cv[_f].max()))
+        if keep and _blk.any():
+            _bv = co[_blk]
+            _cen_blocked_vals.append(float(np.median(_bv)))
+            for _i, _c in enumerate(_CEN_CUTS):
+                _cen_mag[_i] += int((_bv <= _c).sum())
+            _cen_mag[-1] += int((_bv > _CEN_CUTS[-1]).sum())
+        if keep:
+            # COUNTERFACTUAL. Under `viol_eff = where(viol <= eps, 0, viol)` the incumbent's
+            # own viol also snaps to 0, so a child wins exactly when it is compliant, its
+            # viol is within eps, and it converts better. Counted; never applied.
+            for _e in _CEN_CUTS:
+                _w = _f & (co <= _e) & _v
+                if _w.any():
+                    _cen_eps[_e]["n"] += int(_w.sum())
+                    _cen_eps[_e]["best"] = max(_cen_eps[_e]["best"], float(cv[_w].max()))
+        return int(_f.sum()), float(cb.mean()) if cb.size else 0.0
+
+    # 19ed: WHAT IS IN `other`? Split ONE candidate's engineering violation into the four
+    # terms `_violation` sums, in the same order, plus the two facts in PLAIN UNITS that a
+    # relative sum hides: the worst gateway's share of its cell against the max-share cap,
+    # and the portfolio VAMP rate against the global cap.
+    _dec = {"share": [], "glob": [], "midcap": [], "band": [], "resid": [],
+            "worst": [], "rows_over": [], "grate": [], "n": 0}
+
+    # [FN-ga-census-decomp]
+    def _viol_parts(lg1):
+        """(parts, extras) for one logit row, or None if anything is unavailable."""
+        _fn = _segment_softmax_fast if _SM_OK["use"] else _segment_softmax_serial
+        sh = np.asarray(_fn(np.asarray(lg1, float)[None, :],
+                            p.cell_start, p.cell_len)[0], float)
+        w = sh * p.vol
+        _nm = int(p.n_mids)
+        num = np.bincount(p.mid_id, weights=w * p.risk, minlength=_nm)
+        den = np.bincount(p.mid_id, weights=w, minlength=_nm)
+        rate = np.divide(num, den, out=np.zeros_like(num), where=den > 0)
+        _hc, _sc = np.asarray(p.mid_hard_cap, float), np.asarray(p.mid_soft_cap, float)
+        _oh = np.maximum(0.0, np.divide(rate, _hc, out=np.zeros_like(rate),
+                                        where=_hc > 0) - 1.0)
+        _osf = np.maximum(0.0, np.divide(rate, _sc, out=np.zeros_like(rate),
+                                         where=_sc > 0) - 1.0)
+        _midcap = float(np.minimum(_oh, _osf).sum())
+        _ms = np.asarray(p.max_share, float)
+        _share = float(np.maximum(0.0, sh / _ms - 1.0).sum())
+        # the kernel's OWN band term (structurally 0 here: tab2 passes no mid_bands). Computed,
+        # not assumed — if it is ever non-zero this block's premise is wrong and must say so.
+        _band = 0.0
+        _bm = np.asarray(getattr(p, "mid_band_metric", np.zeros(_nm)), float)
+        if (_bm > 0).any():
+            _hi = np.asarray(p.mid_band_hi, float)
+            _lo = np.asarray(p.mid_band_lo, float)
+            _val = np.where(_bm == 1, den, np.where(_bm == 2, num, rate))
+            _ov = np.where((_bm > 0) & (_hi < 1e300) & (_hi > 0) & (_val > _hi),
+                           _val / np.where(_hi > 0, _hi, 1.0) - 1.0, 0.0)
+            _un = np.where((_bm > 0) & (_lo > -1e300) & (_lo > 0) & (_val < _lo),
+                           1.0 - _val / np.where(_lo > 0, _lo, 1.0), 0.0)
+            _band = float(_ov.sum() + _un.sum())
+        _gvc = float(getattr(p, "global_vamp_cap", np.inf))
+        _gd, _gn = float(den.sum()), float(num.sum())
+        _grate = (_gn / _gd) if _gd > 0 else 0.0
+        _glob = (max(0.0, _grate / _gvc - 1.0)
+                 if (np.isfinite(_gvc) and _gvc > 0) else 0.0)
+        return ({"share": _share, "glob": _glob, "midcap": _midcap, "band": _band},
+                {"worst": float((sh / _ms).max()) if sh.size else 0.0,
+                 "rows_over": int((sh > _ms).sum()),
+                 "grate": _grate, "gvc": _gvc, "cap": float(_ms.max()) if _ms.size else 0.0})
+
+    # 19ed: the INCUMBENT, taken apart once. Its 2.38e-14 is the number every child is being
+    # compared against, and until this line it had no explanation at all.
+    if _cen_dec_on:
+        try:
+            _ip, _ix = _viol_parts(best_logits)
+            _isum = sum(_ip.values())
+            # .6g, not .4g: these four terms are printed so a reader can ADD THEM UP, and at four
+            # significant figures the printed parts do not sum to the printed total — which reads
+            # as a decomposition that fails to close when in fact it closes exactly.
+            log(f"[ga-census] the INCUMBENT's engineering violation {best_other:.6g} = max-share {_ip['share']:.6g} "
+                f"+ global-VAMP-cap {_ip['glob']:.6g} + per-MID-ceiling {_ip['midcap']:.6g} + kernel-band {_ip['band']:.6g} "
+                f"(Σparts {_isum:.6g}, residual vs the kernel {abs(_isum - float(best_other)):.3g}). "
+                f"IN PLAIN UNITS: worst gateway holds {100.0 * _ix['worst'] * _ix['cap']:.4f}% of its cell against a "
+                f"{100.0 * _ix['cap']:.1f}% cap, {_ix['rows_over']:,} row(s) above it; portfolio VAMP rate "
+                f"{100.0 * _ix['grate']:.3f}% against a {100.0 * _ix['gvc']:.2f}% cap.")
+        except Exception as _dce:                        # noqa: BLE001
+            log(f"[ga-census] incumbent decomposition skipped ({type(_dce).__name__}: {_dce}).")
+
     history = []
     evaluated = 0                              # cumulative candidate splits scored
     _t0 = time.perf_counter()
@@ -1658,7 +1885,22 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             _el = min(elite, max(1, _pn // 8))
             _gg_i0 = time.perf_counter()
             pop = _init_pop(best_logits, _pn, _rng)
+            # 19ee: 3/4 of this population is unanchored noise and essentially all of it breaks
+            # the cap. Repairing here is what makes generation 0's elites legal candidates
+            # rather than a pool the ranking has already written off.
+            pop = np.asarray(_repair_maxshare(pop), float)
             vwsr, other, band = _eval_with_bands(pop)
+            # [ga-census] the STARTING population. pp[0] is the incumbent itself; the rest are
+            # 1/4 incumbent+N(0,0.3) full-width and 3/4 unanchored N(0,1.5). If almost none of
+            # them is compliant, the restart begins with nothing to select from but the incumbent.
+            _cen_r = dict(_cen0)
+            _cen_init = (0, 0.0)
+            if _cen_on:
+                _cen_init = _cen_add(dict(_cen0), np.asarray(band, float),
+                                     np.asarray(vwsr, float), np.asarray(other, float),
+                                     float(best_vwsr), float(best_other))
+            _cen_g0 = None                          # (compliant, mean breach) of generation 0
+            _cen_gl = None                          # ... and of the last generation run
             _gg["init"] += time.perf_counter() - _gg_i0
             evaluated += pop.shape[0]
             stale = 0
@@ -1856,8 +2098,45 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     if _fxk.get("msg") and not _fxk.get("said"):
                         _fxk["said"] = True
                         log("   " + _fxk["msg"])
+                # 19ee: repair BEFORE evaluation, so what is scored is what the genome decodes to and
+                # what would ship. Charged to `build` (the timer below starts after it) so the
+                # [gen-gap] segments still sum to the real generation.
+                children = np.asarray(_repair_maxshare(children), float)
                 _gg_t3 = time.perf_counter()
                 child_vwsr, child_other, child_band = _eval_with_bands(children)
+                # [ga-census] against the incumbent AS OF THIS GENERATION (best_* was updated at the
+                # top of the loop). Comparison on arrays that already exist; the run total is the copy
+                # that keeps the magnitudes, so nothing is double-counted.
+                if _cen_on:
+                    _cbA = np.asarray(child_band, float)
+                    _cvA = np.asarray(child_vwsr, float)
+                    _coA = np.asarray(child_other, float)
+                    _cg = _cen_add(_cen_r, _cbA, _cvA, _coA, float(best_vwsr), float(best_other))
+                    _cen_add(_cen, _cbA, _cvA, _coA, float(best_vwsr), float(best_other), keep=True)
+                    if _cen_g0 is None:
+                        _cen_g0 = _cg
+                    _cen_gl = _cg
+                    # 19ed: ONE candidate per generation — the best-CONVERTING child that was rejected
+                    # on `other`. That is the child the whole question is about: it is legal, it earns
+                    # more, and something in key 2 threw it away. Taking the WORST offender apart would
+                    # answer a different question.
+                    if _cen_dec_on:
+                        _blkI = np.where((_cbA <= _FEAS_EPS) & (_cvA > float(best_vwsr))
+                                         & (_coA > float(best_other)))[0]
+                        if _blkI.size:
+                            _pick = int(_blkI[int(np.argmax(_cvA[_blkI]))])
+                            try:
+                                _pp, _px = _viol_parts(children[_pick])
+                                _dec["n"] += 1
+                                for _k in ("share", "glob", "midcap", "band"):
+                                    _dec[_k].append(_pp[_k])
+                                _dec["resid"].append(abs(sum(_pp.values()) - float(_coA[_pick])))
+                                for _k in ("worst", "rows_over", "grate"):
+                                    _dec[_k].append(_px[_k])
+                                _dec["cap"] = _px["cap"]
+                                _dec["gvc"] = _px["gvc"]
+                            except Exception:                        # noqa: BLE001
+                                pass
                 _gg_t4 = time.perf_counter()
                 evaluated += children.shape[0]
                 pop = np.vstack([elites, children])
@@ -1871,6 +2150,151 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 _gg["eval"] += _gg_t4 - _gg_t3
                 _gg["tail"] += _gg_t5 - _gg_t4
                 _gg["gen"].append(_gg_t5 - _gg_g0)
+            # [ga-census] ONE line per seed/restart. The two ends of the run matter as much as the
+            # totals: if the compliant count in the last generation is no better than in the first,
+            # the population never converged toward the incumbent at all.
+            if _cen_on and _cen_r["kids"]:
+                _cb_min = _cen_r["minband"]
+                _cb_bf = _cen_r["bestfeas"]
+                log(f"[ga-census] seed {_s + 1}/{n_seeds} restart {_r + 1}/{restarts}: "
+                    f"start pop {_pn} \u2192 {_cen_init[0]} compliant (incl. the incumbent). "
+                    f"{_cen_r['kids']:,} children \u2192 {_cen_r['feas']:,} compliant "
+                    f"({100.0 * _cen_r['feas'] / max(_cen_r['kids'], 1):.1f}%), "
+                    f"{_cen_r['vbet']:,} beat the incumbent on vwsr, "
+                    f"{_cen_r['feas_vbet']:,} did BOTH, {_cen_r['won']:,} would have won. "
+                    + (f"gen 0 compliant {_cen_g0[0]} (mean breach {_cen_g0[1]:.3g}) \u2192 "
+                       f"gen {gen} compliant {_cen_gl[0]} (mean breach {_cen_gl[1]:.3g}). "
+                       if (_cen_g0 and _cen_gl) else "")
+                    + f"smallest breach seen {_cb_min:.3g}; "
+                    + (f"best compliant child vwsr {_cb_bf:.6f} vs incumbent {best_vwsr:.6f} "
+                       f"(\u0394 {_cb_bf - best_vwsr:+.3g})."
+                       if _cb_bf > float('-inf') else "NO child was ever compliant."))
+
+    # ── [ms-repair] 19ee: what the repair actually did ───────────────────────────────────
+    if _MSR_ON and _msr["seen"]:
+        _mv = (_msr["moved"] / max(_msr["cands"], 1))
+        log("")
+        log(f"[ms-repair] {_msr['cands']:,} of {_msr['seen']:,} candidate(s) "
+            f"({100.0 * _msr['cands'] / max(_msr['seen'], 1):.1f}%) held a gateway above the "
+            f"max-share cap and were brought back under it, across {_msr['cells']:,} cell "
+            f"repair(s). Mean share moved per repaired candidate {_mv:.4g}; largest single-row "
+            f"move {_msr['worst']:.4g}. The cap itself is UNCHANGED and still hard — nothing "
+            "above it ships, before or after this change.")
+        if _msr["stuck_c"]:
+            log(f"[ms-repair]    {_msr['stuck_c']:,} candidate(s) could NOT be fully repaired "
+                f"({_msr['stuck_k']:,} cell(s)): the over-cap row was the only row in its cell "
+                "holding any share, so the excess had nowhere proportional to go. Those cells "
+                "keep their original shares and the candidate is rejected exactly as before — "
+                "spreading the excess onto rows the seed holds at zero would be inventing "
+                "routing, not repairing it.")
+        else:
+            log("[ms-repair]    every over-cap cell had somewhere to put the excess; no "
+                "candidate was left illegal.")
+        log(f"[ms-repair]    cost {_msr['secs']:.1f}s over the whole search, charged to the "
+            "`build` segment of [gen-gap]. ROUTING_MAXSHARE_REPAIR=0 reverts the search to "
+            "discarding these candidates instead, seed included.")
+
+    # ── [ga-census] RUN VERDICT ──────────────────────────────────────────────────────────
+    # Four candidate explanations for a flat vwsr, told apart by counts; 19ed then asks the
+    # question the counts cannot answer — whether the blocking violations are REAL.
+    if _cen_on and _cen["kids"]:
+        _K = _cen["kids"]
+        log("")
+        log(f"[ga-census] {_K:,} children over the whole budget. Incumbent: vwsr "
+            f"{best_vwsr:.6f}, M5 band breach {best_band:.3g}, engineering violation "
+            f"{best_other:.3g}.")
+        log(f"[ga-census]    compliant (band \u2264 {_FEAS_EPS:g}): {_cen['feas']:,} "
+            f"({100.0 * _cen['feas'] / _K:.2f}%) \u00b7 beat the incumbent on vwsr: "
+            f"{_cen['vbet']:,} ({100.0 * _cen['vbet'] / _K:.2f}%) \u00b7 BOTH: "
+            f"{_cen['feas_vbet']:,} \u00b7 rejected by the engineering tie-break: "
+            f"{_cen['blocked_other']:,} \u00b7 displaced the incumbent: {_cen['won']:,} "
+            f"(+{_cen['won_eng']:,} on the engineering term alone, converting WORSE).")
+        # ── 19ed A. HOW BIG were the blocking violations? ────────────────────────────────
+        # 19ee FIX: the first five buckets are CUMULATIVE, so summing all six double-counts.
+        # The 2026-08-29 19:03 run printed "over the 4,448 rejected child(ren)" against a true
+        # 4,354, and every percentage on that line was against the wrong denominator. The total
+        # is the LAST CUMULATIVE bucket plus the open-ended one \u2014 and it must equal the count
+        # reported one line above, which is where the number should have come from all along.
+        _nb = _cen_mag[-2] + _cen_mag[-1]
+        if _nb:
+            _lbl = ["\u2264 1e-12", "\u2264 1e-9", "\u2264 1e-6", "\u2264 1e-3",
+                    "\u2264 1e-1", "> 1e-1"]
+            log("[ga-census]    BLOCKING VIOLATION SIZE over the "
+                f"{_nb:,} rejected child(ren) (the first five are CUMULATIVE, so they overlap; "
+                "the last two add to the total): "
+                + " \u00b7 ".join(f"{_l} {_n:,} ({100.0 * _n / _nb:.1f}%)"
+                                   for _l, _n in zip(_lbl, _cen_mag)))
+            if _nb != _cen["blocked_other"]:
+                log(f"[ga-census]    \u26a0 the buckets total {_nb:,} but "
+                    f"{_cen['blocked_other']:,} children were counted as rejected on the "
+                    "engineering term. These are the same population counted twice, so a "
+                    "difference means one of the two tallies is wrong and neither should be "
+                    "read until it is explained.")
+            if _cen_blocked_vals:
+                log(f"[ga-census]    median blocking violation across generations "
+                    f"{float(np.median(_cen_blocked_vals)):.4g} "
+                    f"(incumbent's own {best_other:.4g}) \u2014 a rejection is DUST when these "
+                    "two are the same order, and a REAL breach when they are not.")
+        # ── 19ed B. WHAT WOULD A TOLERANCE BUY? ──────────────────────────────────────────
+        log("[ga-census]    COUNTERFACTUAL \u2014 if `viol` snapped to 0 below eps (the rule "
+            "the BAND key already uses), children that would have displaced the incumbent:")
+        for _e in _CEN_CUTS:
+            _r = _cen_eps[_e]
+            log(f"[ga-census]       eps {_e:>7.0e}: {_r['n']:,} child(ren)"
+                + (f" \u00b7 best vwsr {_r['best']:.6f} vs {best_vwsr:.6f} "
+                   f"(\u0394 {_r['best'] - best_vwsr:+.3g})" if _r["n"] else " \u2014 nothing"))
+        log("[ga-census]       (counted, NOT applied \u2014 this run ranked exactly as before.)")
+        # ── 19ed C. WHAT IS THE VIOLATION MADE OF? ───────────────────────────────────────
+        if _dec["n"]:
+            _md = {_k: float(np.median(_dec[_k])) for _k in
+                   ("share", "glob", "midcap", "band", "resid", "worst", "grate")}
+            _ro = float(np.median(_dec["rows_over"]))
+            _cap = float(_dec.get("cap", 0.0))
+            _gvc = float(_dec.get("gvc", float("inf")))
+            log(f"[ga-census]    DECOMPOSITION of the best-converting REJECTED child, sampled "
+                f"once per generation ({_dec['n']:,} sample(s), medians): max-share "
+                f"{_md['share']:.4g} \u00b7 global-VAMP-cap {_md['glob']:.4g} \u00b7 "
+                f"per-MID-ceiling {_md['midcap']:.4g} \u00b7 kernel-band {_md['band']:.4g}.")
+            log(f"[ga-census]       IN PLAIN UNITS: the worst gateway holds "
+                f"{100.0 * _md['worst'] * _cap:.4f}% of its cell against a {100.0 * _cap:.1f}% "
+                f"cap, with {_ro:,.0f} row(s) above the cap; portfolio VAMP rate "
+                f"{100.0 * _md['grate']:.3f}% against a {100.0 * _gvc:.2f}% cap.")
+            _wr = float(np.max(_dec["resid"])) if _dec["resid"] else 0.0
+            log(f"[ga-census]       parts-vs-whole: median residual {_md['resid']:.3g}, worst "
+                f"{_wr:.3g}. This numpy decomposition must reconstruct the numba kernel's own "
+                "number; a residual comparable to the value being decomposed means the split "
+                "above is NOT evidence and must not be read as one.")
+            if _md["midcap"] > 0 or _md["band"] > 0:
+                log("[ga-census]       \u26a0 a term expected to be STRUCTURALLY ZERO is not: "
+                    "per-MID rate ceilings should be inf (the app disables them) and the "
+                    "kernel band term should be off (tab2 passes no mid_bands). One of those "
+                    "assumptions is wrong, and it changes what `other` means.")
+        # ── the verdict ──────────────────────────────────────────────────────────────────
+        if _cen["won"] > 0 or _cen["won_eng"] > 0:
+            log(f"[ga-census]    VERDICT: {_cen['won'] + _cen['won_eng']:,} child(ren) "
+                "outranked the incumbent under the ranking's OWN comparison and it did not "
+                "move. That is an UPDATE fault, and unlike 19eb's version of this line the "
+                "test behind it carries no tolerance of its own.")
+        elif _cen["feas"] == 0:
+            log(f"[ga-census]    VERDICT: NOT ONE of {_K:,} children was compliant "
+                f"(smallest breach {_cen['minband']:.3g}). The M5 breach is the STRICT "
+                f"primary key, so the ranking never reaches vwsr: {_cen['vbet']:,} child(ren) "
+                "DID convert better and every one was rejected for breaching.")
+        elif _cen["blocked_other"] > 0:
+            log(f"[ga-census]    VERDICT: {_cen['blocked_other']:,} compliant, "
+                "higher-converting child(ren) were rejected on the ENGINEERING violation, "
+                "which sits ABOVE vwsr in a STRICT lexicographic ranking with no tolerance "
+                "of its own. Read the three blocks above in order: if the sizes are dust the "
+                "ranking is discarding conversion for nothing; if they are real breaches the "
+                "rejections are correct in KIND and the question becomes whether a breach of "
+                "ANY size should outrank a conversion gain of ANY size.")
+        else:
+            log(f"[ga-census]    VERDICT: {_cen['feas']:,} compliant child(ren) were produced "
+                f"and the best scored {_cen['bestfeas']:.6f} against the incumbent's "
+                f"{best_vwsr:.6f}. Compliant splits ARE reachable; none converts better. A "
+                "genuine local optimum at this mutation scale.")
+        log("[ga-census]    Read-only measurement; nothing above changed what the search did. "
+            "ROUTING_GA_CENSUS=0 removes it, ROUTING_GA_CENSUS_DECOMP=0 just the decomposition.")
 
     best_shares_sorted = _segment_softmax(best_logits[None, :], p.cell_start, p.cell_len)[0]
     # restore original row order

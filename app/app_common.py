@@ -258,6 +258,27 @@ def _switched_off_gateways(ov: dict) -> set:
 
 
 # [FN-236] 19cv
+def run_company(ss, default="TotalAV"):
+    """The brand this run is for.
+
+    IT LIVES IN `forecast_settings`, which tab 1 writes — NOT at the top level of session state.
+    `ss.get("company")` returns None, and None is not an error to anything that consumes it:
+
+        build_capability(brand=None)  ->  113 gateways / 45 MIDs across 27 brands
+        build_capability(brand="TotalAV") ->  38 gateways / 15 MIDs
+
+    so tab 3 injected zero-VAMP recipient rows for every brand in the MID list, and every
+    brand filter downstream matched nothing and failed OPEN. Measured on the 2026-08-29 16:38
+    run: the per-MID table carried Stripe - VPN360, PaySafe - Total Cleaner, WoodForest -
+    Total Adblock and twenty more, all zeros.
+
+    ONE definition, because the two tabs already read this from two different places once.
+    """
+    _fs = ss.get("forecast_settings") or {}
+    _v = str(_fs.get("company") or "").strip()
+    return _v or default
+
+
 def _vamp_off_gateways(ov: dict) -> set:
     """Canonicalised, lower-cased gateway ids whose VAMP is overridden to ZERO — target == 0 with
     apply_to in ("vamp", "both").

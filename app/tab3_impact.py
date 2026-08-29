@@ -20,7 +20,7 @@ from impact_calcs import (_c_prepost_granular, _c_read_parquet, _mtime, build_ki
                           pool_targeted_compression, projection_cache_sig, rpgt_avg_ticket,
                           rpgt_currency_avg_ticket)
 
-from app_common import (load_mid_list, _norm_cols, _map_to_bank, _renorm_share,
+from app_common import (load_mid_list, _norm_cols, _map_to_bank, _renorm_share, run_company,
                         _fid2vamp_from)  # memoised MID reader + shared helpers
 from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, DEFAULT_GATEWAY_FIDS,
                         HAS_PLOTLY, _ensure_base_30d_metrics, _impact_eval_frame, _ink_caption,
@@ -804,17 +804,6 @@ def render():
                                                    ss["_split_export_zip"], file_name="split_templates.zip",
                                                    mime="application/zip", key="export_splits_dl",
                                                    use_container_width=True)
-                        # RAW pre-enforcement split (the GA's ideal split BEFORE build_split_exports
-                        # cap / wallet / USA / <2-gateway back-fill). Distinct from Export Templates,
-                        # which is the ENFORCED output. Used to diagnose scored-vs-delivered: this is
-                        # the exact input the GA scored. Always available (no heavy build).
-                        _raw_split = ss.get("split")
-                        if _raw_split is not None and not getattr(_raw_split, "empty", True):
-                            st.download_button(
-                                "⬇ Download raw split (pre-enforcement) CSV",
-                                _raw_split.to_csv(index=False).encode("utf-8"),
-                                file_name="raw_split_pre_enforcement.csv", mime="text/csv",
-                                key="export_raw_split_dl", use_container_width=True)
 
                     if hasattr(st, "fragment"):
                         st.fragment(_export_ui)()
@@ -4140,8 +4129,11 @@ def render():
                             if os.path.exists(_rjp):
                                 with _io.open(_rjp, encoding="utf-8") as _rfh:
                                     _rj = _je.load(_rfh)
+                            # 19ea: the brand comes from forecast_settings. ss.get("company")
+                            # is None, which widened this from 38 gateways to 113 across 27
+                            # brands and injected a recipient row for every one of them.
                             _capability = _ic_cap.build_capability(restrictions=_rj,
-                                                                   brand=ss.get("company"))
+                                                                   brand=run_company(ss))
                             _cap_sig = (f"{_capability.n_gateways}:{_capability.n_mids}:"
                                         f"{_mtime(_rjp) if os.path.exists(_rjp) else 0:.0f}")
                         except Exception:  # noqa: BLE001
@@ -4231,7 +4223,16 @@ def render():
                         _brand_mids = _ic_cap.brand_vamp_mids(
                             locals().get("_mid_list_e") or os.path.join(
                                 PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"),
-                            ss.get("company"))
+                            run_company(ss))
+                        # 19ea — FAIL LOUD. An empty set means the brand matched nothing, and
+                        # the filter's own rule is then to keep every row. That is the right
+                        # default (never hide a real row) but it must not be SILENT: it looked
+                        # exactly like the filter working on a book with no other brands.
+                        if not _brand_mids:
+                            st.warning(
+                                f"Brand filter unavailable — no vampMid in the Master MID List "
+                                f"matches '{run_company(ss)}'. Every row is shown, including "
+                                "other brands. Check the brand column spelling.")
                         vp = mid_table_from_granular(_gr_shared, keep_mids=_brand_mids)
                     else:
                         vp = compute_vamp_post_by_mid(tp_path, prop_items_flat, str(_m0.date()), str(_gl),

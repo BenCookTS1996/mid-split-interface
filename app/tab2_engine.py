@@ -23,6 +23,7 @@ from routing_optimiser import (HardConstraints, OptimiserSettings, SoftConstrain
 from impact_calcs import _mtime, pool_targeted_compression, process_wallet_incapable
 
 from app_common import load_mid_list, _norm_cols  # memoised MID reader + column-normaliser
+from app_common import run_company            # 19ea: ONE reader for the run's brand
 from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, StreamlitLogHandler,
 
                         _switched_off_gateways, APP_BUILD, DEFAULT_GATEWAY_FIDS, _GA_N_SEED,
@@ -195,7 +196,9 @@ def render():
         # BOTH outside the form so the engine / method selectors show/hide inputs live.
         _ga_auto = True
         _ga_pop, _ga_gen = None, None   # auto-sized from the problem at compute time
-        sr_company = fs.get("company", "TotalAV")   # company & scheme come from tab 1
+        # 19ea: via the shared reader, so tab 2 and tab 3 cannot read the brand from two
+        # different places again — they did, and tab 3 got None for it.
+        sr_company = run_company(ss)   # company & scheme come from tab 1
         sr_scheme = fs.get("card_scheme", "visa")
         trace_gateway = ""  # gateway trace disabled
         today = date.today()

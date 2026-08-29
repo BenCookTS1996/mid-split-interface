@@ -25,14 +25,17 @@
   "woodforest-usd-tdr": {"target": 0, "apply_to": "vamp"},
   "woodforest-usd-tab": {"target": 0, "apply_to": "vamp"},
   "woodforest-usd-tav": {"target": 0, "apply_to": "vamp"},
-  "adyen-aud-tcl": {"target": 0, "apply_to": "vamp"},
-  "adyen-cad-tcl": {"target": 0, "apply_to": "vamp"},
-  "adyen-eur-tcl": {"target": 0, "apply_to": "vamp"},
-  "adyen-gbp-tcl": {"target": 0, "apply_to": "vamp"},
+  "woodforest-usd-tcl": {"target": 0, "apply_to": "vamp"},
   "adyen-gbp-tcl-us": {"target": 0, "apply_to": "vamp"},
-  "adyen-usd-tcl": {"target": 0, "apply_to": "vamp"},
   "adyen-usd-tcl-x-tab": {"target": 0, "apply_to": "vamp"},
   "adyen-usd-tcl-x-tav": {"target": 0, "apply_to": "vamp"},
   "adyen-usd-tpw-x-tab": {"target": 0, "apply_to": "vamp"},
-  "adyen-usd-tpw-x-tav": {"target": 0, "apply_to": "vamp"}
+  "adyen-usd-tpw-x-tav": {"target": 0, "apply_to": "vamp"},
+  
+  "adyen-aud-tcl" : {"target": 0, "apply_to": "vamp"},
+  "adyen-cad-tcl" : {"target": 0, "apply_to": "vamp"},
+  "adyen-eur-tcl" : {"target": 0, "apply_to": "vamp"},
+  "adyen-gbp-tcl" : {"target": 0, "apply_to": "vamp"}
+
+
 }

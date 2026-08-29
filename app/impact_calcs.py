@@ -2493,7 +2493,17 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
         #      which systematically moves mass from thin doors to fat incumbents and surfaces
         #      as scored-vs-delivered drift the GA cannot model. Exported templates are
         #      UNAFFECTED (projection_mode defaults to False).
-        _do_round = (_slvl >= 4) and not projection_mode
+        # 19ef: DEFAULT OFF. The 2dp round + residual-push made the exported sheet a different
+        # split from the one tab 3 projected, for no gain: the ConnectorPool generator's own
+        # `normalize_weights` rounds to integer tenths (0.1%) and re-balances to exactly 1000
+        # from whatever share it is handed, so a 0.01% pre-round is finer than the thing that
+        # consumes it and is discarded immediately. Rounding twice only loses information, and
+        # the push "systematically moves mass from thin doors to fat incumbents" — which is why
+        # `projection_mode` has skipped both since 2026-08-17. The export now takes that same
+        # path. `Check` below is still rounded: it is the column that must READ as 100.00.
+        # ROUTING_EXPORT_ROUND=1 restores the pre-19ef sheet exactly.
+        _do_round = ((_slvl >= 4) and not projection_mode
+                     and os.environ.get("ROUTING_EXPORT_ROUND", "0") == "1")
         RND = np.round(R * 100.0, 2) if _do_round else (R * 100.0)
         if _do_round:
             _rsum = np.round(RND.sum(1), 2)

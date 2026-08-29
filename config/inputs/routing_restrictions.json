@@ -11,7 +11,8 @@
   "usa_only_gateways": [
     "adyen-usd-tav-na",
     "adyen-usd-tdr-na",
-    "adyen-usd-tab-na"
+    "adyen-usd-tab-na",
+    "adyen-usd-tcl-na"
   ],
   "_comment_explore": "gatewayFids to treat as eligible candidates even with NO 30-day attempts, so capable-but-untested gateways can earn exploration volume. They are added to every routing cell of their currency (from Master_MID_List), seeded at volume 0 / baseline 0, scored on the pooled prior success rate, and given the exploration floor. The VAMP cap and all other constraints still govern them. Empty = off (default).",
   "explore_untested_gateways": []
