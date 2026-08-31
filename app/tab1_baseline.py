@@ -97,7 +97,7 @@ def render():
             # Fixed-height scroll box: opening/expanding the run log scrolls WITHIN this box instead of
             # growing the row, so it never reflows the folder / Split-Go-Live column (or the content
             # below) to its left. Tune the px if you want a taller/shorter log.
-            _prev_log_slot = _pv_sp.container(height=200)
+            _prev_log_slot = _pv_sp.container(height=150)   # same cap as the bottom slot
             ss["split_go_live_date"] = split_go_live
             if prev_dir:
                 need_all = ["mid_level.csv", "vamp_t_period_export.csv"]
@@ -169,6 +169,13 @@ def render():
                              + f".  Looked in: {prev_dir}")
 
         _fc_log_slot = None   # forecast run-log slot (assigned in ROW 2 right column)
+        # 19eq: positions RESERVED in the row-2 right column and written to further down. A
+        # widget renders where it is created, and neither of these can be created there — the
+        # button needs `actuals_valid` / `forecast_settings`, the preview needs the assembled
+        # config. Both stay None in previous-forecast mode, where ROW 2 never renders, and every
+        # write site falls back to full-width `st`.
+        _calc_btn_slot = None   # green "Calculate Forecast" button, beside the config captions
+        _yaml_slot = None       # "Preview assembled settings.yaml" expander
 
         if not use_prev:
             # --- ROW 1: Run Identity & Data Sources ---
@@ -400,6 +407,15 @@ def render():
                         override_file, os.path.join(INPUTS_DIR, "gateway_volume_overrides.json"),
                         "gateway volume overrides")
                     # Confirm each JSON actually loaded — from an uploaded file OR the default on disk.
+                    # 19eq: the captions move into the RIGHT half of a two-column split so the
+                    # "Calculate Forecast" button can sit in the left half, on the same line as
+                    # the first one. `vertical_alignment="center"` is what makes them line up
+                    # rather than both hugging the top of their column.
+                    _cfg_btn_col, _cfg_txt_col = st.columns([1, 1.5],
+                                                            vertical_alignment="center")
+                    # Reserved even when a config is missing, so the button's position does not
+                    # depend on whether the JSONs happened to load.
+                    _calc_btn_slot = _cfg_btn_col.empty()
                     for _cfg_lbl, _cfg_val, _cfg_up in (
                             ("Test Gateways", test_gateways, test_gw_file),
                             ("Thermometer Config", thermometer_config, thermo_file),
@@ -407,15 +423,23 @@ def render():
                         if _cfg_val:
                             _cfg_src = "uploaded" if _cfg_up is not None else "default file"
                             _cfg_n = len(_cfg_val)
-                            st.markdown(
+                            _cfg_txt_col.markdown(
                                 "<span style='color:#1D9E75; font-size:0.8rem; font-weight:700;'>"
                                 f"✓ {_cfg_lbl} loaded</span>"
                                 "<span style='color:var(--tav-muted); font-size:0.78rem;'> "
                                 f"({_cfg_src}, {_cfg_n} entr{'y' if _cfg_n == 1 else 'ies'})</span>",
                                 unsafe_allow_html=True)
 
-                # Forecast run log renders here (right column, beside Assumptions).
-                _fc_log_slot = st.container()
+                    # 19eq asks 2 + 3: both bodies live HERE, in the right column, so each is one
+                    # column wide instead of the full page. The run log's fixed height keeps it
+                    # scrolling inside its own box rather than growing the page.
+                    _yaml_slot = st.container()
+                    _fc_log_slot = st.container(height=150)
+
+                # The forecast run log used to render HERE, in the row-2 right column - i.e.
+                # ABOVE the "Calculate Forecast" button - so expanding it pushed the button down
+                # the page. It is now created at the very BOTTOM of the tab instead - search for
+                # the "RUN LOG, LAST" banner below.
 
 
 
@@ -466,27 +490,45 @@ def render():
         st.markdown("""<style>
             .st-key-calc_cache_btn button, .st-key-calc_cache_btn button * { color: #ffffff !important; }
         </style>""", unsafe_allow_html=True)
-        _load_clicked = st.button(
+        # 19eq: rendered into the slot reserved beside the config captions. Built here because
+        # this is the first point where `forecast_settings` has been persisted and
+        # `actuals_valid` is known; `st` is the fallback for previous-forecast mode, where ROW 2
+        # (and therefore the slot) never rendered.
+        _btn_ctx = _calc_btn_slot if _calc_btn_slot is not None else st
+        _load_clicked = _btn_ctx.button(
             "Load forecast" if use_prev else "Calculate Forecast",
             type="primary", key="calc_cache_btn",
             disabled=(not settings_hidden) if use_prev else (not actuals_valid))
         # Preview the assembled settings.yaml — build mode only (hidden when loading a previous
         # forecast). Rendered BELOW the Calculate Forecast button.
         if not use_prev:
-            with st.expander("Preview assembled settings.yaml (VAMP pipeline schema)"):
+            _yaml_ctx = _yaml_slot if _yaml_slot is not None else st
+            with _yaml_ctx.expander("Preview assembled settings.yaml (VAMP pipeline schema)"):
                 pipeline_config = build_pipeline_config(forecast_settings)
                 st.code(yaml.safe_dump(pipeline_config, sort_keys=False), language="yaml")
                 st.download_button("Download settings.yaml",
                                    yaml.safe_dump(pipeline_config, sort_keys=False),
                                    file_name="settings.yaml", mime="text/yaml")
-        # Previous-forecast mode hides ROW 2 (and its right-column log slot). Route the run log to the
-        # reserved TOP slot beside the 'Use a previously created forecast' checkbox so it sits
-        # vertically in-line with the checkbox; the baseline pre/post table renders full-width below.
+        # ── RUN LOG ───────────────────────────────────────────────────────────────────────────
+        # 19eq: the container is created UP IN THE ROW-2 RIGHT COLUMN, next to the config
+        # captions — that is what makes it one column wide rather than full page, and it takes
+        # its st.status header ("Forecast ready for …") with it, since header and body are one
+        # widget.
+        #
+        # This replaces the earlier "create it last" arrangement, whose purpose was to stop an
+        # expanding log pushing the green button down the page. It cannot do that any more for a
+        # different reason: the button now sits ABOVE it in the same column, and the container is
+        # height-capped, so the log scrolls inside its box instead of growing. 150 px is the whole
+        # knob — raise it for a taller box, lower it for a shorter one.
+        #
+        # REMAINS None in previous-forecast mode; the branch below hands it `_prev_log_slot`.
+        # Previous-forecast mode hides ROW 2. That mode has its own log slot beside the
+        # 'Use a previously created forecast' checkbox, so it keeps using that one.
         _pre_table_ctx = None
         if settings_hidden:
             _fc_log_slot = _prev_log_slot
         if _load_clicked:
-            # Render the run log into the ROW-2 right-column slot (normal mode) or the previous-forecast
+            # Render the run log into the BOTTOM slot (normal mode) or the previous-forecast
             # right column; fall back to full-width only if neither exists.
             _log_ctx = _fc_log_slot if _fc_log_slot is not None else st
             with _log_ctx.status("Calculating & caching forecast...", expanded=True) as status:
