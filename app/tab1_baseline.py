@@ -174,7 +174,7 @@ def render():
         # button needs `actuals_valid` / `forecast_settings`, the preview needs the assembled
         # config. Both stay None in previous-forecast mode, where ROW 2 never renders, and every
         # write site falls back to full-width `st`.
-        _calc_btn_slot = None   # green "Calculate Forecast" button, beside the config captions
+        _calc_btn_slot = None   # green "Calculate Forecast" button, bottom of the LEFT column
         _yaml_slot = None       # "Preview assembled settings.yaml" expander
 
         if not use_prev:
@@ -369,6 +369,16 @@ def render():
                                                                 0, 36, 1, step=1,
                                                                 help="Months used to shape the ramp-up. 0 = the last completed month.")
 
+                # 19es: the green "Calculate Forecast" button renders HERE — bottom of the LEFT
+                # column, below the Assumptions box, so it lines up across the page with the
+                # config captions that end the RIGHT column. 19eq put it in a sub-column INSIDE
+                # the right column, which put it on the right-hand half of the page; "in-line
+                # with the Test Gateways caption" meant the same horizontal band, not the same
+                # column. The slot is reserved here and written to further down, because the
+                # button needs `actuals_valid` and a persisted `forecast_settings` that do not
+                # exist yet at this point in the script.
+                _calc_btn_slot = st.empty()
+
             with r2_c2:
                 with st.container(border=True):
                     st.markdown("<h5 style='margin-top:0; margin-bottom:0.25rem;'>5 · Configs & Overrides</h5>", unsafe_allow_html=True)
@@ -407,15 +417,9 @@ def render():
                         override_file, os.path.join(INPUTS_DIR, "gateway_volume_overrides.json"),
                         "gateway volume overrides")
                     # Confirm each JSON actually loaded — from an uploaded file OR the default on disk.
-                    # 19eq: the captions move into the RIGHT half of a two-column split so the
-                    # "Calculate Forecast" button can sit in the left half, on the same line as
-                    # the first one. `vertical_alignment="center"` is what makes them line up
-                    # rather than both hugging the top of their column.
-                    _cfg_btn_col, _cfg_txt_col = st.columns([1, 1.5],
-                                                            vertical_alignment="center")
-                    # Reserved even when a config is missing, so the button's position does not
-                    # depend on whether the JSONs happened to load.
-                    _calc_btn_slot = _cfg_btn_col.empty()
+                    # 19es: full width of this column again. 19eq split it to seat the button
+                    # beside the first caption; the button now lives in the LEFT column instead.
+                    _cfg_txt_col = st.container()
                     for _cfg_lbl, _cfg_val, _cfg_up in (
                             ("Test Gateways", test_gateways, test_gw_file),
                             ("Thermometer Config", thermometer_config, thermo_file),
