@@ -73,6 +73,14 @@ def render():
             help="Load a finished VAMP forecast from disk instead of running the "
                  "pipeline. Give the folder the outputs were saved to; if valid, the "
                  "other inputs are hidden and the forecast is loaded for tab 2.")
+        # 19et: how tall the two scrollable code boxes are — the settings.yaml preview and the
+        # run log. Streamlit renders `st.code` at roughly 21 px per line, so ~10 lines plus the
+        # block's own padding is ~225 px. THIS IS THE WHOLE KNOB for both: raise it to show more
+        # lines before scrolling, lower it to show fewer. Kept as one constant so the two boxes
+        # cannot drift apart, and declared up here because previous-forecast mode's slot below
+        # is the first thing that needs it.
+        _CODE_BOX_PX = 225
+
         # The 'Forecast ready…' run log renders into this slot — assigned to the spacer column to the
         # RIGHT of the 'Split Go Live date' input below (previously-created-forecast mode only).
         _prev_log_slot = None
@@ -97,7 +105,10 @@ def render():
             # Fixed-height scroll box: opening/expanding the run log scrolls WITHIN this box instead of
             # growing the row, so it never reflows the folder / Split-Go-Live column (or the content
             # below) to its left. Tune the px if you want a taller/shorter log.
-            _prev_log_slot = _pv_sp.container(height=150)   # same cap as the bottom slot
+            # 19et: no cap HERE any more — the log's own code box is capped instead, so a
+            # 225 px scroll region is not nested inside a 150 px one (which clipped the status
+            # header and gave two scrollbars). The box below still stops this column growing.
+            _prev_log_slot = _pv_sp.container()
             ss["split_go_live_date"] = split_go_live
             if prev_dir:
                 need_all = ["mid_level.csv", "vamp_t_period_export.csv"]
@@ -438,7 +449,11 @@ def render():
                     # column wide instead of the full page. The run log's fixed height keeps it
                     # scrolling inside its own box rather than growing the page.
                     _yaml_slot = st.container()
-                    _fc_log_slot = st.container(height=150)
+                    # 19et: no height cap here any more. The run log's own code box is capped
+                    # instead (see `_CODE_BOX_PX`), which keeps the st.status header
+                    # ("Forecast ready for …") fully visible above the scroll region rather than
+                    # sharing a 150 px budget with it.
+                    _fc_log_slot = st.container()
 
                 # The forecast run log used to render HERE, in the row-2 right column - i.e.
                 # ABOVE the "Calculate Forecast" button - so expanding it pushed the button down
@@ -509,7 +524,11 @@ def render():
             _yaml_ctx = _yaml_slot if _yaml_slot is not None else st
             with _yaml_ctx.expander("Preview assembled settings.yaml (VAMP pipeline schema)"):
                 pipeline_config = build_pipeline_config(forecast_settings)
-                st.code(yaml.safe_dump(pipeline_config, sort_keys=False), language="yaml")
+                # 19et: the YAML scrolls INSIDE a fixed-height box (~10 lines) instead of
+                # rendering its full length. The download button stays OUTSIDE the box so it is
+                # always reachable without scrolling to the bottom of the config.
+                st.container(height=_CODE_BOX_PX).code(
+                    yaml.safe_dump(pipeline_config, sort_keys=False), language="yaml")
                 st.download_button("Download settings.yaml",
                                    yaml.safe_dump(pipeline_config, sort_keys=False),
                                    file_name="settings.yaml", mime="text/yaml")
@@ -536,7 +555,12 @@ def render():
             # right column; fall back to full-width only if neither exists.
             _log_ctx = _fc_log_slot if _fc_log_slot is not None else st
             with _log_ctx.status("Calculating & caching forecast...", expanded=True) as status:
-                log_area = st.empty()
+                # 19et: the log scrolls inside its OWN fixed-height box (~10 lines) rather than
+                # growing with the run. `log_area` is an st.empty() INSIDE that box, so every
+                # rewrite lands in the same scroll region and the status header above it stays
+                # put. Streamlit keeps a height-capped container scrolled where the user left
+                # it, so this does not fight a user who has scrolled back to read something.
+                log_area = st.container(height=_CODE_BOX_PX).empty()
                 log_lines: list[str] = []
 
                 # [FN-297]
