@@ -3013,7 +3013,13 @@ def render():
                             _rs = _rs.assign(
                                 rpgt_join=_rs["rpgt"].astype(str).str.strip().str.lower(),
                                 currency_join=_rs["currency"].astype(str).str.strip().str.lower(),
-                                bank_join=_rs["bin"].astype(str).str.strip().str.lower(),
+                                # 19ey: a KEYWORD, not a quoted column name — which is why the
+                                # 19eo/19er/19ew sweeps could not see it. The groupby two lines
+                                # below asks for `bin_join`, so this built a frame that could
+                                # never be grouped, the bare `except` below swallowed the
+                                # KeyError, `_raw_rpgt` fell to None, and the failure surfaced
+                                # 200 lines later as an AttributeError on `.fillna`.
+                                bin_join=_rs["bin"].astype(str).str.strip().str.lower(),
                                 gateway_join=_rs["gateway"].astype(str).str.strip().str.lower(),
                                 _succ=pd.to_numeric(_rs["success"], errors="coerce").fillna(0.0),
                                 _att=pd.to_numeric(_rs.get("attempts", 0), errors="coerce").fillna(0.0))
@@ -3028,8 +3034,21 @@ def render():
                             _pre_raw_map = _rs.groupby("gateway_join", as_index=False)["pre_rev_raw"].sum()
                             if "gateway_join" in workings_full.columns:
                                 workings_full = workings_full.merge(_pre_raw_map, on="gateway_join", how="left")
-                    except Exception:  # noqa: BLE001
+                    except Exception as _rre:  # noqa: BLE001
+                        # 19ey: SAY SO. This swallowed a KeyError from the `bin_join` rename and
+                        # left `_raw_rpgt` as None, so the failure re-emerged 200 lines later as
+                        # "AttributeError: 'int' object has no attribute 'fillna'" — an error
+                        # that named neither the column nor the frame that was actually missing.
+                        # The fallback stays (this block is optional enrichment, not the table),
+                        # but a silent one costs more to diagnose than it ever saves.
                         _raw_rpgt = None
+                        try:
+                            st.caption(f"Raw 30D per-RPGT enrichment unavailable "
+                                       f"({type(_rre).__name__}: {_rre}) — the Raw Attempts / "
+                                       "Raw Successes / Pre Revenue (Adj) columns will read 0. "
+                                       "The rest of the table is unaffected.")
+                        except Exception:  # noqa: BLE001
+                            pass
                     if "pre_rev_raw" in workings_full.columns:
                         workings_full["Pre Revenue (Adj)"] = pd.to_numeric(
                             workings_full["pre_rev_raw"], errors="coerce").fillna(_pre_fallback)
@@ -3214,8 +3233,18 @@ def render():
                                                 left_on=["bin_join", "currency_join", "_rpgt_l", "gateway_join"],
                                                 right_on=["bin_join", "currency_join", "rpgt_join", "gateway_join"])
                                 _wr = _wr.drop(columns=["_rpgt_l", "rpgt_join"], errors="ignore")
-                            _wr["Raw Attempts (30D)"] = pd.to_numeric(_wr.get("raw_att", 0), errors="coerce").fillna(0.0)
-                            _wr["Raw Successes (30D)"] = pd.to_numeric(_wr.get("raw_succ", 0), errors="coerce").fillna(0.0)
+                            # 19ey: `DataFrame.get(col, 0)` returns the DEFAULT — the int 0 — when
+                            # the column is absent, and `pd.to_numeric(0)` is a scalar, so `.fillna`
+                            # raised AttributeError: 'int' object has no attribute 'fillna'. The
+                            # same trap is recorded in forecast_pipeline.py's 19au fix, where a
+                            # guard spent two builds silently doing nothing for this exact reason.
+                            # A missing column should give a column of zeros, not an exception.
+                            def _col0(_df, _c):
+                                if _c in _df.columns:
+                                    return pd.to_numeric(_df[_c], errors="coerce").fillna(0.0)
+                                return pd.Series(0.0, index=_df.index)
+                            _wr["Raw Attempts (30D)"] = _col0(_wr, "raw_att")
+                            _wr["Raw Successes (30D)"] = _col0(_wr, "raw_succ")
                             _wr["Pre Revenue (Adj)"] = pd.to_numeric(_wr.get("pre_rev_raw"), errors="coerce").fillna(0.0)
                             # merge POOLED score / softmax / allocation / genetic columns (broadcast per RPGT)
                             _pool = [c for c in ["Cross-border?", "All_Time_Attempts", "All_Time_Success", "All-Time Raw SR",

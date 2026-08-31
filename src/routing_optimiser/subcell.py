@@ -72,7 +72,7 @@ def subcell_vi_fractions(prorata: pd.DataFrame,
 
 # [FN-SC02]
 def expand_forecast_to_subcells(forecast: pd.DataFrame, fractions: pd.DataFrame,
-                                *, currency="currency", bank="bin", rpgt="rpgt",
+                                *, currency="currency", bin_="bin", rpgt="rpgt",
                                 volume="volume") -> pd.DataFrame:
     """Replicate each cell's rows across its (pmp, Country) sub-cells, apportioning the cell's
     forecast VOLUME by `fractions` (from :func:`subcell_vi_fractions`). Every other column
@@ -85,7 +85,7 @@ def expand_forecast_to_subcells(forecast: pd.DataFrame, fractions: pd.DataFrame,
     """
     f = forecast.copy()
     f["_cur"] = f[currency].astype(str).str.strip().str.lower()
-    f["_bin"] = f[bank].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    f["_bin"] = f[bin_].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
     f["_rpgt"] = (f[rpgt].astype(str).str.strip().str.lower() if rpgt in f.columns
                   else pd.Series("all_rpgts", index=f.index))
 
