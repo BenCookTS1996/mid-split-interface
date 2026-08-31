@@ -283,6 +283,22 @@ class ActuarialEngine:
         dist_base[num_cols_dist] = dist_base[num_cols_dist].fillna(0)
         return dist_base
 
+    def _inject_from_siblings_fids(self) -> set:
+        """Lower-cased gatewayFids whose recorded VAMP is unusable and must be inferred instead.
+
+        Driven by `apply_to: inject_from_siblings` in gateway_volume_overrides. Deliberately a
+        DIFFERENT value from "vamp": every other consumer in the codebase tests for the literal
+        strings "vamp"/"both" (allocation_engine._apply_death_syncs, _apply_overrides_to_split,
+        actuarial._apply_override_origin_cutoff, app_common._vamp_off_gateways), so renaming the
+        value is what stops those paths firing on these gateways. Nothing else needed changing.
+        """
+        out = set()
+        for _fid, _cfg in (self.config.get('gateway_volume_overrides', {}) or {}).items():
+            if isinstance(_cfg, dict) and \
+                    str(_cfg.get('apply_to', '')).strip().lower() == 'inject_from_siblings':
+                out.add(str(_fid).strip().lower())
+        return out
+
     def _calculate_waterfall_shares(self, dist_base: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
         """Determines what percentage of volume belongs to each historical gateway."""
         future_cols = [f'fc_vi_trx_m{m}' for m in range(6) if f'fc_vi_trx_m{m}' in dist_base.columns]
@@ -321,6 +337,23 @@ class ActuarialEngine:
             dist_base.drop(columns=raw_share_cols, inplace=True)
 
         dist_base.drop(columns=['share_future_raw', 'total_future_trx', 'deep_hist_trx', 'total_hist_baseline', 'prof_future_sum', 'prof_hist_base_sum', 'prof_deep_sum'], errors='ignore', inplace=True)
+
+        # ai01: gateways flagged `inject_from_siblings` receive NONE of the recorded VAMP,
+        # because the source carries no usable VAMP for them - the profile total is siblings-only
+        # fraud and a transaction-weighted slice of it would be taken from the siblings who
+        # actually generated it. Zeroing the raw share here lets the renormalisation below do
+        # both halves of the job: where the profile has siblings their shares rescale to 1.0 and
+        # they absorb it; where it has none the sum is 0, 0/0 -> NaN -> fillna(0), and the VAMP
+        # is dropped. That drop is the intended rule, and _apply_magic_lock reports its size.
+        self._ai01_zeroed_rows = 0
+        if os.environ.get("ROUTING_ZERO_BAD_VAMP_LABELS", "1") != "0":
+            _inj = self._inject_from_siblings_fids()
+            if _inj and 'gatewayFid' in dist_base.columns:
+                _m = dist_base['gatewayFid'].astype(str).str.strip().str.lower().isin(_inj)
+                if _m.any():
+                    self._ai01_zeroed_rows = int(_m.sum())
+                    for sc in share_cols:
+                        dist_base.loc[_m, sc] = 0.0
 
         for sc in share_cols:
             dist_base[sc] = dist_base[sc] / dist_base.groupby('prof_key', observed=True)[sc].transform('sum')
@@ -384,8 +417,125 @@ class ActuarialEngine:
             m_col = 'vamp_fcast' if m == 0 else f'vamp_fcast_m{m}'
             t_cols_for_m = [f't{t}_fcast_m{m}' for t in range(10) if f't{t}_fcast_m{m}' in merged_profile.columns]
             merged_profile[m_col] = sum([merged_profile[c].values for c in t_cols_for_m]) if t_cols_for_m else 0.0
-            
+
+        # ai01 audit. Every profile's VAMP is split across its gateways by share, so the split
+        # conserves - UNLESS every share in the profile is zero, which is exactly the case where
+        # the only gateways present are flagged `inject_from_siblings`. The gap below is that
+        # dropped volume and nothing else; if it appears without any flagged gateway in the book,
+        # something else is losing VAMP and this number is the alarm.
+        _pv_cols = [c for c in matrix_cols if c in profile_vamps.columns]
+        _in = float(profile_vamps[_pv_cols].to_numpy().sum()) if _pv_cols else 0.0
+        _out = float(merged_profile[matrix_cols].to_numpy().sum()) if matrix_cols else 0.0
+        self._ai01_dropped = max(_in - _out, 0.0)
+        if self._ai01_dropped > 1e-9:
+            logger.info(
+                f"   > ZERO BAD VAMP LABELS (ai01): {getattr(self, '_ai01_zeroed_rows', 0):,} row(s) "
+                f"stripped of their recorded-VAMP share. {self._ai01_dropped:,.2f} unit(s) sat in "
+                f"profiles those gateways ALONE serve, so there was no sibling to return them to "
+                f"and they are dropped - that VAMP is attributed to them by construction and is "
+                f"the same unusable data. Their real VAMP is inferred in ai02. "
+                f"({_in:,.2f} in -> {_out:,.2f} out)")
+            logger.info("     ROUTING_ZERO_BAD_VAMP_LABELS=0 restores the previous behaviour.")
+
         return merged_profile
+
+    def _inject_from_siblings(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Infer VAMP for gateways whose source data does not carry any, from their siblings.
+
+        See the module patch notes. In one line: for each (Company, rpgt, Currency) group and each
+        (origin month, age) cell, take the VAMP rate the REPORTING gateways show, and give each
+        flagged row that rate applied to its own transactions for that origin month.
+
+        This runs AFTER _apply_magic_lock has already set these gateways to zero (ai01), so the
+        number written here is their whole VAMP - there is nothing underneath it to double count.
+        """
+        if os.environ.get("ROUTING_INJECT_FROM_SIBLINGS", "1") == "0":
+            logger.info("   > inject_from_siblings DISABLED (ROUTING_INJECT_FROM_SIBLINGS=0) - "
+                        "flagged gateways keep whatever the waterfall gave them.")
+            return df
+
+        inj = self._inject_from_siblings_fids()
+        if not inj or 'gatewayFid' not in df.columns:
+            return df
+
+        mask = df['gatewayFid'].astype(str).str.strip().str.lower().isin(inj).to_numpy()
+        if not mask.any():
+            return df
+
+        gkeys = [k for k in ('Company', 'rpgt', 'Currency') if k in df.columns]
+        if not gkeys:
+            logger.warning("   > inject_from_siblings: no grouping keys present - skipped.")
+            return df
+
+        # One combined key, built once. groupby on it is cheap and avoids 60 multi-key passes.
+        gid = df[gkeys[0]].astype(str)
+        for k in gkeys[1:]:
+            gid = gid.str.cat(df[k].astype(str), sep='|')
+
+        # Which transaction column is the denominator for each cell.
+        cells = []
+        for m in range(6):
+            for t in range(10):
+                col = f't{t}_fcast_m{m}'
+                if col not in df.columns:
+                    continue
+                origin = m - t
+                trx = f'fc_vi_trx_m{origin}' if origin >= 0 else f'p{abs(origin) - 1}'
+                if trx in df.columns:
+                    cells.append((col, trx, m, t))
+
+        if not cells:
+            logger.warning("   > inject_from_siblings: no cell has a transaction denominator - skipped.")
+            return df
+
+        need = sorted({c for c, _, _, _ in cells} | {x for _, x, _, _ in cells})
+        sib = ~mask
+        # Sibling totals per group, one pass. Flagged rows are excluded from BOTH sides so the
+        # rate is the reporting population's own rate and cannot be diluted by the zeros ai01 left.
+        gsum = df.loc[sib, need].groupby(gid[sib], observed=True).sum()
+
+        injected, per_rpgt, no_rate = 0.0, {}, 0.0
+        gid_inj = gid[mask]
+        rpgt_inj = df.loc[mask, 'rpgt'].astype(str) if 'rpgt' in df.columns else None
+
+        for col, trx, _m, _t in cells:
+            sv = gsum[col]
+            st = gsum[trx]
+            rate = (sv / st.where(st > 0)).fillna(0.0)
+            r = gid_inj.map(rate).fillna(0.0).to_numpy()
+            add = r * df.loc[mask, trx].to_numpy(dtype=np.float64)
+            if not add.any():
+                # A group with transactions but no usable sibling rate infers nothing; report it
+                # rather than letting it read as a genuine zero.
+                no_rate += float(df.loc[mask, trx].to_numpy(dtype=np.float64)[r == 0.0].sum())
+                continue
+            df.loc[mask, col] = df.loc[mask, col].to_numpy(dtype=np.float64) + add
+            injected += float(add.sum())
+            if rpgt_inj is not None:
+                for _rp, _v in pd.Series(add, index=rpgt_inj.to_numpy()).groupby(level=0).sum().items():
+                    per_rpgt[_rp] = per_rpgt.get(_rp, 0.0) + float(_v)
+
+        # Each row's month total must still equal its own age breakdown.
+        for m in range(6):
+            v_col = 'vamp_fcast' if m == 0 else f'vamp_fcast_m{m}'
+            t_cols = [f't{t}_fcast_m{m}' for t in range(10) if f't{t}_fcast_m{m}' in df.columns]
+            if v_col in df.columns and t_cols:
+                df.loc[mask, v_col] = df.loc[mask, t_cols].sum(axis=1).astype(np.float64)
+
+        self._ai02_injected = injected
+        logger.info(
+            f"   > INJECT FROM SIBLINGS (ai02): {injected:,.2f} unit(s) of VAMP inferred for "
+            f"{int(mask.sum()):,} row(s) across {len(inj)} flagged gateway(s). The source carries "
+            f"no usable VAMP for them, so the rate is taken from the gateways that DO report it, "
+            f"at ({' x '.join(gkeys)}) x origin month x age, and applied to each row's own "
+            f"transactions for that origin month.")
+        for _rp, _v in sorted(per_rpgt.items(), key=lambda kv: -kv[1])[:8]:
+            logger.info(f"        {str(_rp)[:30]:30s}{_v:>12,.2f}")
+        if no_rate > 0:
+            logger.info(f"        note: {no_rate:,.0f} transaction(s) sat in groups with no sibling "
+                        f"rate available and received no injection.")
+        logger.info("     ROUTING_INJECT_FROM_SIBLINGS=0 disables this.")
+        return df
 
     def _execute_waterfall_routing(self, profile_vamps: pd.DataFrame, vamp_dist_cols: List[str]) -> pd.DataFrame:
         """Links VAMP forecasts to historical profiles and rescues unmapped rows."""
@@ -397,6 +547,7 @@ class ActuarialEngine:
         dist_base, share_cols = self._calculate_waterfall_shares(dist_base)
         dist_base = self._rescue_unmapped_waterfall(dist_base, profile_vamps, share_cols)
         merged_profile = self._apply_magic_lock(dist_base, profile_vamps)
+        merged_profile = self._inject_from_siblings(merged_profile)
 
         vi_cols = [f'fc_vi_trx_m{m}' for m in range(6)]
         forecast_cols = vamp_dist_cols + vi_cols
@@ -475,7 +626,115 @@ class ActuarialEngine:
         
         logger.info("Distributing Granular VAMPs to Waterfall Matrices...")
         final_attempts_df = self._execute_waterfall_routing(profile_vamps, vamp_dist_cols)
-        
+
+        final_attempts_df = self._apply_override_origin_cutoff(final_attempts_df)
+
         logger.info("✅ Actuarial Engine Complete.")
-        
+
         return final_attempts_df
+
+    def _apply_override_origin_cutoff(self, df: pd.DataFrame) -> pd.DataFrame:
+        """A gateway switched off at date D can only carry VAMP whose ORIGIN transaction predates D.
+
+        The waterfall distributes each profile's future fraud across gateways by historic weight,
+        and it has no idea a gateway has stopped trading — so a gateway with a `target: 0` volume
+        override keeps being forecast new fraud on transactions it could never have taken. Its
+        forecast TRANSACTIONS are already zeroed upstream (data_extractor); this zeroes the
+        matching VAMP.
+
+        `t{t}_fcast_m{m}` is fraud of age t in forecast month m, so the transaction behind it
+        happened in month (m - t). With `off` = the override's effective month relative to month_0:
+
+            m - t  >  off   the gateway was already off      -> 0
+            m - t  == off   the switch-off month itself      -> pro-rata by the days before D
+            m - t  <  off   genuine residual history         -> untouched
+
+        The removed fraud is DELETED, not redistributed: that volume moved to other gateways on
+        the switch-off date and their own forecasts already carry its fraud, so redistributing
+        would double-count it. `vamp_fcast{_m}` is recomputed from the surviving cells so each
+        row's total still equals its own age breakdown.
+
+        Only `target: 0` with `apply_to` in (trx, both). An `apply_to: "vamp"` override means the
+        gateway still TAKES transactions and is merely barred from holding VAMP — deleting fraud
+        on live volume would be a different and much worse bug.
+        """
+        if os.environ.get("ROUTING_OVERRIDE_ORIGIN_CUTOFF", "1") == "0":
+            logger.info("   > override origin cutoff DISABLED (ROUTING_OVERRIDE_ORIGIN_CUTOFF=0) "
+                        "- switched-off gateways keep any forecast VAMP the waterfall gave them.")
+            return df
+
+        overrides = self.config.get('gateway_volume_overrides', {}) or {}
+        if not overrides or 'gatewayFid' not in df.columns:
+            return df
+
+        fid_lower = df['gatewayFid'].astype(str).str.strip().str.lower()
+        m0 = self.m0_start_dt
+        report, total_removed = [], 0.0
+
+        for fid, cfg in overrides.items():
+            target = cfg.get('target', 0) if isinstance(cfg, dict) else cfg
+            apply_to = (cfg.get('apply_to', 'both') if isinstance(cfg, dict) else 'both')
+            eff_raw = cfg.get('effective_date') if isinstance(cfg, dict) else None
+            if float(target or 0) != 0.0 or str(apply_to).lower() not in ('trx', 'both'):
+                continue
+
+            mask = fid_lower == str(fid).strip().lower()
+            if not mask.any():
+                continue
+
+            if eff_raw:
+                D = pd.to_datetime(eff_raw)
+                off_rel = (D.year - m0.year) * 12 + (D.month - m0.month)
+                # Fraction of the switch-off month the gateway was still trading. Transactions
+                # ON the effective date itself are already gone, so day-1.
+                frac = float(max(D.day - 1, 0)) / float(calendar.monthrange(D.year, D.month)[1])
+            else:
+                # No effective date == off from the start: no origin month is ever valid.
+                off_rel, frac, D = None, 0.0, None
+
+            removed = 0.0
+            for m in range(6):
+                for t in range(10):
+                    col = f't{t}_fcast_m{m}'
+                    if col not in df.columns:
+                        continue
+                    origin_rel = m - t
+                    if off_rel is None or origin_rel > off_rel:
+                        scale = 0.0
+                    elif origin_rel == off_rel:
+                        scale = frac
+                    else:
+                        continue                       # genuine residual - untouched
+                    removed += float(df.loc[mask, col].sum()) * (1.0 - scale)
+                    df.loc[mask, col] = df.loc[mask, col].astype(np.float64) * scale
+
+            if removed <= 0.0:
+                continue
+
+            # Per-row month totals must still equal their own age breakdown.
+            for m in range(6):
+                v_col = 'vamp_fcast' if m == 0 else f'vamp_fcast_m{m}'
+                t_cols = [f't{t}_fcast_m{m}' for t in range(10) if f't{t}_fcast_m{m}' in df.columns]
+                if v_col in df.columns and t_cols:
+                    df.loc[mask, v_col] = df.loc[mask, t_cols].sum(axis=1).astype(np.float64)
+
+            total_removed += removed
+            report.append((str(fid), (D.date().isoformat() if D is not None else 'immediate'),
+                           removed))
+
+        if report:
+            logger.info("   > OVERRIDE ORIGIN CUTOFF: a switched-off gateway can only carry VAMP "
+                        "whose ORIGIN transaction predates its effective date. Removed forecast "
+                        "VAMP attributed to transactions the gateway could not have taken:")
+            for fid, d, rm in sorted(report, key=lambda r: -r[2]):
+                logger.info(f"        {fid:26s} off {d}  ->  {rm:10.2f} unit(s) removed")
+            logger.info(f"     TOTAL {total_removed:.2f} unit(s) removed from the forecast. This "
+                        "is a DELETION, not a reallocation - that volume moved to other gateways "
+                        "on the switch-off date and their forecasts already carry its fraud, so "
+                        "redistributing would double-count. The book total falls by this amount "
+                        "and every per-row vamp_fcast has been recomputed from its surviving age "
+                        "cells. ROUTING_OVERRIDE_ORIGIN_CUTOFF=0 reverts.")
+        else:
+            logger.info("   > override origin cutoff: nothing to remove - no switched-off gateway "
+                        "carried forecast VAMP with an origin after its effective date.")
+        return df

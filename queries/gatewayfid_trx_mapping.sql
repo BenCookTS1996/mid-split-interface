@@ -38,5 +38,5 @@ LEFT JOIN (select connector_transaction_id_0, bank_country_0, renewal_number_1 f
 -- 🟢 DYNAMIC WHERE CLAUSE: Exactly 9 months backward from Month 0
 WHERE CAST(riskdata2025.recordDate AS DATE) >= DATE_SUB(CAST('{MONTH_0_START_DATE}' AS DATE), INTERVAL 9 MONTH) 
   AND CAST(riskdata2025.recordDate AS DATE) < CAST('{MONTH_0_START_DATE}' AS DATE) 
-  AND riskdata2025.gatewayFid NOT LIKE '%paypal%'
+  AND riskdata2025.gatewayFid NOT LIKE '%paypal%' and riskdata2025.gatewayFid NOT LIKE '%vindicia%'
 GROUP BY ALL

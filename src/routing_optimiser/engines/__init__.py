@@ -2,11 +2,22 @@
 from __future__ import annotations
 
 from .base import BaseEngine, CellProblem, CellSolution
-from .entropy import EntropyEngine
 from .genetic_ref import GeneticRefEngine
-from .portfolio import PortfolioEngine
-from .softmax import SoftmaxEngine
-from .thompson import ThompsonEngine
+
+# RETIRED FROM THE UI (2026-08-31), still imported on purpose. These four moved to
+# routing_optimiser.legacy_engines because the dropdown now offers only the full-matrix GA.
+# They must remain REGISTERED, not just hidden:
+#   * OptimiserSettings.engine still defaults to "entropy" (constraints.py:75), so
+#     get_engine() must be able to resolve it for any caller that does not pass one;
+#   * ThompsonEngine and PortfolioEngine both subclass SoftmaxEngine, so softmax cannot
+#     be dropped without taking the other two with it.
+# base.py and genetic_ref.py deliberately did NOT move: the whole pipeline uses CellProblem /
+# BaseEngine, and the full-matrix GA dispatches its own revenue reference through
+# get_engine("genetic_ref") (tab2_engine.py, `optimise_split(agg_problems, ref_settings)`).
+from ..legacy_engines.entropy import EntropyEngine
+from ..legacy_engines.portfolio import PortfolioEngine
+from ..legacy_engines.softmax import SoftmaxEngine
+from ..legacy_engines.thompson import ThompsonEngine
 
 # NOTE: the "genetic" option in the UI is served by the CROSS-CELL tilt GA
 # (routing_optimiser.genetic_global.run_midtilt_ga), which the app dispatches

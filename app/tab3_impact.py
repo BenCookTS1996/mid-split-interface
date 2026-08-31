@@ -4146,8 +4146,9 @@ def render():
                     if _bad_ap:
                         st.warning(
                             "gateway_volume_overrides.json contains apply_to value(s) "
-                            f"{sorted(_bad_ap)} that are not one of trx / vamp / both — those "
-                            "entries are IGNORED, they are not applied to anything.")
+                            f"{sorted(_bad_ap)} that are not one of trx / vamp / both / "
+                            "inject_from_siblings — those entries are IGNORED, they are not "
+                            "applied to anything.")
                     # Effective-date-gated switch-off: only remove a switched-off vampMid
                     # from its effective month onward (mid-month pro-rated), not from M0.
                     _kill_eff = build_kill_eff(_vamp2fids, _fid_eff)

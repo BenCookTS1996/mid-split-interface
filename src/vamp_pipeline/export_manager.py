@@ -91,7 +91,7 @@ class ExportManager:
     """
 
     def __init__(self, config: Dict[str, Any], mid_df: pd.DataFrame, attempts_df: pd.DataFrame,
-                 mr_weights: Dict[Any, Any] = None):
+                 mr_weights: Dict[Any, Any] = None, forecast_df: pd.DataFrame = None):
         self.config = config
         self.company = str(self.config['run_settings']['company']).strip()
         self.month_var = str(self.config['run_settings']['month_var']).strip()
@@ -105,6 +105,11 @@ class ExportManager:
         # We need these from the DataExtractor to build the historical summaries
         self.mid_df = mid_df.copy()
         self.attempts_df = attempts_df.copy()
+
+        # ex01: the frame the AllocationEngine actually routes (PHASE 2). `fcp1_frac` is read off
+        # THIS, not off `attempts_df` — see _compute_fcp1_frac. Held by reference and never
+        # mutated: it is ~1.8M x 84 on a live book and must not be copied.
+        self.forecast_df = forecast_df if isinstance(forecast_df, pd.DataFrame) else pd.DataFrame()
         
         # 🟢 FIX: Dynamically construct the output directory based on Run Settings
         self.output_dir = self.config['paths'].get('output_dir', 'data/outputs/').format(month_var=self.month_var, company=self.company)
@@ -464,7 +469,35 @@ class ExportManager:
         Returns empty if the attempts frame lacks fcp data (projection defaults fcp1_frac=1.0).
         """
         _EMPTY = pd.DataFrame(columns=["vampMid", "RPGT", "BIN", "Currency", "fcp1_frac"])
-        a = self.attempts_df
+
+        # ex01: READ THE PERCENTAGE OFF THE SAME DOCUMENT AS THE TOTAL.
+        # `attempts_df` is the PHASE-1 actuals (attempts_success.sql) — what already happened.
+        # The router routes the PHASE-2 forecast (longterm_fcast.sql), which carries its own
+        # fcpNumber/attemptNumber split and is not the actuals scaled up. Applying a ratio from
+        # the first to a volume from the second mixes two populations; measured, that misplaced
+        # 3,083 M5 transactions and explained ~95% of the tab-3 vs Validate per-MID gap.
+        _ff_on = os.environ.get("ROUTING_FCP1_FROM_FORECAST", "1") != "0"
+        _fd = getattr(self, "forecast_df", None)
+        _vi_cols = ([c for c in _fd.columns if re.match(r'^fc_vi_trx_m\d+$', str(c))]
+                    if isinstance(_fd, pd.DataFrame) and not _fd.empty else [])
+        _from_fcast = bool(_ff_on and _vi_cols and "fcpNumber" in _fd.columns)
+        _pre_cnt = None
+        _src = "HISTORIC attempts (pre-ex01 behaviour)"
+        if _from_fcast:
+            # Column-subset BEFORE copying: the forecast frame is ~1.8M x 84 on a live book.
+            _keep = [c for c in ("gatewayFid", "gatewayfid", "RPGT", "rpgt", "BIN", "Currency",
+                                 "fcpNumber", "attemptNumber", "paymentMethodProvider",
+                                 "paymentmethodprovider", "Country", "country")
+                     if c in _fd.columns]
+            a = _fd[_keep + _vi_cols].copy()
+            # Total forecast volume over M0..M5. The true fraction was measured per month and is
+            # flat to within 0.1pt, so one value per sub-cell (what this column already is) is
+            # enough; the six-month total just steadies thin sub-cells.
+            a["_fc_total"] = a[_vi_cols].sum(axis=1)
+            _pre_cnt = "_fc_total"
+            _src = f"FORECAST ({len(_vi_cols)} x fc_vi_trx_m*)"
+        else:
+            a = self.attempts_df
         if a is None or a.empty:
             return _EMPTY
         rpgt_c = "RPGT" if "RPGT" in a.columns else ("rpgt" if "rpgt" in a.columns else None)
@@ -473,8 +506,8 @@ class ExportManager:
             logger.info("   > fcp1_frac skipped (attempts frame has no fcpNumber/RPGT/gatewayFid); "
                         "export gets fcp1_frac=1.0.")
             return _EMPTY
-        cnt = next((c for c in ("successCount", "visa_trx_count", "trx_count", "trx total")
-                    if c in a.columns), None)
+        cnt = _pre_cnt or next((c for c in ("successCount", "visa_trx_count", "trx_count", "trx total")
+                                if c in a.columns), None)
         if cnt is None:
             _vi = [c for c in a.columns if re.match(r'^fc_vi_trx_m\d+$', str(c))]
             cnt = _vi[0] if _vi else None
@@ -517,6 +550,12 @@ class ExportManager:
         if ctry_c and ctry_c != "Country":
             _ren[ctry_c] = "Country"
         g = g.rename(columns=_ren)
+        _tot_v = float(g["_tot"].sum())
+        logger.info(f"   > fcp1_frac source: {_src} · {len(g):,} sub-cell(s) · volume-weighted "
+                    f"mean {(float(g['_el'].sum()) / _tot_v if _tot_v > 0 else 1.0):.4f}"
+                    + ("" if _from_fcast else "  <- ROUTING_FCP1_FROM_FORECAST=0 or no forecast "
+                                              "frame passed; tab 3 and the GA will disagree with "
+                                              "the delivered split by ~1% per MID."))
         _out = ["vampMid", "RPGT", "BIN", "Currency"] + \
                (["paymentMethodProvider"] if pmp_c else []) + (["Country"] if ctry_c else []) + ["fcp1_frac"]
         return g[_out]

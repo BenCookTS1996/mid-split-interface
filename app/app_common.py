@@ -312,8 +312,26 @@ def _vamp_off_gateways(ov: dict) -> set:
 
 # [FN-237] 19cv
 def _unknown_apply_to(ov: dict) -> set:
-    """apply_to values that are not one of trx / vamp / both, so a typo in the overrides file
-    cannot sit there silently reading as if it were applied. Callers log this; nothing acts on it.
+    """apply_to values outside the KNOWN set, so a typo in the overrides file cannot sit there
+    silently reading as if it were applied. Callers log this; nothing acts on it.
+
+    KNOWN VALUES
+        trx     the gateway takes no transactions; it may still hold historic VAMP
+        vamp    the gateway still trades but may hold no VAMP - the death sync strips it and
+                redistributes it to live gateways in the same cohort
+        both    both of the above
+        inject_from_siblings
+                the source data carries no usable VAMP for this gateway, so it receives NONE of
+                the recorded pool (that pool is siblings-only fraud) and its own VAMP is inferred
+                from the gateways that DO report it, at (Company x rpgt x Currency) x origin month
+                x age - see actuarial_engine._inject_from_siblings.
+
+                Deliberately NOT spelled "vamp". Every other consumer in this codebase filters on
+                the literal strings above, so using a distinct value is exactly what stops the
+                death sync, the actuarial origin cutoff and the vamp-off MID list from firing on
+                these gateways. Adding it here is required: without it this function reports the
+                value as a typo and the caller tells the user the entries are IGNORED, which is
+                the opposite of what happens.
     """
     out = set()
     if not isinstance(ov, dict):
@@ -321,7 +339,7 @@ def _unknown_apply_to(ov: dict) -> set:
     for _gw, _cfg in ov.items():
         if isinstance(_cfg, dict):
             _ap = str(_cfg.get("apply_to", "")).strip().lower()
-            if _ap and _ap not in ("trx", "vamp", "both"):
+            if _ap and _ap not in ("trx", "vamp", "both", "inject_from_siblings"):
                 out.add(_ap)
     return out
 

@@ -170,7 +170,15 @@ def render():
 
         # Entropy is retired from the UI; 'genetic_ref' (the revenue reference) is not offered as a
         # standalone engine — it stays in the backend as the genetic engine's internal reference.
-        choices = [(k, lbl) for k, lbl in engine_choices() if k not in ("entropy", "genetic_ref")]
+        # ONLY the full-matrix GA is offered. The registry engines (softmax / thompson /
+        # portfolio / entropy) and the per-cell tilt GA are retired from the UI and their modules
+        # now live in routing_optimiser.legacy_engines. They stay IMPORTABLE and stay in the
+        # ENGINES registry on purpose - `OptimiserSettings.engine` still defaults to "entropy",
+        # ThompsonEngine and PortfolioEngine both subclass SoftmaxEngine, and the GA's own
+        # revenue reference dispatches through get_engine("genetic_ref") at the
+        # `optimise_split(agg_problems, ref_settings)` call below. Removing them from the
+        # registry would break all three; removing them from this list only hides them.
+        choices = []
         # The Genetic algorithm is the cross-cell per-vampMid tilt GA (genetic_global.run_midtilt_ga),
         # dispatched directly by the app (not a registry engine). CONSOLIDATED: the former separate
         # 'genetic' (NumPy) and 'genetic_numba' options are gone — there is now ONE genetic engine:
@@ -179,13 +187,11 @@ def render():
         # precluster). It keys as 'genetic_numba' so all engine logic is unchanged; pre-clustering is
         # turned on for it below (ss['ga_precluster']; set ROUTING_GA_PRECLUSTER=0 to disable as an
         # escape hatch). If Numba is unavailable it self-falls-back to the NumPy path.
-        if "genetic_numba" not in {k for k, _ in choices}:
-            choices.append(("genetic_numba", "Genetic algorithm (Numba + pre-clustering)"))
         # OPT-IN full-matrix BIN-grain GA (genetic_fullmatrix). Reuses the genetic
         # block's ctx + enforcement; only the DELIVERED endpoint is swapped for the
         # full-matrix GA's split (see the override just before `_deliver_G` below).
         if "genetic_fullmatrix" not in {k for k, _ in choices}:
-            choices.append(("genetic_fullmatrix", "GA - Full matrix (BIN grain, experimental)"))
+            choices.append(("genetic_fullmatrix", "Genetic Algorithm"))
         labels = {k: lbl for k, lbl in choices}
         keys = [k for k, _ in choices]
         # Default to the Full-matrix GA; fall back to the tilt genetic engine, then softmax/first.
@@ -269,8 +275,11 @@ def render():
                              "result. ON: every seed runs the FULL generation cap regardless, so the candidate "
                              "count becomes exact (= seeds × restarts × generations × λ) and the run is longer, "
                              "usually with no better split. Use for a deterministic, maximum-budget search.")
-                    # The "Exact projector seed (successive-LP, experimental)" checkbox was
-                    # REMOVED 2026-08-19aa and the stage is now unconditional. It was labelled
+                    # ── REMOVED CONTROL #1: "Exact projector seed (successive-LP, experimental)"
+                    # This note is about the EXACT PROJECTOR checkbox, NOT the anchor below it. It sat
+                    # directly above the anchor tickbox for months and read as if it justified the
+                    # anchor, which it never did.
+                    # Removed 2026-08-19aa; the stage is now unconditional. It was labelled
                     # experimental and defaulted OFF, but measured on the 2026-08-20 23:03 run it
                     # did 71% of the seed chain's work: band-aware 0.032583 → exact-proj 0.0093637
                     # (−0.023219) → targeted-move 0.0036919 (−0.005672, and the one USED).
@@ -279,29 +288,27 @@ def render():
                     # much of the result is not optional, and calling it "experimental" invited
                     # someone to turn off the thing doing most of the work. Cost: ~131.5s of a
                     # ~737s run (18%).
-                    st.checkbox(
-                        "Anchor search on the compliant seed (recommended)", value=True,
-                        key="anchor_ref_on_seed",
-                        help="ON (default): recentre the CMA-ES so its tilts fan out FROM the lowest-breach "
-                             "warm-start seed — i.e. the search STARTS at that compliant split and only tilts "
-                             "to shape risk/revenue from there. This fixes the representational loss where a "
-                             "share-space seed can't be reproduced by the 45-dial tilt genome (so the old "
-                             "warm-start blurred the seed's compliance away). Feasibility-first ranking keeps "
-                             "the compliant anchor as the incumbent, so the result can't come back worse than "
-                             "the seed. OFF: tilt around the revenue-greedy reference (previous behaviour).")
-                    if _pre_engine == "genetic_fullmatrix":
-                        st.number_input(
-                            "Feasibility-check starts (full-matrix)", min_value=1, max_value=16,
-                            value=4, step=1, format="%d", key="fm_feas_starts",
-                            help="How many independent starts the pre-search feasibility projection runs (base "
-                                 "split + jittered restarts), keeping the fewest-unmet result. NOTE each start "
-                                 "is a FULL projection that iterates to convergence (repeats the damped "
-                                 "correction until it stops improving), not a single iteration. Running several "
-                                 "starts makes the 'still unmet' verdict (and the seed the GA inherits) less "
-                                 "dependent on one starting corner, since different corners can converge to "
-                                 "different fewest-unmet counts. Each convergent projection is the ~few-second "
-                                 "greedy, so a handful is negligible vs the GA. 1 = a single convergent "
-                                 "projection from the base only (previous behaviour). Full-matrix engine only.")
+                    #
+                    # ── REMOVED CONTROL #2: "Anchor search on the compliant seed" (2026-08-31)
+                    # The anchor is now HARDWIRED ON. It was inert for the only engine the dropdown
+                    # offers: it recentres the TILT engine's CMA-ES reference, and for
+                    # genetic_fullmatrix that tilt search is never run — `_safe_G` is set straight
+                    # from the band-aware seed and then overwritten with the full-matrix GA's own
+                    # result (`_safe_endpoint_G = _comp_endpoint_G = _fm_full`), so nothing the
+                    # anchor touched survived. Its log line was already suppressed for full-matrix.
+                    # Hardwired ON rather than removed outright so the tilt engines behave exactly as
+                    # before if they are ever brought back from legacy_engines.
+                    # NOTE one side effect is unchanged by this removal: the anchor perturbs
+                    # `ctx["ref_share"]`, which is hashed into the risk-min disk-cache key, so it
+                    # still selects which cached `_inf2` feeds the engine-workings charts
+                    # (ga_genome / ga_pop_obj / ga_pop_viol). That value is discarded for the split
+                    # but not for those charts — a separate issue, not created here.
+                    # "Feasibility-check starts (full-matrix)" input REMOVED (2026-08-31), and
+                    # multi-start retired with it - stage 1 of the seed chain now runs ONCE, fixed,
+                    # with no widget and no env override. The knob only ever multiplied stage 1
+                    # (band-aware), the coarsest link, whose output is then reworked by the exact
+                    # projector and the targeted move, so it was polishing the stage contributing
+                    # least to the seed the GA inherits.
                     # CMA-ES σ controls only apply to the tilt genetic engines. The full-matrix GA is a
                     # plain generational search (no step-size σ), so hide these dead knobs for it.
                     if _pre_engine in ("genetic", "genetic_numba"):
@@ -476,7 +483,6 @@ def render():
                 # Genetic and Thompson have no engine settings — show nothing (no header, no caption).
                 if engine_key not in ("genetic", "genetic_numba", "thompson"):
                     st.divider()
-                    st.markdown("**Engine settings**")
                 if engine_key == "softmax":
                     temp_method = st.selectbox(
                         "Temperature Method", ["Variance-Scaled (auto)", "Manual"],
@@ -5871,7 +5877,17 @@ def render():
                                 # jittered starts and keep the fewest-unmet result, so the feasibility verdict
                                 # (and the seed the GA inherits) isn't pinned to one starting corner. Each
                                 # start is the ~seconds greedy, so a handful is still tiny vs the GA.
-                                _feas_starts = max(1, int(ss.get("fm_feas_starts", 4) or 1))
+                                # ONE start, FIXED (2026-08-31). No widget and no env override: multi-start
+                                # is retired, not configurable. `n_starts=1` takes
+                                # band_greedy_shares_multi's own `_n <= 1` branch - a single un-jittered
+                                # pass from the base split, identical to the pre-multi-start behaviour.
+                                #
+                                # WHY IT WENT. It multiplied stage 1 (band-aware) ONLY, the coarsest link
+                                # in the band-aware -> exact-proj -> targeted-move seed chain, and stage 1's
+                                # output is then reworked by the exact projector (-0.023219, the largest
+                                # single step) and the targeted move (-0.005672, the stage actually USED).
+                                # It was polishing the link contributing least to the seed the GA inherits.
+                                _feas_starts = 1
                                 _bg_keys = []
                                 _bg_par = {}
                                 _band_greedy_G, _bg_key = _gg.band_greedy_shares_multi(
@@ -5882,9 +5898,6 @@ def render():
                                     max_share=float(ctx.get("max_share", 1.0) or 1.0),
                                     n_starts=_feas_starts, rng_seed=0, keys_out=_bg_keys,
                                     par_info=_bg_par)
-                                if _feas_starts > 1:
-                                    log(f"   feasibility projection: {_feas_starts} starts "
-                                        f"(base + {_feas_starts - 1} jittered) — kept the fewest-unmet result.")
                                 # [feas-par] 19ck: the starts run CONCURRENTLY now. State the wall
                                 # time rather than assert a speed-up: `band_greedy_shares` alternates
                                 # a numpy pass that releases the GIL with a per-spec Python loop that
@@ -5953,11 +5966,16 @@ def render():
                                 # (priority-weighted unmet-band count, total breach), lower is better,
                                 # and `rng_seed=0` is hardcoded so the SAME jitters recur every run:
                                 # if they lose once they lose forever, and the cost is pure waste.
-                                # READ IT LIKE THIS: "winner: base" on a couple of runs ⇒ set
-                                # "Feasibility-check starts (full-matrix)" to 1 and reclaim the time.
-                                # A jittered winner ⇒ the knob is doing real work; keep it.
+                                # READ IT LIKE THIS: "winner: base" ⇒ the jittered starts bought
+                                # nothing. That question is settled — multi-start is retired and
+                                # stage 1 runs once — so the block below is unreachable as shipped.
                                 try:
-                                    if _bg_keys:
+                                    # UNREACHABLE at the shipped setting: `_feas_starts` is fixed at 1,
+                                    # so `_bg_keys` always holds exactly one entry and this report never
+                                    # prints. Kept, not deleted, because it is the only diagnostic that
+                                    # can answer "would extra starts have helped?" if anyone ever edits
+                                    # that literal while investigating the seed.
+                                    if len(_bg_keys) > 1:
                                         _bgw = min(_bg_keys, key=lambda t: (t[1], t[2]))
                                         _bgb = next((k for k in _bg_keys if k[0] == 0), None)
                                         log("   [feas-starts] per-start result "
@@ -6364,8 +6382,10 @@ def render():
                         # result. Restored right after the risk-min solve so downstream sees the original.
                         _ref_share_backup = ctx.get("ref_share")
                         _anchored = False
-                        if (bool(ss.get("anchor_ref_on_seed", True))
-                                and _ga_bands and ctx.get("exact_bands") is not None
+                        # Anchor HARDWIRED ON (2026-08-31) — the tickbox is gone; see the two
+                        # "REMOVED CONTROL" notes near the top of this tab. Inert for
+                        # genetic_fullmatrix, preserved for the tilt engines.
+                        if (_ga_bands and ctx.get("exact_bands") is not None
                                 and isinstance(ctx.get("_exact_bands_selfcheck"), dict)
                                 and ctx["_exact_bands_selfcheck"].get("inc") is not None):
                             try:

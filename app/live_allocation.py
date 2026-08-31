@@ -108,7 +108,8 @@ def run_exact_mid_level(project_root: str, forecast_dir: str, split, brand_name:
     try:
         alloc = AllocationEngine(config=cfg, attempts_df=fa, split_df=split_df, mr_weights=mrw)
         pre_df, post_df = alloc.execute_time_aware_routing()
-        exporter = ExportManager(config=cfg, mid_df=mid, attempts_df=fa, mr_weights=mrw)
+        exporter = ExportManager(config=cfg, mid_df=mid, attempts_df=fa, mr_weights=mrw,
+                                 forecast_df=fa)
         exporter.run_all_exports(pre_df, post_df)
         return pd.read_csv(os.path.join(tmp_out, "mid_level.csv"))
     finally:

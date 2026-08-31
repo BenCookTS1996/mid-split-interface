@@ -158,7 +158,8 @@ def run_mastercard_pipeline(config: dict, project_root: str,
 
         logger.info("MC ADAPTER: PHASE 4 — ExportManager.run_all_exports()")
         exporter = ExportManager(config=config, mid_df=extractor.mid_df,
-                                 attempts_df=extractor.attempts_df, mr_weights=mr_weights)
+                                 attempts_df=extractor.attempts_df, mr_weights=mr_weights,
+                                 forecast_df=final_attempts_df)
         exporter.run_all_exports(pre_df, post_df)
 
         out = config["paths"]["output_dir"].format(
