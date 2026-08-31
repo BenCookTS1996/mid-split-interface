@@ -1589,22 +1589,83 @@ def render():
                         ss["_fc_cache"] = forecast_temp.copy()
 
                     if "bank" in forecast_temp.columns:
+                        # ── 19ei [bin-key] NAME THE KEY, DO NOT GUESS IT ──────────────────────
+                        # `bank` is fed by two unrelated things on the two sides of this join:
+                        #   success_rates.py:52       bankName -> bank   "BARCLAYS BANK UK PLC"
+                        #   forecast_pipeline.py:403  BIN      -> bank   "465266"
+                        # and bankName == bin on 0 of 2,138,100 attempt rows. So the join
+                        # ["rpgt","currency","bank","gateway"] was only ever correct because the
+                        # overlap contest that used to live here happened to pick the BIN column
+                        # — correct by coincidence, and silent either way.
+                        #
+                        # Measured on this book, exactly as that contest computed it:
+                        #   bank (= bankName)   5,494 values ·     0 overlap
+                        #   bin                15,125 values · 9,998 overlap  (of 10,212, 97.9%)
+                        # Zero against 9,998, so there is no contest to hold. Naming the BIN
+                        # column is bit-identical to what the contest did on this data.
+                        #
+                        # The overlaps are still COMPUTED and now always LOGGED, won or lost, so
+                        # a dataset that breaks this join says so here instead of surfacing far
+                        # downstream as an unexplained pooled-prior rate.
+                        # ROUTING_BIN_KEY=0 restores the contest exactly.
                         fc_banks = set(forecast_temp["bank"].dropna().astype(str).str.strip().str.upper())
                         adf_banks = set(adf["bank"].dropna().astype(str).str.strip().str.upper()) if "bank" in adf.columns else set()
-                        best_col = "bank"
-                        best_overlap = len(fc_banks.intersection(adf_banks))
-                        
+                        _bk_scores = [("bank", len(adf_banks), len(fc_banks & adf_banks))]
                         for alt_col in ["bin", "BIN", "bankName", "bank_name"]:
                             if alt_col in adf.columns:
                                 alt_set = set(adf[alt_col].dropna().astype(str).str.strip().str.upper())
-                                overlap = len(fc_banks.intersection(alt_set))
-                                if overlap > best_overlap:
-                                    best_overlap = overlap; best_col = alt_col
+                                _bk_scores.append((alt_col, len(alt_set), len(fc_banks & alt_set)))
+
+                        _bk_explicit = os.environ.get("ROUTING_BIN_KEY", "1") != "0"
+                        _bk_bincol = next((c for c in ("bin", "BIN") if c in adf.columns), None)
+                        _bk_binlap = next((o for c, _n, o in _bk_scores if c == _bk_bincol), 0)
+
+                        if _bk_explicit and _bk_bincol is not None and _bk_binlap > 0:
+                            best_col, best_overlap, _bk_how = _bk_bincol, _bk_binlap, "NAMED"
+                        else:
+                            # No BIN column, or it shares nothing with the forecast. Fall back to
+                            # the old contest so this cannot become a hard stop on a book that
+                            # keys differently — but say so loudly; a silent fall-through to bank
+                            # NAMES is exactly the failure this block exists to make visible.
+                            best_col, _bn, best_overlap = max(_bk_scores, key=lambda r: r[2])
+                            _bk_how = "CONTEST" if _bk_explicit else "CONTEST (ROUTING_BIN_KEY=0)"
+                            if _bk_explicit:
+                                log("   ⚠ [bin-key] STOP AND READ: no usable BIN column on the "
+                                    f"attempts frame ({'absent' if _bk_bincol is None else _bk_bincol + ' overlaps 0 forecast value(s)'}). "
+                                    "Fell back to the pre-19ei overlap contest. The forecast keys "
+                                    "on BIN, so if the winner below is a bank NAME the join is "
+                                    "matching on nothing and every per-cell rate is a pooled prior.")
+
+                        log(f"   [bin-key] join key for (rpgt, currency, bank, gateway): "
+                            f"'{best_col}' chosen by {_bk_how} · forecast carries {len(fc_banks):,} "
+                            f"distinct value(s) · candidates: "
+                            + " · ".join(f"{c} ({n:,} values, {o:,} overlap)"
+                                         for c, n, o in _bk_scores)
+                            + ". NOTE `bank` still HOLDS the BIN under a misleading name — 19ej "
+                              "renames it. ROUTING_BIN_KEY=0 restores the contest.")
+
                         if best_col != "bank" and best_overlap > 0:
                             adf["original_bank_name"] = adf["bank"]
                             adf["bank"] = adf[best_col]
                         elif "original_bank_name" not in adf.columns:
                             adf["original_bank_name"] = adf["bank"]
+
+                        # POST-ASSIGNMENT ASSERTION. The one number that says whether the join can
+                        # work at all, stated every run whether or not anything is unusual.
+                        _bk_now = set(adf["bank"].dropna().astype(str).str.strip().str.upper())
+                        _bk_hit = len(fc_banks & _bk_now)
+                        _bk_pct = 100.0 * _bk_hit / max(len(fc_banks), 1)
+                        if _bk_hit == 0:
+                            log("   ⚠ [bin-key] THE JOIN IS DEAD: after assignment the attempts "
+                                "frame and the forecast share ZERO key values, so every "
+                                "(rpgt, currency, bank, gateway) rate falls to the pooled prior "
+                                "and no per-cell success rate in this run is measured. Fix the key "
+                                "before reading any result below.")
+                        else:
+                            log(f"   [bin-key] ✓ {_bk_hit:,} of {len(fc_banks):,} forecast key "
+                                f"value(s) ({_bk_pct:.1f}%) are present on the attempts frame after "
+                                f"assignment. A LOW number here is the cause of a high "
+                                f"pooled-prior rate later, and it is NOT 'expected at BIN grain'.")
 
                     mid_list_path = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                     if os.path.exists(mid_list_path) and "gateway" in forecast_temp.columns:
