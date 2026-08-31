@@ -522,7 +522,10 @@ def render():
         # forecast). Rendered BELOW the Calculate Forecast button.
         if not use_prev:
             _yaml_ctx = _yaml_slot if _yaml_slot is not None else st
-            with _yaml_ctx.expander("Preview assembled settings.yaml (VAMP pipeline schema)"):
+            # 19eu: `expanded=False` stated rather than relied on. It is st.expander's default,
+            # but a default is not a decision — this one is, so it is written down.
+            with _yaml_ctx.expander("Preview assembled settings.yaml (VAMP pipeline schema)",
+                                    expanded=False):
                 pipeline_config = build_pipeline_config(forecast_settings)
                 # 19et: the YAML scrolls INSIDE a fixed-height box (~10 lines) instead of
                 # rendering its full length. The download button stays OUTSIDE the box so it is
@@ -554,7 +557,12 @@ def render():
             # Render the run log into the BOTTOM slot (normal mode) or the previous-forecast
             # right column; fall back to full-width only if neither exists.
             _log_ctx = _fc_log_slot if _fc_log_slot is not None else st
-            with _log_ctx.status("Calculating & caching forecast...", expanded=True) as status:
+            # 19eu: starts COLLAPSED. The trade-off is real and worth knowing: the log no longer
+            # unrolls live while the forecast runs, so watching progress means clicking it open.
+            # What is NOT lost is a failure — the error path below re-opens it with
+            # `expanded=True`, so a run that breaks still shows its own log without being asked.
+            # The completion path already collapsed it, so a finished run looks the same as before.
+            with _log_ctx.status("Calculating & caching forecast...", expanded=False) as status:
                 # 19et: the log scrolls inside its OWN fixed-height box (~10 lines) rather than
                 # growing with the run. `log_area` is an st.empty() INSIDE that box, so every
                 # rewrite lands in the same scroll region and the status header above it stays
