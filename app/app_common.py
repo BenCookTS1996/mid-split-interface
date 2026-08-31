@@ -905,8 +905,26 @@ def _ensure_base_30d_metrics():
     avg ticket, base totals) that the impact views rely on. Idempotent and shared
     by the Routing-engine tab (pre/post visuals) and the Impact tab, so both report
     identical pre/post revenue. Returns the cache dict, or None if no attempts data."""
-    if "cached_base_30d_metrics" in ss:
-        return ss["cached_base_30d_metrics"]
+    # 19ex SCHEMA GUARD. This cache lives in SESSION STATE, which survives a Streamlit rerun
+    # AND a module hot-reload — so after a column rename the app can hold frames built by the
+    # previous build and hand them to code that expects the new names. That is exactly what
+    # happened on 2026-08-31: 19ew renamed the derived join key `bank_join` -> `bin_join`, the
+    # module reloaded, and this returned a cache still carrying `bank_join`, so the merge in
+    # `_impact_eval_frame` raised KeyError: 'bin_join' on a frame that had just been "fixed".
+    #
+    # A cache keyed only on ITS OWN PRESENCE cannot notice that. So check the schema it must
+    # satisfy and rebuild when it does not — the inputs are still in session state, so this
+    # costs one recompute rather than a restart, and it fixes the whole CLASS: any future rename
+    # of a join key invalidates the cache automatically instead of surfacing as a KeyError
+    # hundreds of lines away.
+    _c30 = ss.get("cached_base_30d_metrics")
+    if _c30 is not None:
+        _need = {"cell_agg": ("rpgt_join", "currency_join", "bin_join"),
+                 "gw_agg": ("rpgt_join", "currency_join", "bin_join", "gateway_join")}
+        if all(all(_c in getattr(_c30.get(_k), "columns", ()) for _c in _cols)
+               for _k, _cols in _need.items()):
+            return _c30
+        ss.pop("cached_base_30d_metrics", None)   # stale schema — fall through and rebuild
     if "adf" not in ss:
         return None
     adf_raw = ss["adf"]   # read-only here; the mutated frame is adf_30d (its own .copy() below)
