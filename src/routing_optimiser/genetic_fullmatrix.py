@@ -315,7 +315,67 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
     risk_full = np.asarray(ctx["risk"], dtype=float)
     elig = np.asarray(ctx.get("elig", np.ones(n_row)), dtype=float) > 0.5
 
-    keep_idx = np.where(elig)[0]
+    # ── 19eh [prune-inert] ────────────────────────────────────────────────────────────────
+    # Drop whole cells that carry NO forecast volume. Every term the GA scores is
+    # volume-weighted - vwsr is Sigma vol*share*succ / Sigma vol*share, band metric 1 is
+    # Sigma vol*share, metric 2 is Sigma vol*share*risk, metric 3 is their ratio - so a row with
+    # vol == 0 contributes exactly 0.0 to all four for every candidate. Removing it cannot move
+    # the objective. That is arithmetic, not a measurement.
+    #
+    # cell_vol is the CELL total repeated on every row of the cell, so testing it at cell_starts
+    # is the cell's own volume and the whole cell goes together. Dropping part of a cell would
+    # break its simplex; dropping all of it is clean, and FullMatrixProblem.build remaps cell ids
+    # to dense 0..n_cells-1, so the gap in cell ids costs nothing.
+    #
+    # SIZE, on the 2026-08-31 18:21 book: 9,018 of 23,870 cells and 103,230 of 257,635 rows
+    # (40.1%). [frozen-scaffold] already measured what that buys: "92% of a GA generation is
+    # _pop_band_kernel over the cap scaffold (1.28M rows / 22.3k cells) ... So shrinking the
+    # genome alone saves ~6%." The scaffold is 1,933,016 rows to the genome's 257,635, so 40% of
+    # the genome is ~5% of the per-generation row traffic. The 38% is real, and it is 38% of the
+    # smaller object.
+    #
+    # DEFAULT OFF, and the first reason is the one that matters:
+    #
+    # 1. IT IS NOT BIT-IDENTICAL ON vwsr, and no amount of better code fixes that. Measured on
+    #    the fixture: full 0.60064871358661553 vs pruned 0.60064871358661565, delta 1.11e-16
+    #    (1.85e-16 relative). The three BAND metrics ARE bit-identical, because they go through
+    #    np.bincount, which accumulates sequentially - adding 0.0 to a running sum is exact, so
+    #    dropping zero rows cannot move them. vwsr is a GLOBAL .sum(), and numpy sums float64
+    #    PAIRWISE: the accumulation tree is a function of the array LENGTH, so removing 40% of the
+    #    elements rebuilds the tree and reorders the additions of the NON-ZERO terms.
+    #    Mathematically identical; not bit-identical. And it matters here specifically: [ms-repair]
+    #    deliberately drives every candidate to an exact 0.0 on the engineering key so the ranking
+    #    FALLS THROUGH to vwsr, and [never-worse] compares vwsr too. A last-bit shift can select a
+    #    different candidate and ship a different split. Same objective, different answer.
+    #
+    # 2. [deliv-fuse] SELF-DISABLES. tab2_engine gates it on `len(_fm_colmap) == _fm_nrow` - the
+    #    scatter writing every column - which this breaks by construction. So an optimisation that
+    #    is on today turns off, and the NET speed effect has to be measured, not assumed.
+    #
+    # 3. The delivery transform now meets cells whose every row is 0. The band projector guards its
+    #    own division (`where=psum > 0`); _fm_deliv is a different function and an unguarded
+    #    renormalise there would give NaN. Unverified without a run.
+    #
+    # ROUTING_PRUNE_INERT=1 for one run, then compare tab 3 against Validate. Given (1), the
+    # honest expectation is a ~6% generation saving in exchange for a split that can differ - and
+    # on this project that trade has always been refused. The switch exists so the trade can be
+    # measured rather than argued about.
+    _inert_row = np.zeros(n_row, dtype=bool)
+    _prune_note = ""            # this module has no logger; tab2_engine emits meta['prune_note']
+    if _os_gf.environ.get("ROUTING_PRUNE_INERT", "0") != "0":
+        _cell_vol_by_cell = vol_full[starts] if starts.size else np.zeros(0)
+        _inert_cell = _cell_vol_by_cell <= 0.0
+        if _inert_cell.any():
+            _inert_row = _inert_cell[cell_id_full]
+            # Never prune the whole genome - if every cell reads volume-less the volume column is
+            # wrong, not the book, and running on an empty problem would hide that.
+            if bool(_inert_row.all()):
+                _prune_note = (
+                    "[prune-inert] EVERY cell reads zero forecast volume - that is a broken "
+                    "volume column, not an inert book. Prune SKIPPED; the genome is unchanged.")
+                _inert_row = np.zeros(n_row, dtype=bool)
+
+    keep_idx = np.where(elig & ~_inert_row)[0]
     if keep_idx.size == 0:
         raise ValueError("problem_from_ctx: every row is config-banned (elig==0)")
 
@@ -376,14 +436,47 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
         s = ref_kept[m].sum()
         ref_kept[m] = (ref_kept[m] / s) if s > 1e-12 else (1.0 / m.sum())
 
-    meta = {"keep_idx": keep_idx, "n_row": n_row, "reference_kept": ref_kept}
+    # 19eh: what to put BACK. Config-banned rows correctly ship 0 (they can never carry share);
+    # a pruned inert cell must NOT - it would export as all-zeros instead of summing to 1. Its
+    # rows are restored to their baseline share, so the shipped split for those cells is the
+    # baseline rather than whatever drift the search happened to leave there.
+    _restore_idx = np.where(_inert_row)[0]
+    _base_full = np.asarray(ctx.get("base", np.zeros(n_row)), dtype=float)
+    meta = {"keep_idx": keep_idx, "n_row": n_row, "reference_kept": ref_kept,
+            "restore_idx": _restore_idx,
+            "restore_val": _base_full[_restore_idx].copy() if _restore_idx.size else None}
+    if _restore_idx.size:
+        _n_cell_pruned = int(np.unique(cell_id_full[_restore_idx]).size)
+        _prune_note = (
+            f"[prune-inert] {_n_cell_pruned:,} of {starts.size:,} cell(s) "
+            f"({100.0 * _n_cell_pruned / max(starts.size, 1):.1f}%) carry NO forecast volume and "
+            f"are OUT of the genome, taking {_restore_idx.size:,} of {n_row:,} row(s) "
+            f"({100.0 * _restore_idx.size / max(n_row, 1):.1f}%) with them. Every term the search "
+            f"scores is volume-weighted, so a zero-volume row contributes exactly 0.0 to vwsr and "
+            f"to all three band metrics for every candidate - this cannot move the objective. "
+            f"Those cells ship their BASELINE share, not the search's drift. Genome is now "
+            f"{keep_idx.size:,} row(s) over {problem.n_cells:,} cell(s). Expect ~6% off a "
+            f"generation, NOT 38%: [frozen-scaffold] measured the generation as 92% band kernel "
+            f"over a 1.9M-row scaffold, and the genome is 13% of that traffic. "
+            f"ROUTING_PRUNE_INERT=0 reverts.")
+    meta["prune_note"] = _prune_note
     return problem, meta
 
 
 def reconstruct_full_split(best_kept_shares, meta):
-    """Map a kept-row split back to the full ``n_row`` vector (0 at banned rows)."""
+    """Map a kept-row split back to the full ``n_row`` vector (0 at banned rows).
+
+    19eh: a config-BANNED row correctly lands on 0 - it can never carry share. A row dropped by
+    [prune-inert] must not: its cell was removed from the genome for having no forecast volume,
+    and leaving it at 0 would export that cell as all-zeros instead of a simplex summing to 1.
+    Those rows are restored to their baseline share.
+    """
     full = np.zeros(meta["n_row"], dtype=float)
     full[meta["keep_idx"]] = np.asarray(best_kept_shares, dtype=float)
+    _ri = meta.get("restore_idx")
+    _rv = meta.get("restore_val")
+    if _ri is not None and _rv is not None and len(_ri):
+        full[_ri] = np.asarray(_rv, dtype=float)
     return full
 
 
