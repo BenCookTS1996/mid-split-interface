@@ -1436,7 +1436,12 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # reproduce them. DEFAULT OFF: it is a BEHAVIOUR change (the seed's descendants inherit those
     # zeros), and [decode-loss] below is what prices it. `_compress_on` runs k-means on the logit
     # genome, which -inf would poison, so the two are refused together rather than silently mixed.
-    _hz_want = _os_gf.environ.get("ROUTING_SEED_ZEROS", "0") != "0"
+    # FIXED ON (2026-08-31). Was ROUTING_SEED_ZEROS, set to 1 in routing.env on every run, so
+    # this IS the shipped behaviour and is no longer switchable. It encodes the seed's exact zeros
+    # as -inf logits so the decode can reproduce them; the seed's descendants inherit those zeros.
+    # `_compress_on` still overrides it (k-means over the logit genome cannot survive -inf) and the
+    # refusal is still logged, so the two can never be silently mixed.
+    _hz_want = True
     _hz_info = {}
     _hz_on = bool(_hz_want and not _compress_on)
     seed_logits = _shares_to_logits(
@@ -1464,7 +1469,20 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         "would outrank it on the engineering key regardless of conversion, and the search would "
         "go BACKWARDS on vwsr. ROUTING_MAXSHARE_REPAIR=0 reverts.")
     _msr = {"cands": 0, "seen": 0, "cells": 0, "stuck_c": 0, "stuck_k": 0,
-            "moved": 0.0, "secs": 0.0, "worst": 0.0}
+            "moved": 0.0, "secs": 0.0, "worst": 0.0, "restr": 0, "full": 0,
+            # 19eg: pass counters by grain, and the softmax time split out of the loop time.
+            # 19ef shipped a restriction that fired ONCE in a whole run and nothing in the log
+            # said so. These three numbers make that failure mode visible next time.
+            "pc": 0, "un": 0, "sm": 0.0}
+    # [msr-restrict] 19ef: restrict each repair pass to the cells that can actually change.
+    # Bit-identical by construction and self-checked on the first call. ROUTING_MSR_RESTRICT=0
+    # reverts to the full-width loop.
+    _MSR_R_ON = _os_gf.environ.get("ROUTING_MSR_RESTRICT", "1") != "0"
+    # 19eg [msr-percand]: restrict PER CANDIDATE instead of by the batch union. See the patch
+    # notes. ROUTING_MSR_PERCAND=0 falls back to 19ef's union grain; ROUTING_MSR_RESTRICT=0
+    # still turns both grains off and restores the original full-width loop.
+    _MSR_PC_ON = _MSR_R_ON and _os_gf.environ.get("ROUTING_MSR_PERCAND", "1") != "0"
+    _MSR_R_CHECK = {"done": False}
 
     # [FN-ms-repair]
     def _repair_maxshare(lg):
@@ -1474,6 +1492,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         proportion to the share they ALREADY hold, so the cell still sums to 1 and no share is
         invented anywhere. A candidate that needs no repair is returned BIT-IDENTICAL — its
         logits are not round-tripped through the softmax at all."""
+        nonlocal _MSR_R_ON, _MSR_PC_ON
         if not _MSR_ON:
             return lg
         _t0r = time.perf_counter()
@@ -1484,33 +1503,208 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _fn = _segment_softmax_fast if _SM_OK["use"] else _segment_softmax_serial
         _lg2 = np.atleast_2d(lg)
         _msr["seen"] += int(_lg2.shape[0])
+        _t0sm = time.perf_counter()
         _sh = np.array(_fn(_lg2, p.cell_start, p.cell_len), float)
+        # 19eg: the decode is NOT what the restriction touches, so charging it to the same
+        # number hides how much room the loop actually has. Timed separately from here on.
+        _msr["sm"] += time.perf_counter() - _t0sm
         _orig = _sh.copy()
         _capr = np.where(_live, _cap, np.inf)
         _tgt = _capr * _MSR_BACKOFF
         _any = False
+        # ── [msr-restrict] 19ef: do the per-iteration work only in the cells that can change ──
+        # WHY. This loop was the single largest cost in the search: 191.7s of a 511.6s run on the
+        # 2026-08-31 16:00 run, i.e. 85% of [gen-gap]'s `build` row and ~37% of the whole search,
+        # to repair 74.8 cells per candidate out of 23,870 (0.31%). Each iteration materialised
+        # six full-width (P,R) arrays — two np.where temporaries feeding the reduceats, two
+        # np.repeat broadcasts, and the np.where chain — about 450 MB of traffic per pass to
+        # touch a third of a percent of the cells.
+        #
+        # HOW. A cell whose rows are all under the target is untouched by the full-width form
+        # (its `_ok` is False, so the outer np.where returns its input). So the update can be
+        # restricted to the cells that hold an over-target row, and the result is the same
+        # values in the same order — hence bit-identical, not approximate.
+        #
+        # And after the first pass only the cells just repaired can still be over target: the
+        # repair lowers over-cap rows and raises their siblings, and it touches nothing else.
+        # So pass 1 scans full-width to FIND violations, and passes 2+ look only at `_live`.
+        #
+        # SPARSITY GUARD, because this is not free. Measured full-width vs restricted at the
+        # live shape (P=35, 23,870 cells): 0.31% of cells 2.54x FASTER, 1% 1.31x, 5% 0.61x,
+        # 35% 0.47x — gathering the rows costs more than the passes it saves once the affected
+        # fraction is large. Above the cut-off the full-width path runs, exactly as before.
+        # This mirrors [eligibility]'s restricted blends, which keep full width above 25%.
+        _MSR_RESTRICT_MAX = 0.02          # affected-cell fraction above which full width wins
+        _live = None                      # union grain: cells still able to change
+        _livep = None                     # 19eg per-candidate grain: (cand, cell) pairs still live
+        _nP = int(_lg2.shape[0])
+
+        def _msr_rows(_cells):
+            """Row indices of a set of cells, plus their lengths. Cells are contiguous runs."""
+            _cs = np.asarray(p.cell_start)[_cells]
+            _cl = np.asarray(p.cell_len)[_cells]
+            _n = int(_cl.sum())
+            _off = np.repeat(np.cumsum(_cl) - _cl, _cl)
+            return np.repeat(_cs, _cl) + (np.arange(_n) - _off), _cl
+
         for _ in range(8):
             # TRIGGER ON THE TARGET, NOT THE CAP. A row sitting at EXACTLY the cap is not
             # `> cap`, so a cap-triggered repair would leave it alone — and `share/cap - 1`
             # on such a row is float dust ABOVE zero, which is precisely the 2.38e-14 the
             # seed carries on 96 gateways. Triggering at the backed-off target repairs those
             # too, which is what puts every candidate at an exact 0.0 on the engineering key.
-            _over = _sh > _tgt
-            if not _over.any():
+            _mode = "full"
+            if _livep is not None:
+                # 19eg: only the (candidate, cell) pairs just repaired can still be over target
+                # — the repair lowers over-cap rows and lifts their siblings and touches nothing
+                # else, and cells are independent. So passes 2+ look only at those.
+                if _livep[0].size == 0:
+                    break
+                _pc, _pk, _mode = _livep[0], _livep[1], "pc"
+            elif _live is not None:
+                if _live.size == 0:
+                    break
+                _hit, _mode = _live, "union"
+            else:
+                _over = _sh > _tgt
+                if not _over.any():
+                    break
+                if _MSR_PC_ON:
+                    # CHEAP UPPER BOUND FIRST. An affected cell needs at least one over-target
+                    # row, so the over-row count bounds the affected-cell count from above.
+                    # Above that bound, go full width WITHOUT building the (P, cells) hit
+                    # matrix — paying for a scan and discarding it is exactly what made 19ef
+                    # slower than plain full width on every population call.
+                    if (int(_over.sum()) / max(_nP, 1)) <= _MSR_RESTRICT_MAX * _over.shape[1]:
+                        _ch = np.add.reduceat(_over, p.cell_start, axis=1) > 0
+                        _nh = int(_ch.sum())
+                        if _nh == 0:
+                            break
+                        if (_nh / max(_nP, 1)) <= _MSR_RESTRICT_MAX * _over.shape[1]:
+                            _pc, _pk = np.nonzero(_ch)
+                            _mode = "pc"
+                elif _MSR_R_ON:
+                    _hit = np.flatnonzero(np.add.reduceat(_over, p.cell_start, axis=1).any(axis=0))
+                    if _hit.size > 0 and _hit.size <= _MSR_RESTRICT_MAX * _over.shape[1]:
+                        _mode = "union"
+
+            if _mode == "pc":
+                # ── 19eg PER-CANDIDATE PATH: the same arithmetic on a flat (candidate, row)
+                # element list. Every reduceat segment below is one candidate's one cell, which
+                # is the identical segment the full-width form reduces, in the identical order.
+                _cln = np.asarray(p.cell_len)[_pk]
+                _n = int(_cln.sum())
+                _off = np.repeat(np.cumsum(_cln) - _cln, _cln)
+                _ri = np.repeat(np.asarray(p.cell_start)[_pk], _cln) + (np.arange(_n) - _off)
+                _ci = np.repeat(_pc, _cln)
+                _lst = (np.cumsum(_cln) - _cln).astype(np.intp)
+                _s = _sh[_ci, _ri]
+                _t = _tgt[_ri] if np.ndim(_tgt) else _tgt
+                _o = _s > _t
+                if not _o.any():
+                    break
+                _exc = np.add.reduceat(np.where(_o, _s - _t, 0.0), _lst)
+                _free = np.add.reduceat(np.where(_o, 0.0, _s), _lst)
+                # A cell with excess but NO free mass cannot be repaired without inventing share.
+                _ok = (_exc > 0.0) & (_free > 0.0)
+                if not _ok.any():
+                    break
+                _any = True
+                _msr["cells"] += int(_ok.sum())
+                _msr["restr"] += 1
+                _msr["pc"] += 1
+                _sc = np.where(_ok, 1.0 + _exc / np.where(_free > 0.0, _free, 1.0), 1.0)
+                _okr = np.repeat(_ok, _cln)
+                _scr = np.repeat(_sc, _cln)
+                _sh[_ci, _ri] = np.where(_okr & _o, _t, np.where(_okr, _s * _scr, _s))
+                _livep = (_pc[_ok], _pk[_ok])
+                continue
+
+            if _mode == "full":
+                # ORIGINAL FULL-WIDTH PATH, character for character.
+                _over = _sh > _tgt
+                if not _over.any():
+                    break
+                _exc = np.add.reduceat(np.where(_over, _sh - _tgt, 0.0), p.cell_start, axis=1)
+                _free = np.add.reduceat(np.where(_over, 0.0, _sh), p.cell_start, axis=1)
+                # A cell with excess but NO free mass cannot be repaired without inventing share.
+                _ok = (_exc > 0.0) & (_free > 0.0)
+                if not _ok.any():
+                    break
+                _any = True
+                _msr["cells"] += int(_ok.sum())
+                _sc = np.where(_ok, 1.0 + _exc / np.where(_free > 0.0, _free, 1.0), 1.0)
+                _okr = np.repeat(_ok, p.cell_len, axis=1)
+                _scr = np.repeat(_sc, p.cell_len, axis=1)
+                _sh = np.where(_okr & _over, _tgt,
+                               np.where(_okr, _sh * _scr, _sh))
+                _live = None          # full width every pass once this path is taken
+                _livep = None
+                _msr["full"] += 1
+                continue
+
+            # UNION-GRAIN RESTRICTED PATH (19ef) — the same arithmetic on the affected cells'
+            # rows only, for the whole batch at once. Reachable with ROUTING_MSR_PERCAND=0.
+            _rows, _cl = _msr_rows(_hit)
+            _lst = np.concatenate([[0], np.cumsum(_cl)[:-1]]).astype(np.intp)
+            _s = _sh[:, _rows]
+            _t = _tgt[_rows] if np.ndim(_tgt) else _tgt
+            _o = _s > _t
+            if not _o.any():
                 break
-            _exc = np.add.reduceat(np.where(_over, _sh - _tgt, 0.0), p.cell_start, axis=1)
-            _free = np.add.reduceat(np.where(_over, 0.0, _sh), p.cell_start, axis=1)
+            _exc = np.add.reduceat(np.where(_o, _s - _t, 0.0), _lst, axis=1)
+            _free = np.add.reduceat(np.where(_o, 0.0, _s), _lst, axis=1)
             # A cell with excess but NO free mass cannot be repaired without inventing share.
             _ok = (_exc > 0.0) & (_free > 0.0)
             if not _ok.any():
                 break
             _any = True
             _msr["cells"] += int(_ok.sum())
+            _msr["restr"] += 1
+            _msr["un"] += 1
             _sc = np.where(_ok, 1.0 + _exc / np.where(_free > 0.0, _free, 1.0), 1.0)
-            _okr = np.repeat(_ok, p.cell_len, axis=1)
-            _scr = np.repeat(_sc, p.cell_len, axis=1)
-            _sh = np.where(_okr & _over, _tgt,
-                           np.where(_okr, _sh * _scr, _sh))
+            _okr = np.repeat(_ok, _cl, axis=1)
+            _scr = np.repeat(_sc, _cl, axis=1)
+            _sh[:, _rows] = np.where(_okr & _o, _t, np.where(_okr, _s * _scr, _s))
+            _live = _hit[_ok.any(axis=0)]
+        # ── [msr-restrict] ONE-SHOT SELF-CHECK ON THE LIVE SCAFFOLD ──────────────────────
+        # The offline proof used a synthetic fixture. This runs the ORIGINAL full-width loop
+        # from the same starting shares on the first call that actually restricted anything,
+        # and compares bit-for-bit. A fixture can miss a shape the live scaffold has; this
+        # cannot. Counters are snapshotted and restored so the check cannot inflate them.
+        if _MSR_R_ON and not _MSR_R_CHECK["done"] and _msr["restr"] > 0:
+            _MSR_R_CHECK["done"] = True
+            _snap = dict(_msr)
+            _ref = _orig.copy()
+            for _ in range(8):
+                _rov = _ref > _tgt
+                if not _rov.any():
+                    break
+                _rex = np.add.reduceat(np.where(_rov, _ref - _tgt, 0.0), p.cell_start, axis=1)
+                _rfr = np.add.reduceat(np.where(_rov, 0.0, _ref), p.cell_start, axis=1)
+                _rok = (_rex > 0.0) & (_rfr > 0.0)
+                if not _rok.any():
+                    break
+                _rsc = np.where(_rok, 1.0 + _rex / np.where(_rfr > 0.0, _rfr, 1.0), 1.0)
+                _ref = np.where(np.repeat(_rok, p.cell_len, axis=1) & _rov, _tgt,
+                                np.where(np.repeat(_rok, p.cell_len, axis=1),
+                                         _ref * np.repeat(_rsc, p.cell_len, axis=1), _ref))
+            _msr.clear(); _msr.update(_snap)
+            if np.array_equal(_sh, _ref):
+                log("[fullmatrix-ga] [msr-restrict] ✓ SELF-CHECK PASSED on the live scaffold: "
+                    f"restricting the repair to the {_msr['restr']} affected-cell pass(es) "
+                    f"({_msr['pc']} PER-CANDIDATE, {_msr['un']} union-grain) is bit-identical to "
+                    "the full-width loop (np.array_equal on the whole "
+                    f"{_sh.shape[0]}x{_sh.shape[1]:,} array, not allclose).")
+            else:
+                _MSR_R_ON = False
+                _MSR_PC_ON = False
+                log("[fullmatrix-ga] [msr-restrict] ✗ SELF-CHECK FAILED on the live scaffold "
+                    f"(max|Δ| {float(np.abs(_sh - _ref).max()):.3e}) — RESTRICTION DISABLED for "
+                    "the rest of this run and the full-width result is used. This is a defect in "
+                    "the restriction, not in the repair; the split is unaffected.")
+                _sh = _ref
+
         if not _any:
             _msr["secs"] += time.perf_counter() - _t0r
             return lg
@@ -1680,7 +1874,14 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # Counts, per generation, WHY each child failed to displace the incumbent, and (19ed)
     # HOW BIG the blocking violation was. Reads arrays the loop already computed; the one
     # added computation is a single-candidate decomposition once per generation.
-    _cen_on = _os_gf.environ.get("ROUTING_GA_CENSUS", "1") != "0"
+    # [ga-census] PROBE REMOVED (2026-08-31): read-only, permanently off. It counted how many
+    # children outranked the incumbent and printed a counterfactual over five tolerances that
+    # returned the SAME vwsr at every one (0.594275 vs 0.594275 across 1e-12..1e-1 on the
+    # 16:00 run) - i.e. it re-answered a settled question every generation. It also contradicted
+    # itself on that run, reporting "displaced the incumbent: 1,056" and then "1,056 child(ren)
+    # outranked the incumbent and it did not move ... an UPDATE fault". Both cannot be true; the
+    # miscount goes with the block.
+    _cen_on = False
     _cen_dec_on = _cen_on and _os_gf.environ.get("ROUTING_GA_CENSUS_DECOMP", "1") != "0"
     _cen0 = {"kids": 0, "feas": 0, "vbet": 0, "feas_vbet": 0, "blocked_other": 0,
              "won": 0, "won_eng": 0, "minband": float("inf"), "bestfeas": float("-inf")}
@@ -2190,9 +2391,50 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         else:
             log("[ms-repair]    every over-cap cell had somewhere to put the excess; no "
                 "candidate was left illegal.")
+        _sm = _msr.get("sm", 0.0)
+        _lp = max(_msr["secs"] - _sm, 0.0)
         log(f"[ms-repair]    cost {_msr['secs']:.1f}s over the whole search, charged to the "
             "`build` segment of [gen-gap]. ROUTING_MAXSHARE_REPAIR=0 reverts the search to "
             "discarding these candidates instead, seed included.")
+        # 19eg [msr-percand]. READ THE PASS COUNTS BEFORE THE TIME. 19ef shipped a restriction
+        # that fired on 1 pass in a whole run — the seed — while every population call went full
+        # width and still paid the union scan. If `per-candidate` below is not the large majority
+        # of the passes, the restriction is not doing the job and the time is not the loop's.
+        log(f"[ms-repair]    [msr-percand] of that, {_sm:.1f}s is the segment-softmax DECODE "
+            f"(untouched by the restriction) and {_lp:.1f}s is the repair loop itself "
+            f"({100.0 * _lp / max(_msr['secs'], 1e-9):.0f}%) — the loop is the only part 19eg "
+            f"can shorten, so it is the ceiling on this change.")
+        log(f"[ms-repair]    [msr-percand] passes: {_msr.get('pc', 0):,} PER-CANDIDATE · "
+            f"{_msr.get('un', 0):,} union-grain · {_msr.get('full', 0):,} full-width. "
+            "ROUTING_MSR_PERCAND=0 restores the union grain; ROUTING_MSR_RESTRICT=0 restores "
+            "the full-width loop.")
+        # MEASURED OFFLINE at the live shape (23,870 cells x 257,635 rows, P=35, 0.31% of cells
+        # affected per candidate), phase by phase, because the ITERATION PASSES are the only
+        # thing the restriction touches and they are a MINORITY of the function:
+        #
+        #     phase             full-width   union(19ef)   per-cand(19eg)   restricted?
+        #     decode              196.0 ms      207.1 ms         202.6 ms      no
+        #     setup (_orig copy)   14.0          13.9             12.7         no
+        #     passes              195.6         228.5             43.4        YES  4.50x
+        #     revert + stats       86.5          84.7             78.2         no
+        #     encode (back to      98.9          98.7             87.9         no
+        #       logits)
+        #     TOTAL               591.0         633.0            424.8             1.39x
+        #
+        # So: 4.50x on the passes, 1.39x on the function, because the passes are only 33% of it.
+        # Note the union grain (19ef) is 633.0 vs 591.0 for plain full width — a 7% net LOSS —
+        # so part of 19eg's gain is repaying 19ef's discarded union scan; against the shipped
+        # code it is 1.49x. On the 18:21 run's 139.7s that projects to ~100s, i.e. ~39s off a
+        # 1,567s run (2.5%). NOT the 5x asked for, and saying so is the point of this comment.
+        #
+        # IDENTITY, proven twice and not asserted: 14 of 14 fixtures np.array_equal on the
+        # SHIPPED TEXT (both function bodies lifted verbatim out of the file and run in a
+        # scaffold — REF=full width, UN=union grain, PC=per-candidate, all fed identical
+        # logits), and 17 of 17 on the isolated loop, max|Δ| exactly 0.0 with matching cell
+        # repair counts. Edge cases covered: minimum cell length 2, cells with excess but no
+        # free mass, non-live caps (>=1, <=0, nan, inf), sibling lift forcing extra passes,
+        # per-row caps differing inside one cell, 2% and 3% (either side of the cut-off),
+        # 100% affected, P=1 (the seed call), P=2 and P=70.
 
     # ── [ga-census] RUN VERDICT ──────────────────────────────────────────────────────────
     # Four candidate explanations for a flat vwsr, told apart by counts; 19ed then asks the
