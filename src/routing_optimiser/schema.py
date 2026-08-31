@@ -12,7 +12,7 @@ from __future__ import annotations
 #   RPGT (transaction type) x Currency x Bank
 # The optimiser decides, for each cell, what fraction of that cell's forecast
 # volume to send to each eligible gateway/MID.
-CELL_KEYS = ["rpgt", "currency", "bank"]
+CELL_KEYS = ["rpgt", "currency", "bin"]
 
 # --- Full profile key -------------------------------------------------------
 # The k-means + config generator work at a finer grain (they also carry brand,

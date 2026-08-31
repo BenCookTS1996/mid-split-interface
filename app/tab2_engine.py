@@ -1603,84 +1603,44 @@ def render():
                         ss["_fc_cache_k"] = _fc_k
                         ss["_fc_cache"] = forecast_temp.copy()
 
-                    if "bank" in forecast_temp.columns:
-                        # ── 19ei [bin-key] NAME THE KEY, DO NOT GUESS IT ──────────────────────
-                        # `bank` is fed by two unrelated things on the two sides of this join:
-                        #   success_rates.py:52       bankName -> bank   "BARCLAYS BANK UK PLC"
-                        #   forecast_pipeline.py:403  BIN      -> bank   "465266"
-                        # and bankName == bin on 0 of 2,138,100 attempt rows. So the join
-                        # ["rpgt","currency","bank","gateway"] was only ever correct because the
-                        # overlap contest that used to live here happened to pick the BIN column
-                        # — correct by coincidence, and silent either way.
+                    if "bin" in forecast_temp.columns:
+                        # ── 19eo [bin-key] BOTH SIDES NOW CARRY `bin` NATIVELY ────────────────
+                        # 19ei replaced a set-overlap contest with a named choice; 19eo removes
+                        # the choice entirely. `load_success_data` emits the BIN as `bin` and the
+                        # bank name as `bank_name`, and the forecast loader emits the BIN as
+                        # `bin` too, so there is no column to reassign and no vocabulary to pick
+                        # between. What remains is the ASSERTION - the one number that says
+                        # whether this join can work at all, stated every run.
                         #
-                        # Measured on this book, exactly as that contest computed it:
-                        #   bank (= bankName)   5,494 values ·     0 overlap
-                        #   bin                15,125 values · 9,998 overlap  (of 10,212, 97.9%)
-                        # Zero against 9,998, so there is no contest to hold. Naming the BIN
-                        # column is bit-identical to what the contest did on this data.
-                        #
-                        # The overlaps are still COMPUTED and now always LOGGED, won or lost, so
-                        # a dataset that breaks this join says so here instead of surfacing far
-                        # downstream as an unexplained pooled-prior rate.
-                        # ROUTING_BIN_KEY=0 restores the contest exactly.
-                        fc_banks = set(forecast_temp["bank"].dropna().astype(str).str.strip().str.upper())
-                        adf_banks = set(adf["bank"].dropna().astype(str).str.strip().str.upper()) if "bank" in adf.columns else set()
-                        _bk_scores = [("bank", len(adf_banks), len(fc_banks & adf_banks))]
-                        for alt_col in ["bin", "BIN", "bankName", "bank_name"]:
-                            if alt_col in adf.columns:
-                                alt_set = set(adf[alt_col].dropna().astype(str).str.strip().str.upper())
-                                _bk_scores.append((alt_col, len(alt_set), len(fc_banks & alt_set)))
-
-                        _bk_explicit = os.environ.get("ROUTING_BIN_KEY", "1") != "0"
-                        _bk_bincol = next((c for c in ("bin", "BIN") if c in adf.columns), None)
-                        _bk_binlap = next((o for c, _n, o in _bk_scores if c == _bk_bincol), 0)
-
-                        if _bk_explicit and _bk_bincol is not None and _bk_binlap > 0:
-                            best_col, best_overlap, _bk_how = _bk_bincol, _bk_binlap, "NAMED"
+                        # It is stated even when healthy on purpose. A low overlap here is the
+                        # cause of a high pooled-prior rate hundreds of lines later, and on
+                        # 2026-08-31 that surfaced as "86% of gateway-cells on the pooled prior
+                        # ... expected at BIN grain, not a mismatch" - a reassurance written from
+                        # the wrong side of a rename.
+                        _fc_bins = set(forecast_temp["bin"].dropna().astype(str).str.strip().str.upper())
+                        _ad_bins = (set(adf["bin"].dropna().astype(str).str.strip().str.upper())
+                                    if "bin" in adf.columns else set())
+                        _bk_hit = len(_fc_bins & _ad_bins)
+                        _bk_pct = 100.0 * _bk_hit / max(len(_fc_bins), 1)
+                        if "original_bank_name" not in adf.columns:
+                            adf["original_bank_name"] = adf.get("bank_name", "")
+                        if not _ad_bins:
+                            log("   ⚠ [bin-key] THE ATTEMPTS FRAME HAS NO `bin` COLUMN. Every "
+                                "(rpgt, currency, bin, gateway) rate will fall to the pooled "
+                                "prior and no per-cell success rate in this run is measured. "
+                                "Check attempts_success.sql still emits `bin` and that "
+                                "load_success_data still maps it.")
+                        elif _bk_hit == 0:
+                            log("   ⚠ [bin-key] THE JOIN IS DEAD: the attempts frame and the "
+                                f"forecast share ZERO BIN values ({len(_ad_bins):,} vs "
+                                f"{len(_fc_bins):,} distinct). Fix the key before reading any "
+                                "result below — every per-cell rate is a pooled prior.")
                         else:
-                            # No BIN column, or it shares nothing with the forecast. Fall back to
-                            # the old contest so this cannot become a hard stop on a book that
-                            # keys differently — but say so loudly; a silent fall-through to bank
-                            # NAMES is exactly the failure this block exists to make visible.
-                            best_col, _bn, best_overlap = max(_bk_scores, key=lambda r: r[2])
-                            _bk_how = "CONTEST" if _bk_explicit else "CONTEST (ROUTING_BIN_KEY=0)"
-                            if _bk_explicit:
-                                log("   ⚠ [bin-key] STOP AND READ: no usable BIN column on the "
-                                    f"attempts frame ({'absent' if _bk_bincol is None else _bk_bincol + ' overlaps 0 forecast value(s)'}). "
-                                    "Fell back to the pre-19ei overlap contest. The forecast keys "
-                                    "on BIN, so if the winner below is a bank NAME the join is "
-                                    "matching on nothing and every per-cell rate is a pooled prior.")
-
-                        log(f"   [bin-key] join key for (rpgt, currency, bank, gateway): "
-                            f"'{best_col}' chosen by {_bk_how} · forecast carries {len(fc_banks):,} "
-                            f"distinct value(s) · candidates: "
-                            + " · ".join(f"{c} ({n:,} values, {o:,} overlap)"
-                                         for c, n, o in _bk_scores)
-                            + ". NOTE `bank` still HOLDS the BIN under a misleading name — 19ej "
-                              "renames it. ROUTING_BIN_KEY=0 restores the contest.")
-
-                        if best_col != "bank" and best_overlap > 0:
-                            adf["original_bank_name"] = adf["bank"]
-                            adf["bank"] = adf[best_col]
-                        elif "original_bank_name" not in adf.columns:
-                            adf["original_bank_name"] = adf["bank"]
-
-                        # POST-ASSIGNMENT ASSERTION. The one number that says whether the join can
-                        # work at all, stated every run whether or not anything is unusual.
-                        _bk_now = set(adf["bank"].dropna().astype(str).str.strip().str.upper())
-                        _bk_hit = len(fc_banks & _bk_now)
-                        _bk_pct = 100.0 * _bk_hit / max(len(fc_banks), 1)
-                        if _bk_hit == 0:
-                            log("   ⚠ [bin-key] THE JOIN IS DEAD: after assignment the attempts "
-                                "frame and the forecast share ZERO key values, so every "
-                                "(rpgt, currency, bank, gateway) rate falls to the pooled prior "
-                                "and no per-cell success rate in this run is measured. Fix the key "
-                                "before reading any result below.")
-                        else:
-                            log(f"   [bin-key] ✓ {_bk_hit:,} of {len(fc_banks):,} forecast key "
-                                f"value(s) ({_bk_pct:.1f}%) are present on the attempts frame after "
-                                f"assignment. A LOW number here is the cause of a high "
-                                f"pooled-prior rate later, and it is NOT 'expected at BIN grain'.")
+                            log(f"   [bin-key] join key `bin` — {_bk_hit:,} of {len(_fc_bins):,} "
+                                f"forecast BIN(s) ({_bk_pct:.1f}%) present on the attempts frame "
+                                f"({len(_ad_bins):,} distinct there). A LOW number here is the "
+                                f"cause of a high pooled-prior rate later, and it is NOT "
+                                f"'expected at BIN grain'.")
 
                     mid_list_path = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                     if os.path.exists(mid_list_path) and "gateway" in forecast_temp.columns:
@@ -1698,7 +1658,7 @@ def render():
                         except Exception as e:
                             log(f"   [Warning] Failed to map MIDs: {e}")
 
-                    for c in ["currency", "bank", "gateway"]:
+                    for c in ["currency", "bin", "gateway"]:
                         if c in adf.columns: adf[c] = adf[c].astype(str).str.strip().str.lower()
                         if c in forecast_temp.columns: forecast_temp[c] = forecast_temp[c].astype(str).str.strip().str.lower()
                     # Forecast RPGT comes from the VAMP pipeline output (bin_rpgt_impact_export.csv),
@@ -1863,17 +1823,17 @@ def render():
                         # BIN and ctx (hence the full-matrix genome) is built per BIN. All
                         # downstream steps are grain-agnostic — they just get more cells
                         # (slower). This is what makes "GA - Full matrix" actually BIN-grain.
-                        bin_to_bank = {b: b for b in agg_adf["bank"].unique()}
+                        bin_to_bank = {b: b for b in agg_adf["bin"].unique()}
                         log("   [full-matrix] TRUE BIN GRAIN: parent-bank collapse DISABLED — "
                             "optimising per BIN (more cells, slower).")
                     elif "original_bank_name" in agg_adf.columns:
                         valid_banks = agg_adf[agg_adf["original_bank_name"].str.strip() != ""]
-                        bin_to_bank = valid_banks.groupby("bank")["original_bank_name"].agg(lambda x: x.mode()[0] if not x.mode().empty else "UNKNOWN").to_dict()
+                        bin_to_bank = valid_banks.groupby("bin")["original_bank_name"].agg(lambda x: x.mode()[0] if not x.mode().empty else "UNKNOWN").to_dict()
                     else:
-                        bin_to_bank = {b: b for b in agg_adf["bank"].unique()}
+                        bin_to_bank = {b: b for b in agg_adf["bin"].unique()}
 
-                    agg_forecast["parent_bank"] = agg_forecast["bank"].map(bin_to_bank).fillna(agg_forecast["bank"])
-                    agg_adf["parent_bank"] = agg_adf["bank"].map(bin_to_bank).fillna(agg_adf["bank"])
+                    agg_forecast["parent_bank"] = agg_forecast["bin"].map(bin_to_bank).fillna(agg_forecast["bin"])
+                    agg_adf["parent_bank"] = agg_adf["bin"].map(bin_to_bank).fillna(agg_adf["bin"])
 
                     # Optimisation grain (the CELL grain — where the split is made & traffic moved).
                     # Bank×Currency collapses RPGT into ONE cell per (currency, parent_bank);
@@ -1907,7 +1867,7 @@ def render():
                     agg_adf = agg_adf.groupby(_gk + ["gateway"]).sum(numeric_only=True).reset_index()
                     if not _opt_by_rpgt:
                         agg_adf["rpgt"] = "ALL_RPGTS"
-                    agg_adf["bank"] = agg_adf["parent_bank"]
+                    agg_adf["bin"] = agg_adf["parent_bank"]
 
                     # Build the routing cells from those attempts-based gateways.
                     # Current split (baseline_share) = each gateway's 30D attempts share;
@@ -1982,7 +1942,7 @@ def render():
                     agg_forecast = att[_gk + ["gateway", "volume", "baseline_share"]].copy()
                     if not _opt_by_rpgt:
                         agg_forecast["rpgt"] = "ALL_RPGTS"
-                    agg_forecast["bank"] = agg_forecast["parent_bank"]
+                    agg_forecast["bin"] = agg_forecast["parent_bank"]
 
                     # Attach period-0 risk from `orig_forecast["risk_rate"]`, volume-weighted
                     # across RPGTs to the Bank x Currency x gateway grain. Gateways with no
@@ -1997,7 +1957,7 @@ def render():
                     agg_forecast["risk_rate"] = np.nan
                     if "risk_rate" in orig_forecast.columns:
                         rf = orig_forecast.copy()
-                        rf["parent_bank"] = rf["bank"].map(bin_to_bank).fillna(rf["bank"])
+                        rf["parent_bank"] = rf["bin"].map(bin_to_bank).fillna(rf["bin"])
                         rf["_ck"] = rf["currency"].astype(str).str.strip().str.lower()
                         rf["_pk"] = rf["parent_bank"].astype(str).str.strip().str.lower()
                         rf["_gwk"] = rf["gateway"].astype(str).str.strip().str.lower()
@@ -2159,7 +2119,7 @@ def render():
                             # read as still-configurable.
                             _explore_all = True
                             _MIN_GW = (10 ** 9) if _explore_all else 2
-                            _cellkey_cols = _gk + ["bank"]
+                            _cellkey_cols = _gk + ["bin"]
                             _af_keys = list(zip(*[agg_forecast[c].astype(str).str.strip().str.lower()
                                                   for c in _cellkey_cols]))
                             _af_gw = agg_forecast["gateway"].astype(str).str.strip().str.lower().tolist()
@@ -2198,13 +2158,13 @@ def render():
                                         continue
                                     _rp = _cd.get("rpgt", "ALL_RPGTS")
                                     _nr = {k: _cd[k] for k in _gk}
-                                    _nr.update({"bank": _cd["bank"], "gateway": _g, "volume": 0.0,
+                                    _nr.update({"bin": _cd["bin"], "gateway": _g, "volume": 0.0,
                                                 "baseline_share": 0.0, "rpgt": _rp,
                                                 "risk_rate": np.nan, "risk_n": 0.0,
                                                 "is_explore": True})  # risk filled at seeding; capped in reference
                                     _new_rows.append(_nr)
                                     _inj_fc_keys.append((str(_cd["currency"]).strip().lower(),
-                                                         str(_cd["bank"]).strip().lower(),
+                                                         str(_cd["bin"]).strip().lower(),
                                                          str(_rp).strip().lower(), _g))
                             if _new_rows:
                                 agg_forecast = pd.concat([agg_forecast, pd.DataFrame(_new_rows)], ignore_index=True)
@@ -2231,11 +2191,11 @@ def render():
                     agg_adf_full = (adf.copy() if _score_by_rpgt else _adf_all_rpgts.copy())
                     if "date" not in agg_adf_full.columns and "Date" in agg_adf_full.columns:
                         agg_adf_full = agg_adf_full.rename(columns={"Date": "date"})
-                    agg_adf_full["parent_bank"] = agg_adf_full["bank"].map(bin_to_bank).fillna(agg_adf_full["bank"])
+                    agg_adf_full["parent_bank"] = agg_adf_full["bin"].map(bin_to_bank).fillna(agg_adf_full["bin"])
                     agg_adf_full = agg_adf_full[agg_adf_full["attempts"] > 0].copy()
                     if not _score_by_rpgt:
                         agg_adf_full["rpgt"] = "ALL_RPGTS"   # per-RPGT keeps real rpgt -> per-RPGT rates
-                    agg_adf_full["bank"] = agg_adf_full["parent_bank"]
+                    agg_adf_full["bin"] = agg_adf_full["parent_bank"]
 
                     # Pass the DATED rows (NOT pre-summed) so the time-decay half-life
                     # weights recent attempts before the rate is computed; gateway_
@@ -2243,7 +2203,7 @@ def render():
                     agg_sr = gateway_success_rates(
                         agg_adf_full, shrink_strength=float(shrink),
                         time_decay_half_life_days=(float(decay_half) if apply_decay else None),
-                        prior_scope=("rpgt", "currency", "bank"), empirical_bayes=use_eb)
+                        prior_scope=("rpgt", "currency", "bin"), empirical_bayes=use_eb)
 
                     log(f"   {len(agg_sr):,} dense aggregated cell × gateway success rates (full-window rate, 30D eligibility)")
 
@@ -2294,7 +2254,7 @@ def render():
                                      _wr=("_wr", "sum"), _wp=("_wp", "sum"), _w=("_w", "sum"))
                         if "kappa" in _s.columns:
                             _aggc["kappa"] = ("kappa", "first")
-                        _agg = _s.groupby(["currency", "bank", "gateway"], as_index=False).agg(**_aggc)
+                        _agg = _s.groupby(["currency", "bin", "gateway"], as_index=False).agg(**_aggc)
                         _agg["success_rate"] = np.where(_agg["_w"] > 0, _agg["_wr"] / _agg["_w"],
                                                         np.where(_agg["attempts"] > 0, _agg["success"] / _agg["attempts"], 0.0))
                         _agg["prior_rate"] = np.where(_agg["_w"] > 0, _agg["_wp"] / _agg["_w"], _agg["success_rate"])
@@ -2313,7 +2273,7 @@ def render():
                         try:
                             _sr = agg_sr.copy()
                             _sr["_ck"] = _sr["currency"].astype(str).str.strip().str.lower()
-                            _sr["_bk"] = _sr["bank"].astype(str).str.strip().str.lower()
+                            _sr["_bk"] = _sr["bin"].astype(str).str.strip().str.lower()
                             _sr["_rk"] = (_sr["rpgt"].astype(str).str.strip().str.lower()
                                           if "rpgt" in _sr.columns else "all_rpgts")
                             if "prior_rate" not in _sr.columns:
@@ -2323,7 +2283,7 @@ def render():
                             _glob_sr = float(pd.to_numeric(agg_sr["success_rate"], errors="coerce").mean()) if len(agg_sr) else 0.85
                             _af = agg_forecast.copy()
                             _af["_ck"] = _af["currency"].astype(str).str.strip().str.lower()
-                            _af["_bk"] = _af["bank"].astype(str).str.strip().str.lower()
+                            _af["_bk"] = _af["bin"].astype(str).str.strip().str.lower()
                             _af["_rk"] = _af["rpgt"].astype(str).str.strip().str.lower()
                             _riskavg = (_af[pd.to_numeric(_af["risk_rate"], errors="coerce").notna()]
                                         .groupby(["_ck", "_bk", "_rk"])["risk_rate"].mean().to_dict())
@@ -2389,7 +2349,7 @@ def render():
                                     _srv = float(_a["_sr_m"]) if _a else _glob_sr
                                     _prv = float(_a["_pr_m"]) if _a else _srv
                                 _row = {"rpgt": (_rp if _rp != "all_rpgts" else "ALL_RPGTS"),
-                                        "currency": _c, "bank": _b, "gateway": _g,
+                                        "currency": _c, "bin": _b, "gateway": _g,
                                         "success_rate": _srv, "prior_rate": _prv,
                                         "attempts": 0.0, "success": 0.0}
                                 if "kappa" in agg_sr.columns:
@@ -2401,7 +2361,7 @@ def render():
                             _nar = pd.to_numeric(agg_forecast["risk_rate"], errors="coerce").isna()
                             if _nar.any():
                                 _ck2 = agg_forecast["currency"].astype(str).str.strip().str.lower()
-                                _bk2 = agg_forecast["bank"].astype(str).str.strip().str.lower()
+                                _bk2 = agg_forecast["bin"].astype(str).str.strip().str.lower()
                                 _rk2 = agg_forecast["rpgt"].astype(str).str.strip().str.lower()
                                 agg_forecast.loc[_nar, "risk_rate"] = [
                                     _riskavg.get((c, b, r), 0.006)
@@ -2523,7 +2483,7 @@ def render():
                             _act_on = os.environ.get("ROUTING_MIDLIST_ACTIVE", "0") == "1"
                             _hard = _d_excl | _d_cur | _d_brand | (_d_act if _act_on else False)
                             # ---- never leave a cell with no candidate --------------------------
-                            _ckf = [_c for _c in ["rpgt", "currency", "bank"] if _c in agg_forecast.columns]
+                            _ckf = [_c for _c in ["rpgt", "currency", "bin"] if _c in agg_forecast.columns]
                             if _ckf and bool(_hard.any()):
                                 _t1 = pd.DataFrame({"_k": (~_hard).astype(int).to_numpy()})
                                 for _c in _ckf:
@@ -2628,7 +2588,7 @@ def render():
                                     ["googlepay", "applepay"]).to_numpy()
                                 _incap2 = np.array([not _mf_w.get(_g, True) for _g in _gw2], dtype=bool)
                                 _dropw = _wal2 & _incap2
-                                _sk2 = [_c for _c in ["rpgt", "currency", "bank", "pmp", "ctry"]
+                                _sk2 = [_c for _c in ["rpgt", "currency", "bin", "pmp", "ctry"]
                                         if _c in _agg_sc.columns]
                                 if _sk2 and bool(_dropw.any()):
                                     _t2 = pd.DataFrame({"_k": (~_dropw).astype(int)})
@@ -2751,9 +2711,9 @@ def render():
                     _stage(f"④ Run {engine_key} engine across the Risk↔Conversion axis")
                     log(f"   {_N_VARIATIONS} dials: {', '.join(str(int(round(w * 100))) for w in weights)}")
 
-                    mapping_df = orig_forecast[["rpgt", "currency", "bank"]].drop_duplicates()
-                    mapping_df["parent_bank"] = mapping_df["bank"].map(bin_to_bank).fillna(mapping_df["bank"])
-                    mapping_df = mapping_df.rename(columns={"rpgt": "orig_rpgt", "bank": "orig_bank"})
+                    mapping_df = orig_forecast[["rpgt", "currency", "bin"]].drop_duplicates()
+                    mapping_df["parent_bank"] = mapping_df["bin"].map(bin_to_bank).fillna(mapping_df["bin"])
+                    mapping_df = mapping_df.rename(columns={"rpgt": "orig_rpgt", "bin": "orig_bank"})
 
                     # [FN-313]
                     # [explode-keep] logs once (_explode has 6 callers). THE SCOPE IS STASHED
@@ -2771,12 +2731,12 @@ def render():
                         if _opt_by_rpgt:
                             sc = agg_split.copy()
                             sc["_rk"] = sc["rpgt"].astype(str).str.strip().str.lower()
-                            if "bank" in sc.columns:
-                                sc = sc.rename(columns={"bank": "parent_bank"})
-                            _mp = orig_forecast[["rpgt", "currency", "bank"]].drop_duplicates().copy()
-                            _mp["parent_bank"] = _mp["bank"].map(bin_to_bank).fillna(_mp["bank"])
+                            if "bin" in sc.columns:
+                                sc = sc.rename(columns={"bin": "parent_bank"})
+                            _mp = orig_forecast[["rpgt", "currency", "bin"]].drop_duplicates().copy()
+                            _mp["parent_bank"] = _mp["bin"].map(bin_to_bank).fillna(_mp["bin"])
                             _mp["_rk"] = _mp["rpgt"].astype(str).str.strip().str.lower()
-                            _mp = _mp.rename(columns={"rpgt": "_orig_rpgt", "bank": "_orig_bank"}).drop(columns=["rpgt"], errors="ignore")
+                            _mp = _mp.rename(columns={"rpgt": "_orig_rpgt", "bin": "_orig_bank"}).drop(columns=["rpgt"], errors="ignore")
                             ex = _mp.merge(sc.drop(columns=["rpgt"], errors="ignore"),
                                            on=["currency", "parent_bank", "_rk"], how="inner")
                             # ── KEEP PROFILES THAT CARRY TRAFFIC (2026-08-19g) ──────────────
@@ -2924,17 +2884,17 @@ def render():
                                     log(f"   [drop-measure] skipped "
                                         f"({type(_dmE).__name__}: {_dmE}) — the [blend-cells] "
                                         "intersection will say it has no stash.")
-                            return ex.rename(columns={"_orig_rpgt": "rpgt", "_orig_bank": "bank"}).drop(
+                            return ex.rename(columns={"_orig_rpgt": "rpgt", "_orig_bank": "bin"}).drop(
                                 columns=["parent_bank", "_rk"], errors="ignore")
                         sc = agg_split.copy()
                         if "rpgt" in sc.columns:
                             sc = sc.drop(columns=["rpgt"])
-                        if "bank" in sc.columns:
-                            sc = sc.rename(columns={"bank": "parent_bank"})
+                        if "bin" in sc.columns:
+                            sc = sc.rename(columns={"bin": "parent_bank"})
                         if "currency" not in sc.columns:
                             sc["currency"] = mapping_df["currency"].iloc[0] if not mapping_df.empty else "usd"
                         ex = mapping_df.merge(sc, on=["currency", "parent_bank"], how="inner")
-                        return ex.rename(columns={"orig_rpgt": "rpgt", "orig_bank": "bank"}).drop(columns=["parent_bank"])
+                        return ex.rename(columns={"orig_rpgt": "rpgt", "orig_bank": "bin"}).drop(columns=["parent_bank"])
 
                     # Reference = conversion-optimal split (no per-cell cap). The risk
                     # constraint is applied CROSS-CELL, per vampMid, afterwards.
@@ -3027,7 +2987,7 @@ def render():
                     _rp_key = (_mc["rpgt"].astype(str).str.strip().str.lower()
                                if "rpgt" in _mc.columns else "all_rpgts")
                     _mc["cell"] = (_mc["currency"].astype(str).str.lower() + "|"
-                                   + _mc["bank"].astype(str).str.lower() + "|" + _rp_key)
+                                   + _mc["bin"].astype(str).str.lower() + "|" + _rp_key)
                     if _opt_subcell:
                         # SUB-CELL decision grain: extend the cell key with pmp/ctry (carried through
                         # from optimise_split), so G["_cellk"]/cell_starts give one softmax simplex
@@ -3037,7 +2997,7 @@ def render():
                                        + _mc.get("ctry", "_all_").astype(str).str.strip().str.lower())
                     _mc["vampMid"] = _mc["gateway"].astype(str).str.strip().str.lower().map(fid2vamp).fillna(_mc["gateway"].astype(str))
                     _ck = _mc["currency"].astype(str).str.strip().str.lower()
-                    _pk = _mc["bank"].astype(str).str.strip().str.lower()
+                    _pk = _mc["bin"].astype(str).str.strip().str.lower()
                     _mc["rate"] = [mid_rate.get((c, b, v), np.nan) for c, b, v in zip(_ck, _pk, _mc["vampMid"])]
                     _mc["rate"] = pd.to_numeric(_mc["rate"], errors="coerce").fillna(_mc["gateway_risk_rate"])
                     _mc["cell_vol"] = _mc["cell_volume"]
@@ -3308,20 +3268,20 @@ def render():
                         try:
                             _f2v_l = {str(_k).strip().lower(): str(_v).strip()
                                       for _k, _v in (fid2vamp or {}).items()}
-                            _dc = agg_sr[["currency", "bank", "rpgt", "gateway"]].drop_duplicates().copy()
+                            _dc = agg_sr[["currency", "bin", "rpgt", "gateway"]].drop_duplicates().copy()
                             _dc["_cur"] = _dc["currency"].astype(str).str.strip().str.lower()
-                            _dc["_pb"] = _dc["bank"].astype(str).str.strip().str.lower()
+                            _dc["_pb"] = _dc["bin"].astype(str).str.strip().str.lower()
                             _dc["_rk"] = _dc["rpgt"].astype(str).str.strip().str.lower()
                             _dc["_mid"] = _dc["gateway"].astype(str).str.strip().str.lower().map(_f2v_l)
                             _dc = _dc[_dc["_mid"].notna()].copy()
                             _dc["_midl"] = _dc["_mid"].astype(str).str.strip().str.lower()
                             _dc = _dc[_dc["_midl"].isin(_capped_l)]
                             # parent bank → its BIN-level banks: the SAME replicate the incidence uses.
-                            _ofd = orig_forecast[["currency", "bank", "rpgt"]].drop_duplicates().copy()
+                            _ofd = orig_forecast[["currency", "bin", "rpgt"]].drop_duplicates().copy()
                             _ofd["_cur"] = _ofd["currency"].astype(str).str.strip().str.lower()
-                            _ofd["_bin"] = _ofd["bank"].astype(str).str.strip()
+                            _ofd["_bin"] = _ofd["bin"].astype(str).str.strip()
                             _ofd["_rk"] = _ofd["rpgt"].astype(str).str.strip().str.lower()
-                            _ofd["_pb"] = _ofd["bank"].map(
+                            _ofd["_pb"] = _ofd["bin"].map(
                                 lambda _b: bin_to_bank.get(_b, bin_to_bank.get(str(_b).strip().lower(), _b))
                             ).astype(str).str.strip().str.lower()
                             _dj = _dc[["_cur", "_pb", "_rk", "_mid", "_midl"]].merge(
@@ -3961,7 +3921,7 @@ def render():
                         load_restrictions, load_usa_only, apply_restrictions, unenforceable_fields)
                     _rr_path = os.path.join(PROJECT_ROOT, "config", "inputs", "routing_restrictions.json")
                     _elig_rules = load_restrictions(_rr_path)
-                    _unenf = unenforceable_fields(_elig_rules, ["rpgt", "currency", "bank"])
+                    _unenf = unenforceable_fields(_elig_rules, ["rpgt", "currency", "bin"])
                     if _unenf:
                         log(f"   [Warning] restriction field(s) not enforceable at the routing grain "
                             f"(ignored — need finer routing): {', '.join(sorted(_unenf))}.")
@@ -3980,7 +3940,7 @@ def render():
                         _w["_att"] = pd.to_numeric(_w["attempts"], errors="coerce").fillna(0.0)
                         _w["_watt"] = np.where(_w["_wal"], _w["_att"], 0.0)
                         _w["_c"] = _w["currency"].astype(str).str.strip().str.lower()
-                        _w["_b"] = _w["bank"].astype(str).str.strip().str.lower()
+                        _w["_b"] = _w["bin"].astype(str).str.strip().str.lower()
                         _wg = _w.groupby(["_c", "_b"]).agg(a=("_att", "sum"), wa=("_watt", "sum")).reset_index()
                         _wallet_frac = {(c, b): (float(wa) / float(a) if a > 0 else 0.0)
                                         for c, b, a, wa in zip(_wg["_c"], _wg["_b"], _wg["a"], _wg["wa"])}
@@ -4004,7 +3964,7 @@ def render():
                             _cy["_att"] = pd.to_numeric(_cy["attempts"], errors="coerce").fillna(0.0)
                             _cy["_natt"] = np.where(_cy["_non"], _cy["_att"], 0.0)
                             _cy["_c"] = _cy["currency"].astype(str).str.strip().str.lower()
-                            _cy["_b"] = _cy["bank"].astype(str).str.strip().str.lower()
+                            _cy["_b"] = _cy["bin"].astype(str).str.strip().str.lower()
                             _cg = _cy.groupby(["_c", "_b"]).agg(a=("_att", "sum"), na=("_natt", "sum")).reset_index()
                             _nonusa_frac = {(c, b): (float(na) / float(a) if a > 0 else 0.0)
                                             for c, b, a, na in zip(_cg["_c"], _cg["_b"], _cg["a"], _cg["na"])}
@@ -4029,7 +3989,7 @@ def render():
                         _cp["_usa_att"] = np.where(_isusa, _catt, 0.0)
                         _cp["_non_att"] = np.where(~_isusa, _catt, 0.0)
                         _cp["_c"] = _cp["currency"].astype(str).str.strip().str.lower()
-                        _cp["_b"] = _cp["bank"].astype(str).str.strip()
+                        _cp["_b"] = _cp["bin"].astype(str).str.strip()
                         _cpg = _cp.groupby(["_c", "_b"], as_index=False).agg(usa=("_usa_att", "sum"), non=("_non_att", "sum"))
                         _country_pres = {(c, b): (float(u), float(n))
                                          for c, b, u, n in zip(_cpg["_c"], _cpg["_b"], _cpg["usa"], _cpg["non"])}
@@ -4075,7 +4035,7 @@ def render():
 
                     # [FN-321]
                     def _mid_cap_granular(gran):
-                        _kc = ["currency", "bank", "gateway", "rpgt"]
+                        _kc = ["currency", "bin", "gateway", "rpgt"]
                         _key = None
                         try:
                             _h = int(pd.util.hash_pandas_object(gran[_kc].astype(str), index=False).sum() & ((1 << 63) - 1))
@@ -4090,11 +4050,11 @@ def render():
                             return g
                         g = gran.copy()
                         g["_cur"] = g["currency"].astype(str).str.strip().str.lower()
-                        g["_pb"] = g["bank"].astype(str).map(
+                        g["_pb"] = g["bin"].astype(str).map(
                             lambda b: bin_to_bank.get(b, bin_to_bank.get(str(b).strip().lower(), b))).astype(str).str.strip().str.lower()
                         g["_gw"] = g["gateway"].astype(str).str.strip().str.lower()
                         g["_vm"] = g["_gw"].map(_fid2vamp_l).fillna(g["_gw"])
-                        g["cell"] = (g["rpgt"].astype(str).str.lower() + "|" + g["_cur"] + "|" + g["bank"].astype(str).str.lower())
+                        g["cell"] = (g["rpgt"].astype(str).str.lower() + "|" + g["_cur"] + "|" + g["bin"].astype(str).str.lower())
                         g["_key"] = list(zip(g["_cur"], g["_pb"], g["_vm"]))
                         g["rate"] = pd.to_numeric(g["_key"].map(mid_rate), errors="coerce")
                         g["rate"] = g["rate"].fillna(pd.to_numeric(g.get("gateway_risk_rate", 0.006), errors="coerce")).fillna(0.006)
@@ -4177,14 +4137,14 @@ def render():
                         g["_vm"] = g["gateway"].astype(str).str.strip().str.lower().map(fid2vamp)
                         g = g.dropna(subset=["_vm"])
                         if _opt_by_rpgt:
-                            pr = g.groupby(["currency", "bank", "rpgt", "_vm"], as_index=False)["share"].sum()
+                            pr = g.groupby(["currency", "bin", "rpgt", "_vm"], as_index=False)["share"].sum()
                             _prop = tuple((str(c).lower(), str(b), str(rp), str(v), float(s))
                                           for c, b, rp, v, s in
-                                          pr[["currency", "bank", "rpgt", "_vm", "share"]].itertuples(index=False))
+                                          pr[["currency", "bin", "rpgt", "_vm", "share"]].itertuples(index=False))
                         else:
-                            pr = g.groupby(["currency", "bank", "_vm"], as_index=False)["share"].sum()
+                            pr = g.groupby(["currency", "bin", "_vm"], as_index=False)["share"].sum()
                             _prop = tuple((str(c).lower(), str(b), str(v), float(s))
-                                          for c, b, v, s in pr[["currency", "bank", "_vm", "share"]].itertuples(index=False))
+                                          for c, b, v, s in pr[["currency", "bin", "_vm", "share"]].itertuples(index=False))
                         return _blend_ga(_prop)
 
                     # ---- GATE-1 diagnostic: collapsed BandProjector vs the TRUE _project_capped ----
@@ -4566,23 +4526,23 @@ def render():
                     _inc_rev_rate = {}
                     try:
                         if (isinstance(agg_sr, pd.DataFrame)
-                                and {"currency", "bank", "gateway", "success_rate"}.issubset(agg_sr.columns)):
+                                and {"currency", "bin", "gateway", "success_rate"}.issubset(agg_sr.columns)):
                             _tk = {}
                             if (isinstance(orig_adf, pd.DataFrame)
-                                    and {"currency", "bank", "amount", "success"}.issubset(orig_adf.columns)):
+                                    and {"currency", "bin", "amount", "success"}.issubset(orig_adf.columns)):
                                 _a = orig_adf
                                 _sa = (pd.to_numeric(_a["amount"], errors="coerce").fillna(0.0)
                                        * pd.to_numeric(_a["success"], errors="coerce").fillna(0.0))
                                 _sc = pd.to_numeric(_a["success"], errors="coerce").fillna(0.0)
                                 _tg = pd.DataFrame({
                                     "cur": _a["currency"].astype(str).str.strip().str.lower(),
-                                    "bk": _a["bank"].astype(str).str.strip().str.lower(),
+                                    "bk": _a["bin"].astype(str).str.strip().str.lower(),
                                     "sa": _sa.to_numpy(), "s": _sc.to_numpy()}).groupby(["cur", "bk"]).sum()
                                 _tk = {k: (float(r["sa"]) / float(r["s"]) if float(r["s"]) > 0 else 25.0)
                                        for k, r in _tg.iterrows()}
                             _srv = pd.to_numeric(agg_sr["success_rate"], errors="coerce").fillna(0.0).to_numpy()
                             _cu = agg_sr["currency"].astype(str).str.strip().str.lower().to_numpy()
-                            _bk = agg_sr["bank"].astype(str).str.strip().str.lower().to_numpy()
+                            _bk = agg_sr["bin"].astype(str).str.strip().str.lower().to_numpy()
                             _gw = agg_sr["gateway"].astype(str).str.strip().str.lower().to_numpy()
                             for _i in range(len(_srv)):
                                 _inc_rev_rate[(_cu[_i], _bk[_i], _gw[_i])] = float(_srv[_i]) * float(_tk.get((_cu[_i], _bk[_i]), 25.0))
@@ -4663,7 +4623,7 @@ def render():
                                 if not _vd.empty:
                                     _mx = _vd.max()
                                     _a = _a[(_dts > (_mx - pd.Timedelta(days=30))) & (_dts <= _mx)].copy()
-                            _a["_pb"] = _a["bank"].map(lambda b: bin_to_bank.get(b, bin_to_bank.get(str(b).strip().lower(), b))).astype(str).str.strip().str.lower()
+                            _a["_pb"] = _a["bin"].map(lambda b: bin_to_bank.get(b, bin_to_bank.get(str(b).strip().lower(), b))).astype(str).str.strip().str.lower()
                             _a["_cur"] = _a["currency"].astype(str).str.strip().str.lower()
                             _a["_gw"] = _a["gateway"].astype(str).str.strip().str.lower()
 
@@ -4712,7 +4672,7 @@ def render():
                         _srr = pd.to_numeric(G["gateway_success_rate"], errors="coerce").fillna(0.0).to_numpy()
                         _rkr = pd.to_numeric(G["rate"], errors="coerce").fillna(0.0).to_numpy()
                         _cur_l = G["currency"].astype(str).str.strip().str.lower().tolist()
-                        _pb_l = G["bank"].astype(str).str.strip().str.lower().tolist()
+                        _pb_l = G["bin"].astype(str).str.strip().str.lower().tolist()
                         _gw_l = G["gateway"].astype(str).str.strip().str.lower().tolist()
                         # sub-cell identity per G row (always present via optimise_split; "_all_" at cell grain)
                         _pmp_l = (G["pmp"].astype(str).str.strip().str.lower().tolist()
@@ -4883,7 +4843,7 @@ def render():
                                     "cell": _cellk,
                                     "gateway": G["gateway"].astype(str).to_numpy(),
                                     "currency": G["currency"].astype(str).to_numpy(),
-                                    "bank": G["bank"].astype(str).to_numpy(),
+                                    "bin": G["bin"].astype(str).to_numpy(),
                                     "rpgt": _rpgt_col,
                                     "pmp": (G["pmp"].astype(str).to_numpy() if "pmp" in G.columns
                                             else np.array(["_all_"] * len(G))),
@@ -4960,14 +4920,14 @@ def render():
                                 # empty on a session's first run) — the staleness that flipped the
                                 # blocked set 32<->13 between runs. Use the current-run local.
                                 _b2b_ga = bin_to_bank or {}
-                                if _b2b_ga and "bank" in _bapre_ga.columns:
-                                    _bapre_ga["bank"] = _bapre_ga["bank"].map(
+                                if _b2b_ga and "bin" in _bapre_ga.columns:
+                                    _bapre_ga["bin"] = _bapre_ga["bin"].map(
                                         lambda _b: _b2b_ga.get(_b, _b2b_ga.get(str(_b), _b)))
                                 _bdf_ga = detect_blocked_gateways(
                                     _bapre_ga, float(ss.get("block_min_inp", 100) or 100))
                                 _bflag_ga = _bdf_ga[_bdf_ga["blocked"]] if not _bdf_ga.empty else _bdf_ga
                                 _blk_ga = set(zip(
-                                    _bflag_ga["bank"].astype(str).str.strip().str.lower(),
+                                    _bflag_ga["bin"].astype(str).str.strip().str.lower(),
                                     _bflag_ga["gateway"].astype(str).str.strip().str.lower()))
                                 if _blk_ga:
                                     _row_blk = np.array([(b, g) in _blk_ga
@@ -5092,11 +5052,11 @@ def render():
                                 _rpgt_g = (G["rpgt"].astype(str).str.strip().str.lower().tolist()
                                            if "rpgt" in G.columns else [""] * len(G))
                                 # parent(bank) → its BIN-level banks, per (currency, rpgt) [explode replicate]
-                                _of = orig_forecast[["currency", "bank", "rpgt"]].drop_duplicates().copy()
+                                _of = orig_forecast[["currency", "bin", "rpgt"]].drop_duplicates().copy()
                                 _of["_cur"] = _of["currency"].astype(str).str.strip().str.lower()
-                                _of["_bin"] = _of["bank"].astype(str).str.strip()
+                                _of["_bin"] = _of["bin"].astype(str).str.strip()
                                 _of["_rk"] = _of["rpgt"].astype(str).str.strip().str.lower()
-                                _of["_pb"] = _of["bank"].map(
+                                _of["_pb"] = _of["bin"].map(
                                     lambda b: bin_to_bank.get(b, bin_to_bank.get(str(b).strip().lower(), b))
                                 ).astype(str).str.strip().str.lower()
                                 _bins_by = {}
@@ -6479,7 +6439,7 @@ def render():
                                                 cell_counts=ctx["cell_counts"], risk=ctx["risk"],
                                                 cell_vol=ctx["cell_vol"], elig=ctx["elig"],
                                                 mid_names=[str(m) for m in _mids_u],
-                                                cell_cur=_colcol("currency"), cell_bank=_colcol("bank"),
+                                                cell_cur=_colcol("currency"), cell_bank=_colcol("bin"),
                                                 cell_rpgt=_colcol("rpgt")):
                                             log(_ln)
                                     except Exception as _dge:  # noqa: BLE001 — a diagnostic must never break the run
@@ -6744,14 +6704,14 @@ def render():
                             try:
                                 _bapre = orig_adf.copy()
                                 _b2bp = bin_to_bank or {}   # current-run map (not stale ss — see pre-GA note)
-                                if _b2bp and "bank" in _bapre.columns:
-                                    _bapre["bank"] = _bapre["bank"].map(
+                                if _b2bp and "bin" in _bapre.columns:
+                                    _bapre["bin"] = _bapre["bin"].map(
                                         lambda _b: _b2bp.get(_b, _b2bp.get(str(_b), _b)))
                                 _bdfp = detect_blocked_gateways(
                                     _bapre, float(ss.get("block_min_inp", 100) or 100))
                                 _bflagp = _bdfp[_bdfp["blocked"]] if not _bdfp.empty else _bdfp
                                 _blk_pairs_pre = set(zip(
-                                    _bflagp["bank"].astype(str).str.strip().str.lower(),
+                                    _bflagp["bin"].astype(str).str.strip().str.lower(),
                                     _bflagp["gateway"].astype(str).str.strip().str.lower()))
                                 if _blk_pairs_pre:
                                     log(f"   auto-block (pre-enforcement): {len(_blk_pairs_pre)} bank×gateway "
@@ -6981,7 +6941,7 @@ def render():
                                             _bbm = {str(_k).strip().lower(): str(_v).strip().lower()
                                                     for _k, _v in (bin_to_bank or {}).items()}
                                             _gwL = G["gateway"].astype(str).str.strip().str.lower()
-                                            _bkL = G["bank"].astype(str).str.strip().str.lower()
+                                            _bkL = G["bin"].astype(str).str.strip().str.lower()
                                             _pkL = _bkL.map(lambda _b: _bbm.get(_b, _b))
                                             _fm_blk_row = np.array(
                                                 [((_b, _g) in _blk_pairs_pre) or ((_p, _g) in _blk_pairs_pre)
@@ -8323,7 +8283,7 @@ def render():
                                             _gk = None
                                             if os.environ.get("ROUTING_BLOCK_CTRY", "1") != "0":
                                                 _gk = tuple(_c for _c in ("rpgt", "currency",
-                                                                          "bank", "pmp", "ctry")
+                                                                          "bin", "pmp", "ctry")
                                                             if _c in _gr.columns)
                                             _gr, _ = _apply_blocked_caps(
                                                 _gr, _blk_pairs_pre, float(floor),
@@ -10060,7 +10020,7 @@ def render():
                             # ROUTING_BLOCK_CTRY=0 restores the pooled behaviour exactly.
                             _bwGK = None
                             if os.environ.get("ROUTING_BLOCK_CTRY", "1") != "0":
-                                _bwGK = tuple(c for c in ("rpgt", "currency", "bank", "pmp", "ctry")
+                                _bwGK = tuple(c for c in ("rpgt", "currency", "bin", "pmp", "ctry")
                                               if c in _ga_gran.columns)
                                 log(f"   [block-ctry] blocked-caps redistribution groups by "
                                     f"{_bwGK}, matching the search's sub-cell grain — DEFAULT ON "
@@ -10149,7 +10109,7 @@ def render():
                                         # None test, never truthiness, on any pandas object.
                                         _crC0 = getattr(_crG, "columns", None)
                                         _crC = set(_crC0) if _crC0 is not None else set()
-                                        _crK = [c for c in ("currency", "bank", "rpgt", "pmp",
+                                        _crK = [c for c in ("currency", "bin", "rpgt", "pmp",
                                                             "ctry") if c in _crC]
                                         if len(_crK) == 5 and "share" in _crC:
                                             _crD = _crG[_crK + ["share"]].copy()
@@ -10157,7 +10117,7 @@ def render():
                                                             .str.strip().str.lower())
                                             _crD["currency"] = (_crD["currency"].astype(str)
                                                                 .str.strip().str.lower())
-                                            _crD["bank"] = _crD["bank"].astype(str).str.strip()
+                                            _crD["bin"] = _crD["bin"].astype(str).str.strip()
                                             _crD["pmp"] = (_crD["pmp"].astype(str)
                                                            .str.strip().str.lower())
                                             _crD["ctry"] = (_crD["ctry"].astype(str)
@@ -10424,7 +10384,7 @@ def render():
                                         _pkeys_r = list(getattr(getattr(_eb, "projector", None),
                                                                 "prop_keys", []) or []) if _eb is not None else []
                                         if (_sg_r is not None and len(_pkeys_r)
-                                                and {"currency", "bank", "rpgt", "gateway", "share"}
+                                                and {"currency", "bin", "rpgt", "gateway", "share"}
                                                 .issubset(set(_sg_r.columns))):
                                             _f2v_r = {str(_k5).strip().lower(): str(_v5).strip()
                                                       for _k5, _v5 in (fid2vamp or {}).items()}
@@ -10432,7 +10392,7 @@ def render():
                                                       .map(_f2v_r))
                                             _keepr = _mid_r.notna().to_numpy()
                                             _cur_r = _sg_r["currency"].astype(str).str.strip().str.lower()
-                                            _bin_r = _sg_r["bank"].astype(str).str.strip()
+                                            _bin_r = _sg_r["bin"].astype(str).str.strip()
                                             _rk_r = _sg_r["rpgt"].astype(str).str.strip().str.lower()
                                             _pmp_r = (_sg_r["pmp"].astype(str).str.strip().str.lower()
                                                       if "pmp" in _sg_r.columns
@@ -11984,7 +11944,7 @@ def render():
                                                 # ---- the circularity self-check set ----
                                                 _fcT = set()
                                                 try:
-                                                    _ofc = ["currency", "bank", "rpgt"]
+                                                    _ofc = ["currency", "bin", "rpgt"]
                                                     if all(_c in orig_forecast.columns for _c in _ofc):
                                                         _ofT = orig_forecast[_ofc].astype(str)
                                                         for _c in _ofc:
@@ -13545,7 +13505,7 @@ def render():
                     try:
                         _samp_v = min(variations, key=lambda v: v["weight"]) if variations else None
                         _sdf = _samp_v["split"].copy() if _samp_v is not None else pd.DataFrame()
-                        _ckeys = [c for c in ("currency", "bank", "rpgt") if c in _sdf.columns]
+                        _ckeys = [c for c in ("currency", "bin", "rpgt") if c in _sdf.columns]
                         if _ckeys and "share" in _sdf.columns and not _sdf.empty:
                             _sdf["_bs"] = pd.to_numeric(_sdf.get("baseline_share", 0), errors="coerce").fillna(0.0)
                             _sdf["_sh"] = pd.to_numeric(_sdf["share"], errors="coerce").fillna(0.0)
@@ -13588,7 +13548,7 @@ def render():
                     except Exception as _e:  # noqa: BLE001
                         _diag(f"   [granular profile samples failed: {_e}]")
 
-                    granular_sr = gateway_success_rates(orig_adf, shrink_strength=float(shrink), time_decay_half_life_days=(float(decay_half) if apply_decay else None), prior_scope=("rpgt", "currency", "bank"), empirical_bayes=use_eb)
+                    granular_sr = gateway_success_rates(orig_adf, shrink_strength=float(shrink), time_decay_half_life_days=(float(decay_half) if apply_decay else None), prior_scope=("rpgt", "currency", "bin"), empirical_bayes=use_eb)
                     granular_problems = build_cell_problems(orig_forecast, granular_sr)
 
                     ss["mid_vol_constrained"] = sorted(
@@ -13604,14 +13564,14 @@ def render():
                         try:
                             _badf = orig_adf.copy()
                             _b2b = bin_to_bank or {}   # current-run map (not stale ss — see pre-GA note)
-                            if _b2b and "bank" in _badf.columns:   # match the split's (BIN→bank-mapped) bank
-                                _badf["bank"] = _badf["bank"].map(
+                            if _b2b and "bin" in _badf.columns:   # match the split's (BIN→bank-mapped) bank
+                                _badf["bin"] = _badf["bin"].map(
                                     lambda _b: _b2b.get(_b, _b2b.get(str(_b), _b)))
                             _bmin = float(ss.get("block_min_inp", 100) or 100)
                             _bdf = detect_blocked_gateways(_badf, _bmin)
                             ss["blocked_gateways"] = _bdf
                             _bflag = _bdf[_bdf["blocked"]] if not _bdf.empty else _bdf
-                            _bpairs = set(zip(_bflag["bank"].astype(str).str.strip().str.lower(),
+                            _bpairs = set(zip(_bflag["bin"].astype(str).str.strip().str.lower(),
                                               _bflag["gateway"].astype(str).str.strip().str.lower()))
                             ss["blocked_pairs"] = _bpairs
                             if _bpairs:
@@ -13631,7 +13591,7 @@ def render():
                                     _v0 = variations[0].get("split") if variations else None
                                     _vc0 = getattr(_v0, "columns", None)
                                     _vcols = set(_vc0) if _vc0 is not None else set()
-                                    _vgk = tuple(c for c in ("rpgt", "currency", "bank", "pmp",
+                                    _vgk = tuple(c for c in ("rpgt", "currency", "bin", "pmp",
                                                              "ctry") if c in _vcols) or None
                                 for v in variations:
                                     v["split"], _nc = _apply_blocked_caps(v["split"], _bpairs, float(floor),

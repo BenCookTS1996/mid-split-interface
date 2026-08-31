@@ -164,6 +164,10 @@ def green_button_css(key):
     (green fill, white text, darker-green hover). Used by the 'Fetch projected M0' buttons."""
     st.markdown(
         f"<style>.st-key-{key} button{{background-color:#22C36B !important;"
+        # border-radius: the global `.stButton > button` rule in streamlit_app.py sets 0 but
+        # WITHOUT !important, so Streamlit's own generated class outranked it here and these
+        # buttons alone came out rounded against an otherwise square UI.
+        f"border-radius:0 !important;"
         f"border-color:#22C36B !important;}} .st-key-{key} button,"
         f".st-key-{key} button *{{color:#ffffff !important;}} "
         f".st-key-{key} button:hover{{background-color:#1EA95D !important;"
@@ -360,7 +364,7 @@ def _variance_gap_temp(agg_sr, anchor=0.17, t_ceiling=0.30, n_cap=500.0):
     """
     g = agg_sr.copy()
     g["_c"] = g["currency"].astype(str).str.strip().str.lower()
-    g["_b"] = g["bank"].astype(str).str.strip().str.lower()
+    g["_b"] = g["bin"].astype(str).str.strip().str.lower()
     g["_n"] = pd.to_numeric(g["attempts"], errors="coerce").fillna(0.0)
     g["_p"] = pd.to_numeric(g["success_rate"], errors="coerce").fillna(0.0).clip(0.0, 1.0)
     zmap = {}
@@ -480,11 +484,11 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
     excludes the same rows. Returns (new_split, n_rows_capped). Deterministic; no-op when
     `blocked_pairs` is empty or nothing matches."""
     if not blocked_pairs or split is None or getattr(split, "empty", True) \
-            or not {"bank", "gateway", "share"}.issubset(split.columns):
+            or not {"bin", "gateway", "share"}.issubset(split.columns):
         return split, 0
     blocked_pairs = set(blocked_pairs)   # O(1) membership in the per-row checks below
     d = split.copy()
-    _bk = d["bank"].astype(str).str.strip().str.lower()
+    _bk = d["bin"].astype(str).str.strip().str.lower()
     _gw = d["gateway"].astype(str).str.strip().str.lower()
     # Grain-robust match. The split's `bank` is BIN-level, but `blocked_pairs` may be keyed at
     # PARENT-bank grain (detect_blocked_gateways runs on bin_to_bank-mapped attempts). Treat a row
@@ -506,7 +510,7 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
     # [block-why] probe. `group_keys=None` keeps the historical tuple byte-identical; pass an
     # explicit tuple to align the grain with a caller's own cell definition.
     _key = ([c for c in group_keys if c in d.columns] if group_keys
-            else [c for c in ("rpgt", "currency", "bank", "pmp") if c in d.columns]) or ["bank"]
+            else [c for c in ("rpgt", "currency", "bin", "pmp") if c in d.columns]) or ["bin"]
     _sh = pd.to_numeric(d["share"], errors="coerce").fillna(0.0).to_numpy()
     _cap = np.where(_isb, np.minimum(_sh, float(floor)), _sh)          # blocked -> <= floor
     d["_freed"] = _sh - _cap                                            # >= 0, only blocked rows
@@ -920,8 +924,8 @@ def _ensure_base_30d_metrics():
     # Collapse BINs into their parent Bank so the whole tab operates at the
     # Bank x Currency grain (matching the engine's scoring grain).
     _b2b = ss.get("bin_to_bank", {})
-    if _b2b and "bank" in adf_30d.columns:
-        adf_30d["bank"] = adf_30d["bank"].map(
+    if _b2b and "bin" in adf_30d.columns:
+        adf_30d["bin"] = adf_30d["bin"].map(
             lambda b: _b2b.get(b, _b2b.get(str(b).strip().lower(), b))).astype(str)
 
     if "amount" in adf_30d.columns:
@@ -940,16 +944,16 @@ def _ensure_base_30d_metrics():
 
     cell_agg = adf_30d.groupby([adf_30d["rpgt"].astype(str).str.strip().str.lower(),
                                 adf_30d["currency"].astype(str).str.strip().str.lower(),
-                                adf_30d["bank"].astype(str).str.strip().str.lower()]).agg(
+                                adf_30d["bin"].astype(str).str.strip().str.lower()]).agg(
         cell_att=("attempts", "sum"), cell_succ=("success", "sum"), cell_rev=("succ_amount", "sum")
-    ).reset_index().rename(columns={"rpgt": "rpgt_join", "currency": "currency_join", "bank": "bank_join"})
+    ).reset_index().rename(columns={"rpgt": "rpgt_join", "currency": "currency_join", "bin": "bank_join"})
     cell_agg["cell_sr"] = np.where(cell_agg["cell_att"] > 0, cell_agg["cell_succ"] / cell_agg["cell_att"], 0)
 
     # Average value per successful transaction at the Bank x Currency level (ONE
     # value per bank x currency), used consistently for every revenue figure so the
     # impact tables reconcile. Falls back to $25 if a cell has no successes.
     bc_val = adf_30d.groupby([adf_30d["currency"].astype(str).str.strip().str.lower(),
-                              adf_30d["bank"].astype(str).str.strip().str.lower()]).agg(
+                              adf_30d["bin"].astype(str).str.strip().str.lower()]).agg(
         bc_rev=("succ_amount", "sum"), bc_succ=("success", "sum"), bc_att=("attempts", "sum")
     ).reset_index()
     bc_val.columns = ["currency_join", "bank_join", "bc_rev", "bc_succ", "bc_att"]
@@ -968,10 +972,10 @@ def _ensure_base_30d_metrics():
 
     gw_agg = adf_30d.groupby([adf_30d["rpgt"].astype(str).str.strip().str.lower(),
                               adf_30d["currency"].astype(str).str.strip().str.lower(),
-                              adf_30d["bank"].astype(str).str.strip().str.lower(),
+                              adf_30d["bin"].astype(str).str.strip().str.lower(),
                               adf_30d["gateway"].astype(str).str.strip().str.lower()]).agg(
         gw_att=("attempts", "sum"), gw_succ=("success", "sum")
-    ).reset_index().rename(columns={"rpgt": "rpgt_join", "currency": "currency_join", "bank": "bank_join", "gateway": "gateway_join"})
+    ).reset_index().rename(columns={"rpgt": "rpgt_join", "currency": "currency_join", "bin": "bank_join", "gateway": "gateway_join"})
     gw_agg["gw_sr"] = np.where(gw_agg["gw_att"] > 0, gw_agg["gw_succ"] / gw_agg["gw_att"], np.nan)
 
     ss["cached_base_30d_metrics"] = {
@@ -999,14 +1003,14 @@ def _impact_eval_frame(split, cache, by_rpgt=False):
     b2b = ss.get("bin_to_bank", {})
     cell_agg, gw_agg = cache["cell_agg"], cache["gw_agg"]
     sv = split.copy()
-    if "bank" in sv.columns:
-        sv["bank"] = sv["bank"].map(
+    if "bin" in sv.columns:
+        sv["bin"] = sv["bin"].map(
             lambda b: b2b.get(b, b2b.get(str(b).strip().lower(), b))).astype(str)
-    for c in ["rpgt", "currency", "bank", "gateway"]:
+    for c in ["rpgt", "currency", "bin", "gateway"]:
         if c in sv.columns:
             sv[f"{c}_join"] = sv[c].astype(str).str.strip().str.lower()
     gcols = ["rpgt_join", "currency_join", "bank_join", "gateway_join"]
-    amap = {c: (c, "first") for c in ["rpgt", "currency", "bank", "gateway"] if c in sv.columns}
+    amap = {c: (c, "first") for c in ["rpgt", "currency", "bin", "gateway"] if c in sv.columns}
     if "share" in sv.columns: amap["share"] = ("share", "mean")
     if "baseline_share" in sv.columns: amap["baseline_share"] = ("baseline_share", "mean")
     if "volume" in sv.columns: amap["volume"] = ("volume", "sum")

@@ -34,9 +34,9 @@ def synthesise_forecast_from_success(success_df: pd.DataFrame,
     Used when a real VAMP 'pre' export isn't wired in yet. Volume = observed
     attempts; baseline_share = observed share of that gateway within the cell.
     """
-    g = (success_df.groupby(["rpgt", "currency", "bank", "gateway"], as_index=False)
+    g = (success_df.groupby(["rpgt", "currency", "bin", "gateway"], as_index=False)
          .agg(volume=("attempts", "sum")))
-    tot = g.groupby(["rpgt", "currency", "bank"])["volume"].transform("sum")
+    tot = g.groupby(["rpgt", "currency", "bin"])["volume"].transform("sum")
     g["baseline_share"] = np.where(tot > 0, g["volume"] / tot, 0.0)
     # crude per-gateway risk: higher-volume processors slightly riskier, just
     # so the sample has variation. Replace with real VAMP 'post' numbers.
@@ -95,10 +95,10 @@ def build_cell_problems(
         return str(x).strip().casefold()
 
     _srn = success_rates.copy()
-    for _c in ("rpgt", "currency", "bank", "gateway"):
+    for _c in ("rpgt", "currency", "bin", "gateway"):
         if _c in _srn.columns:
             _srn[_c] = _srn[_c].map(_nk)
-    sr = _srn.set_index(["rpgt", "currency", "bank", "gateway"])
+    sr = _srn.set_index(["rpgt", "currency", "bin", "gateway"])
     # Normalising the keys can collapse case/whitespace-variant rows onto the same key; drop
     # the resulting duplicate index entries (keep first) so `sr.loc[key]` returns exactly one
     # row (a Series) rather than a multi-row DataFrame — otherwise float(row[...]) raises.
@@ -117,7 +117,7 @@ def build_cell_problems(
     problems: list[CellProblem] = []
     _n_gw = _n_pool = 0
 
-    for (rpgt, currency, bank), cell in forecast.groupby(["rpgt", "currency", "bank"]):
+    for (rpgt, currency, bank), cell in forecast.groupby(["rpgt", "currency", "bin"]):
         gateways = list(cell["gateway"])
         vol = float(cell["volume"].sum())
         base = cell["baseline_share"].to_numpy(float)
@@ -201,7 +201,7 @@ def build_cell_problems(
             warnings.warn(
                 f"build_cell_problems: 0/{_n_gw} gateways matched a per-cell success rate — the "
                 f"forecast and success-rate join keys don't line up AT ALL (likely a BIN-vs-bankName "
-                f"mismatch on 'bank'); every rate is the pooled prior.", stacklevel=2)
+                f"mismatch on 'bin'); every rate is the pooled prior.", stacklevel=2)
         else:
             # Keys ALIGN (some matched) but per-cell data is sparse — EXPECTED on a granular
             # BIN-level forecast, where most BIN×gateway combos have no direct attempts and
@@ -236,10 +236,10 @@ def build_subcell_problems(
         return str(x).strip().casefold()
 
     _srn = success_rates.copy()
-    for _c in ("rpgt", "currency", "bank", "gateway"):
+    for _c in ("rpgt", "currency", "bin", "gateway"):
         if _c in _srn.columns:
             _srn[_c] = _srn[_c].map(_nk)
-    sr = _srn.set_index(["rpgt", "currency", "bank", "gateway"])
+    sr = _srn.set_index(["rpgt", "currency", "bin", "gateway"])
     if sr.index.has_duplicates:
         sr = sr[~sr.index.duplicated(keep="first")]
     if len(sr) and {"success", "attempts"}.issubset(sr.columns) and float(sr["attempts"].sum()) > 0:
@@ -260,7 +260,7 @@ def build_subcell_problems(
     problems: list[CellProblem] = []
     _n_gw = _n_pool = 0
     for (rpgt, currency, bank, pmp, ctry), cell in _fc.groupby(
-            ["rpgt", "currency", "bank", "pmp", "ctry"]):
+            ["rpgt", "currency", "bin", "pmp", "ctry"]):
         gateways = list(cell["gateway"])
         vol = float(cell["volume"].sum())
         base = cell["baseline_share"].to_numpy(float)

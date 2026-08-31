@@ -354,11 +354,11 @@ def _hier_vamp_shrink(d: pd.DataFrame, fallback_kappa: float = 50.0, kmax: float
     q = pd.to_numeric(d["volume"], errors="coerce").fillna(0.0).to_numpy(float)
     tot_v = float(v.sum()); tot_q = float(q.sum())
     est = _np.full(n, (tot_v / tot_q) if tot_q > 0 else 0.0)       # coarsest level = global rate
-    _t = d[["gateway", "rpgt", "bank", "currency"]].copy()
+    _t = d[["gateway", "rpgt", "bin", "currency"]].copy()
     _t["_v"] = v; _t["_q"] = q
     # coarse → fine; the final key set is the full cell grain, so its shrink is the cell itself
-    chain = [["gateway"], ["rpgt"], ["bank"], ["bank", "rpgt"],
-             ["bank", "rpgt", "currency"], ["bank", "rpgt", "currency", "gateway"]]
+    chain = [["gateway"], ["rpgt"], ["bin"], ["bin", "rpgt"],
+             ["bin", "rpgt", "currency"], ["bin", "rpgt", "currency", "gateway"]]
     levels_log = []
     for keys in chain:
         _gt = _t.groupby(keys)[["_v", "_q"]]
@@ -400,7 +400,7 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
 
     d = df.copy()
     d.columns = [str(c) for c in d.columns]
-    ren = {"vampMid": "gateway", "BIN": "bank", "Currency": "currency"}
+    ren = {"vampMid": "gateway", "BIN": "bin", "Currency": "currency"}
     for a, b in ren.items():
         if a in d.columns:
             d = d.rename(columns={a: b})
@@ -415,7 +415,7 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
     vol_col = next((c for c in ["Txn_Pre", PRE_SALES, "VI_Txn_Pre"] if c in d.columns), None)
     vamp_col = next((c for c in ["VAMP_Pre", PRE_VAMPS] if c in d.columns), None)
     if vol_col is None:
-        return pd.DataFrame(columns=["rpgt", "currency", "bank", "gateway",
+        return pd.DataFrame(columns=["rpgt", "currency", "bin", "gateway",
                                      "volume", "baseline_share", "risk_rate"])
     d["volume"] = pd.to_numeric(d[vol_col], errors="coerce").fillna(0.0)
     if vamp_col is not None:
@@ -426,7 +426,7 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
     else:
         d["_vamps"] = 0.0
 
-    for c in ["rpgt", "currency", "bank", "gateway"]:
+    for c in ["rpgt", "currency", "bin", "gateway"]:
         d[c] = d.get(c, "unknown").astype(str)
     d = d[d["volume"] > 0].copy()
 
@@ -434,7 +434,7 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
     # compute per-gateway rates or shares, so the merged row has the combined
     # volume and a volume-weighted risk rate.
     d["gateway"] = d["gateway"].map(_canonical_gateway)
-    d = (d.groupby(["rpgt", "currency", "bank", "gateway"], as_index=False)
+    d = (d.groupby(["rpgt", "currency", "bin", "gateway"], as_index=False)
            .agg(volume=("volume", "sum"), _vamps=("_vamps", "sum")))
 
     # RISK RATE: hierarchical empirical-Bayes shrinkage (default on; ROUTING_VAMP_SHRINK=0
@@ -453,9 +453,9 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
     else:
         d["risk_rate"] = _raw_rr
         _LAST_VAMP_SHRINK = {"on": False, "levels": None}
-    tot = d.groupby(["rpgt", "currency", "bank"])["volume"].transform("sum")
+    tot = d.groupby(["rpgt", "currency", "bin"])["volume"].transform("sum")
     d["baseline_share"] = (d["volume"] / tot).fillna(0.0)
-    return d[["rpgt", "currency", "bank", "gateway", "volume",
+    return d[["rpgt", "currency", "bin", "gateway", "volume",
               "baseline_share", "risk_rate"]].reset_index(drop=True)
 
 

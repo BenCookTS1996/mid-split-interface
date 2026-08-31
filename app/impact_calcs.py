@@ -2303,7 +2303,7 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     df = split.copy()
     df["RPGT"] = df["rpgt"].astype(str)
     df["Currency"] = df["currency"].astype(str).str.upper()
-    df["BIN"] = df["bank"].astype(str)
+    df["BIN"] = df["bin"].astype(str)
     df["gateway"] = df["gateway"].astype(str)
     df["share"] = pd.to_numeric(df["share"], errors="coerce").fillna(0.0)
     gateways = sorted(df["gateway"].unique().tolist())
@@ -2738,7 +2738,7 @@ def enforced_split_frame(split, brand, go_live, wallet_incapable=frozenset(), fi
     per BIN cell (each variant already sums to 1, so the pooled shares sum to ~1). Share is
     re-normalised per (rpgt, currency, bank) cell. Empty frame if the split yields no rows.
     """
-    cols = ["rpgt", "currency", "bank", "gateway", "share"]
+    cols = ["rpgt", "currency", "bin", "gateway", "share"]
     templates = build_split_exports(
         split, brand, go_live, wallet_incapable=wallet_incapable, fid2vamp=fid2vamp,
         mid_list_path=mid_list_path, usa_only=usa_only, country_pres=country_pres,
@@ -2762,16 +2762,16 @@ def enforced_split_frame(split, brand, go_live, wallet_incapable=frozenset(), fi
     if allm.empty:
         return pd.DataFrame(columns=cols)
     allm["currency"] = allm["Currency"].astype(str).str.strip().str.lower()
-    allm["bank"] = allm["BIN"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    allm["bin"] = allm["BIN"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
     allm["gateway"] = allm["gateway"].astype(str).str.strip()
     # Normalise within each export sub-cell (rpgt, currency, BIN, pmp, Country) → share sums to 1.
-    _sub = ["rpgt", "currency", "bank"] + [c for c in ["paymentMethodProvider", "Country"] if c in allm.columns]
+    _sub = ["rpgt", "currency", "bin"] + [c for c in ["paymentMethodProvider", "Country"] if c in allm.columns]
     _tot = allm.groupby(_sub)["w"].transform("sum")
     allm["_s"] = (allm["w"] / _tot).where(_tot > 0, 0.0)
     # Pool pmp / Country to the BIN grain by MEAN share, then re-normalise per (rpgt, currency, bank).
-    out = (allm.groupby(["rpgt", "currency", "bank", "gateway"], as_index=False)["_s"].mean()
+    out = (allm.groupby(["rpgt", "currency", "bin", "gateway"], as_index=False)["_s"].mean()
            .rename(columns={"_s": "share"}))
-    _renorm_share(out, ["rpgt", "currency", "bank"])
+    _renorm_share(out, ["rpgt", "currency", "bin"])
     return out[cols]
 
 
@@ -2815,7 +2815,7 @@ def pool_targeted_core(split_ideal, *, target_pools, wallet_ctx, brand_name, bra
     wc = wallet_ctx or {}
     _si = split_ideal.copy()
     if "cell_volume" not in _si.columns:
-        _si["cell_volume"] = (_si.groupby(["rpgt", "currency", "bank"])["volume"].transform("sum")
+        _si["cell_volume"] = (_si.groupby(["rpgt", "currency", "bin"])["volume"].transform("sum")
                               if "volume" in _si.columns else 1.0)
 
     # PICKLABLE count function (functools.partial of a MODULE-LEVEL fn) so the pool-budget
@@ -2845,7 +2845,7 @@ def _pool_disk_key(split_ideal, *, target_pools, wallet_ctx, brand_name, brand_k
     import hashlib as _hl
     import json as _json
     wc = wallet_ctx or {}
-    _cols = [c for c in ["rpgt", "currency", "bank", "gateway", "share", "volume",
+    _cols = [c for c in ["rpgt", "currency", "bin", "gateway", "share", "volume",
                          "cell_volume", "baseline_share", "rate"] if c in split_ideal.columns]
     try:
         _h = pd.util.hash_pandas_object(split_ideal[_cols], index=False)

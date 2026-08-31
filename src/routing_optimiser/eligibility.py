@@ -109,11 +109,11 @@ def load_restrictions(path: str) -> list[dict]:
 
 # [FN-056]
 def _resolve_field(field: str, profile: dict):
-    """Value for a rule field, aliasing 'bin' onto the 'bank' column (BIN-level
-    cells are keyed as 'bank' in this app). Returns None if unavailable."""
+    """Value for a rule field, aliasing 'bin' onto the 'bin' column (BIN-level
+    cells are keyed as 'bin' in this app). Returns None if unavailable."""
     pv = profile.get(field)
     if pv is None and field == "bin":
-        pv = profile.get("bank")
+        pv = profile.get("bin")
     return pv
 
 
@@ -183,7 +183,7 @@ def unenforceable_fields(rules: list[dict], available_cols) -> set:
     """Match-fields referenced by rules that can't be enforced at this grain
     (after aliasing BIN -> bank). The caller can warn about these (e.g. country)."""
     avail = {str(c).strip().lower() for c in available_cols}
-    if "bank" in avail:
+    if "bin" in avail:
         avail.add("bin")
     missing = set()
     for r in rules:
@@ -261,7 +261,7 @@ def _capability_blend(df: pd.DataFrame, group_cols: list[str], incapable, frac_m
     result_share = df["share"].to_numpy(float).copy()
     if not (group_cols and incapable_mask.any()):
         return result_share
-    has_cur_bank = ("currency" in df.columns and "bank" in df.columns)
+    has_cur_bank = ("currency" in df.columns and "bin" in df.columns)
     _sc_col = _subcell_col(df, kind) if kind else None
     _pos_of = {lbl: p for p, lbl in enumerate(df.index)}   # label -> positional (unique index)
     for _grp_key, row_idx in df.groupby(group_cols, dropna=False).groups.items():
@@ -272,7 +272,7 @@ def _capability_blend(df: pd.DataFrame, group_cols: list[str], incapable, frac_m
         reroute_frac = default
         if has_cur_bank:
             cur_bank_key = (str(group_rows["currency"].iloc[0]).strip().lower(),
-                            str(group_rows["bank"].iloc[0]).strip().lower())
+                            str(group_rows["bin"].iloc[0]).strip().lower())
             reroute_frac = float(frac_map.get(cur_bank_key, default))
         # EXACT at sub-cell grain: when the group is pure (one pmp / one Country), the
         # fraction is not an estimate — it is 0 or 1. `_sc_col` is None at cell grain, so
@@ -301,7 +301,7 @@ def apply_restrictions(split: pd.DataFrame, rules: list[dict], fid2vamp: dict,
                        wallet_default: float = 0.0,
                        usa_only=frozenset(), nonusa_frac: dict | None = None,
                        nonusa_default: float = 0.0,
-                       group_keys=("rpgt", "currency", "bank", "pmp", "ctry")) -> pd.DataFrame:
+                       group_keys=("rpgt", "currency", "bin", "pmp", "ctry")) -> pd.DataFrame:
     """Return the split with bans + wallet capability + country capability enforced.
 
     split: rows with at least [gateway, share] and ideally [rpgt, currency, bank].
@@ -327,7 +327,7 @@ def apply_restrictions(split: pd.DataFrame, rules: list[dict], fid2vamp: dict,
 
     # 1. Hard bans -> share 0, then renormalise within each routing group.
     if rules:
-        prof_cols = [c for c in ("rpgt", "currency", "bank", "bin", "country") if c in df.columns]
+        prof_cols = [c for c in ("rpgt", "currency", "bin", "bin", "country") if c in df.columns]
         banned = _banned_mask_cached(df, rules, prof_cols)
         if banned.any():
             df.loc[banned, "share"] = 0.0
@@ -392,7 +392,7 @@ def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, 
     cell_starts = np.asarray(starts, dtype=np.intp)
     cell_counts = np.diff(np.append(cell_starts, n)).astype(np.intp)
 
-    prof_cols = [c for c in ("rpgt", "currency", "bank", "bin", "country") if c in df.columns]
+    prof_cols = [c for c in ("rpgt", "currency", "bin", "bin", "country") if c in df.columns]
     if rules:
         if prof_cols:
             _p = df[prof_cols].astype(str)
@@ -406,8 +406,8 @@ def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, 
 
     _cur = (df["currency"].astype(str).str.strip().str.lower().to_numpy()
             if "currency" in df.columns else np.array([""] * n))
-    _bnk = (df["bank"].astype(str).str.strip().str.lower().to_numpy()
-            if "bank" in df.columns else np.array([""] * n))
+    _bnk = (df["bin"].astype(str).str.strip().str.lower().to_numpy()
+            if "bin" in df.columns else np.array([""] * n))
 
     # [FN-065]
     def _incap_mask(incapable):

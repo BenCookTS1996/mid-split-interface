@@ -187,7 +187,7 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
     """
     d = df.copy()
     d.columns = [str(c) for c in d.columns]
-    ren = {"mastercardMid": "gateway", "BIN": "bank", "Currency": "currency"}
+    ren = {"mastercardMid": "gateway", "BIN": "bin", "Currency": "currency"}
     for a, b in ren.items():
         if a in d.columns:
             d = d.rename(columns={a: b})
@@ -203,7 +203,7 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
     vol_col = next((c for c in ["Txn_Pre", PRE_SALES, "MC_Txn_Pre"] if c in d.columns), None)
     cb_col = next((c for c in ["CB_Pre", PRE_CBS] if c in d.columns), None)
     if vol_col is None:
-        return pd.DataFrame(columns=["rpgt", "currency", "bank", "gateway",
+        return pd.DataFrame(columns=["rpgt", "currency", "bin", "gateway",
                                      "volume", "baseline_share", "risk_rate"])
     d["volume"] = pd.to_numeric(d[vol_col], errors="coerce").fillna(0.0)
     if cb_col is not None:
@@ -214,18 +214,18 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
     else:
         d["_cbs"] = 0.0
 
-    for c in ["rpgt", "currency", "bank", "gateway"]:
+    for c in ["rpgt", "currency", "bin", "gateway"]:
         d[c] = d.get(c, "unknown").astype(str)
     d = d[d["volume"] > 0].copy()
 
     d["gateway"] = d["gateway"].map(_canonical_gateway)
-    d = (d.groupby(["rpgt", "currency", "bank", "gateway"], as_index=False)
+    d = (d.groupby(["rpgt", "currency", "bin", "gateway"], as_index=False)
            .agg(volume=("volume", "sum"), _cbs=("_cbs", "sum")))
 
     d["risk_rate"] = (d["_cbs"] / d["volume"].replace(0, pd.NA)).fillna(0.0)
-    tot = d.groupby(["rpgt", "currency", "bank"])["volume"].transform("sum")
+    tot = d.groupby(["rpgt", "currency", "bin"])["volume"].transform("sum")
     d["baseline_share"] = (d["volume"] / tot).fillna(0.0)
-    return d[["rpgt", "currency", "bank", "gateway", "volume",
+    return d[["rpgt", "currency", "bin", "gateway", "volume",
               "baseline_share", "risk_rate"]].reset_index(drop=True)
 
 

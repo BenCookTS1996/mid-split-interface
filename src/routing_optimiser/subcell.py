@@ -53,26 +53,26 @@ def subcell_vi_fractions(prorata: pd.DataFrame,
     viv = pd.to_numeric(df[vi], errors="coerce").fillna(0.0) if vi in df.columns else pd.Series(0.0, index=df.index)
     tt = pd.to_numeric(df[t], errors="coerce").fillna(0).astype(int) if t in df.columns else pd.Series(0, index=df.index)
 
-    g = pd.DataFrame({"cur": cur, "bank": bnk, "rpgt": rpg, "pmp": pm, "ctry": ct,
+    g = pd.DataFrame({"cur": cur, "bin": bnk, "rpgt": rpg, "pmp": pm, "ctry": ct,
                       "vi": viv, "t": tt})
     g = g[g["t"] == 0]
-    sub = g.groupby(["cur", "bank", "rpgt", "pmp", "ctry"], as_index=False)["vi"].sum()
-    cell_tot = sub.groupby(["cur", "bank", "rpgt"])["vi"].transform("sum")
+    sub = g.groupby(["cur", "bin", "rpgt", "pmp", "ctry"], as_index=False)["vi"].sum()
+    cell_tot = sub.groupby(["cur", "bin", "rpgt"])["vi"].transform("sum")
     # Cells with positive VI: fraction = sub-cell VI / cell VI.
     pos = cell_tot > 0
     sub["vi_frac"] = np.where(pos, sub["vi"] / cell_tot.where(pos, 1.0), np.nan)
 
     # Cells with zero VI (or absent from the export): one '_all_' sub-cell, frac 1.0.
-    zero_cells = (sub.loc[~pos, ["cur", "bank", "rpgt"]].drop_duplicates())
+    zero_cells = (sub.loc[~pos, ["cur", "bin", "rpgt"]].drop_duplicates())
     if len(zero_cells):
         zero_cells = zero_cells.assign(pmp=_ALL, ctry=_ALL, vi=0.0, vi_frac=1.0)
         sub = pd.concat([sub[pos], zero_cells], ignore_index=True)
-    return sub[["cur", "bank", "rpgt", "pmp", "ctry", "vi", "vi_frac"]].reset_index(drop=True)
+    return sub[["cur", "bin", "rpgt", "pmp", "ctry", "vi", "vi_frac"]].reset_index(drop=True)
 
 
 # [FN-SC02]
 def expand_forecast_to_subcells(forecast: pd.DataFrame, fractions: pd.DataFrame,
-                                *, currency="currency", bank="bank", rpgt="rpgt",
+                                *, currency="currency", bank="bin", rpgt="rpgt",
                                 volume="volume") -> pd.DataFrame:
     """Replicate each cell's rows across its (pmp, Country) sub-cells, apportioning the cell's
     forecast VOLUME by `fractions` (from :func:`subcell_vi_fractions`). Every other column
@@ -89,8 +89,8 @@ def expand_forecast_to_subcells(forecast: pd.DataFrame, fractions: pd.DataFrame,
     f["_rpgt"] = (f[rpgt].astype(str).str.strip().str.lower() if rpgt in f.columns
                   else pd.Series("all_rpgts", index=f.index))
 
-    fr = fractions[["cur", "bank", "rpgt", "pmp", "ctry", "vi_frac"]].rename(
-        columns={"cur": "_cur", "bank": "_bank", "rpgt": "_rpgt"})
+    fr = fractions[["cur", "bin", "rpgt", "pmp", "ctry", "vi_frac"]].rename(
+        columns={"cur": "_cur", "bin": "_bank", "rpgt": "_rpgt"})
     merged = f.merge(fr, on=["_cur", "_bank", "_rpgt"], how="left")
 
     # Cells absent from `fractions` → single '_all_' sub-cell, frac 1.0 (behaves like cell grain).

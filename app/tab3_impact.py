@@ -186,10 +186,10 @@ def render():
                 # collapsing it to "Other" — means the Mid Detail / bank breakdowns show the actual
                 # banks, while the numeric-vs-name split still cleanly separates BIN-specific
                 # overrides (numeric) from fallback cells (bank names) everywhere downstream.
-                if "bin" in _adf_v.columns and "bank" in _split_v.columns:
+                if "bin" in _adf_v.columns and "bin" in _split_v.columns:
                     _sv_r = _split_v["rpgt"].astype(str).str.strip().str.lower()
                     _sv_c = _split_v["currency"].astype(str).str.strip().str.lower()
-                    _sv_b = _split_v["bank"].astype(str).str.strip()
+                    _sv_b = _split_v["bin"].astype(str).str.strip()
                     _explicit_bins: dict = {}   # (rpgt,currency) -> {explicit numeric BINs}
                     for _r, _c, _b in zip(_sv_r, _sv_c, _sv_b):
                         if _b.replace(".", "", 1).isdigit():
@@ -197,11 +197,11 @@ def render():
                     _a_r = _adf_v["rpgt"].astype(str).str.strip().str.lower()
                     _a_c = _adf_v["currency"].astype(str).str.strip().str.lower()
                     _a_b = _adf_v["bin"].astype(str).str.strip()
-                    _orig_bank = _adf_v["bank"].astype(str).to_numpy()   # real issuing-bank name
+                    _orig_bank = _adf_v["bin"].astype(str).to_numpy()   # real issuing-bank name
                     _mapped = []
                     for _k, _b, _ob in zip(zip(_a_r, _a_c), _a_b, _orig_bank):
                         _mapped.append(_b if _b in _explicit_bins.get(_k, ()) else _ob)
-                    _adf_v["bank"] = _mapped
+                    _adf_v["bin"] = _mapped
                 ss["adf"] = _adf_v
                 ss.setdefault("bin_to_bank", {})   # v1: raw-bank alignment (BIN on both sides)
                 ss["opt_by_rpgt"] = True
@@ -228,16 +228,16 @@ def render():
 
                 def _is_num(s):
                     return _lc(s).str.replace(".", "", 1, regex=False).str.isdigit()
-                _keep = ["rpgt", "currency", "bank", "gateway", "share", "baseline_share", "cell_volume"]
+                _keep = ["rpgt", "currency", "bin", "gateway", "share", "baseline_share", "cell_volume"]
 
                 # BIN-specific override rows: proposed share vs observed per-BIN baseline.
-                _spec = _split_v[_is_num(_split_v["bank"]).to_numpy()].copy()
+                _spec = _split_v[_is_num(_split_v["bin"]).to_numpy()].copy()
                 if not _spec.empty:
                     _cagg = _cache_v["cell_agg"]
                     _gagg = _cache_v["gw_agg"]
                     _spec["rpgt_join"] = _lc(_spec["rpgt"])
                     _spec["currency_join"] = _lc(_spec["currency"])
-                    _spec["bank_join"] = _lc(_spec["bank"])
+                    _spec["bank_join"] = _lc(_spec["bin"])
                     _spec["gateway_join"] = _lc(_spec["gateway"])
                     _spec = _spec.merge(_cagg[["rpgt_join", "currency_join", "bank_join", "cell_att"]],
                                         on=["rpgt_join", "currency_join", "bank_join"], how="left")
@@ -256,11 +256,11 @@ def render():
                     _spec = pd.DataFrame(columns=_keep)
 
                 # Catch-all cells rebuilt from the observed live actuals (all gateways).
-                _adf_o = _adf_v[~_is_num(_adf_v["bank"]).to_numpy()].copy()
+                _adf_o = _adf_v[~_is_num(_adf_v["bin"]).to_numpy()].copy()
                 _adf_o["_a"] = pd.to_numeric(_adf_o.get("attempts", 0), errors="coerce").fillna(0.0).astype("float64")
-                _obs = _adf_o.groupby(["rpgt", "currency", "bank", "gateway"], as_index=False)["_a"].sum()
+                _obs = _adf_o.groupby(["rpgt", "currency", "bin", "gateway"], as_index=False)["_a"].sum()
                 if not _obs.empty:
-                    _ct = _obs.groupby(["rpgt", "currency", "bank"])["_a"].transform("sum").to_numpy(dtype="float64")
+                    _ct = _obs.groupby(["rpgt", "currency", "bin"])["_a"].transform("sum").to_numpy(dtype="float64")
                     _av = _obs["_a"].to_numpy(dtype="float64")
                     with np.errstate(divide="ignore", invalid="ignore"):
                         _osh = np.where(_ct > 0, _av / _ct, 0.0)
@@ -411,9 +411,9 @@ def render():
             _mid_list_e = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
             _csrc = split_ideal.copy()
             if "cell_volume" not in _csrc.columns:
-                _csrc["cell_volume"] = (_csrc.groupby(["rpgt", "currency", "bank"])["volume"].transform("sum")
+                _csrc["cell_volume"] = (_csrc.groupby(["rpgt", "currency", "bin"])["volume"].transform("sum")
                                         if "volume" in _csrc.columns else 1.0)
-            _raw_cells = int(_csrc.groupby(["rpgt", "currency", "bank"]).ngroups)
+            _raw_cells = int(_csrc.groupby(["rpgt", "currency", "bin"]).ngroups)
             # Signature of everything the pool-targeted result depends on (tab 4 uses the
             # default 'sales' mode for its cards/export; tab 6 keys its own mode separately).
             _pool_sig = (float(picked_w), _maxN, ss.get("variations_engine"), _brand_key_e,
@@ -432,7 +432,7 @@ def render():
                     # Validate: only the BIN-specific overrides are a real deployed change — every
                     # other cell is the live-actuals fallback. Count pools from the BIN-specific
                     # rows only, so the Pools card reflects the splits actually being validated.
-                    _num = (_si["bank"].astype(str).str.strip()
+                    _num = (_si["bin"].astype(str).str.strip()
                             .str.replace(".", "", 1, regex=False).str.isdigit())
                     _si = _si[_num.to_numpy()].copy()
                 return pool_targeted_compression(
@@ -461,14 +461,14 @@ def render():
                 # gateways new to a cell via the cluster centroid get baseline_share 0.
                 _cl = _comp_long.copy()
                 if "baseline_share" in split_ideal.columns:
-                    _bl = split_ideal[["rpgt", "currency", "bank", "gateway", "baseline_share"]].drop_duplicates(
-                        ["rpgt", "currency", "bank", "gateway"])
+                    _bl = split_ideal[["rpgt", "currency", "bin", "gateway", "baseline_share"]].drop_duplicates(
+                        ["rpgt", "currency", "bin", "gateway"])
                     # The compressed frame may ALREADY carry a baseline_share; dropping it first stops the
                     # merge from producing suffixed baseline_share_x/_y (which broke the plain-name access
                     # below with a KeyError). split_ideal is the authoritative pre-split baseline.
                     if "baseline_share" in _cl.columns:
                         _cl = _cl.drop(columns=["baseline_share"])
-                    _cl = _cl.merge(_bl, on=["rpgt", "currency", "bank", "gateway"], how="left")
+                    _cl = _cl.merge(_bl, on=["rpgt", "currency", "bin", "gateway"], how="left")
                     _cl["baseline_share"] = _cl["baseline_share"].fillna(0.0)
                 _cl["volume"] = _cl["cell_volume"] * _cl["share"]
                 _impact_split = _cl
@@ -499,9 +499,9 @@ def render():
                     return _spl
                 _b2b = ss.get("bin_to_bank", {})
                 _enf = _enf.copy()
-                _enf["bank"] = _map_to_bank(_enf["bank"], _b2b).astype(str)
-                _enf = _enf.groupby(["rpgt", "currency", "bank", "gateway"], as_index=False)["share"].mean()
-                _renorm_share(_enf, ["rpgt", "currency", "bank"])
+                _enf["bin"] = _map_to_bank(_enf["bin"], _b2b).astype(str)
+                _enf = _enf.groupby(["rpgt", "currency", "bin", "gateway"], as_index=False)["share"].mean()
+                _renorm_share(_enf, ["rpgt", "currency", "bin"])
                 # Backup catch-all re-adds (e.g. Braintree) at gateway grain, per (rpgt,currency,bank).
                 _bc = ss.get("backup_catchall") or {}
                 if _bc and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
@@ -514,20 +514,20 @@ def render():
                             _acc[(_cur, _rp)][str(_g).strip().lower()] += float(_v)
                     _pooled = {k: {g: v / max(_cnt[k], 1) for g, v in gw.items()} for k, gw in _acc.items()}
                     _rows = []
-                    for (_rp, _cur, _bnk), _grp in _enf.groupby(["rpgt", "currency", "bank"]):
+                    for (_rp, _cur, _bnk), _grp in _enf.groupby(["rpgt", "currency", "bin"]):
                         _spec = {str(r["gateway"]): float(r["share"]) for _, r in _grp.iterrows()}
                         _ca = _pooled.get((str(_cur).strip().lower(), str(_rp).strip().lower()), {})
                         _eff = _bcs(_spec, _ca) if _ca else _spec
                         for _g, _s in _eff.items():
-                            _rows.append({"rpgt": _rp, "currency": _cur, "bank": _bnk, "gateway": _g, "share": _s})
+                            _rows.append({"rpgt": _rp, "currency": _cur, "bin": _bnk, "gateway": _g, "share": _s})
                     if _rows:
                         _enf = pd.DataFrame(_rows)
                 if "baseline_share" in _spl.columns:
                     # OUTER-merge so gateways that were routed PRE but dropped to 0 POST still appear
                     # (post share 0), and back-fill gateways new POST get baseline 0 — both show in Δ.
-                    _bl = _spl[["rpgt", "currency", "bank", "gateway", "baseline_share"]].drop_duplicates(
-                        ["rpgt", "currency", "bank", "gateway"])
-                    _enf = _enf.merge(_bl, on=["rpgt", "currency", "bank", "gateway"], how="outer")
+                    _bl = _spl[["rpgt", "currency", "bin", "gateway", "baseline_share"]].drop_duplicates(
+                        ["rpgt", "currency", "bin", "gateway"])
+                    _enf = _enf.merge(_bl, on=["rpgt", "currency", "bin", "gateway"], how="outer")
                     _enf["share"] = _enf["share"].fillna(0.0)
                     _enf["baseline_share"] = _enf["baseline_share"].fillna(0.0)
                 # Carry per-cell volume through so the eval frame can size pre/post volume + revenue.
@@ -535,12 +535,12 @@ def render():
                 # NOT — without this, _impact_eval_frame's cell_volume/volume would be missing.)
                 _cvsrc = None
                 if "cell_volume" in _spl.columns:
-                    _cvsrc = _spl.groupby(["rpgt", "currency", "bank"], as_index=False)["cell_volume"].first()
+                    _cvsrc = _spl.groupby(["rpgt", "currency", "bin"], as_index=False)["cell_volume"].first()
                 elif "volume" in _spl.columns:
-                    _cvsrc = (_spl.groupby(["rpgt", "currency", "bank"], as_index=False)["volume"].sum()
+                    _cvsrc = (_spl.groupby(["rpgt", "currency", "bin"], as_index=False)["volume"].sum()
                               .rename(columns={"volume": "cell_volume"}))
                 if _cvsrc is not None:
-                    _enf = _enf.merge(_cvsrc, on=["rpgt", "currency", "bank"], how="left")
+                    _enf = _enf.merge(_cvsrc, on=["rpgt", "currency", "bin"], how="left")
                     _enf["cell_volume"] = pd.to_numeric(_enf["cell_volume"], errors="coerce").fillna(0.0)
                     _enf["volume"] = _enf["cell_volume"] * _enf["share"]
                 # Belt-and-suspenders: drop switched-off gateways (target=0, trx/both) from the eval
@@ -559,7 +559,7 @@ def render():
                         _gc = _enf["gateway"].map(_cge).astype(str).str.strip().str.lower()
                         _enf = _enf[~_gc.isin(_off_e)].copy()
                         if "share" in _enf.columns:
-                            _renorm_share(_enf, ["rpgt", "currency", "bank"])
+                            _renorm_share(_enf, ["rpgt", "currency", "bin"])
                             if "cell_volume" in _enf.columns:
                                 _enf["volume"] = _enf["cell_volume"] * _enf["share"]
                 except Exception as _e:  # noqa: BLE001
@@ -931,16 +931,16 @@ def render():
                 with _bbc_col.container(border=True):
                     st.markdown("##### Bank-blocked gateways")
                     _bf = _blk_df[_blk_df["blocked"]].copy()
-                    # The 'bank' column holds the BIN; add the parent Bank Name beside it.
+                    # The 'bin' column holds the BIN; add the parent Bank Name beside it.
                     _b2b_blk = ss.get("bin_to_bank", {})
-                    _bf["bank_name"] = _map_to_bank(_bf["bank"], _b2b_blk, default="").astype(str)
-                    _cols_bf = [c for c in ["bank", "bank_name", "gateway", "consec_failed", "last_success_date"]
+                    _bf["bank_name"] = _map_to_bank(_bf["bin"], _b2b_blk, default="").astype(str)
+                    _cols_bf = [c for c in ["bin", "bank_name", "gateway", "consec_failed", "last_success_date"]
                                 if c in _bf.columns]
                     if "consec_failed" in _bf.columns:
                         _bf = _bf.sort_values("consec_failed", ascending=False)
                     # Styled HTML table (red sticky header / card bg / ink text) so the format matches
                     # the app's other data tables.
-                    _hdr_bf = {"bank": "BIN", "bank_name": "Bank Name", "gateway": "Gateway",
+                    _hdr_bf = {"bin": "BIN", "bank_name": "Bank Name", "gateway": "Gateway",
                                "consec_failed": "Failed Attempts",
                                "last_success_date": "Last success"}
                     _bkh = ['<div style="display:inline-block; max-width:100%; '
@@ -950,7 +950,7 @@ def render():
                             '<table style="width:auto; border-collapse:collapse; font-family:inherit; '
                             'font-size:0.72rem; line-height:1.2; table-layout:auto;"><tr>']
                     for _c in _cols_bf:
-                        _al = "left" if _c in ("bank", "bank_name", "gateway") else "right"
+                        _al = "left" if _c in ("bin", "bank_name", "gateway") else "right"
                         # Header wraps (white-space:normal) so a long label like "Consecutive failed
                         # attempts" no longer forces the column wider than its (short) values.
                         _bkh.append(f'<th style="background-color:var(--tav-red); color:#FFF; '
@@ -961,7 +961,7 @@ def render():
                     for _, _rbk in _bf.iterrows():
                         _bkh.append('<tr>')
                         for _c in _cols_bf:
-                            _al = "left" if _c in ("bank", "bank_name", "gateway") else "right"
+                            _al = "left" if _c in ("bin", "bank_name", "gateway") else "right"
                             _cv = _rbk[_c]
                             if _c == "consec_failed":
                                 _cn = pd.to_numeric(_cv, errors="coerce")
@@ -1131,7 +1131,7 @@ def render():
                             _cellagg_bk = cell_agg[cell_agg["rpgt_join"].astype(str).str.strip().str.lower() == _kbk]
                     cell_impact = _eval_bk.groupby(["rpgt_join", "currency_join", "bank_join"]).agg(exp_succ=("exp_succ", "sum"), exp_rev=("exp_rev", "sum"), pre_rev=("pre_rev", "sum")).reset_index()
                     cell_full = _cellagg_bk.merge(cell_impact, on=["rpgt_join", "currency_join", "bank_join"], how="left").fillna(0)
-                    bank_display_map = eval_df[["bank_join", "bank"]].drop_duplicates().set_index("bank_join")["bank"].to_dict()
+                    bank_display_map = eval_df[["bank_join", "bin"]].drop_duplicates().set_index("bank_join")["bin"].to_dict()
 
                     bank_table = cell_full.groupby(["bank_join", "currency_join"]).agg(old_att=("cell_att", "sum"), old_succ=("cell_succ", "sum"), old_rev=("cell_rev", "sum"), old_rev_pre=("pre_rev", "sum"), new_succ=("exp_succ", "sum"), new_rev=("exp_rev", "sum"), avg_ticket=("avg_ticket", "first")).reset_index()
                     # Baseline revenue on the MODELLED pre_rev basis (same basis as the Expected
@@ -1266,16 +1266,16 @@ def render():
                     _spr["_vm"] = _spr["gateway"].astype(str).str.strip().str.lower().map(_f2v_r)
                     _spr = _spr.dropna(subset=["_vm"])
                     if bool(ss.get("opt_by_rpgt", False)) and "rpgt" in _spr.columns:
-                        _spr = _spr.drop_duplicates(["currency", "bank", "rpgt", "gateway"])
-                        _pdf = _spr.groupby(["currency", "bank", "rpgt", "_vm"], as_index=False)["share"].sum()
+                        _spr = _spr.drop_duplicates(["currency", "bin", "rpgt", "gateway"])
+                        _pdf = _spr.groupby(["currency", "bin", "rpgt", "_vm"], as_index=False)["share"].sum()
                         _prop_r = tuple((str(c).lower(), str(b), str(rp), str(v), float(s))
                                         for c, b, rp, v, s in
-                                        _pdf[["currency", "bank", "rpgt", "_vm", "share"]].itertuples(index=False))
+                                        _pdf[["currency", "bin", "rpgt", "_vm", "share"]].itertuples(index=False))
                     else:
-                        _spr = _spr.drop_duplicates(["currency", "bank", "gateway"])
-                        _pdf = _spr.groupby(["currency", "bank", "_vm"], as_index=False)["share"].sum()
+                        _spr = _spr.drop_duplicates(["currency", "bin", "gateway"])
+                        _pdf = _spr.groupby(["currency", "bin", "_vm"], as_index=False)["share"].sum()
                         _prop_r = tuple((str(c).lower(), str(b), str(v), float(s))
-                                        for c, b, v, s in _pdf[["currency", "bank", "_vm", "share"]].itertuples(index=False))
+                                        for c, b, v, s in _pdf[["currency", "bin", "_vm", "share"]].itertuples(index=False))
                     # Use ENFORCED shares (post cap / wallet / USA-Non-USA / back-fill) so revenue
                     # reflects the pipeline's actual routing — same source as the risk pre/post table
                     # (shared per-variation cache).
@@ -1469,10 +1469,10 @@ def render():
                     a = _adf_raw.copy()   # px is re-imported later where it's first used
                     # Collapse BINs into their parent Bank (Bank x Currency grain).
                     _b2b_d = ss.get("bin_to_bank", {})
-                    if _b2b_d and "bank" in a.columns:
-                        a["bank"] = _map_to_bank(a["bank"], _b2b_d).astype(str)
+                    if _b2b_d and "bin" in a.columns:
+                        a["bin"] = _map_to_bank(a["bin"], _b2b_d).astype(str)
                     _dc2 = "date" if "date" in a.columns else ("Date" if "Date" in a.columns else None)
-                    a["bank_currency"] = a["bank"].astype(str).str.strip() + " - " + a["currency"].astype(str).str.strip().str.upper()
+                    a["bank_currency"] = a["bin"].astype(str).str.strip() + " - " + a["currency"].astype(str).str.strip().str.upper()
                     bc_opts = sorted(a["bank_currency"].dropna().unique().tolist())
                     gw_opts = sorted(a["gateway"].astype(str).str.strip().dropna().unique().tolist())
 
@@ -1493,7 +1493,7 @@ def render():
                         a["_d"] = pd.to_datetime(a[_dc2], errors="coerce")
                         _bv = sel_bc.split(" - ")[0].strip().lower()
                         _cv = sel_bc.split(" - ")[1].strip().lower()
-                        mask = ((a["bank"].astype(str).str.strip().str.lower() == _bv)
+                        mask = ((a["bin"].astype(str).str.strip().str.lower() == _bv)
                                 & (a["currency"].astype(str).str.strip().str.lower() == _cv))
                         d = a[mask].copy()
                         # No date filters now → default to the most recent 30 days in the data.
@@ -1596,7 +1596,7 @@ def render():
                     [data-testid="stPlotlyChart"] > div, [data-testid="stPlotlyChart"] .js-plotly-plot, [data-testid="stPlotlyChart"] .plot-container { max-width: 100% !important; }
                 </style>""", unsafe_allow_html=True)
             
-                eval_df["bank_currency"] = eval_df["bank"] + " - " + eval_df["currency"].str.upper()
+                eval_df["bank_currency"] = eval_df["bin"] + " - " + eval_df["currency"].str.upper()
                 bank_list = sorted(eval_df["bank_currency"].dropna().unique().tolist())
                 # Follow the 'Raw daily attempts & successes' Bank/Currency selection instead of a
                 # separate filter. Falls back to whole-portfolio if that selection isn't present in
@@ -1612,11 +1612,11 @@ def render():
                     else:
                         b_val = selected_bank.split(" - ")[0]
                         c_val = selected_bank.split(" - ")[1].lower()
-                        _bj_tmp = eval_df.loc[(eval_df["bank"] == b_val) & (eval_df["currency_join"] == c_val), "bank_join"]
+                        _bj_tmp = eval_df.loc[(eval_df["bin"] == b_val) & (eval_df["currency_join"] == c_val), "bank_join"]
                         # A bank label containing " - " can split wrong, leaving an empty match — fall
                         # back to the bank part's own join key instead of IndexError-ing on .iloc[0].
                         b_join = _bj_tmp.iloc[0] if not _bj_tmp.empty else str(b_val).strip().lower()
-                        plot_adf_sel = adf_30d[(adf_30d["bank"].astype(str).str.strip().str.lower() == b_join) & (adf_30d["currency"].astype(str).str.strip().str.lower() == c_val)].copy()
+                        plot_adf_sel = adf_30d[(adf_30d["bin"].astype(str).str.strip().str.lower() == b_join) & (adf_30d["currency"].astype(str).str.strip().str.lower() == c_val)].copy()
                         b_df = eval_df[(eval_df["bank_join"] == b_join) & (eval_df["currency_join"] == c_val)].copy()
                 
                     # vampMid-level SR / gateway-share charts: map gatewayFid → vampMid via
@@ -1872,7 +1872,7 @@ def render():
                             _b2b = ss.get("bin_to_bank", {})
                             _pb = str(_b2b.get(_bv, _b2b.get(str(_bv).strip().lower(), _bv))).strip().lower()
                             _a = _a[(_a["currency"].astype(str).str.strip().str.lower() == _cv)
-                                    & (_a["bank"].astype(str).str.strip().str.lower() == _pb)]
+                                    & (_a["bin"].astype(str).str.strip().str.lower() == _pb)]
                             _escore = _a.groupby("_gj")["_sr"].mean().to_dict()
                         else:
                             _escore = (_a.groupby("_gj")
@@ -1984,15 +1984,15 @@ def render():
                         # (independent of the Bank Analysis selection).
                         with _t_gwdet:
                             _gwf1, _gwf2, _gwfsp = st.columns([1, 1, 4])
-                            _bopts = (["(All)"] + sorted(adf_30d["bank"].astype(str).str.strip().unique().tolist())
-                                      if "bank" in adf_30d.columns else ["(All)"])
+                            _bopts = (["(All)"] + sorted(adf_30d["bin"].astype(str).str.strip().unique().tolist())
+                                      if "bin" in adf_30d.columns else ["(All)"])
                             _ropts = (["(All)"] + sorted(adf_30d["rpgt"].astype(str).str.title().str.strip().unique().tolist())
                                       if "rpgt" in adf_30d.columns else ["(All)"])
                             _gw_selb = _gwf1.selectbox("Bank", _bopts, key="gwdet_bank")
                             _gw_selr = _gwf2.selectbox("RPGT", _ropts, key="gwdet_rpgt")
                         _src_gw = adf_30d
-                        if _gw_selb != "(All)" and "bank" in _src_gw.columns:
-                            _src_gw = _src_gw[_src_gw["bank"].astype(str).str.strip() == _gw_selb]
+                        if _gw_selb != "(All)" and "bin" in _src_gw.columns:
+                            _src_gw = _src_gw[_src_gw["bin"].astype(str).str.strip() == _gw_selb]
                         if _gw_selr != "(All)" and "rpgt" in _src_gw.columns:
                             _src_gw = _src_gw[_src_gw["rpgt"].astype(str).str.title().str.strip() == _gw_selr]
                         if "date_clean" in _src_gw.columns:
@@ -2255,11 +2255,11 @@ def render():
                         try:
                             _agg_tm = ss.get("agg_sr")
                             if (HAS_PLOTLY and _agg_tm is not None and not _agg_tm.empty
-                                    and {"bank", "gateway", "attempts", "success_rate"}.issubset(_agg_tm.columns)):
+                                    and {"bin", "gateway", "attempts", "success_rate"}.issubset(_agg_tm.columns)):
                                 _b2b_tm = ss.get("bin_to_bank", {})
                                 _tm = _agg_tm.copy()
                                 _tm["_vm"] = _tm["gateway"].astype(str).str.strip().str.lower().map(_f2v_bi).astype(str)
-                                _tm["parent"] = _map_to_bank(_tm["bank"], _b2b_tm).astype(str).str.upper()
+                                _tm["parent"] = _map_to_bank(_tm["bin"], _b2b_tm).astype(str).str.upper()
                                 _tm["attempts"] = pd.to_numeric(_tm["attempts"], errors="coerce").fillna(0.0)
                                 _tm["success_rate"] = pd.to_numeric(_tm["success_rate"], errors="coerce").fillna(0.0)
                                 _tm["_wsr"] = _tm["success_rate"] * _tm["attempts"]
@@ -2392,7 +2392,7 @@ def render():
                             st.caption("Bank treemap unavailable for this vampMid.")
                         # FULL per-vampMid per-bank agg (drives BOTH the sortable table and the bridge's
                         # Current/Proposed totals + 'Other banks' roll-up).
-                        _gfull = _evv[_evv["_vmid"].astype(str) == _gsel].groupby("bank", as_index=False).agg(
+                        _gfull = _evv[_evv["_vmid"].astype(str) == _gsel].groupby("bin", as_index=False).agg(
                             pre_vol=("pre_vol", "sum"), post_vol=("post_vol", "sum"),
                             vol_delta=("vol_delta", "sum"), rev_delta=("rev_delta", "sum"),
                             pre_rev=("pre_rev", "sum"), post_rev=("post_rev", "sum"),
@@ -2403,7 +2403,7 @@ def render():
                             st.info("No banks for this vampMid.")
                         else:
                             # Sortable table (click any header). green↑/red↓ shading on 30D $ Impact.
-                            _disp = _gt[["bank", "rev_delta", "share_delta_pp", "vol_delta",
+                            _disp = _gt[["bin", "rev_delta", "share_delta_pp", "vol_delta",
                                          "pre_vol", "post_vol"]].copy()
                             _disp.columns = ["Bank", "30D $ Impact", "Δ Share (pp)",
                                              "Δ Volume (txns)", "Pre Volume", "Post Volume"]
@@ -2428,7 +2428,7 @@ def render():
                             _gb_sort = "Top absolute movers"   # bank bridge always shows the biggest movers
                             _gbpre, _gbpost = ("pre_rev", "post_rev") if _gb_money else ("pre_vol", "post_vol")
                             _vm_wf = None
-                            _gbi = _bridge_items(_gfull, "bank", _gbpre, _gbpost, _gb_sort, "Other banks")
+                            _gbi = _bridge_items(_gfull, "bin", _gbpre, _gbpost, _gb_sort, "Other banks")
                             if _gbi is not None:
                                 _vm_wf = _rev_bridge_waterfall(*_gbi, money=_gb_money)
                             # Sortable table beside the bridge (the bank treemap is at the TOP of the tab).
@@ -2450,7 +2450,7 @@ def render():
             # --- Banks per vampMid: how widely each MID is spread across banks ---
             _bpm_split = ss.get("split")
             if (HAS_PLOTLY and _bpm_split is not None and not getattr(_bpm_split, "empty", True)
-                    and {"gateway", "bank", "share"}.issubset(getattr(_bpm_split, "columns", []))):
+                    and {"gateway", "bin", "share"}.issubset(getattr(_bpm_split, "columns", []))):
                 with _t_engwork.container():
                     try:
                         import plotly.graph_objects as _gbp
@@ -2463,8 +2463,8 @@ def render():
                         _gwl = _d["gateway"].astype(str).str.strip().str.lower()
                         _d["_vm"] = (_gwl.map(_f2v).fillna(_d["gateway"].astype(str)) if _f2v
                                      else _d["gateway"].astype(str))
-                        # 'bank' holds the BIN; map it to its parent bank for the distinct-banks view.
-                        _d["_pb"] = _map_to_bank(_d["bank"], _b2b).astype(str)
+                        # 'bin' holds the BIN; map it to its parent bank for the distinct-banks view.
+                        _d["_pb"] = _map_to_bank(_d["bin"], _b2b).astype(str)
 
                         # [FN-370]
                         def _spread_fig(_col, _unit):
@@ -2507,7 +2507,7 @@ def render():
                                            tickfont=dict(color="#0B1F3A", size=9)))
                             return _f
 
-                        _fig_bin = _spread_fig("bank", "BIN(s)")
+                        _fig_bin = _spread_fig("bin", "BIN(s)")
                         _fig_bank = _spread_fig("_pb", "bank(s)")
                         if _fig_bin is None and _fig_bank is None:
                             st.info("No routed share in the selected split.")
@@ -2736,10 +2736,10 @@ def render():
                 # Collapse BINs into their parent Bank so the debug table is at
                 # the Bank x Currency grain (matching the selection & engine).
                 _b2b_s = ss.get("bin_to_bank", {})
-                if _b2b_s and "bank" in sr_df.columns:
-                    sr_df["bank"] = _map_to_bank(sr_df["bank"], _b2b_s).astype(str)
+                if _b2b_s and "bin" in sr_df.columns:
+                    sr_df["bin"] = _map_to_bank(sr_df["bin"], _b2b_s).astype(str)
 
-                if sr_df.empty or "bank" not in sr_df.columns:
+                if sr_df.empty or "bin" not in sr_df.columns:
                     st.info("This diagnostic is only available for an engine-computed split "
                             "(**2 · Routing engine**); a validated split doesn't build the "
                             "granular per-BIN success-rate cache it needs.")
@@ -2751,9 +2751,9 @@ def render():
                         st.write("**Diagnostics:**")
                         st.write(f"- Looking for BIN: `{b_val}` and Currency: `{c_val}`")
                         st.write(f"- Total rows available in Engine Cache: `{len(sr_df)}`")
-                        st.write(f"- Sample of unique BINs in cache: `{sr_df['bank'].astype(str).unique()[:10]}`")
+                        st.write(f"- Sample of unique BINs in cache: `{sr_df['bin'].astype(str).unique()[:10]}`")
                     
-                    sr_df = sr_df[(sr_df["bank"].astype(str).str.upper() == b_val.upper()) & (sr_df["currency"].astype(str).str.lower() == c_val)]
+                    sr_df = sr_df[(sr_df["bin"].astype(str).str.upper() == b_val.upper()) & (sr_df["currency"].astype(str).str.lower() == c_val)]
                 
                     if debug_mode:
                         st.write(f"- Rows found after filtering: `{len(sr_df)}`")
@@ -2771,7 +2771,7 @@ def render():
                 
                     sr_df["weighted_sr"] = sr_df[rate_col] * sr_df[att_col]
                 
-                    workings = sr_df.groupby(["bank", "currency", "gateway"]).agg(
+                    workings = sr_df.groupby(["bin", "currency", "gateway"]).agg(
                         All_Time_Attempts=(att_col, "sum"),
                         All_Time_Success=(succ_col, "sum"),
                         Weighted_SR=("weighted_sr", "sum")
@@ -2790,14 +2790,14 @@ def render():
                     if agg_sr_lk is not None and not agg_sr_lk.empty:
                         a = agg_sr_lk.copy()
                         a["_cj"] = a["currency"].astype(str).str.strip().str.lower()
-                        a["_pj"] = a["bank"].astype(str).str.strip().str.lower()
+                        a["_pj"] = a["bin"].astype(str).str.strip().str.lower()
                         a["_gj"] = a["gateway"].astype(str).str.strip().str.lower()
                         _acols = ["_cj", "_pj", "_gj", "attempts", "success", "prior_rate", "success_rate"]
                         if "kappa" in a.columns:
                             _acols.append("kappa")
                         a = a[_acols].drop_duplicates(["_cj", "_pj", "_gj"])
                         workings["_cj"] = workings["currency"].astype(str).str.strip().str.lower()
-                        workings["_pj"] = workings["bank"].map(_parent)
+                        workings["_pj"] = workings["bin"].map(_parent)
                         workings["_gj"] = workings["gateway"].astype(str).str.strip().str.lower()
                         workings = workings.merge(a, on=["_cj", "_pj", "_gj"], how="left")
                         workings["Engine Score (Smoothed SR)"] = workings["success_rate"].fillna(0.0)
@@ -2832,15 +2832,15 @@ def render():
                         # Fallback = the (bank, currency, gateway) grouped mean, looked up PER ROW by
                         # key (reindex on workings' own keys) rather than assigned by position — a
                         # key-sorted .values array would otherwise attach scores to the wrong cell.
-                        _grp_fb = sr_df.groupby(["bank", "currency", "gateway"])[rate_col].mean()
+                        _grp_fb = sr_df.groupby(["bin", "currency", "gateway"])[rate_col].mean()
                         _grp_fb_aligned = _grp_fb.reindex(
-                            pd.MultiIndex.from_frame(workings[["bank", "currency", "gateway"]])).to_numpy()
+                            pd.MultiIndex.from_frame(workings[["bin", "currency", "gateway"]])).to_numpy()
                         workings["Engine Score (Smoothed SR)"] = np.where(workings["All_Time_Attempts"] > 0, workings["Weighted_SR"] / workings["All_Time_Attempts"], _grp_fb_aligned)
                         for _c in ["Prior SR %", "Bayesian Adj Attempts", "Bayesian Adj Success", "All-Time Attempts (raw)", "κ used"]:
                             workings[_c] = 0.0
                     workings["All-Time Raw SR"] = np.where(workings["All_Time_Attempts"] > 0, workings["All_Time_Success"] / workings["All_Time_Attempts"], 0)
                 
-                    workings["bank_join"] = workings["bank"].astype(str).str.strip().str.lower()
+                    workings["bank_join"] = workings["bin"].astype(str).str.strip().str.lower()
                     workings["currency_join"] = workings["currency"].astype(str).str.strip().str.lower()
                     workings["gateway_join"] = workings["gateway"].astype(str).str.strip().str.lower()
                 
@@ -2868,12 +2868,12 @@ def render():
                         gw_sh_det = pd.DataFrame(columns=["bank_join", "currency_join", "gateway_join", "Gateway", "curr_vol", "Expected_Attempts", "Expected_Success", "Expected_Rev", "Pre_Rev", "Baseline_Success", "Baseline_Attempts"])
                 
                     if not plot_adf_sel.empty:
-                        raw_gw_det = plot_adf_sel.groupby(["bank", "currency", "gateway"]).agg(
+                        raw_gw_det = plot_adf_sel.groupby(["bin", "currency", "gateway"]).agg(
                             Raw_Gateway=("gateway", "first"),
                             raw_att=("attempts", "sum"),
                             raw_succ=("success", "sum"),
                             raw_amount=("succ_amount", "sum")
-                        ).reset_index().rename(columns={"bank": "bank_join", "currency": "currency_join", "gateway": "gateway_join"})
+                        ).reset_index().rename(columns={"bin": "bank_join", "currency": "currency_join", "gateway": "gateway_join"})
                         raw_gw_det["bank_join"] = raw_gw_det["bank_join"].astype(str).str.strip().str.lower()
                         raw_gw_det["currency_join"] = raw_gw_det["currency_join"].astype(str).str.strip().str.lower()
                         raw_gw_det["gateway_join"] = raw_gw_det["gateway_join"].astype(str).str.strip().str.lower()
@@ -2955,7 +2955,7 @@ def render():
                     try:
                         _ca_t = cache.get("cell_agg") if isinstance(cache, dict) else None
                         if (_ca_t is not None and not plot_adf_sel.empty
-                                and {"rpgt", "currency", "bank", "gateway", "success"}.issubset(plot_adf_sel.columns)
+                                and {"rpgt", "currency", "bin", "gateway", "success"}.issubset(plot_adf_sel.columns)
                                 and {"rpgt_join", "currency_join", "bank_join", "rpgt_ticket"}.issubset(_ca_t.columns)):
                             _tk = _ca_t[["rpgt_join", "currency_join", "bank_join", "rpgt_ticket"]].copy()
                             if "avg_ticket" in _ca_t.columns:
@@ -2964,7 +2964,7 @@ def render():
                             _rs = _rs.assign(
                                 rpgt_join=_rs["rpgt"].astype(str).str.strip().str.lower(),
                                 currency_join=_rs["currency"].astype(str).str.strip().str.lower(),
-                                bank_join=_rs["bank"].astype(str).str.strip().str.lower(),
+                                bank_join=_rs["bin"].astype(str).str.strip().str.lower(),
                                 gateway_join=_rs["gateway"].astype(str).str.strip().str.lower(),
                                 _succ=pd.to_numeric(_rs["success"], errors="coerce").fillna(0.0),
                                 _att=pd.to_numeric(_rs.get("attempts", 0), errors="coerce").fillna(0.0))
@@ -3140,7 +3140,7 @@ def render():
                     # Bank x Currency (the grain the engine scores on) and repeat across a gateway's RPGTs.
                     if (not b_df.empty) and {"rpgt", "gateway"}.issubset(b_df.columns):
                         _b = b_df.copy()
-                        for _kj, _sc0 in (("gateway_join", "gateway"), ("bank_join", "bank"), ("currency_join", "currency")):
+                        for _kj, _sc0 in (("gateway_join", "gateway"), ("bank_join", "bin"), ("currency_join", "currency")):
                             if _kj not in _b.columns:
                                 _b[_kj] = _b[_sc0].astype(str).str.strip().str.lower()
                         _grp = ["bank_join", "currency_join", "rpgt", "gateway_join"]
@@ -4059,19 +4059,19 @@ def render():
                     # for the compute_vamp_post_by_mid fallback, which is RPGT-agnostic.
                     _disp_by_rpgt = bool(ss.get("opt_by_rpgt", False)) and "rpgt" in sp.columns
                     if _disp_by_rpgt:
-                        sp = sp.drop_duplicates(["currency", "bank", "rpgt", "gateway"])
-                        _pdf = sp.groupby(["currency", "bank", "rpgt", "_vm"], as_index=False)["share"].sum()
+                        sp = sp.drop_duplicates(["currency", "bin", "rpgt", "gateway"])
+                        _pdf = sp.groupby(["currency", "bin", "rpgt", "_vm"], as_index=False)["share"].sum()
                         prop_items = tuple((str(c).lower(), str(b), str(rp), str(v), float(s))
                                            for c, b, rp, v, s in
-                                           _pdf[["currency", "bank", "rpgt", "_vm", "share"]].itertuples(index=False))
-                        _pdf_flat = sp.groupby(["currency", "bank", "_vm"], as_index=False)["share"].sum()
+                                           _pdf[["currency", "bin", "rpgt", "_vm", "share"]].itertuples(index=False))
+                        _pdf_flat = sp.groupby(["currency", "bin", "_vm"], as_index=False)["share"].sum()
                         prop_items_flat = tuple((str(c).lower(), str(b), str(v), float(s))
-                                                for c, b, v, s in _pdf_flat[["currency", "bank", "_vm", "share"]].itertuples(index=False))
+                                                for c, b, v, s in _pdf_flat[["currency", "bin", "_vm", "share"]].itertuples(index=False))
                     else:
-                        sp = sp.drop_duplicates(["currency", "bank", "gateway"])
-                        prop_df = sp.groupby(["currency", "bank", "_vm"], as_index=False)["share"].sum()
+                        sp = sp.drop_duplicates(["currency", "bin", "gateway"])
+                        prop_df = sp.groupby(["currency", "bin", "_vm"], as_index=False)["share"].sum()
                         prop_items = tuple((str(c).lower(), str(b), str(v), float(s))
-                                           for c, b, v, s in prop_df[["currency", "bank", "_vm", "share"]].itertuples(index=False))
+                                           for c, b, v, s in prop_df[["currency", "bin", "_vm", "share"]].itertuples(index=False))
                         prop_items_flat = prop_items
 
                     fs_cfg = ss.get("forecast_settings", {})

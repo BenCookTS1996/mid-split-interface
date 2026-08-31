@@ -49,7 +49,13 @@ def load_success_data(source) -> pd.DataFrame:
     # 2. Safely extract values from the schema mapping using .get() to avoid KeyErrors
     rename_map = {
         C.get("currency", "currency"): "currency",
-        C.get("bank_name", "bankName"): "bank",
+        # 19eo: a bank NAME is kept under a name. Until now this landed in a column called
+        # `bank`, while the forecast put the BIN in a column of the same name - two unrelated
+        # vocabularies (0 shared values across 2,138,100 rows) meeting on one join key.
+        C.get("bank_name", "bankName"): "bank_name",
+        # ...and the BIN is the join key, carried through explicitly rather than reassigned
+        # downstream by a set-overlap contest (see 19ei [bin-key]).
+        C.get("bin", "bin"): "bin",
         C.get("processor", "processor"): "processor",
         C.get("gateway_fid", "gatewayFid"): "gateway",
         C.get("initial_attempt", "initialattempt"): "attempts",
@@ -126,7 +132,7 @@ def _empirical_bayes_kappa(grp: pd.DataFrame, scope: list[str],
     # bias kappa. So `bank` is always part of the per-cell grouping (added here if
     # it isn't already in `scope`); we measure the spread WITHIN each
     # (scope, bank) cell, then attempt-weight-pool those cells up to `scope`.
-    cell_extra = [] if "bank" in scope else ["bank"]
+    cell_extra = [] if "bin" in scope else ["bin"]
     for key, g in grp.groupby(scope):
         key = key if isinstance(key, tuple) else (key,)
         n_all = g["attempts"].to_numpy(float)
@@ -196,7 +202,7 @@ def gateway_success_rates(
     """
     df = _apply_time_decay(df, time_decay_half_life_days)
     grp = (
-        df.groupby(["rpgt", "currency", "bank", gateway_col], as_index=False)
+        df.groupby(["rpgt", "currency", "bin", gateway_col], as_index=False)
         .agg(attempts=("attempts", "sum"), success=("success", "sum"))
     )
     grp = grp.rename(columns={gateway_col: "gateway"})
@@ -262,17 +268,17 @@ def detect_blocked_gateways(adf, min_consecutive: float, date_col: str = "date")
     last_success_date, blocked (bool), sorted by consec_failed descending. Empty if the inputs
     lack the needed columns or `min_consecutive` <= 0.
     """
-    cols = ["bank", "gateway", "consec_failed", "last_success_date", "blocked"]
-    need = {"bank", "gateway", "attempts", "success"}
+    cols = ["bin", "gateway", "consec_failed", "last_success_date", "blocked"]
+    need = {"bin", "gateway", "attempts", "success"}
     if (adf is None or not need.issubset(getattr(adf, "columns", [])) or date_col not in
             getattr(adf, "columns", []) or float(min_consecutive) <= 0):
         return pd.DataFrame(columns=cols)
-    d = adf[["bank", "gateway", "attempts", "success", date_col]].copy()
+    d = adf[["bin", "gateway", "attempts", "success", date_col]].copy()
     d["_day"] = pd.to_datetime(d[date_col], errors="coerce").dt.normalize()
     d = d.dropna(subset=["_day"])
     if d.empty:
         return pd.DataFrame(columns=cols)
-    d["_bank"] = d["bank"].astype(str)
+    d["_bank"] = d["bin"].astype(str)
     d["_gw"] = d["gateway"].astype(str)
     d["att"] = pd.to_numeric(d["attempts"], errors="coerce").fillna(0.0)
     d["suc"] = pd.to_numeric(d["success"], errors="coerce").fillna(0.0)
@@ -290,7 +296,7 @@ def detect_blocked_gateways(adf, min_consecutive: float, date_col: str = "date")
              .rename(columns={"_day": "last_success_date"}))
     out = out.merge(_succ, on=["_bank", "_gw"], how="left")
     out["blocked"] = out["consec_failed"] >= float(min_consecutive)
-    out = out.rename(columns={"_bank": "bank", "_gw": "gateway"})
+    out = out.rename(columns={"_bank": "bin", "_gw": "gateway"})
     return out[cols].sort_values("consec_failed", ascending=False).reset_index(drop=True)
 
 
@@ -309,7 +315,7 @@ def rpgt_gateway_sensitivity(sr_df, avg_ticket: float = 1.0, min_attempts: float
     Returns one row per rpgt: ``volume`` (30-day attempts), ``sensitivity_pp``,
     ``dollars_at_stake``, ``cells`` (number of routable cells), sorted by dollars.
     """
-    need = {"rpgt", "currency", "bank", "gateway", "attempts", "success_rate"}
+    need = {"rpgt", "currency", "bin", "gateway", "attempts", "success_rate"}
     d = sr_df.copy()
     missing = need - set(d.columns)
     if missing:
@@ -320,7 +326,7 @@ def rpgt_gateway_sensitivity(sr_df, avg_ticket: float = 1.0, min_attempts: float
     cols = ["rpgt", "volume", "sensitivity_pp", "dollars_at_stake", "cells"]
     if d.empty:
         return pd.DataFrame(columns=cols)
-    cell = d.groupby(["rpgt", "currency", "bank"], as_index=False).agg(
+    cell = d.groupby(["rpgt", "currency", "bin"], as_index=False).agg(
         vol=("attempts", "sum"), rmax=("success_rate", "max"),
         rmin=("success_rate", "min"), ngw=("gateway", "nunique"))
     # Only cells with ≥2 eligible gateways are reroutable; single-gateway cells
