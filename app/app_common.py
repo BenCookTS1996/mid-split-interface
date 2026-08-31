@@ -1010,6 +1010,26 @@ def _ensure_base_30d_metrics():
 
 
 # [FN-244]
+def ensure_cols(df, spec):
+    """Guarantee every column in `spec` exists on `df` as a REAL Series, in place.
+
+    `spec` is an iterable of (name, default). THE TRAP THIS CLOSES, which this codebase has now
+    hit three times: `DataFrame.get(col, 0)` returns the DEFAULT — a bare int — when the column
+    is absent, so `pd.to_numeric(...).fillna(...)` on it raises
+
+        AttributeError: 'int' object has no attribute 'fillna'
+
+    naming neither the column nor the frame that was actually missing. `_impact_eval_frame` below
+    already guards its own inputs this way (see its loop); `forecast_pipeline._reconcile_pre_...`
+    was silently doing nothing for two builds for the same reason (19au). Optional enrichment
+    that did not run should leave a column of defaults behind, not a scalar landmine.
+    """
+    for _c, _d in spec:
+        if _c not in df.columns:
+            df[_c] = _d
+    return df
+
+
 def _impact_eval_frame(split, cache, by_rpgt=False):
     """Per-(rpgt, currency, bank, gateway) pre/post frame for a proposed split,
     using the SAME revenue basis as the Impact tab (cell_att × share × gw_sr ×

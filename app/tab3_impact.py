@@ -20,7 +20,7 @@ from impact_calcs import (_c_prepost_granular, _c_read_parquet, _mtime, build_ki
                           pool_targeted_compression, projection_cache_sig, rpgt_avg_ticket,
                           rpgt_currency_avg_ticket)
 
-from app_common import (load_mid_list, _norm_cols, _map_to_bank, _renorm_share, run_company,
+from app_common import (ensure_cols, load_mid_list, _norm_cols, _map_to_bank, _renorm_share, run_company,
                         _fid2vamp_from)  # memoised MID reader + shared helpers
 from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, DEFAULT_GATEWAY_FIDS,
                         HAS_PLOTLY, _ensure_base_30d_metrics, _impact_eval_frame, _ink_caption,
@@ -2959,6 +2959,16 @@ def render():
                     workings_full["BIN"] = workings_full["BIN"].fillna(workings_full["bin_join"].str.upper())
                     workings_full["Currency"] = workings_full["Currency"].fillna(workings_full["currency_join"].str.upper())
                 
+                    # 19ez: same guard, same reason — these come from optional enrichment blocks
+                    # above, and four of the reads below are the BARE form with no pd.to_numeric,
+                    # so a missing column crashed on `.fillna` rather than reading as zero.
+                    ensure_cols(workings_full, (
+                        ("All_Time_Attempts", 0.0), ("All-Time Raw SR", 0.0),
+                        ("Engine Score (Smoothed SR)", 0.0), ("raw_amount", 0.0),
+                        ("raw_succ", 0.0), ("Avg txn value (Bank x Cur)", 0.0),
+                        ("Expected_Rev", 0.0), ("Expected_Attempts", 0.0),
+                        ("Expected_Success", 0.0), ("curr_vol", 0.0),
+                        ("Baseline_Success", 0.0)))
                     workings_full["All-Time Attempts"] = workings_full.get("All_Time_Attempts", 0).fillna(0)
                     workings_full["All-Time Raw SR"] = workings_full.get("All-Time Raw SR", 0).fillna(0)
                     workings_full["Engine Score (Smoothed SR)"] = workings_full.get("Engine Score (Smoothed SR)", 0).fillna(0)
@@ -3233,19 +3243,16 @@ def render():
                                                 left_on=["bin_join", "currency_join", "_rpgt_l", "gateway_join"],
                                                 right_on=["bin_join", "currency_join", "rpgt_join", "gateway_join"])
                                 _wr = _wr.drop(columns=["_rpgt_l", "rpgt_join"], errors="ignore")
-                            # 19ey: `DataFrame.get(col, 0)` returns the DEFAULT — the int 0 — when
-                            # the column is absent, and `pd.to_numeric(0)` is a scalar, so `.fillna`
-                            # raised AttributeError: 'int' object has no attribute 'fillna'. The
-                            # same trap is recorded in forecast_pipeline.py's 19au fix, where a
-                            # guard spent two builds silently doing nothing for this exact reason.
-                            # A missing column should give a column of zeros, not an exception.
-                            def _col0(_df, _c):
-                                if _c in _df.columns:
-                                    return pd.to_numeric(_df[_c], errors="coerce").fillna(0.0)
-                                return pd.Series(0.0, index=_df.index)
-                            _wr["Raw Attempts (30D)"] = _col0(_wr, "raw_att")
-                            _wr["Raw Successes (30D)"] = _col0(_wr, "raw_succ")
-                            _wr["Pre Revenue (Adj)"] = pd.to_numeric(_wr.get("pre_rev_raw"), errors="coerce").fillna(0.0)
+                            # 19ez: the merge above is CONDITIONAL on `_raw_rpgt`, so when that
+                            # enrichment does not run these three columns never arrive and every
+                            # `.get(col, 0)` below returns a bare int. Guarantee them as real
+                            # Series first — the same fix app_common._impact_eval_frame already
+                            # applies to its own inputs.
+                            ensure_cols(_wr, (("raw_att", 0.0), ("raw_succ", 0.0),
+                                              ("pre_rev_raw", 0.0)))
+                            _wr["Raw Attempts (30D)"] = pd.to_numeric(_wr["raw_att"], errors="coerce").fillna(0.0)
+                            _wr["Raw Successes (30D)"] = pd.to_numeric(_wr["raw_succ"], errors="coerce").fillna(0.0)
+                            _wr["Pre Revenue (Adj)"] = pd.to_numeric(_wr["pre_rev_raw"], errors="coerce").fillna(0.0)
                             # merge POOLED score / softmax / allocation / genetic columns (broadcast per RPGT)
                             _pool = [c for c in ["Cross-border?", "All_Time_Attempts", "All_Time_Success", "All-Time Raw SR",
                                                  "Prior SR %", "κ used", "Bayesian Adj Attempts", "Bayesian Adj Success",
