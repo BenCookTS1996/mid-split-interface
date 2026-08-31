@@ -445,8 +445,17 @@ class ExportManager:
             base_cols.insert(4, 'paymentMethodProvider')
         if 'Country' in t_data.columns:
             base_cols.insert(4, 'Country')
+        # 19ep: carry POST as well as PRE, mirroring the visa export. APPENDED, not inserted,
+        # so the Country / paymentMethodProvider positions above are untouched.
+        _post_src = [c for c in ('CB_Post', 'MC_Txn_Post') if c in t_data.columns]
+        base_cols = base_cols + _post_src
         df = t_data[base_cols].copy()
-        df = df.rename(columns={rpgt_col: 'RPGT', 'CB_Pre': 'cbCount', 'MC_Txn_Pre': 'MC_Txn_Count'})
+        df = df.rename(columns={rpgt_col: 'RPGT', 'CB_Pre': 'cbCount', 'MC_Txn_Pre': 'MC_Txn_Count',
+                                'CB_Post': 'cbCount_Post', 'MC_Txn_Post': 'MC_Txn_Count_Post'})
+        if len(_post_src) < 2:
+            logger.warning("   > pro-rata export: t_data carries %s of the two POST columns, so "
+                           "tab 3's Validate table will keep reading bin_rpgt_impact_export.csv.",
+                           len(_post_src))
         df['orig_period'] = df['period'].astype(int) - df['t'].astype(int)
         df['is_mr'] = df['RPGT'].astype(str).str.lower().str.strip() == 'monthly renewal'
         lut = self._prorata_lookup()

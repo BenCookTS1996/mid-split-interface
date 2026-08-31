@@ -570,8 +570,19 @@ class ExportManager:
             base_cols.insert(4, 'paymentMethodProvider')  # after Currency
         if 'Country' in t_data.columns:
             base_cols.insert(4, 'Country')                # after Currency (USA/Non-USA baseline)
+        # 19ep: carry POST as well as PRE. `t_data` has had these all along — the granular
+        # impact export (bin_rpgt) picks them up and this one did not, which is the only reason
+        # tab 3's Validate table still had to read bin_rpgt for a pre-vs-post view. APPENDED,
+        # not inserted, so the Country / paymentMethodProvider positions above are untouched.
+        _post_src = [c for c in ('VAMP_Post', 'VI_Txn_Post') if c in t_data.columns]
+        base_cols = base_cols + _post_src
         df = t_data[base_cols].copy()
-        df = df.rename(columns={rpgt_col: 'RPGT', 'VAMP_Pre': 'vampCount', 'VI_Txn_Pre': 'VI_Txn_Count'})
+        df = df.rename(columns={rpgt_col: 'RPGT', 'VAMP_Pre': 'vampCount', 'VI_Txn_Pre': 'VI_Txn_Count',
+                                'VAMP_Post': 'vampCount_Post', 'VI_Txn_Post': 'VI_Txn_Count_Post'})
+        if len(_post_src) < 2:
+            logger.warning("   > pro-rata export: t_data carries %s of the two POST columns, so "
+                           "tab 3's Validate table will keep reading bin_rpgt_impact_export.csv. "
+                           "A pre-vs-post view needs both.", len(_post_src))
         df['orig_period'] = df['period'].astype(int) - df['t'].astype(int)
         df['is_mr'] = df['RPGT'].astype(str).str.lower().str.strip() == 'monthly renewal'
         lut = self._prorata_lookup()

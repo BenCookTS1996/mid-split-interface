@@ -124,10 +124,59 @@ def render():
     # PROPOSED split with no pipeline run) never calls this. Returns None if the file/cols are absent.
     def _validate_granular_from_bin_rpgt(_od):
         try:
-            _bp = os.path.join(_od or "", "bin_rpgt_impact_export.csv")
-            if not os.path.exists(_bp):
-                return None
-            _bd = pd.read_csv(_bp)
+            # ── 19ep: PREFER THE PRO-RATA EXPORT ──────────────────────────────────────────
+            # Everything else in the pipeline baselines off the pro-rata export; this table
+            # could not, because it is a PRE vs POST view and that file was baseline-only.
+            # 19ep makes the pipeline emit `vampCount_Post` / `VI_Txn_Count_Post` (and the
+            # Mastercard equivalents), so it can now — aggregated to bin_rpgt's own key set
+            # (id, RPGT, BIN, Currency, period) so BOTH paths hand the code below an
+            # identical shape and nothing downstream can tell which one it got.
+            #
+            # THE FALLBACK IS NOT OPTIONAL. Pro-rata exports written before 19ep have no Post
+            # columns, and a missing Post must NEVER be read as a Post of zero — that renders
+            # as "the split changed nothing", which is a wrong answer rather than a missing
+            # one. So the Post columns must BOTH be present, or this reads bin_rpgt as before.
+            _pp = os.path.join(_od or "", "vamp_t_period_prorata_export.csv")
+            _mp_ = os.path.join(_od or "", "mc_cb_t_period_prorata_export.csv")
+            _bd = None
+            _src = None
+            for _pth, _idc0, _pre, _post, _tpre, _tpost in (
+                    (_pp, "vampMid", "vampCount", "vampCount_Post",
+                     "VI_Txn_Count", "VI_Txn_Count_Post"),
+                    (_mp_, "mastercardMid", "cbCount", "cbCount_Post",
+                     "MC_Txn_Count", "MC_Txn_Count_Post")):
+                if not os.path.exists(_pth):
+                    continue
+                _pd_ = pd.read_csv(_pth)
+                if not {_post, _tpost}.issubset(_pd_.columns):
+                    continue                      # pre-19ep export — no Post, use bin_rpgt
+                _rpc0 = "RPGT" if "RPGT" in _pd_.columns else "rpgt"
+                _k0 = [c for c in (_idc0, _rpc0, "BIN", "Currency", "period")
+                       if c in _pd_.columns]
+                _vals = [c for c in (_pre, _post, _tpre, _tpost) if c in _pd_.columns]
+                # Sum over t / Country / paymentMethodProvider — the grain the pro-rata export
+                # has and bin_rpgt does not.
+                _bd = _pd_.groupby(_k0, as_index=False, observed=True)[_vals].sum()
+                _bd = _bd.rename(columns={
+                    _pre: ("VAMP_Pre" if _idc0 == "vampMid" else "CB_Pre"),
+                    _post: ("VAMP_Post" if _idc0 == "vampMid" else "CB_Post"),
+                    _tpre: "Txn_Pre", _tpost: "Txn_Post"})
+                _src = os.path.basename(_pth)
+                break
+            if _bd is None:
+                _bp = os.path.join(_od or "", "bin_rpgt_impact_export.csv")
+                if not os.path.exists(_bp):
+                    return None
+                _bd = pd.read_csv(_bp)
+                _src = "bin_rpgt_impact_export.csv"
+            try:
+                st.caption(f"Validate granular source: `{_src}`"
+                           + ("" if _src.endswith("prorata_export.csv") else
+                              " — the pro-rata export carries no POST columns yet, so this "
+                              "table still reads the legacy impact export. Re-run the forecast "
+                              "to move it onto the same file as everything else."))
+            except Exception:  # noqa: BLE001 - a caption must never break the table
+                pass
             _idc = ("vampMid" if "vampMid" in _bd.columns
                     else ("mastercardMid" if "mastercardMid" in _bd.columns else None))
             _vpre = "VAMP_Pre" if "VAMP_Pre" in _bd.columns else "CB_Pre"
