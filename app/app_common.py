@@ -946,7 +946,7 @@ def _ensure_base_30d_metrics():
                                 adf_30d["currency"].astype(str).str.strip().str.lower(),
                                 adf_30d["bin"].astype(str).str.strip().str.lower()]).agg(
         cell_att=("attempts", "sum"), cell_succ=("success", "sum"), cell_rev=("succ_amount", "sum")
-    ).reset_index().rename(columns={"rpgt": "rpgt_join", "currency": "currency_join", "bin": "bank_join"})
+    ).reset_index().rename(columns={"rpgt": "rpgt_join", "currency": "currency_join", "bin": "bin_join"})
     cell_agg["cell_sr"] = np.where(cell_agg["cell_att"] > 0, cell_agg["cell_succ"] / cell_agg["cell_att"], 0)
 
     # Average value per successful transaction at the Bank x Currency level (ONE
@@ -956,10 +956,10 @@ def _ensure_base_30d_metrics():
                               adf_30d["bin"].astype(str).str.strip().str.lower()]).agg(
         bc_rev=("succ_amount", "sum"), bc_succ=("success", "sum"), bc_att=("attempts", "sum")
     ).reset_index()
-    bc_val.columns = ["currency_join", "bank_join", "bc_rev", "bc_succ", "bc_att"]
+    bc_val.columns = ["currency_join", "bin_join", "bc_rev", "bc_succ", "bc_att"]
     bc_val["avg_txn_value"] = np.where(bc_val["bc_succ"] > 0, bc_val["bc_rev"] / bc_val["bc_succ"], 25.0)
-    cell_agg = cell_agg.merge(bc_val[["currency_join", "bank_join", "avg_txn_value"]],
-                              on=["currency_join", "bank_join"], how="left")
+    cell_agg = cell_agg.merge(bc_val[["currency_join", "bin_join", "avg_txn_value"]],
+                              on=["currency_join", "bin_join"], how="left")
     cell_agg["avg_ticket"] = cell_agg["avg_txn_value"].fillna(25.0)
     cell_agg = cell_agg.drop(columns=["avg_txn_value"])
     # Per-RPGT ticket (Bank×Currency×RPGT grain): used for revenue when the optimisation
@@ -975,7 +975,7 @@ def _ensure_base_30d_metrics():
                               adf_30d["bin"].astype(str).str.strip().str.lower(),
                               adf_30d["gateway"].astype(str).str.strip().str.lower()]).agg(
         gw_att=("attempts", "sum"), gw_succ=("success", "sum")
-    ).reset_index().rename(columns={"rpgt": "rpgt_join", "currency": "currency_join", "bin": "bank_join", "gateway": "gateway_join"})
+    ).reset_index().rename(columns={"rpgt": "rpgt_join", "currency": "currency_join", "bin": "bin_join", "gateway": "gateway_join"})
     gw_agg["gw_sr"] = np.where(gw_agg["gw_att"] > 0, gw_agg["gw_succ"] / gw_agg["gw_att"], np.nan)
 
     ss["cached_base_30d_metrics"] = {
@@ -1009,7 +1009,7 @@ def _impact_eval_frame(split, cache, by_rpgt=False):
     for c in ["rpgt", "currency", "bin", "gateway"]:
         if c in sv.columns:
             sv[f"{c}_join"] = sv[c].astype(str).str.strip().str.lower()
-    gcols = ["rpgt_join", "currency_join", "bank_join", "gateway_join"]
+    gcols = ["rpgt_join", "currency_join", "bin_join", "gateway_join"]
     amap = {c: (c, "first") for c in ["rpgt", "currency", "bin", "gateway"] if c in sv.columns}
     if "share" in sv.columns: amap["share"] = ("share", "mean")
     if "baseline_share" in sv.columns: amap["baseline_share"] = ("baseline_share", "mean")
@@ -1017,8 +1017,8 @@ def _impact_eval_frame(split, cache, by_rpgt=False):
     if "cell_volume" in sv.columns: amap["cell_volume"] = ("cell_volume", "sum")
     sv = sv.groupby(gcols, as_index=False).agg(**amap)
 
-    ev = sv.merge(cell_agg, on=["rpgt_join", "currency_join", "bank_join"], how="left")
-    ev = ev.merge(gw_agg[["rpgt_join", "currency_join", "bank_join", "gateway_join", "gw_sr"]],
+    ev = sv.merge(cell_agg, on=["rpgt_join", "currency_join", "bin_join"], how="left")
+    ev = ev.merge(gw_agg[["rpgt_join", "currency_join", "bin_join", "gateway_join", "gw_sr"]],
                   on=gcols, how="left")
     # Guarantee every column the calc below reads exists as a real Series. A split fed in without
     # cell_volume / avg_ticket / etc. (e.g. the enforced-split revenue view) would otherwise make
@@ -1047,7 +1047,7 @@ def _impact_eval_frame(split, cache, by_rpgt=False):
     # Impact, per-RPGT breakdown) with no per-table rescaling. Idempotent — a no-op when the
     # shares already sum to 1.
     for _sc in ("share", "baseline_share"):
-        _tsum = ev.groupby(["rpgt_join", "currency_join", "bank_join"])[_sc].transform("sum").to_numpy()
+        _tsum = ev.groupby(["rpgt_join", "currency_join", "bin_join"])[_sc].transform("sum").to_numpy()
         ev[_sc] = np.where(_tsum > 0, ev[_sc].to_numpy() / _tsum, ev[_sc].to_numpy())
     _cv = pd.to_numeric(ev.get("cell_volume", 0), errors="coerce").fillna(0.0)
 

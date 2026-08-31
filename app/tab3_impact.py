@@ -286,12 +286,12 @@ def render():
                     _gagg = _cache_v["gw_agg"]
                     _spec["rpgt_join"] = _lc(_spec["rpgt"])
                     _spec["currency_join"] = _lc(_spec["currency"])
-                    _spec["bank_join"] = _lc(_spec["bin"])
+                    _spec["bin_join"] = _lc(_spec["bin"])
                     _spec["gateway_join"] = _lc(_spec["gateway"])
-                    _spec = _spec.merge(_cagg[["rpgt_join", "currency_join", "bank_join", "cell_att"]],
-                                        on=["rpgt_join", "currency_join", "bank_join"], how="left")
-                    _spec = _spec.merge(_gagg[["rpgt_join", "currency_join", "bank_join", "gateway_join", "gw_att"]],
-                                        on=["rpgt_join", "currency_join", "bank_join", "gateway_join"], how="left")
+                    _spec = _spec.merge(_cagg[["rpgt_join", "currency_join", "bin_join", "cell_att"]],
+                                        on=["rpgt_join", "currency_join", "bin_join"], how="left")
+                    _spec = _spec.merge(_gagg[["rpgt_join", "currency_join", "bin_join", "gateway_join", "gw_att"]],
+                                        on=["rpgt_join", "currency_join", "bin_join", "gateway_join"], how="left")
                     _cv = pd.to_numeric(_spec["cell_att"], errors="coerce").to_numpy(dtype="float64", na_value=np.nan)
                     _gv = pd.to_numeric(_spec["gw_att"], errors="coerce").to_numpy(dtype="float64", na_value=np.nan)
                     _cv = np.where(np.isnan(_cv), 0.0, _cv)
@@ -897,7 +897,7 @@ def render():
                 # Cell key = (rpgt, currency, bank); cell_volume is the cell total on every row.
                 _sc["_cellk"] = (_sc["rpgt_join"].astype(str) + "|"
                                  + _sc["currency_join"].astype(str) + "|"
-                                 + _sc["bank_join"].astype(str))
+                                 + _sc["bin_join"].astype(str))
                 _sc["cell_volume"] = pd.to_numeric(_sc.get("cell_volume", 0), errors="coerce").fillna(0.0)
                 _sc["gw_sr"] = pd.to_numeric(_sc.get("gw_sr", 0), errors="coerce").fillna(0.0)
                 # Max-approval hypothetical: the single highest-gw_sr eligible gateway per cell takes
@@ -1178,15 +1178,15 @@ def render():
                             _eval_bk = eval_df[eval_df["rpgt_join"].astype(str).str.strip().str.lower() == _kbk]
                         if "rpgt_join" in cell_agg.columns:
                             _cellagg_bk = cell_agg[cell_agg["rpgt_join"].astype(str).str.strip().str.lower() == _kbk]
-                    cell_impact = _eval_bk.groupby(["rpgt_join", "currency_join", "bank_join"]).agg(exp_succ=("exp_succ", "sum"), exp_rev=("exp_rev", "sum"), pre_rev=("pre_rev", "sum")).reset_index()
-                    cell_full = _cellagg_bk.merge(cell_impact, on=["rpgt_join", "currency_join", "bank_join"], how="left").fillna(0)
-                    bank_display_map = eval_df[["bank_join", "bin"]].drop_duplicates().set_index("bank_join")["bin"].to_dict()
+                    cell_impact = _eval_bk.groupby(["rpgt_join", "currency_join", "bin_join"]).agg(exp_succ=("exp_succ", "sum"), exp_rev=("exp_rev", "sum"), pre_rev=("pre_rev", "sum")).reset_index()
+                    cell_full = _cellagg_bk.merge(cell_impact, on=["rpgt_join", "currency_join", "bin_join"], how="left").fillna(0)
+                    bank_display_map = eval_df[["bin_join", "bin"]].drop_duplicates().set_index("bin_join")["bin"].to_dict()
 
-                    bank_table = cell_full.groupby(["bank_join", "currency_join"]).agg(old_att=("cell_att", "sum"), old_succ=("cell_succ", "sum"), old_rev=("cell_rev", "sum"), old_rev_pre=("pre_rev", "sum"), new_succ=("exp_succ", "sum"), new_rev=("exp_rev", "sum"), avg_ticket=("avg_ticket", "first")).reset_index()
+                    bank_table = cell_full.groupby(["bin_join", "currency_join"]).agg(old_att=("cell_att", "sum"), old_succ=("cell_succ", "sum"), old_rev=("cell_rev", "sum"), old_rev_pre=("pre_rev", "sum"), new_succ=("exp_succ", "sum"), new_rev=("exp_rev", "sum"), avg_ticket=("avg_ticket", "first")).reset_index()
                     # Baseline revenue on the MODELLED pre_rev basis (same basis as the Expected
                     # Revenue card and every other bridge, so all revenue bridges reconcile).
                     bank_table["old_rev"] = bank_table["old_rev_pre"]
-                    bank_table["Bank"] = (bank_table["bank_join"].map(bank_display_map).fillna(bank_table["bank_join"]).astype(str)
+                    bank_table["Bank"] = (bank_table["bin_join"].map(bank_display_map).fillna(bank_table["bin_join"]).astype(str)
                                           + " - " + bank_table["currency_join"].astype(str).str.upper())
                     bank_table["Attempts"] = bank_table["old_att"]
                     bank_table["Baseline Success"] = bank_table["old_succ"]
@@ -1661,12 +1661,12 @@ def render():
                     else:
                         b_val = selected_bank.split(" - ")[0]
                         c_val = selected_bank.split(" - ")[1].lower()
-                        _bj_tmp = eval_df.loc[(eval_df["bin"] == b_val) & (eval_df["currency_join"] == c_val), "bank_join"]
+                        _bj_tmp = eval_df.loc[(eval_df["bin"] == b_val) & (eval_df["currency_join"] == c_val), "bin_join"]
                         # A bank label containing " - " can split wrong, leaving an empty match — fall
                         # back to the bank part's own join key instead of IndexError-ing on .iloc[0].
                         b_join = _bj_tmp.iloc[0] if not _bj_tmp.empty else str(b_val).strip().lower()
                         plot_adf_sel = adf_30d[(adf_30d["bin"].astype(str).str.strip().str.lower() == b_join) & (adf_30d["currency"].astype(str).str.strip().str.lower() == c_val)].copy()
-                        b_df = eval_df[(eval_df["bank_join"] == b_join) & (eval_df["currency_join"] == c_val)].copy()
+                        b_df = eval_df[(eval_df["bin_join"] == b_join) & (eval_df["currency_join"] == c_val)].copy()
                 
                     # vampMid-level SR / gateway-share charts: map gatewayFid → vampMid via
                     # Master_MID_List, then collapse. Only the CHART frames (daily_gw + local copies
@@ -2889,7 +2889,7 @@ def render():
                             workings[_c] = 0.0
                     workings["All-Time Raw SR"] = np.where(workings["All_Time_Attempts"] > 0, workings["All_Time_Success"] / workings["All_Time_Attempts"], 0)
                 
-                    workings["bank_join"] = workings["bin"].astype(str).str.strip().str.lower()
+                    workings["bin_join"] = workings["bin"].astype(str).str.strip().str.lower()
                     workings["currency_join"] = workings["currency"].astype(str).str.strip().str.lower()
                     workings["gateway_join"] = workings["gateway"].astype(str).str.strip().str.lower()
                 
@@ -2911,10 +2911,10 @@ def render():
                             _agg_kw["Baseline_Success"] = ("pre_succ", "sum")
                         if "pre_att" in b_df.columns:
                             _agg_kw["Baseline_Attempts"] = ("pre_att", "sum")
-                        gw_sh_det = b_df.groupby(["bank_join", "currency_join", "gateway_join"]).agg(
+                        gw_sh_det = b_df.groupby(["bin_join", "currency_join", "gateway_join"]).agg(
                             **_agg_kw).reset_index()
                     else:
-                        gw_sh_det = pd.DataFrame(columns=["bank_join", "currency_join", "gateway_join", "Gateway", "curr_vol", "Expected_Attempts", "Expected_Success", "Expected_Rev", "Pre_Rev", "Baseline_Success", "Baseline_Attempts"])
+                        gw_sh_det = pd.DataFrame(columns=["bin_join", "currency_join", "gateway_join", "Gateway", "curr_vol", "Expected_Attempts", "Expected_Success", "Expected_Rev", "Pre_Rev", "Baseline_Success", "Baseline_Attempts"])
                 
                     if not plot_adf_sel.empty:
                         raw_gw_det = plot_adf_sel.groupby(["bin", "currency", "gateway"]).agg(
@@ -2922,23 +2922,23 @@ def render():
                             raw_att=("attempts", "sum"),
                             raw_succ=("success", "sum"),
                             raw_amount=("succ_amount", "sum")
-                        ).reset_index().rename(columns={"bin": "bank_join", "currency": "currency_join", "gateway": "gateway_join"})
-                        raw_gw_det["bank_join"] = raw_gw_det["bank_join"].astype(str).str.strip().str.lower()
+                        ).reset_index().rename(columns={"bin": "bin_join", "currency": "currency_join", "gateway": "gateway_join"})
+                        raw_gw_det["bin_join"] = raw_gw_det["bin_join"].astype(str).str.strip().str.lower()
                         raw_gw_det["currency_join"] = raw_gw_det["currency_join"].astype(str).str.strip().str.lower()
                         raw_gw_det["gateway_join"] = raw_gw_det["gateway_join"].astype(str).str.strip().str.lower()
                     else:
-                        raw_gw_det = pd.DataFrame(columns=["bank_join", "currency_join", "gateway_join", "Raw_Gateway", "raw_att", "raw_succ", "raw_amount"])
+                        raw_gw_det = pd.DataFrame(columns=["bin_join", "currency_join", "gateway_join", "Raw_Gateway", "raw_att", "raw_succ", "raw_amount"])
                 
                     raw_gw_det["Raw 30D Success Rate"] = np.where(raw_gw_det["raw_att"] > 0, raw_gw_det["raw_succ"] / raw_gw_det["raw_att"], 0)
                 
-                    gw_sh_det = gw_sh_det.merge(raw_gw_det, on=["bank_join", "currency_join", "gateway_join"], how="outer")
+                    gw_sh_det = gw_sh_det.merge(raw_gw_det, on=["bin_join", "currency_join", "gateway_join"], how="outer")
                 
                     if "Gateway" in gw_sh_det.columns and "Raw_Gateway" in gw_sh_det.columns:
                         gw_sh_det["Gateway"] = gw_sh_det["Gateway"].fillna(gw_sh_det["Raw_Gateway"]).fillna(gw_sh_det["gateway_join"])
                     elif "Gateway" not in gw_sh_det.columns:
                         gw_sh_det["Gateway"] = gw_sh_det["gateway_join"]
                 
-                    gw_sh_det["BIN"] = gw_sh_det["bank_join"].str.upper()
+                    gw_sh_det["BIN"] = gw_sh_det["bin_join"].str.upper()
                     gw_sh_det["Currency"] = gw_sh_det["currency_join"].str.upper()
                 
                     for safe_col in ["Expected_Attempts", "Expected_Success", "Expected_Rev", "raw_att", "raw_succ", "raw_amount", "curr_vol", "Raw 30D Success Rate"]:
@@ -2953,10 +2953,10 @@ def render():
                     gw_sh_det["Proposed Share"] = np.where(t_prop_g > 0, (gw_sh_det["Expected_Attempts"] / t_prop_g), 0)
                     gw_sh_det["Shift (pp)"] = (gw_sh_det["Proposed Share"] - gw_sh_det["Current Share"]) * 100
                 
-                    workings_full = gw_sh_det.merge(workings, on=["bank_join", "currency_join", "gateway_join"], how="left")
+                    workings_full = gw_sh_det.merge(workings, on=["bin_join", "currency_join", "gateway_join"], how="left")
                 
                     workings_full["Gateway"] = workings_full["Gateway"].fillna(workings_full["gateway_join"])
-                    workings_full["BIN"] = workings_full["BIN"].fillna(workings_full["bank_join"].str.upper())
+                    workings_full["BIN"] = workings_full["BIN"].fillna(workings_full["bin_join"].str.upper())
                     workings_full["Currency"] = workings_full["Currency"].fillna(workings_full["currency_join"].str.upper())
                 
                     workings_full["All-Time Attempts"] = workings_full.get("All_Time_Attempts", 0).fillna(0)
@@ -2977,9 +2977,9 @@ def render():
                     _bcv = cache.get("bc_val")
                     if _bcv is not None:
                         workings_full = workings_full.merge(
-                            _bcv[["currency_join", "bank_join", "avg_txn_value"]].rename(
+                            _bcv[["currency_join", "bin_join", "avg_txn_value"]].rename(
                                 columns={"avg_txn_value": "Avg txn value (Bank x Cur)"}),
-                            on=["currency_join", "bank_join"], how="left")
+                            on=["currency_join", "bin_join"], how="left")
                         workings_full["Avg txn value (Bank x Cur)"] = pd.to_numeric(
                             workings_full.get("Avg txn value (Bank x Cur)", 0), errors="coerce").fillna(0)
                     else:
@@ -3005,8 +3005,8 @@ def render():
                         _ca_t = cache.get("cell_agg") if isinstance(cache, dict) else None
                         if (_ca_t is not None and not plot_adf_sel.empty
                                 and {"rpgt", "currency", "bin", "gateway", "success"}.issubset(plot_adf_sel.columns)
-                                and {"rpgt_join", "currency_join", "bank_join", "rpgt_ticket"}.issubset(_ca_t.columns)):
-                            _tk = _ca_t[["rpgt_join", "currency_join", "bank_join", "rpgt_ticket"]].copy()
+                                and {"rpgt_join", "currency_join", "bin_join", "rpgt_ticket"}.issubset(_ca_t.columns)):
+                            _tk = _ca_t[["rpgt_join", "currency_join", "bin_join", "rpgt_ticket"]].copy()
                             if "avg_ticket" in _ca_t.columns:
                                 _tk["avg_ticket"] = _ca_t["avg_ticket"].to_numpy()
                             _rs = plot_adf_sel.copy()
@@ -3017,9 +3017,9 @@ def render():
                                 gateway_join=_rs["gateway"].astype(str).str.strip().str.lower(),
                                 _succ=pd.to_numeric(_rs["success"], errors="coerce").fillna(0.0),
                                 _att=pd.to_numeric(_rs.get("attempts", 0), errors="coerce").fillna(0.0))
-                            _rs = _rs.groupby(["rpgt_join", "currency_join", "bank_join", "gateway_join"],
+                            _rs = _rs.groupby(["rpgt_join", "currency_join", "bin_join", "gateway_join"],
                                               as_index=False).agg(raw_succ=("_succ", "sum"), raw_att=("_att", "sum"))
-                            _rs = _rs.merge(_tk, on=["rpgt_join", "currency_join", "bank_join"], how="left")
+                            _rs = _rs.merge(_tk, on=["rpgt_join", "currency_join", "bin_join"], how="left")
                             _tkr = pd.to_numeric(_rs["rpgt_ticket"], errors="coerce")
                             _tkr = _tkr.fillna(pd.to_numeric(_rs.get("avg_ticket"), errors="coerce")).fillna(0.0)
                             _rs["ticket"] = _tkr
@@ -3073,7 +3073,7 @@ def render():
                             _fb = float(_temp) if _temp else 0.17
                             workings_full["Temperature (cell)"] = [
                                 _celltemp.get(f"{c}|{b}", _fb) for c, b in
-                                zip(workings_full["currency_join"], workings_full["bank_join"])]
+                                zip(workings_full["currency_join"], workings_full["bin_join"])]
                             _k = workings_full["Temperature (cell)"].astype(float) * 100.0   # per-cell multiplier
                         else:
                             _k = float(_temp) * 100.0            # dial 0.16 -> k = 16
@@ -3189,10 +3189,10 @@ def render():
                     # Bank x Currency (the grain the engine scores on) and repeat across a gateway's RPGTs.
                     if (not b_df.empty) and {"rpgt", "gateway"}.issubset(b_df.columns):
                         _b = b_df.copy()
-                        for _kj, _sc0 in (("gateway_join", "gateway"), ("bank_join", "bin"), ("currency_join", "currency")):
+                        for _kj, _sc0 in (("gateway_join", "gateway"), ("bin_join", "bin"), ("currency_join", "currency")):
                             if _kj not in _b.columns:
                                 _b[_kj] = _b[_sc0].astype(str).str.strip().str.lower()
-                        _grp = ["bank_join", "currency_join", "rpgt", "gateway_join"]
+                        _grp = ["bin_join", "currency_join", "rpgt", "gateway_join"]
                         _aggmap = {}
                         for _src, _dst in [("post_att", "Expected Attempts"), ("post_succ", "Expected Success"),
                                            ("post_rev", "Post Revenue")]:
@@ -3207,12 +3207,12 @@ def render():
                             _wr = _b.groupby(_grp, as_index=False).agg(**_aggmap)
                             # RAW observed 30D + raw-basis Pre Revenue (case-insensitive rpgt join)
                             if _raw_rpgt is not None and not getattr(_raw_rpgt, "empty", True):
-                                _rr = _raw_rpgt[["bank_join", "currency_join", "rpgt_join", "gateway_join",
+                                _rr = _raw_rpgt[["bin_join", "currency_join", "rpgt_join", "gateway_join",
                                                  "raw_succ", "raw_att", "pre_rev_raw"]].copy()
                                 _wr["_rpgt_l"] = _wr["rpgt"].astype(str).str.strip().str.lower()
                                 _wr = _wr.merge(_rr, how="left",
-                                                left_on=["bank_join", "currency_join", "_rpgt_l", "gateway_join"],
-                                                right_on=["bank_join", "currency_join", "rpgt_join", "gateway_join"])
+                                                left_on=["bin_join", "currency_join", "_rpgt_l", "gateway_join"],
+                                                right_on=["bin_join", "currency_join", "rpgt_join", "gateway_join"])
                                 _wr = _wr.drop(columns=["_rpgt_l", "rpgt_join"], errors="ignore")
                             _wr["Raw Attempts (30D)"] = pd.to_numeric(_wr.get("raw_att", 0), errors="coerce").fillna(0.0)
                             _wr["Raw Successes (30D)"] = pd.to_numeric(_wr.get("raw_succ", 0), errors="coerce").fillna(0.0)
@@ -3224,10 +3224,10 @@ def render():
                                                  "Euler's constant", "Weighting", "Total Weighting", "Softmax Share (pre-floor)",
                                                  "Exploration floor %", "Max share cap %", "Reference Share (waterfall)",
                                                  "Tilt (pp)", "Final Share"] if c in workings_full.columns]
-                            if _pool and {"bank_join", "currency_join", "gateway_join"}.issubset(workings_full.columns):
-                                _pfm = workings_full[["bank_join", "currency_join", "gateway_join"] + _pool].drop_duplicates(
-                                    ["bank_join", "currency_join", "gateway_join"])
-                                _wr = _wr.merge(_pfm, on=["bank_join", "currency_join", "gateway_join"], how="left")
+                            if _pool and {"bin_join", "currency_join", "gateway_join"}.issubset(workings_full.columns):
+                                _pfm = workings_full[["bin_join", "currency_join", "gateway_join"] + _pool].drop_duplicates(
+                                    ["bin_join", "currency_join", "gateway_join"])
+                                _wr = _wr.merge(_pfm, on=["bin_join", "currency_join", "gateway_join"], how="left")
                             # derived (on FRACTIONS, before the %-scaling below). A column may be
                             # absent for some engines (e.g. no Softmax Share for genetic), so read via
                             # a helper that always returns a Series (never a scalar → no .fillna crash).
@@ -3245,7 +3245,7 @@ def render():
                                 _sfrac = pd.to_numeric(_wr["Softmax Share (pre-floor)"], errors="coerce").fillna(_pfrac)
                                 _wr["Floor+cap+enforce shift (pp)"] = (_pfrac - _sfrac) * 100.0
                             _wr["Raw SR % (All-Time)"] = _S("All-Time Raw SR") * 100.0
-                            _wr["Bank"] = _wr["bank_join"].astype(str).str.upper()
+                            _wr["Bank"] = _wr["bin_join"].astype(str).str.upper()
                             _wr["Currency"] = _wr["currency_join"].astype(str).str.upper()
                             if "Gateway" not in _wr.columns:
                                 _wr["Gateway"] = _wr["gateway_join"]

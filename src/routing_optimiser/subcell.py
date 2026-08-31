@@ -85,13 +85,13 @@ def expand_forecast_to_subcells(forecast: pd.DataFrame, fractions: pd.DataFrame,
     """
     f = forecast.copy()
     f["_cur"] = f[currency].astype(str).str.strip().str.lower()
-    f["_bank"] = f[bank].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    f["_bin"] = f[bank].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
     f["_rpgt"] = (f[rpgt].astype(str).str.strip().str.lower() if rpgt in f.columns
                   else pd.Series("all_rpgts", index=f.index))
 
     fr = fractions[["cur", "bin", "rpgt", "pmp", "ctry", "vi_frac"]].rename(
-        columns={"cur": "_cur", "bin": "_bank", "rpgt": "_rpgt"})
-    merged = f.merge(fr, on=["_cur", "_bank", "_rpgt"], how="left")
+        columns={"cur": "_cur", "bin": "_bin", "rpgt": "_rpgt"})
+    merged = f.merge(fr, on=["_cur", "_bin", "_rpgt"], how="left")
 
     # Cells absent from `fractions` → single '_all_' sub-cell, frac 1.0 (behaves like cell grain).
     miss = merged["vi_frac"].isna()
@@ -100,6 +100,6 @@ def expand_forecast_to_subcells(forecast: pd.DataFrame, fractions: pd.DataFrame,
     merged.loc[miss, "vi_frac"] = 1.0
 
     merged[volume] = pd.to_numeric(merged[volume], errors="coerce").fillna(0.0) * merged["vi_frac"]
-    merged["subcell"] = (merged["_cur"] + "|" + merged["_bank"] + "|" + merged["_rpgt"]
+    merged["subcell"] = (merged["_cur"] + "|" + merged["_bin"] + "|" + merged["_rpgt"]
                          + "|" + merged["pmp"].astype(str) + "|" + merged["ctry"].astype(str))
-    return merged.drop(columns=["_cur", "_bank", "_rpgt", "vi_frac"]).reset_index(drop=True)
+    return merged.drop(columns=["_cur", "_bin", "_rpgt", "vi_frac"]).reset_index(drop=True)
