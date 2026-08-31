@@ -229,8 +229,114 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
               "baseline_share", "risk_rate"]].reset_index(drop=True)
 
 
+def _mc_prorata_to_pre(df: pd.DataFrame) -> pd.DataFrame:
+    """Mastercard mirror of visa's `_prorata_to_pre`.
+
+    The MC pro-rata export (`mc_cb_t_period_prorata_export.csv`) carries `cbCount` /
+    `MC_Txn_Count` at the finer Country x paymentMethodProvider x t grain. Sum over `t` per
+    (mastercardMid, RPGT, BIN, Currency, period) and rename to the CB_Pre / Txn_Pre contract
+    `_normalise_pre` already reads - `Txn_Pre` is first in its volume preference list and
+    `CB_Pre` first in its chargeback list, so nothing downstream changes.
+
+    A numerical no-op by construction: export_manager builds this file and
+    bin_rpgt_impact_export.csv from the same `t_data`. Verified on the 2026-08-21 Mastercard
+    outputs - 270,393 keys, max|Δ| 0.0000000000 on BOTH CB_Pre and Txn_Pre, no key on one side
+    only. `_reconcile_mc_pre_against_bin_rpgt` re-checks it every run rather than trusting that.
+
+    NOT BIT-IDENTICAL, AND THAT IS UNAVOIDABLE. This path sums over `t` here and again inside
+    `_normalise_pre`; the bin_rpgt path sums once. Float addition is not associative, so the two
+    differ in the last bits. Measured end-to-end on the 2026-08-21 MC outputs, 35,382 baseline
+    rows, identical keys in identical order:
+
+        volume          max|Δ| 4.547e-13 · max relative 3.415e-16 · Σ 340,424.000000 both sides
+        baseline_share  max|Δ| 1.110e-16 · max relative 4.829e-16 · Σ  14,783.000000 both sides
+        risk_rate       max|Δ| 4.857e-17 · max relative 1.182e-13 · Σ     101.995231, Δ 4.3e-14
+
+    Every difference is within 4 ULP, and the totals are exact. No amount of better code removes
+    it - a different summation ORDER is the whole mechanism. Worth stating rather than burying:
+    the VISA baseline has had this same property since it moved to its pro-rata export, so this
+    brings Mastercard into line with an existing behaviour rather than introducing a new one.
+
+    Returns `df` unchanged if it isn't the MC pro-rata export.
+
+    NOTE ON THE FLATTENING. This drops `Country` and `paymentMethodProvider`, which the export
+    does carry - the same discard visa's loader makes, and for the same bad reason: the shape
+    downstream expects. It is harmless HERE only because `_normalise_pre` groups to
+    (rpgt, currency, bank, gateway) on the next line, so the columns would die anyway. It is
+    kept deliberately so this change stays a verified no-op; when the visa side stops
+    flattening, this follows it. Do not read this as an endorsement of the flattening.
+    """
+    cols = set(df.columns)
+    if not ({"cbCount", "MC_Txn_Count"} <= cols):
+        return df
+    # GRAIN MUST MATCH bin_rpgt_impact_export.csv, WHICH CARRIES `Country`. This is not a
+    # cosmetic choice - `_normalise_pre` drops rows with volume <= 0 BEFORE it groups, so the
+    # grain decides which chargebacks survive that filter. Aggregating Country away first folds
+    # a zero-volume Country slice's CBs into a sibling that does have volume, and those CBs then
+    # reach `risk_rate` when on the bin_rpgt path they were discarded. Measured: 53 of 35,382
+    # rows moved, max |Δrisk_rate| 0.1218, on a frame whose `volume` matched to 2e-12. Keeping
+    # Country makes the two paths identical.
+    #
+    # `paymentMethodProvider` is deliberately NOT a key: bin_rpgt does not carry it, so adding
+    # it would make this FINER than the file it must reproduce and move the same filter the
+    # other way. It comes back when the visa-side flattening is fixed, together.
+    keys = [c for c in ["mastercardMid", "RPGT", "BIN", "Currency", "Country", "period"]
+            if c in cols]
+    return (df.groupby(keys, as_index=False, observed=True)[["cbCount", "MC_Txn_Count"]].sum()
+              .rename(columns={"cbCount": "CB_Pre", "MC_Txn_Count": "Txn_Pre"}))
+
+
+def _reconcile_mc_pre_against_bin_rpgt(pre: pd.DataFrame, out_dir: str) -> None:
+    """RECONCILIATION GUARD, mirroring visa's `_reconcile_pre_against_bin_rpgt`.
+
+    When the baseline comes from the MC pro-rata export, verify it agrees with the legacy
+    bin_rpgt_impact_export.csv. Both are built from the same `t_data`, so they MUST. Logs a
+    prominent WARNING on any material divergence - this never silently baselines off a
+    mismatched file. Read-only, and never raises: a guard that can break the run is a guard
+    people turn off.
+    """
+    try:
+        bin_p = os.path.join(out_dir, "bin_rpgt_impact_export.csv")
+        if not os.path.exists(bin_p):
+            return
+        b = pd.read_csv(bin_p)
+
+        def _sum(_df, _col):
+            if _col not in getattr(_df, "columns", ()):
+                return None
+            return float(pd.to_numeric(_df[_col], errors="coerce").fillna(0.0).sum())
+
+        rows = []
+        for _col in ("CB_Pre", "Txn_Pre"):
+            _p, _b = _sum(pre, _col), _sum(b, _col)
+            if _p is None or _b is None:
+                rows.append(f"{_col}: NOT COMPARABLE ("
+                            f"{'missing on the pro-rata side' if _p is None else 'missing on bin_rpgt'})")
+                continue
+            _d = abs(_p - _b)
+            _rel = _d / max(abs(_b), 1e-9)
+            rows.append(f"{_col} {_p:,.2f} vs {_b:,.2f} (Δ {_d:,.4f}, {_rel:.2%})")
+            if _rel > 1e-6 and _d > 1e-6:
+                # f-string, NOT %-args: "%,.2f" is not a valid %-format and would raise
+                # inside the logger — a guard that crashes when it fires is worse than none.
+                logger.warning(
+                    f"      - ⚠️ MC BASELINE RECONCILIATION MISMATCH on {_col}: pro-rata export "
+                    f"{_p:,.2f} vs bin_rpgt {_b:,.2f} (Δ {_d:,.4f}). Both are built from the "
+                    "same t_data, so they MUST agree — a difference means one of the two exports "
+                    "is stale or the aggregation grain has drifted. The baseline below is the "
+                    "PRO-RATA one.")
+        if rows:
+            logger.info("      - MC baseline reconciliation: " + " · ".join(rows))
+    except Exception as _e:  # noqa: BLE001 - a guard must never break the run it guards
+        logger.info(f"      - MC baseline reconciliation skipped ({type(_e).__name__}: {_e})")
+
+
 # Pipeline output files that carry a usable Mastercard 'pre' baseline, in preference order.
-PRE_SOURCE_FILES = ["bin_rpgt_impact_export.csv", "effective_rate_impact.csv"]
+# 19el: the MC pro-rata export FIRST, matching visa's PRE_SOURCE_FILES. Both are written from
+# the same `t_data`, so this is a no-op numerically (verified: 270,393 keys, max|Δ| 0.0 on CB_Pre
+# and Txn_Pre) - the point is that the baseline and the band scorer now read ONE file.
+PRE_SOURCE_FILES = ["mc_cb_t_period_prorata_export.csv",
+                    "bin_rpgt_impact_export.csv", "effective_rate_impact.csv"]
 
 
 def load_mc_pre_forecast(path: str) -> pd.DataFrame:
@@ -242,15 +348,21 @@ def load_mc_pre_forecast(path: str) -> pd.DataFrame:
         for fname in PRE_SOURCE_FILES:
             fpath = os.path.join(path, fname)
             if os.path.exists(fpath):
-                out = _normalise_pre(pd.read_csv(fpath))
+                # 19el: convert the MC pro-rata export to the CB_Pre / Txn_Pre contract first.
+                # `_mc_prorata_to_pre` returns the frame untouched for every other source, so
+                # the bin_rpgt and effective_rate paths are byte-for-byte what they were.
+                _raw = _mc_prorata_to_pre(pd.read_csv(fpath))
+                out = _normalise_pre(_raw)
                 logger.info(f"      - MC baseline from {fname}: {len(out):,} cell-rows")
                 if len(out):
+                    if fname == "mc_cb_t_period_prorata_export.csv":
+                        _reconcile_mc_pre_against_bin_rpgt(_raw, path)
                     return out
         raise FileNotFoundError(
             f"No usable Mastercard baseline export found in {path}. Looked for: "
             + ", ".join(PRE_SOURCE_FILES))
     if not os.path.exists(path):
         raise FileNotFoundError(f"Mastercard pipeline 'pre' output not found at {path}.")
-    out = _normalise_pre(pd.read_csv(path))
+    out = _normalise_pre(_mc_prorata_to_pre(pd.read_csv(path)))
     logger.info(f"      - MC baseline from {os.path.basename(path)}: {len(out):,} cell-rows")
     return out
