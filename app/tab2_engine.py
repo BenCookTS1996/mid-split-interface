@@ -1578,8 +1578,23 @@ def render():
                     # Cache the parsed baseline forecast too (keyed on out_dir + baseline mtime +
                     # attempts identity — the only things it depends on). Re-running the FORECAST
                     # (tab 1) changes the baseline mtime and invalidates it.
-                    _fc_bl = os.path.join(out_dir, "bin_rpgt_impact_export.csv")
-                    _fc_k = (out_dir, _mtime(_fc_bl), attempts_path, _mtime(attempts_path))
+                    # 19ek [fc-cache-key]: key on the file(s) `load_forecast` ACTUALLY reads.
+                    # This used to hard-code bin_rpgt_impact_export.csv, but load_forecast resolves
+                    # through PRE_SOURCE_FILES and takes the first that exists - on this book the
+                    # PRO-RATA export ("baseline from vamp_t_period_prorata_export.csv" in the log).
+                    # So the staleness check watched a file it never opened. It has not bitten
+                    # because both are written by the same export run and their mtimes move
+                    # together; it would bite the first time one is regenerated alone.
+                    # Keying on ALL of them also removes the dependency on the resolution ORDER.
+                    try:
+                        from routing_optimiser.forecast_pipeline import (
+                            PRE_SOURCE_FILES as _FC_SRCS)
+                    except Exception:  # noqa: BLE001 - never let a cache key break the run
+                        _FC_SRCS = ["vamp_t_period_prorata_export.csv",
+                                    "bin_rpgt_impact_export.csv", "effective_rate_impact.csv"]
+                    _fc_k = ((out_dir,)
+                             + tuple(_mtime(os.path.join(out_dir, _f)) for _f in _FC_SRCS)
+                             + (attempts_path, _mtime(attempts_path)))
                     if ss.get("_fc_cache_k") == _fc_k and ss.get("_fc_cache") is not None:
                         forecast_temp = ss["_fc_cache"].copy()
                         log("   (reused parsed baseline forecast from in-memory cache)")
