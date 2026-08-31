@@ -1940,44 +1940,43 @@ def render():
                     # only 2 volume-less cells for the same reason: `fillna` had given them all
                     # a volume.
                     #
-                    # LIVE ROUTING CHANGE, not a reporting one: those BINs now carry NO rule in
-                    # the exported split, so their traffic falls to the gateway configuration's
-                    # own default. ROUTING_REQUIRE_FORECAST=0 restores the substitution exactly.
+                    # LIVE ROUTING CHANGE, and an INTENDED one (19en): those BINs now carry NO
+                    # rule in the exported split, so their traffic falls to the gateway
+                    # configuration's own default. There is deliberately NO switch back — the
+                    # substitution was the defect, so an option to restore it would only be an
+                    # option to reintroduce it.
                     _rf_miss = att["fc_volume"].isna()
-                    _rf_on = os.environ.get("ROUTING_REQUIRE_FORECAST", "1") != "0"
                     if _rf_miss.any():
                         _rf_cells = int(att.loc[_rf_miss, _gk].drop_duplicates().shape[0])
                         _rf_rows = int(_rf_miss.sum())
                         _rf_att = float(pd.to_numeric(att.loc[_rf_miss, "attempts"],
                                                       errors="coerce").fillna(0.0).sum())
-                        if _rf_on and bool((~_rf_miss).any()):
-                            att = att[~_rf_miss].copy()
-                            log(f"   [require-forecast] {_rf_cells:,} cell(s) / {_rf_rows:,} "
-                                f"gateway-row(s) REMOVED: the forecast has no row for them, so "
-                                f"until 19em they were routed on {_rf_att:,.0f} 30-day ATTEMPT(s) "
-                                f"substituted for forecast volume. Historic attempts are not "
-                                f"forecast transactions. They also mapped to no prop-key and "
-                                f"reached no band ceiling, so the search was deciding them and "
-                                f"nothing was checking them. {len(att):,} gateway-row(s) remain. "
-                                f"NOTE those BINs now carry NO rule in the exported split — their "
-                                f"traffic falls to the gateway config's default. "
-                                f"ROUTING_REQUIRE_FORECAST=0 restores the substitution.")
-                        elif _rf_on:
-                            # Every cell missing would mean the join key is wrong, not that the
-                            # book is empty. Removing them all would hand the engine nothing and
-                            # look like a data problem; say so and keep the old behaviour.
-                            log(f"   ⚠ [require-forecast] STOP AND READ: ALL {_rf_rows:,} "
-                                f"gateway-row(s) are missing a forecast row. That is a broken "
-                                f"join key ({', '.join(_gk)}), not an uncovered book — check "
-                                f"[bin-key] above. Substitution KEPT for this run so the failure "
-                                f"is visible rather than fatal.")
-                            att["fc_volume"] = att["fc_volume"].fillna(att["cell_att"])
-                        else:
-                            att["fc_volume"] = att["fc_volume"].fillna(att["cell_att"])
-                            log(f"   [require-forecast] OFF (ROUTING_REQUIRE_FORECAST=0): "
-                                f"{_rf_cells:,} cell(s) / {_rf_rows:,} row(s) with no forecast "
-                                f"row keep {_rf_att:,.0f} substituted 30-day attempt(s) as their "
-                                f"volume. This is the pre-19em behaviour.")
+                        if not bool((~_rf_miss).any()):
+                            # EVERY cell missing is a broken join key, not an uncovered book.
+                            # 19em kept the substitution here; that violated the rule this
+                            # project runs on — a guard may flag a root cause, it may NEVER
+                            # silently change what ships — and it would have done so on 100% of
+                            # the book. A run in this state must not produce a split at all.
+                            raise ValueError(
+                                f"[require-forecast] ALL {_rf_rows:,} gateway-row(s) are missing "
+                                f"a forecast row, so no cell can be routed. That is a broken join "
+                                f"key ({', '.join(_gk)}) rather than an uncovered book — read the "
+                                f"[bin-key] line above, which reports the overlap between the "
+                                f"attempts frame and the forecast on the key column. This run is "
+                                f"stopped deliberately: substituting 30-day attempt counts for "
+                                f"forecast volume is the defect 19em removed, and doing it on the "
+                                f"whole book to keep a run alive would ship a split built "
+                                f"entirely on history.")
+                        att = att[~_rf_miss].copy()
+                        log(f"   [require-forecast] {_rf_cells:,} cell(s) / {_rf_rows:,} "
+                            f"gateway-row(s) REMOVED: the forecast has no row for them, so until "
+                            f"19em they were routed on {_rf_att:,.0f} 30-day ATTEMPT(s) "
+                            f"substituted for forecast volume. Historic attempts are not forecast "
+                            f"transactions. They also mapped to no prop-key and reached no band "
+                            f"ceiling, so the search was deciding them and nothing was checking "
+                            f"them. {len(att):,} gateway-row(s) remain. NOTE those BINs now carry "
+                            f"NO rule in the exported split — their traffic falls to the gateway "
+                            f"config's default. This is intended and there is no switch back.")
                     att["volume"] = att["fc_volume"] * att["baseline_share"]
 
                     agg_forecast = att[_gk + ["gateway", "volume", "baseline_share"]].copy()
@@ -1985,10 +1984,16 @@ def render():
                         agg_forecast["rpgt"] = "ALL_RPGTS"
                     agg_forecast["bank"] = agg_forecast["parent_bank"]
 
-                    # Attach period-0 risk (from bin_rpgt_impact_export via the
-                    # forecast's risk_rate), volume-weighted across RPGTs to the
-                    # Bank x Currency x gateway grain. Gateways with no forecast
-                    # risk fall back to the default.
+                    # Attach period-0 risk from `orig_forecast["risk_rate"]`, volume-weighted
+                    # across RPGTs to the Bank x Currency x gateway grain. Gateways with no
+                    # forecast risk fall back to the default.
+                    # 19en: this comment used to say the rates come "from bin_rpgt_impact_export".
+                    # They do not, and have not since the baseline moved to the pro-rata export —
+                    # orig_forecast IS that export ("baseline from vamp_t_period_prorata_export.csv"
+                    # on every run's own log line). The DATA was already right; only the comment
+                    # was stale, and it sent an investigation looking for a second risk source
+                    # that does not exist. Named after the variable now, not after a file, so it
+                    # cannot go stale again the next time the source moves.
                     agg_forecast["risk_rate"] = np.nan
                     if "risk_rate" in orig_forecast.columns:
                         rf = orig_forecast.copy()
