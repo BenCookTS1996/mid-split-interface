@@ -1910,15 +1910,74 @@ def render():
                     agg_adf["bank"] = agg_adf["parent_bank"]
 
                     # Build the routing cells from those attempts-based gateways.
-                    # Current split (baseline_share) = each gateway's 30D attempts
-                    # share; per-gateway volume = forecast cell total x that share
-                    # (falls back to 30D attempts volume if the forecast doesn't
-                    # cover the bank), so the cell total still equals the forecast.
+                    # Current split (baseline_share) = each gateway's 30D attempts share;
+                    # per-gateway volume = forecast cell total x that share. A cell the forecast
+                    # does NOT cover is dropped (19em) rather than given its attempt count as a
+                    # stand-in, so the cell total always equals the forecast — which is what the
+                    # sentence here used to claim while `fillna` made it false.
                     att = agg_adf[_gk + ["gateway", "attempts"]].copy()
                     att["cell_att"] = att.groupby(_gk)["attempts"].transform("sum")
                     att["baseline_share"] = np.where(att["cell_att"] > 0, att["attempts"] / att["cell_att"], 0.0)
                     att = att.merge(fc_tot, on=_gk, how="left")
-                    att["fc_volume"] = att["fc_volume"].fillna(att["cell_att"])
+
+                    # ── 19em [require-forecast] ───────────────────────────────────────────────
+                    # This LEFT join leaves NaN on every cell the forecast has no row for, and
+                    # until 19em the next line was `fillna(att["cell_att"])` — the cell's 30-DAY
+                    # ATTEMPT COUNT substituted for forecast volume. Historic attempts are not
+                    # forecast transactions, and swapping one for the other put 40.1% of the
+                    # genome on a stand-in:
+                    #
+                    #   forecast baseline Σvolume                      184,165
+                    #   cells assembled, total forecast volume         207,877
+                    #                                                 --------
+                    #                                  substituted in   23,712
+                    #   [profiles] 9,018 dropped profiles Σattempts     24,033   (within 1.3%)
+                    #
+                    # Those cells then fail the delivered explode's INNER merge against
+                    # orig_forecast (103,230 of 257,635 rows), map to no prop-key ("154,405/
+                    # 257,635 ... 59.9%"), and reach no band ceiling — so the GA optimised them,
+                    # they shipped in the rules, and nothing checked them. [prune-inert] found
+                    # only 2 volume-less cells for the same reason: `fillna` had given them all
+                    # a volume.
+                    #
+                    # LIVE ROUTING CHANGE, not a reporting one: those BINs now carry NO rule in
+                    # the exported split, so their traffic falls to the gateway configuration's
+                    # own default. ROUTING_REQUIRE_FORECAST=0 restores the substitution exactly.
+                    _rf_miss = att["fc_volume"].isna()
+                    _rf_on = os.environ.get("ROUTING_REQUIRE_FORECAST", "1") != "0"
+                    if _rf_miss.any():
+                        _rf_cells = int(att.loc[_rf_miss, _gk].drop_duplicates().shape[0])
+                        _rf_rows = int(_rf_miss.sum())
+                        _rf_att = float(pd.to_numeric(att.loc[_rf_miss, "attempts"],
+                                                      errors="coerce").fillna(0.0).sum())
+                        if _rf_on and bool((~_rf_miss).any()):
+                            att = att[~_rf_miss].copy()
+                            log(f"   [require-forecast] {_rf_cells:,} cell(s) / {_rf_rows:,} "
+                                f"gateway-row(s) REMOVED: the forecast has no row for them, so "
+                                f"until 19em they were routed on {_rf_att:,.0f} 30-day ATTEMPT(s) "
+                                f"substituted for forecast volume. Historic attempts are not "
+                                f"forecast transactions. They also mapped to no prop-key and "
+                                f"reached no band ceiling, so the search was deciding them and "
+                                f"nothing was checking them. {len(att):,} gateway-row(s) remain. "
+                                f"NOTE those BINs now carry NO rule in the exported split — their "
+                                f"traffic falls to the gateway config's default. "
+                                f"ROUTING_REQUIRE_FORECAST=0 restores the substitution.")
+                        elif _rf_on:
+                            # Every cell missing would mean the join key is wrong, not that the
+                            # book is empty. Removing them all would hand the engine nothing and
+                            # look like a data problem; say so and keep the old behaviour.
+                            log(f"   ⚠ [require-forecast] STOP AND READ: ALL {_rf_rows:,} "
+                                f"gateway-row(s) are missing a forecast row. That is a broken "
+                                f"join key ({', '.join(_gk)}), not an uncovered book — check "
+                                f"[bin-key] above. Substitution KEPT for this run so the failure "
+                                f"is visible rather than fatal.")
+                            att["fc_volume"] = att["fc_volume"].fillna(att["cell_att"])
+                        else:
+                            att["fc_volume"] = att["fc_volume"].fillna(att["cell_att"])
+                            log(f"   [require-forecast] OFF (ROUTING_REQUIRE_FORECAST=0): "
+                                f"{_rf_cells:,} cell(s) / {_rf_rows:,} row(s) with no forecast "
+                                f"row keep {_rf_att:,.0f} substituted 30-day attempt(s) as their "
+                                f"volume. This is the pre-19em behaviour.")
                     att["volume"] = att["fc_volume"] * att["baseline_share"]
 
                     agg_forecast = att[_gk + ["gateway", "volume", "baseline_share"]].copy()
