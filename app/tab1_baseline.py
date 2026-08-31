@@ -81,6 +81,23 @@ def render():
         # is the first thing that needs it.
         _CODE_BOX_PX = 225
 
+        # 19ev: the height RESERVED in the right column for the settings.yaml preview and the run
+        # log together. Both live inside one container of this height, so opening either scrolls
+        # INSIDE it and the container never changes size.
+        #
+        # WHY THAT IS THE FIX. The pre/post table is not in a column — it renders after the whole
+        # row-2 block, and a Streamlit row is as tall as its tallest column. So anything that
+        # grows a column grows the row and pushes everything below it down. Nothing can be
+        # "beside" the table, because the table starts where the row ends. Reserving the space up
+        # front is the only way to make expanding free.
+        #
+        # COSTS NOTHING IN PRACTICE while it stays under the height of the LEFT column (the
+        # "4 · Assumptions" box), because the row is already that tall — the reserve is spent on
+        # whitespace the row had anyway. Raise it past that and the row grows by the difference,
+        # permanently. That is the trade being made here: a little reserved space always, instead
+        # of a jump every time something is opened.
+        _GROW_BOX_PX = 300
+
         # The 'Forecast ready…' run log renders into this slot — assigned to the spacer column to the
         # RIGHT of the 'Split Go Live date' input below (previously-created-forecast mode only).
         _prev_log_slot = None
@@ -105,10 +122,12 @@ def render():
             # Fixed-height scroll box: opening/expanding the run log scrolls WITHIN this box instead of
             # growing the row, so it never reflows the folder / Split-Go-Live column (or the content
             # below) to its left. Tune the px if you want a taller/shorter log.
-            # 19et: no cap HERE any more — the log's own code box is capped instead, so a
-            # 225 px scroll region is not nested inside a 150 px one (which clipped the status
-            # header and gave two scrollbars). The box below still stops this column growing.
-            _prev_log_slot = _pv_sp.container()
+            # 19ev: capped for the same reason as the row-2 pair — expanding the log in
+            # previous-forecast mode would otherwise grow this row and push everything below it
+            # down. Same reserve, so the two modes behave identically. (19et had briefly removed
+            # the cap; that fixed a nested-scrollbar problem and reintroduced the growth one.
+            # `_GROW_BOX_PX` > `_CODE_BOX_PX` is what lets both be true at once.)
+            _prev_log_slot = _pv_sp.container(height=_GROW_BOX_PX)
             ss["split_go_live_date"] = split_go_live
             if prev_dir:
                 need_all = ["mid_level.csv", "vamp_t_period_export.csv"]
@@ -448,12 +467,13 @@ def render():
                     # 19eq asks 2 + 3: both bodies live HERE, in the right column, so each is one
                     # column wide instead of the full page. The run log's fixed height keeps it
                     # scrolling inside its own box rather than growing the page.
-                    _yaml_slot = st.container()
-                    # 19et: no height cap here any more. The run log's own code box is capped
-                    # instead (see `_CODE_BOX_PX`), which keeps the st.status header
-                    # ("Forecast ready for …") fully visible above the scroll region rather than
-                    # sharing a 150 px budget with it.
-                    _fc_log_slot = st.container()
+                    # 19ev: BOTH live inside ONE fixed-height container, so opening either one
+                    # scrolls within it and the row-2 height never changes — the pre/post table
+                    # below stays exactly where it is. `_CODE_BOX_PX` still caps each code block
+                    # inside; this caps the region they share.
+                    _grow_box = st.container(height=_GROW_BOX_PX)
+                    _yaml_slot = _grow_box.container()
+                    _fc_log_slot = _grow_box.container()
 
                 # The forecast run log used to render HERE, in the row-2 right column - i.e.
                 # ABOVE the "Calculate Forecast" button - so expanding it pushed the button down
