@@ -55,7 +55,7 @@ class SoftmaxEngine(BaseEngine):
         Uses guard clauses to bail early on the two common cases (slider at 100, or
         the reference already compliant) before doing the compliance projection.
         """
-        self._t(f"=== CELL rpgt={p.rpgt} currency={p.currency} bank={p.bank} "
+        self._t(f"=== CELL rpgt={p.rpgt} currency={p.currency} bin={p.bin} "
                 f"| slider={self.w*100:.0f} (weight w={self.w:g}) ===")
         reference = self._reference_split(p)
         slider_weight = self.w

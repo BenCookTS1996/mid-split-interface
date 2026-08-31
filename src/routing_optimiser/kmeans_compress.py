@@ -53,9 +53,9 @@ def wallet_segment_split(split: pd.DataFrame, wallet_incapable, wallet_frac=None
     inc = (d["_gw"].isin(wallet_incapable) | d["_vm"].isin(wallet_incapable)).to_numpy()
 
     seg_nw, seg_w = [], []
-    for _, grp in d.groupby(["rpgt", "currency", "bank"], sort=False):
+    for _, grp in d.groupby(["rpgt", "currency", "bin"], sort=False):
         cur = str(grp["currency"].iloc[0]).strip().lower()
-        bank = str(grp["bank"].iloc[0]).strip().lower()
+        bank = str(grp["bin"].iloc[0]).strip().lower()
         wf = wallet_frac.get((cur, bank), wallet_default)
         wf = 0.0 if (wf != wf) else min(max(float(wf), 0.0), 1.0)
         cvol = float(grp["cell_volume"].iloc[0]) if "cell_volume" in grp.columns else 0.0
@@ -144,7 +144,7 @@ def compress_split(
     # A `pmp` (paymentMethodProvider) column adds a wallet/non-wallet dimension:
     # cluster each segment separately and carry it into the rules.
     has_pmp = "pmp" in split.columns
-    idx_cols = ["rpgt", "currency", "bank"] + (["pmp"] if has_pmp else [])
+    idx_cols = ["rpgt", "currency", "bin"] + (["pmp"] if has_pmp else [])
     if has_pmp and "pmp" not in group_keys:
         group_keys = group_keys + ["pmp"]
     rpgt_targets = {**DEFAULT_TARGETS, **(rpgt_targets or {})}
@@ -202,7 +202,7 @@ def compress_split(
                 continue
             centroid = _cap_and_respill(chosen_km.cluster_centers_[cl], max_gateway_cap)
             row = {k: v for k, v in zip(group_keys, gkey if isinstance(gkey, tuple) else (gkey,))}
-            row["banks"] = sorted(members["bank"].astype(str).unique().tolist())
+            row["banks"] = sorted(members["bin"].astype(str).unique().tolist())
             row["n_cells"] = int(len(members))
             row["volume"] = float(members["_vol"].sum())
             for gc, val in zip(gateway_cols, centroid):
@@ -266,7 +266,7 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
     * If target_pools <= 0, no compression is applied (0 = 'no compression' by convention).
     """
     has_pmp = "pmp" in split.columns
-    idx_cols = ["rpgt", "currency", "bank"] + (["pmp"] if has_pmp else [])
+    idx_cols = ["rpgt", "currency", "bin"] + (["pmp"] if has_pmp else [])
     raw_cells = int(split.groupby(idx_cols).ngroups)
 
     # Uncompressed pool count (each cell keeps its own centroid) from the raw split.
@@ -439,7 +439,7 @@ def _build_compress_context(split: pd.DataFrame, group_keys, max_gateway_cap, k_
     """
     group_keys = list(group_keys)
     has_pmp = "pmp" in split.columns
-    idx_cols = ["rpgt", "currency", "bank"] + (["pmp"] if has_pmp else [])
+    idx_cols = ["rpgt", "currency", "bin"] + (["pmp"] if has_pmp else [])
     if has_pmp and "pmp" not in group_keys:
         group_keys = group_keys + ["pmp"]
 

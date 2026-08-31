@@ -472,7 +472,7 @@ def optimise_split(problems: list[CellProblem],
             share = float(sol.shares[i]) if _has else 0.0
             if share < 1e-9:
                 continue
-            _c_rpgt.append(p.rpgt); _c_cur.append(p.currency); _c_bank.append(p.bank)
+            _c_rpgt.append(p.rpgt); _c_cur.append(p.currency); _c_bank.append(p.bin)
             _c_pmp.append(getattr(p, "pmp", "_all_")); _c_ctry.append(getattr(p, "ctry", "_all_"))
             _c_gw.append(gw)
             _c_share.append(share)
@@ -488,7 +488,7 @@ def optimise_split(problems: list[CellProblem],
     if not _c_share:
         return pd.DataFrame([])   # preserve the old empty-frame (0×0) shape when nothing routes
     return pd.DataFrame({
-        "rpgt": _c_rpgt, "currency": _c_cur, "bank": _c_bank,
+        "rpgt": _c_rpgt, "currency": _c_cur, "bin": _c_bank,
         "pmp": _c_pmp, "ctry": _c_ctry,          # sub-cell identity (carried through for sub-cell grain)
         "gateway": _c_gw,
         "share": _c_share,
@@ -520,7 +520,7 @@ def portfolio_summary(split: pd.DataFrame) -> dict:
     total_volume = max(_tot_vol, 1)
     expected_success = (volumes * split["gateway_success_rate"]).sum() / total_volume
     expected_risk = (volumes * split["gateway_risk_rate"]).sum() / total_volume
-    infeasible_cells = split.loc[~split["feasible"], ["rpgt", "currency", "bank"]].drop_duplicates()
+    infeasible_cells = split.loc[~split["feasible"], ["rpgt", "currency", "bin"]].drop_duplicates()
     return {
         "volume": float(_tot_vol),
         "expected_success_rate": float(expected_success),

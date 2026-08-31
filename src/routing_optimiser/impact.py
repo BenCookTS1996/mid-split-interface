@@ -32,7 +32,7 @@ def cell_baseline_vs_proposed(split: pd.DataFrame,
     g["proposed_succ"] = g["share"] * g["gateway_success_rate"]
     g["baseline_succ"] = g["baseline_share"] * g["gateway_success_rate"]
 
-    cell = (g.groupby(["rpgt", "currency", "bank"], as_index=False)
+    cell = (g.groupby(["rpgt", "currency", "bin"], as_index=False)
             .agg(cell_volume=("cell_volume", "first"),
                  proposed_rate=("proposed_succ", "sum"),
                  baseline_rate=("baseline_succ", "sum")))
@@ -61,7 +61,7 @@ def headline_impact(cell: pd.DataFrame) -> dict:
 
 
 # [FN-151]
-def key_contributors(cell: pd.DataFrame, by: str = "bank", top: int = 10) -> pd.DataFrame:
+def key_contributors(cell: pd.DataFrame, by: str = "bin", top: int = 10) -> pd.DataFrame:
     """Which banks / currencies / RPGTs drive most of the incremental revenue."""
     agg = (cell.groupby(by, as_index=False)
            .agg(incremental_revenue=("incremental_revenue", "sum"),
@@ -100,7 +100,7 @@ def _split_volume(df: pd.DataFrame) -> pd.Series:
 
 # [FN-154]
 def gateway_move_vs_reference(ref_split: pd.DataFrame, sel_split: pd.DataFrame,
-                              keys=("rpgt", "currency", "bank", "gateway")) -> pd.DataFrame:
+                              keys=("rpgt", "currency", "bin", "gateway")) -> pd.DataFrame:
     """Per-gateway volume BEFORE (`ref_split`) vs AFTER (`sel_split`), aligned on the
     cell×gateway grain. Use with the revenue reference (dial 100) as `ref_split` and the
     selected compliant split as `sel_split` to see the traffic moved to meet constraints.

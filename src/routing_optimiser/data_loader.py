@@ -4,7 +4,7 @@ Load the inputs the optimiser needs and turn them into CellProblems.
 Two inputs:
   1. The "pre" forecast (baseline volumes + current split) from the VAMP
      pipeline. We accept a tidy CSV/parquet with columns:
-        rpgt, currency, bank, gateway, volume, baseline_share [, risk_rate]
+        rpgt, currency, bin, gateway, volume, baseline_share [, risk_rate]
      If you don't have that shape yet, `synthesise_forecast_from_success`
      builds a stand-in from the attempts data so the app runs end to end.
   2. The success/attempts data (for success rates).
@@ -117,7 +117,7 @@ def build_cell_problems(
     problems: list[CellProblem] = []
     _n_gw = _n_pool = 0
 
-    for (rpgt, currency, bank), cell in forecast.groupby(["rpgt", "currency", "bin"]):
+    for (rpgt, currency, bin_), cell in forecast.groupby(["rpgt", "currency", "bin"]):
         gateways = list(cell["gateway"])
         vol = float(cell["volume"].sum())
         base = cell["baseline_share"].to_numpy(float)
@@ -126,7 +126,7 @@ def build_cell_problems(
         succ, obs_s, obs_a, is_pool = [], [], [], []
         prior_r, kap = [], []
         for gw in gateways:
-            key = (_nk(rpgt), _nk(currency), _nk(bank), _nk(gw))
+            key = (_nk(rpgt), _nk(currency), _nk(bin_), _nk(gw))
             _n_gw += 1
             if key in sr.index:
                 row = sr.loc[key]
@@ -164,7 +164,7 @@ def build_cell_problems(
             risk_n = None
 
         problem = CellProblem(
-            rpgt=str(rpgt), currency=str(currency), bank=str(bank),
+            rpgt=str(rpgt), currency=str(currency), bin=str(bin_),
             gateways=gateways,
             success_rates=np.array(succ, float),
             risk_rates=np.array(risk, float),
@@ -220,13 +220,13 @@ def build_subcell_problems(
     default_risk: float = 0.006,
 ) -> list[CellProblem]:
     """SUB-CELL variant of :func:`build_cell_problems` — one CellProblem per
-    (rpgt × currency × bank × pmp × Country) sub-cell.
+    (rpgt × currency × bin × pmp × Country) sub-cell.
 
     Design (locked): the DECISION grain is the sub-cell, but the SCORING (success-rate) grain
-    stays at CELL — so success rates are joined on the CELL key (rpgt,currency,bank,gateway) and
+    stays at CELL — so success rates are joined on the CELL key (rpgt,currency,bin,gateway) and
     BROADCAST onto each sub-cell (no pmp/Country split of the thin conversion data). `forecast`
     must already carry `pmp` and `ctry` columns with the volume apportioned to sub-cells (see
-    `routing_optimiser.subcell.expand_forecast_to_subcells`). `bank` is kept as the raw BIN and
+    `routing_optimiser.subcell.expand_forecast_to_subcells`). `bin` is the raw BIN and
     the sub-cell identity is carried on `CellProblem.pmp` / `.ctry`, so the band projector's
     sub-cell scaffold (keyed bin/pmp/ctry) still aligns.
 
@@ -259,7 +259,7 @@ def build_subcell_problems(
 
     problems: list[CellProblem] = []
     _n_gw = _n_pool = 0
-    for (rpgt, currency, bank, pmp, ctry), cell in _fc.groupby(
+    for (rpgt, currency, bin_, pmp, ctry), cell in _fc.groupby(
             ["rpgt", "currency", "bin", "pmp", "ctry"]):
         gateways = list(cell["gateway"])
         vol = float(cell["volume"].sum())
@@ -268,7 +268,7 @@ def build_subcell_problems(
 
         succ, obs_s, obs_a, is_pool, prior_r, kap = [], [], [], [], [], []
         for gw in gateways:
-            key = (_nk(rpgt), _nk(currency), _nk(bank), _nk(gw))   # CELL-grain rate (broadcast)
+            key = (_nk(rpgt), _nk(currency), _nk(bin_), _nk(gw))   # CELL-grain rate (broadcast)
             _n_gw += 1
             if key in sr.index:
                 row = sr.loc[key]
@@ -292,7 +292,7 @@ def build_subcell_problems(
             risk_n = None
 
         problem = CellProblem(
-            rpgt=str(rpgt), currency=str(currency), bank=str(bank),
+            rpgt=str(rpgt), currency=str(currency), bin=str(bin_),
             gateways=gateways, success_rates=np.array(succ, float),
             risk_rates=np.array(risk, float), volume=vol, baseline_shares=base,
             obs_success=np.array(obs_s, float), obs_attempts=np.array(obs_a, float),

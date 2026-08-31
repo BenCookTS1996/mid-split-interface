@@ -35,7 +35,10 @@ class CellProblem:
 
     rpgt: str
     currency: str
-    bank: str
+    # 19er: the BIN. Held a BIN throughout and was called `bank`, which is the same misleading
+    # name 19eo removed from the dataframes — one layer down, where a quoted-string sweep could
+    # not see it. `bin` is safe as a field name: it is an attribute, so it shadows nothing.
+    bin: str
     gateways: list[str]                 # eligible gateway/MID names
     success_rates: np.ndarray           # expected auth rate per gateway, 0-1
     risk_rates: np.ndarray              # expected chargeback/VAMP rate per gateway, 0-1

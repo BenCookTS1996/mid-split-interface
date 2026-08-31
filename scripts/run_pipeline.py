@@ -64,9 +64,9 @@ def main():
     print(f"      success-rate uplift: {hi['success_rate_uplift_pp']:+.2f} pp   "
           f"incremental revenue: {hi['incremental_revenue']:+,.0f}")
     print("      top contributor banks:")
-    kc = key_contributors(cell, by="bank", top=5)
+    kc = key_contributors(cell, by="bin", top=5)
     for _, r in kc.iterrows():
-        print(f"        {r['bank'][:34]:34}  rev {r['incremental_revenue']:+9,.0f}  "
+        print(f"        {r['bin'][:34]:34}  rev {r['incremental_revenue']:+9,.0f}  "
               f"({r['pct_of_uplift']:.0f}% of uplift)")
 
     print("[4/6] Slider sweep (Pareto frontier) ...")

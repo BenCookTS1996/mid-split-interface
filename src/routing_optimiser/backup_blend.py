@@ -252,7 +252,7 @@ def parse_rules_to_split(rules_dir: str) -> pd.DataFrame:
     the sheet (collapsed to a parent bank downstream via bin_to_bank). Returns an EMPTY frame
     (same columns) when the folder has no readable rule files — the caller decides how to flag.
     """
-    cols = ["rpgt", "currency", "bank", "gateway", "share"]
+    cols = ["rpgt", "currency", "bin", "gateway", "share"]
     files: list[str] = []
     if rules_dir and os.path.isdir(rules_dir):
         for pat in ("*.xlsx", "*.xls", "*.csv"):
@@ -287,12 +287,12 @@ def parse_rules_to_split(rules_dir: str) -> pd.DataFrame:
                 except (ValueError, TypeError):
                     w = 0.0
                 if w > 0:
-                    recs.append({"rpgt": rp, "currency": cur, "bank": bnk,
+                    recs.append({"rpgt": rp, "currency": cur, "bin": bnk,
                                  "gateway": str(gc).strip(), "weight": w})
     if not recs:
         return pd.DataFrame(columns=cols)
     out = pd.DataFrame(recs).groupby(
-        ["rpgt", "currency", "bank", "gateway"], as_index=False)["weight"].sum()
-    _tot = out.groupby(["rpgt", "currency", "bank"])["weight"].transform("sum")
+        ["rpgt", "currency", "bin", "gateway"], as_index=False)["weight"].sum()
+    _tot = out.groupby(["rpgt", "currency", "bin"])["weight"].transform("sum")
     out["share"] = (out["weight"] / _tot).where(_tot > 0, 0.0)
     return out[cols]

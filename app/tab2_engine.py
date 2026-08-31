@@ -2661,7 +2661,7 @@ def render():
                         # currency / bank / RPGT spread
                         _curs = sorted({str(p.currency) for p in agg_problems})
                         _rpgts = sorted({str(p.rpgt) for p in agg_problems})
-                        _banks = len({(str(p.currency), str(p.bank)) for p in agg_problems})
+                        _banks = len({(str(p.currency), str(p.bin)) for p in agg_problems})
                         _diag(f"      currencies={_curs} · distinct banks(×cur)={_banks:,} · rpgt grain values={_rpgts[:8]}"
                               + (" …" if len(_rpgts) > 8 else ""))
                     except Exception as _e:  # noqa: BLE001
@@ -2684,7 +2684,7 @@ def render():
                         cell_temp, _medz, _scl = _variance_gap_temp(agg_sr)
                         _matched = 0
                         for p in agg_problems:
-                            t = cell_temp.get((str(p.currency).strip().lower(), str(p.bank).strip().lower()))
+                            t = cell_temp.get((str(p.currency).strip().lower(), str(p.bin).strip().lower()))
                             if t is not None:
                                 p.temperature = float(t)
                                 _matched += 1

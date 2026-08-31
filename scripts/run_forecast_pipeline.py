@@ -40,7 +40,7 @@ def main():
         pre = load_pre_forecast(out_dir)
 
     print(f"Baseline 'pre' forecast: {len(pre)} rows across "
-          f"{pre[['rpgt','currency','bank']].drop_duplicates().shape[0]} cells")
+          f"{pre[['rpgt','currency','bin']].drop_duplicates().shape[0]} cells")
     print(pre.head(10).to_string(index=False))
 
 
