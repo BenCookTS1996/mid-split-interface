@@ -964,6 +964,74 @@ def _prop_key_str(k, by_rpgt: bool, by_subcell: bool = False) -> str:
     return "|".join([str(k[0]).strip().lower(), str(k[1]).strip(), str(k[2]).strip()])
 
 
+# [FN-011c]
+def _grp_codes(df, cols):
+    """`pd.factorize(df[cols].astype(str).agg("|".join, axis=1))[0]` -- WITHOUT building the strings.
+
+    Returns ELEMENT-WISE IDENTICAL codes, or None when the fast path cannot promise that, in which
+    case the caller runs the exact string join.
+
+    WHY (19fy). That one line was the hot spot in `_static`, which the PopulationBandProjector
+    constructor calls twice ([pbp-build] measured the constructor at 114.5s). `.agg(..., axis=1)`
+    is a ROW-WISE PYTHON APPLY -- one Python call per row -- and it then glues 6 columns into a
+    45-character label per row so that factorize can hash it. On the real export fixture that is
+    9.56s for 1.73M rows; this is 0.81s, 11.7x faster.
+
+    WHY THE CODES COME OUT IDENTICAL, not merely equivalent. `pd.factorize(x, sort=False)` depends
+    on exactly two things: which values are equal to which, and the order in which each distinct
+    value FIRST APPEARS. Two rows share a joined string iff they share the whole tuple, so the
+    string key and a composite integer key induce the SAME equivalence classes in the SAME
+    first-appearance order -- therefore the same integer labels, row for row.
+
+    THAT IDENTITY IS THE WHOLE POINT, and it is not cosmetic. `gcode`'s labels set the order the
+    numba kernels visit cells in, and a band value is a float sum ACROSS cells. Float addition is
+    not associative, so re-labelling the cells -- even into a perfectly valid partition -- could
+    move the last bits of every band value. Preserving the labels is what makes this a speedup with
+    nothing to verify downstream rather than a change needing a bit-identity argument.
+
+    Per column: factorize the RAW values (cheap), stringify only the UNIQUES, then re-factorize
+    those strings so that any two raw values which stringify alike MERGE exactly as the join would
+    (int 403163 and str "403163" both become "403163"). Codes are then combined by mixed-radix on
+    the per-column cardinalities into one int64.
+
+    IT DECLINES IN TWO CASES, both returning None:
+      * a value CONTAINS "|" -- then the join is ambiguous and MERGES distinct tuples that this
+        does not: ("a|b","c") and ("a","b|c") both join to "a|b|c". The string path's answer is
+        arguably wrong, but it is what ships today, so this defers instead of quietly fixing it.
+        Checked over the UNIQUES only, so it costs nothing. No column of the live export contains
+        "|" (verified), so the fast path is what actually runs.
+      * mixed-radix overflow past 2**62 -- cannot happen at these cardinalities, guarded anyway.
+
+    A column containing nulls takes an exact per-column `astype(str)` instead of the
+    unique-value shortcut, because pd.factorize collapses None and NaN into ONE missing value while
+    `astype(str)` renders them "None" and "nan" -- the same trap that 19fx's edge-case test caught.
+    """
+    n = len(df)
+    if not n:
+        return np.zeros(0, np.int64)
+    percol = []
+    for _c in cols:
+        _col = pd.Series(df[_c])
+        if bool(_col.isna().any()):
+            _sc, _su = pd.factorize(_col.astype(str), use_na_sentinel=False)
+            _sc = np.asarray(_sc, np.int64)
+        else:
+            _rc, _ru = pd.factorize(_col, use_na_sentinel=False)
+            _sc0, _su = pd.factorize(pd.Series(_ru).astype(str).to_numpy(),
+                                     use_na_sentinel=False)
+            _sc = np.asarray(_sc0, np.int64)[_rc]
+        if any("|" in str(_x) for _x in np.asarray(_su)):
+            return None
+        percol.append(_sc)
+    key = np.zeros(n, np.int64)
+    for _c2 in percol:
+        _k = int(_c2.max()) + 1
+        if _k and key.max() > (2 ** 62) // _k:
+            return None
+        key = key * _k + _c2
+    return pd.factorize(key, use_na_sentinel=False)[0]
+
+
 # [FN-012]
 def _prop_raw(T0: pd.DataFrame, prop: dict, by_rpgt: bool, by_subcell: bool = False) -> np.ndarray:
     """Look up each t0 row's proposed share from the `prop` dict by its bucket key.
@@ -994,7 +1062,11 @@ def _static(T0: pd.DataFrame):
         candidate put any volume in this cell?") is applied per-candidate at eval time,
         matching `_project_capped` line 3951.
     """
-    gcode = pd.factorize(T0[_GRPK].astype(str).agg("|".join, axis=1))[0]
+    # 19fy: identical codes, ~11.7x faster -- see _grp_codes. None ⇒ it declined, so run the
+    # exact string join it is a stand-in for.
+    gcode = _grp_codes(T0, _GRPK)
+    if gcode is None:
+        gcode = pd.factorize(T0[_GRPK].astype(str).agg("|".join, axis=1))[0]
     ngc = int(gcode.max()) + 1 if len(gcode) else 0
     av_sum = np.bincount(gcode, weights=T0["_av"].to_numpy(float), minlength=ngc)[gcode]
     base = np.where(av_sum > 0, T0["_av"].to_numpy(float) / np.where(av_sum > 0, av_sum, 1.0), 0.0)
@@ -1029,17 +1101,88 @@ def rpgt_scope_mask(rpgt_values, scoped_rpgts):
 
 
 # [FN-014]
+_OMAP_KEYS = ["cur", "bin", "rpgt", "pmp", "ctry", "midl"]
+
+
+# [FN-014b]
+def _codes_pair(left, right):
+    """One SHARED integer code space for two columns, built from their DISTINCT values only.
+
+    Returns (left_codes, right_codes), where a right value absent from `left` gets -1 -- it can
+    never match, which is exactly what the string join's "no such key" means. None if it declines.
+
+    Two columns must share ONE dictionary or the codes are not comparable, and the shortcut is that
+    the mapping only has to be decided once per distinct value, not once per row.
+    """
+    _lc, _lu = pd.factorize(left, use_na_sentinel=False)
+    _mc, _mu = pd.factorize(pd.Series(_lu).astype(str).to_numpy(), use_na_sentinel=False)
+    if any("|" in str(_x) for _x in _mu):
+        return None
+    _rc, _ru = pd.factorize(right, use_na_sentinel=False)
+    _rus = pd.Series(_ru).astype(str).to_numpy()
+    if any("|" in str(_x) for _x in _rus):
+        return None
+    return (np.asarray(_mc, np.int64)[_lc],
+            pd.Index(_mu).get_indexer(_rus).astype(np.int64)[_rc])
+
+
 def _origin_map(T0: pd.DataFrame, Pc: pd.DataFrame) -> np.ndarray:
-    """Each aged Pc row -> its ORIGIN t0 row index (om==per), excluding back-fill; -1 if none."""
-    t0join = (T0["cur"] + "|" + T0["bin"] + "|" + T0["rpgt"] + "|" + T0["pmp"] + "|"
-              + T0["ctry"] + "|" + T0["midl"] + "|" + T0["per"].astype(str)).to_numpy()
-    valid = ~T0["bf"].to_numpy(bool)
-    t0pos = pd.Series(np.where(valid)[0], index=t0join[valid])
-    t0pos = t0pos[~t0pos.index.duplicated(keep="last")]
+    """Each aged Pc row -> its ORIGIN t0 row index (om==per), excluding back-fill; -1 if none.
+
+    19fy: joined on an INT64 composite key instead of a 7-part concatenated string. Same answer,
+    row for row -- verified element-wise on a fixture built from the live export, including
+    back-fill exclusion, duplicate keys resolved keep="last", and the 442,853 no-origin -1s.
+
+    WHY. The string version built one ~55-character label per row on BOTH sides -- 1.9M for T0 and
+    6.45M for Pc -- and then hash-joined 6.45M strings. Measured 3.47s -> 1.56s on the fixture
+    (2.2x), which is ~12.9s -> ~5.8s at the run's real Pc width. Part of the 114.5s
+    PopulationBandProjector constructor that [pbp-build] exposed.
+
+    A join has failure modes a grouping does not, so all three are pinned by construction:
+      * NO MATCH -- any component value absent from the T0 side codes -1, which forces the whole
+        key to a sentinel that cannot match, giving -1. Same rows as before.
+      * DUPLICATE T0 keys -- still `~index.duplicated(keep="last")`, unchanged and in the same
+        order, because the row indices it selects from are unchanged.
+      * BACK-FILL -- still excluded by `~T0["bf"]` before the index is built.
+
+    Declines (falling back to the exact string join) if any value contains "|", since the string
+    join is ambiguous there and MERGES distinct tuples; checked over distinct values only.
+    """
+    _n1 = len(Pc)
+    if not len(T0) or not _n1:
+        return np.full(_n1, -1, np.int64)
     om = (Pc["per"] - Pc["t"]).astype(int)
-    pcjoin = (Pc["cur"] + "|" + Pc["bin"] + "|" + Pc["rpgt"] + "|" + Pc["pmp"] + "|"
-              + Pc["ctry"] + "|" + Pc["midl"] + "|" + om.astype(str)).to_numpy()
-    return t0pos.reindex(pcjoin).fillna(-1).to_numpy().astype(np.int64)
+    _tk = np.zeros(len(T0), np.int64)
+    _pk = np.zeros(_n1, np.int64)
+    _bad = np.zeros(_n1, bool)
+    _ok = True
+    for _c in _OMAP_KEYS + ["per"]:
+        _pair = _codes_pair(T0["per"] if _c == "per" else T0[_c],
+                            om if _c == "per" else Pc[_c])
+        if _pair is None:
+            _ok = False
+            break
+        _tc, _pc = _pair
+        _k = int(max(_tc.max(), _pc.max())) + 1
+        if _k and max(_tk.max(), _pk.max()) > (2 ** 62) // _k:
+            _ok = False
+            break
+        _tk = _tk * _k + _tc
+        _bad |= (_pc < 0)
+        _pk = _pk * _k + np.where(_pc < 0, 0, _pc)
+    valid = ~T0["bf"].to_numpy(bool)
+    if not _ok:
+        # EXACT fallback: the original string join, unchanged.
+        t0join = (T0["cur"] + "|" + T0["bin"] + "|" + T0["rpgt"] + "|" + T0["pmp"] + "|"
+                  + T0["ctry"] + "|" + T0["midl"] + "|" + T0["per"].astype(str)).to_numpy()
+        t0pos = pd.Series(np.where(valid)[0], index=t0join[valid])
+        t0pos = t0pos[~t0pos.index.duplicated(keep="last")]
+        pcjoin = (Pc["cur"] + "|" + Pc["bin"] + "|" + Pc["rpgt"] + "|" + Pc["pmp"] + "|"
+                  + Pc["ctry"] + "|" + Pc["midl"] + "|" + om.astype(str)).to_numpy()
+        return t0pos.reindex(pcjoin).fillna(-1).to_numpy().astype(np.int64)
+    t0pos = pd.Series(np.where(valid)[0], index=_tk[valid])
+    t0pos = t0pos[~t0pos.index.duplicated(keep="last")]
+    return t0pos.reindex(np.where(_bad, -1, _pk)).fillna(-1).to_numpy().astype(np.int64)
 
 
 # [FN-015a]
