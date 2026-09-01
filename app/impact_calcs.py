@@ -43,8 +43,37 @@ def _apply_keep(t0, excluded_mids, kill_eff, month_0):
     t0["_keep"] = np.where(_binary, 0.0, _keep)
     return t0
 
+# ── [forensic] 19gt: THE FOUR ATTRIBUTION STASHES ARE COMPUTED ON DEMAND ────────────────────
+# `compute_vamp_prepost_granular` builds four read-only stashes that exist for ONE purpose:
+# explaining a non-zero reconciliation error. On the 2026-09-01 22:09 run they were 77s of a
+# 162s projection — 47% — explaining an error of 0.
+#
+#   [passthru]    18.8s   which aged groups the no-recipient override fired on
+#   [pshare-why]  18.7s   why Σ_pshare came out under 1
+#   [vterms]      29.6s   the four VAMP terms + three single-variable counterfactuals
+#   [move-gate]    9.8s   five one-gate-lifted movable-fraction variants
+#
+# 19fq deleted their env switches, and that reasoning stands: "a switch that can turn off the
+# only explanation of a number you are driving to zero is a switch that will be found off on the
+# run where it mattered". THIS IS NOT THAT SWITCH. The caller sets it False, projects, reads the
+# per-band drift off that projection, and — if the drift is real — sets it True and projects
+# AGAIN before anything downstream reads a stash. The explanation is never unavailable; it is
+# computed exactly when there is something to explain, and the run log says which happened.
+#
+# A skipped stash is set to the string "skipped", NOT None. None already means "this failed",
+# and a reader must be able to tell those apart.
+FORENSIC = True
+
+
+class _Skip(Exception):
+    """Raised to leave a forensic stash block early when FORENSIC is off.
+
+    A dedicated type, not a bare `return`: these blocks sit inside broad
+    `except Exception` handlers that set the stash to None (= "this failed"), and a skip
+    must not be recorded as a failure. Each handler re-checks the flag."""
+
 __build__ = ("2026-08-17b-count-only-pool-search+subcell-exporter+staged-enforcement"
-             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zerocell+vamp-term-stash+2026-09-01-19gq-gk-int-key+cvp-submarks")
+             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zerocell+vamp-term-stash+2026-09-01-19gq-gk-int-key+cvp-submarks+19gt-forensic-on-demand")
 
 
 # [FN-246b]
@@ -1881,7 +1910,11 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # closes the +243 IS the cause, and if none does, the cause is not a gate at all.
     #
     # Cost is four vectorised passes over a frame already in memory — no extra projection.
+    if not FORENSIC:
+        globals()["_LAST_MOVE_GATES"] = "skipped"
     try:
+        if not FORENSIC:
+            raise _Skip()
         _gk_v = _gk
         _pra = pd.to_numeric(pp["_pr_app"], errors="coerce").fillna(0.0)
         _om = pd.to_numeric(pp["orig_m"], errors="coerce").fillna(-1)
@@ -1922,6 +1955,8 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
             "no_gates": _mv_of(False, False, False),
         })
         globals()["_LAST_MOVE_GATES"] = _vg.groupby(["midl", "per"], as_index=False).sum()
+    except _Skip:
+        pass                       # [forensic] 19gt: skipped, not failed — stash already set
     except Exception:  # noqa: BLE001
         globals()["_LAST_MOVE_GATES"] = None
     _cv_mark("[move-gate] five one-gate-lifted variants + stash")
@@ -1940,6 +1975,9 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # rows are capped so a diagnostic can never dominate the run.
     try:
         _pt_gf = pd.to_numeric(pp["_gf"], errors="coerce").fillna(0.0).to_numpy()
+        if not FORENSIC:
+            globals()["_LAST_PASSTHRU"] = "skipped"
+            raise _Skip()
         _pt_pra = pd.to_numeric(pp["_pr_app"], errors="coerce").fillna(0.0).to_numpy()
         _pt_vc = pd.to_numeric(pp["vampCount"], errors="coerce").fillna(0.0).to_numpy()
         _pt_om = pd.to_numeric(pp["orig_m"], errors="coerce").fillna(-1).to_numpy()
@@ -1981,6 +2019,8 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
             "n_movable": int(len(_pg)),
             "mv_held": float(_fired["mv"].sum()),
             "detail": _det}
+    except _Skip:
+        pass                       # [forensic] 19gt: skipped, not failed — stash already set
     except Exception:  # noqa: BLE001
         globals()["_LAST_PASSTHRU"] = None
     _cv_mark("[passthru] fired-set stash (7-column string key + 2 groupbys)")
@@ -2004,7 +2044,9 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # it at two sites to explain a recipient-share drift, and a switch that can turn off the only
     # explanation of a number you are driving to zero is a switch that will be found off on the
     # run where it mattered. Unconditional now.
-    if True:
+    if not FORENSIC:
+        globals()["_LAST_PSHARE_WHY"] = "skipped"
+    if FORENSIC:
         _pw_t_0 = _time.perf_counter()
         try:
             # INTENDED recipients, at origination: the rows whose vshare made up the 1.0. This is
@@ -2102,7 +2144,10 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     _cv_mark("[pshare-why] recipient-share stash")
     # 19fq: ROUTING_VTERMS DELETED, same reason. _LAST_VAMP_TERMS / _LAST_VAMP_PSUM feed the
     # Search-vs-Delivery Reconciliation Breakdown, the [nw-attrib] table and the move-gate ladder.
-    if True:
+    if not FORENSIC:
+        globals()["_LAST_VAMP_TERMS"] = "skipped"
+        globals()["_LAST_VAMP_PSUM"] = "skipped"
+    if FORENSIC:
         try:
             _vt_vc = pd.to_numeric(pp["vampCount"], errors="coerce").fillna(0.0)
             _vt_mv = pd.to_numeric(pp["_move"], errors="coerce").fillna(0.0)

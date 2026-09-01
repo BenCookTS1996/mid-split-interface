@@ -120,7 +120,7 @@ import pandas as pd
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-08-19bz-float32-optin"
+__build__ = ("2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on"
              "+2026-08-19by-lane-cap-16-measured-on-the-cell-blocked-kernel"
              "+2026-08-19bt-cell-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -587,11 +587,20 @@ _PROJ_CB_ON = os.environ.get("ROUTING_PROJ_CELLBLOCK", "1") != "0"
 # 19bz: FLOAT32, OPT-IN. See the module patch note. This is the ONE setting in the projector that
 # changes the answer, so it defaults OFF, it announces itself in the run log, and it measures its
 # own drift on the live scaffold every run instead of quoting a remembered figure.
-# FIXED OFF (2026-08-31). Was ROUTING_PROJ_FLOAT32, pinned to 0 in routing.env on every run.
-# It is the ONE projector setting that CHANGES THE ANSWER, so it is now nailed to the exact
-# float64 path rather than left switchable. The self-check, the drift measurement and the
-# announcement below are all retained: they now confirm exactness instead of policing an opt-in.
-_PROJ_F32 = False
+# ON BY DEFAULT as of 19gt, at Ben's instruction, so the next run measures it.
+#
+# READ THIS BEFORE TRUSTING A RESULT. This is the ONE projector setting that CHANGES THE ANSWER.
+# Everything else in this module is bit-identical by construction; float32 is not, and it does not
+# pretend to be. What makes it safe to default ON is that it polices itself every run, on the live
+# scaffold, at the live candidate width:
+#   * the self-check below measures the drift against the float64 path and FLIPS ITSELF OFF for
+#     the process if it is out of tolerance — the run continues on exact float64,
+#   * [proj-config] prints the measured drift rather than a remembered figure,
+#   * RECONCILIATION ERROR is the end-to-end proof, exactly as it was for 19fs: delivery is an
+#     untouched float64 path, so if float32 moved anything that matters it stops reading 0.
+# If reconciliation is non-zero on the next run, set ROUTING_PROJ_FLOAT32=0 and re-run before
+# reading anything else — that is the first thing to rule out.
+_PROJ_F32 = os.environ.get("ROUTING_PROJ_FLOAT32", "1") != "0"
 _F32_OK = {"use": _PROJ_F32, "said": False, "dv": None, "dt": None}
 # `use` is flipped off for the process by the live self-check. `sweeps` is the water-fill sweep
 # high-water mark: the ONE case where per-cell convergence could differ from the shipped kernel's
@@ -773,7 +782,7 @@ def proj_config():
                      ("ROUTING_PROJ_CHUNK", _PROJ_CHUNK_ON),
                      ("ROUTING_PROJ_PARALLEL", _PROJ_PAR_ON)):
         _raw = os.environ.get(_nm)
-        _dflt = _nm != "ROUTING_PROJ_FLOAT32"          # every switch but float32 defaults ON
+        _dflt = True                                   # 19gt: every projector switch defaults ON
         _now = _dflt if _raw is None else (_raw != "0")
         if bool(_now) != bool(_im):
             out.append("*** " + _nm + " reads "
@@ -783,12 +792,11 @@ def proj_config():
                        "These switches are read ONCE. Setting one after the app has started does "
                        "nothing \u2014 quit the app fully and relaunch it.")
 
-    if False:   # float32 is fixed off (2026-08-31); this "switch is unset" note no longer applies
-        out.append("float32 is off because ROUTING_PROJ_FLOAT32 is UNSET in this process. "
-                   "`routing.env` is read by run.command AT LAUNCH only, so if that file sets it "
-                   "to 1 then this app was not started by run.command (or was started before the "
-                   "file existed). Quit the app fully and relaunch \u2014 a browser refresh, or "
-                   "clicking Run again, will not pick it up.")
+    if not _PROJ_F32:
+        out.append("float32 is OFF because ROUTING_PROJ_FLOAT32=0 is set in this process. It "
+                   "defaults ON since 19gt, so something set it: `routing.env` is read by "
+                   "run.command AT LAUNCH only. The projector is running the exact float64 path "
+                   "\u2014 correct, and paying roughly double the memory traffic.")
 
     # 19ch: THE PATH ACTUALLY TAKEN, recorded rather than derived. [kernel-ab] restates the
     # dispatch rule to describe the live path; on 2026-08-25 19:14 its answer and [proj-par]'s

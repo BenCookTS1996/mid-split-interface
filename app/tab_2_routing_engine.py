@@ -3736,6 +3736,24 @@ def render():
                         _Pc["_om"] = _Pc["_per"] - _Pc["_t"]
                         log(f"   per-MID cap projection scaffold: {len(_T0):,} t0 rows, "
                             f"{len(_Pc):,} capped-MID rows ({len(_keep):,} cells).")
+                        # ── [cap-timing] 19gt: SPLIT THE 54.5s ────────────────────────────
+                        # The gap between this line and 'per-MID target±tolerance caps' was
+                        # 54.5s on the 2026-09-01 22:09 run — the largest single step in the
+                        # scaffold build and the only one with no breakdown at all. Same
+                        # treatment as [cvp-timing]: mark it, then attack what the marks name.
+                        # Marks only; nothing computed here moved. The prime suspects are
+                        # visible in the code below — several `a + "|" + b + "|" + ...` string
+                        # keys built over _T0 (~1.9M rows) and _Pc (~6.5M), which is the exact
+                        # pattern 19fy and 19gn each measured at ~10x — but the marks decide
+                        # that, not the reading. The last two estimates I made off a table
+                        # like this were wrong by 4x and by a factor the other way.
+                        import time as _cap_time
+                        _cap_tm = {"t": _cap_time.perf_counter(), "rows": []}
+
+                        def _cap_mark(_lbl, _st=_cap_tm, _tm=_cap_time):
+                            _n = _tm.perf_counter()
+                            _st["rows"].append((_lbl, _n - _st["t"]))
+                            _st["t"] = _n
                         # ── [scaffold-recon] SCAFFOLD vs PRO-RATA EXPORT RECONCILIATION ────────
                         # Two row counts get quoted side by side in this log — the pro-rata
                         # export's and the band projector's scaffold — and they are NOT the same
@@ -3806,6 +3824,7 @@ def render():
                         # per-call proposed shares with a C-level get_indexer + numpy gather (keep-last
                         # via last-write-wins fancy assignment), instead of building a pandas Series +
                         # de-duplicating + reindexing over ~600k rows on every call. Exact.
+                        _cap_mark("scaffold reconciliation table + the two _T0 prop-key strings")
                         _T0_pk_codes, _u = pd.factorize(_T0_pk)
                         _T0_pk_uniq_ix = pd.Index(_u)
                         _T0_pkr_codes, _ur = pd.factorize(_T0_pk_rpgt)
@@ -3820,6 +3839,7 @@ def render():
                         _T0_fcp_a = _T0["_fcp"].to_numpy(float)   # movable-cohort fraction (fcp1)
                         _T0_vc_a = _T0["_vc"].to_numpy(float)     # baseline VAMP at t0 (for VAMP share)
                         _T0_vi_a = _T0["_vi"].to_numpy(float)
+                        _cap_mark("factorise the _T0 keys + pull the per-row arrays")
                         _T0_capidx = np.where(_T0["_midl"].isin(_capped_l).to_numpy())[0]
                         # _Pc → _T0 row index by (cur,bin,rpgt,midl, _Pc._om == _T0._per)
                         _t0_join = (_T0["_cur"] + "|" + _T0["_bin"] + "|" + _T0["_rpgt"] + "|"
@@ -3842,6 +3862,7 @@ def render():
                         _t0_pos = pd.Series(np.where(_valid)[0], index=_t0_join[_valid])
                         _t0_pos = _t0_pos[~_t0_pos.index.duplicated(keep="last")]
                         _Pc_to_t0 = _t0_pos.reindex(_pc_join).fillna(-1).to_numpy().astype(np.int64)
+                        _cap_mark("_Pc -> _T0 row-index map (two more string keys, over _T0 and _Pc)")
                         _Pc_vc_a = _Pc["_vc"].to_numpy(float)
                         # Moved-VAMP pool per (cur,bin,rpgt,pmp,ctry,period,t), APPEARANCE-MONTH timed
                         # to match the tab-3 DELIVERED projection (compute_vamp_prepost_granular):
@@ -3888,6 +3909,7 @@ def render():
                         # Aggregation group codes + (midl, period) labels — VAMP over _Pc rows,
                         # TXN over capped _T0 rows. Same groups as the old (_midl,_per) group-by.
                         _SEP = ""
+                        _cap_mark("origin fcp / pro-rata / moved-pool maps over _P (np.fromiter loops)")
                         _pc_aggcodes, _pc_agguniq = pd.factorize(
                             _Pc["_midl"].astype(str) + _SEP + _Pc["_per"].astype(str))
                         _pc_agg_labels = [(_s.rsplit(_SEP, 1)[0], int(_s.rsplit(_SEP, 1)[1])) for _s in _pc_agguniq]
@@ -3896,6 +3918,7 @@ def render():
                         _t0cap_agg_labels = [(_s.rsplit(_SEP, 1)[0], int(_s.rsplit(_SEP, 1)[1])) for _s in _t0cap_agguniq]
                         # Group counts for np.bincount (speedup 1): factorize codes are contiguous
                         # 0..n-1, so minlength = max+1 = #unique. Precomputed once with the codes.
+                        _cap_mark("aggregation keys (_pc_agg / _t0cap: string build + factorize + rsplit)")
                         _n_gc = (int(_T0_gcodes.max()) + 1) if len(_T0_gcodes) else 0
                         _n_pc_agg = len(_pc_agg_labels)
                         _n_t0cap_agg = len(_t0cap_agg_labels)
@@ -4035,6 +4058,21 @@ def render():
                             _vc[["cell", "gateway", "vampMid", "cell_vol", "baseline_share", "share", "rate"]],
                             a_max_by_mid, max_share=float(max_share))
                         comp_share = _vc2["share"].to_numpy()
+                        _cap_mark("build the cap tables (a_max_by_mid) + the rest")
+                        try:
+                            _cap_tot = sum(_v for _, _v in _cap_tm["rows"])
+                            if _cap_tot >= 1.0:
+                                log(f"   [cap-timing] building the per-MID cap scaffold took "
+                                    f"{_cap_tot:.1f}s, largest first (these SUM to the gap "
+                                    "between the scaffold line above and the caps line below, so "
+                                    "there is no residual to argue about) ──")
+                                for _l, _v in sorted(_cap_tm["rows"], key=lambda kv: -kv[1]):
+                                    if _v >= 0.05:
+                                        log(f"      {_v:8.1f}s  "
+                                            f"({100.0 * _v / max(_cap_tot, 1e-9):>5.1f}%)  {_l}")
+                        except Exception as _cte:  # noqa: BLE001
+                            log(f"   [cap-timing] unavailable ({type(_cte).__name__}) — "
+                                "measurement only.")
                         log(f"   per-MID target±tolerance caps: {len(a_max_by_mid)} active; "
                             f"{len(mid_vol_constrained)} MID(s) scaled/retired.")
                     ss["mid_vol_constrained"] = sorted(str(m) for m in mid_vol_constrained)
@@ -8313,6 +8351,15 @@ def render():
                                     def _pj_stash_keys(_mod):
                                         return [_a for _a in dir(_mod) if _a.startswith("_LAST_")]
 
+                                    def _stash(_mod, _name):
+                                        """Read a `_LAST_*` stash, mapping [forensic] 19gt's "skipped" sentinel
+                                        to None. A skip and a failure both read as "no numbers here", and every
+                                        caller below already handles None — but they must not be CONFLATED in
+                                        the log, which is why the sentinel exists at all and why [forensic]
+                                        prints which of the two happened."""
+                                        _v = getattr(_mod, _name, None)
+                                        return None if isinstance(_v, str) else _v
+
                                     def _pj_chain(_gr, _tag):
                                         """delivered split -> (enforced+blended prop items, period-5 projection).
 
@@ -8510,8 +8557,8 @@ def render():
                                         # without it only the shipped split is ever explained,
                                         # which is how the 12:38 log reported "the renormalisation
                                         # is a no-op" while the seed's +399 drift sat unexplained.
-                                        _st = {"terms": getattr(_nw_ic, "_LAST_VAMP_TERMS", None),
-                                               "psum": getattr(_nw_ic, "_LAST_VAMP_PSUM", None)}
+                                        _st = {"terms": _stash(_nw_ic, "_LAST_VAMP_TERMS"),
+                                               "psum": _stash(_nw_ic, "_LAST_VAMP_PSUM")}
                                         _u = 0.0
                                         _per_band = {}
                                         for _rp in _fm_eb.report(_fm_s2pr(
@@ -8561,12 +8608,90 @@ def render():
                                             "as of 19fi the reconcile REUSES whichever of the two "
                                             "belongs to the split that ships, so the run pays for "
                                             "two in total rather than three. ──")
+                                        # ── [forensic] 19gt: EXPLAIN THE ERROR ONLY WHEN THERE IS ONE ──
+                                        # compute_vamp_prepost_granular builds four read-only stashes —
+                                        # [passthru], [pshare-why], [vterms], [move-gate] — whose ONLY job is
+                                        # to attribute a non-zero reconciliation error. On the 2026-09-01
+                                        # 22:09 run they were 77s of a 162s projection, 47% of it, explaining
+                                        # an error of 0.
+                                        #
+                                        # 19fq deleted their env switches and that reasoning stands: a switch
+                                        # that turns off the only explanation of a number you are driving to
+                                        # zero will be found off on the run where it mattered. THIS IS NOT A
+                                        # SWITCH. Project once WITHOUT them, read the per-band drift off that
+                                        # projection, and if the drift is real, project AGAIN with them on —
+                                        # before anything downstream reads a stash. The explanation is never
+                                        # unavailable; it is computed exactly when there is something to
+                                        # explain.
+                                        #
+                                        # WHY THE DRIFT IS KNOWABLE HERE and not at the RECONCILIATION ERROR
+                                        # line ~5,000 lines below: `_nw_delivered_units` returns `_per_band`
+                                        # carrying BOTH numbers per band — what delivery produced, and what
+                                        # the projector scored. Their absolute difference IS the
+                                        # reconciliation error, and it is in hand the moment the first
+                                        # projection returns. The error line below re-derives it through the
+                                        # authoritative reconcile; if the two ever disagree, THAT is a defect
+                                        # and [forensic] says so rather than quietly re-projecting.
+                                        _fx_on = os.environ.get("ROUTING_FORENSIC", "auto")
+                                        _pj_ic_m = __import__("impact_calcs")
+                                        _pj_ic_m.FORENSIC = (_fx_on == "1")
                                         _nw_t0 = _nw_time.perf_counter()
                                         _nw_dg, _nw_bg, _nw_stg = _nw_delivered_units(
                                             _fm_full, "GA output")
                                         _nw_t1 = _nw_time.perf_counter()
                                         log(f"   [never-worse] GA output projected in "
                                             f"{_nw_t1 - _nw_t0:.1f}s")
+                                        try:
+                                            _fx_bar = float(os.environ.get("ROUTING_RECON_BAR", "1") or 1)
+                                        except Exception:  # noqa: BLE001
+                                            _fx_bar = 1.0
+                                        # Σ|delivered − scored| over the banded MIDs. `_per_band` values are
+                                        # (delivered, projector_now, ceil, floor, metric, over).
+                                        _fx_drift = None
+                                        try:
+                                            _fx_drift = float(sum(abs(float(_v[0]) - float(_v[1]))
+                                                                  for _v in (_nw_bg or {}).values()
+                                                                  if _v[1] is not None))
+                                        except Exception as _fxe:  # noqa: BLE001
+                                            _fx_drift = None
+                                            log(f"   [forensic] could not read the per-band drift off the "
+                                                f"projection ({type(_fxe).__name__}: {_fxe}) — projecting "
+                                                "AGAIN with the attribution stashes on, because a run that "
+                                                "cannot prove it reconciles is a run that needs them.")
+                                        if _fx_on == "1":
+                                            log("   [forensic] ROUTING_FORENSIC=1 — the four attribution "
+                                                "stashes ran on the first projection, whether or not there "
+                                                "is anything to attribute. Costs ~77s.")
+                                        elif _fx_on == "0":
+                                            log("   [forensic] ROUTING_FORENSIC=0 — the four attribution "
+                                                "stashes are OFF and will NOT be computed even if this run "
+                                                "fails to reconcile. [vterms], [pshare-why], [move-gate] and "
+                                                "[passthru] will be absent below, and the reconciliation "
+                                                "error will have no explanation. Unset it.")
+                                        elif _fx_drift is not None and _fx_drift <= _fx_bar:
+                                            log(f"   [forensic] scored and delivered agree to "
+                                                f"{_fx_drift:,.3g} unit(s) across "
+                                                f"{len(_nw_bg or {})} banded MID(s), inside the bar of "
+                                                f"{_fx_bar:,.0f} — so the four attribution stashes were NOT "
+                                                "computed and this projection was ~77s cheaper. They explain "
+                                                "a reconciliation error; there is no reconciliation error. "
+                                                "[vterms], [pshare-why], [move-gate] and [passthru] will "
+                                                "report themselves as not-computed rather than empty.")
+                                        else:
+                                            log(f"   [forensic] scored and delivered differ by "
+                                                f"{'unreadable' if _fx_drift is None else f'{_fx_drift:,.0f}'}"
+                                                f" unit(s), over the bar of {_fx_bar:,.0f} — PROJECTING "
+                                                "AGAIN with the four attribution stashes on, so [vterms], "
+                                                "[pshare-why], [move-gate] and [passthru] can say WHERE it "
+                                                "comes from. This second projection is the price of an "
+                                                "explanation and is only paid on a run that needs one.")
+                                            _pj_ic_m.FORENSIC = True
+                                            _PJ_MEMO.clear()
+                                            _fx_t0 = _nw_time.perf_counter()
+                                            _nw_dg, _nw_bg, _nw_stg = _nw_delivered_units(
+                                                _fm_full, "GA output (forensic re-projection)")
+                                            log(f"   [forensic] re-projected in "
+                                                f"{_nw_time.perf_counter() - _fx_t0:.1f}s.")
                                         # ── [nw-skip] 19gp: A ZERO CANNOT BE BEATEN ──────────
                                         # The decision below is `_nw_pick_ga = _nw_dg <= _nw_ds`,
                                         # and `_nw_delivered_units` returns a SUM OF NON-NEGATIVE
@@ -11177,7 +11302,7 @@ def render():
                                             #   POOL Δ ⇒ the two sides disagree on the pool itself.
                                             try:
                                                 import routing_optimiser.s4_search.band_projection as _bpm_v
-                                                _dvt = getattr(_ic_t, "_LAST_VAMP_TERMS", None)
+                                                _dvt = _stash(_ic_t, "_LAST_VAMP_TERMS")
                                                 _vcp = np.asarray(getattr(_pj, "_vcpos", []), float)
                                                 _porg = np.asarray(getattr(_pj, "_pc_org", []), np.int64)
                                                 if _dvt is None or not _vcp.size or not _porg.size:
@@ -11410,7 +11535,7 @@ def render():
                                                     # nominating the nearest one, which is how the
                                                     # max-share cap absorbed three runs.
                                                     if _v19_hv:
-                                                        _mg = getattr(_ic_t, "_LAST_MOVE_GATES", None)
+                                                        _mg = _stash(_ic_t, "_LAST_MOVE_GATES")
                                                         if _mg is None or not len(_mg):
                                                             _vlog("      [detail] gate attribution "
                                                                 "unavailable (impact_calcs pre-19di).")
@@ -11486,7 +11611,7 @@ def render():
                                                         # what is left is different ROWS or
                                                         # different SHARES — and only the live run
                                                         # has both sides to compare.
-                                                        _v19_pt = getattr(_ic_t, "_LAST_PASSTHRU", None)
+                                                        _v19_pt = _stash(_ic_t, "_LAST_PASSTHRU")
                                                         _gkeys = getattr(_pj, "_pc_gk_keys", None)
                                                         if _v19_pt is None or _gkeys is None or not len(_gkeys):
                                                             _vlog("      [detail] passthrough "
@@ -13158,13 +13283,29 @@ def render():
                                             # delivered VAMP units on THIS data.
                                             try:
                                                 import impact_calcs as _ic_vt
-                                                _vt = getattr(_ic_vt, "_LAST_VAMP_TERMS", None)
-                                                _vp = getattr(_ic_vt, "_LAST_VAMP_PSUM", None)
+                                                _vt = _stash(_ic_vt, "_LAST_VAMP_TERMS")
+                                                _vp = _stash(_ic_vt, "_LAST_VAMP_PSUM")
                                                 if _vt is None or _vp is None:
-                                                    log("   [vterms] stash absent — either "
-                                                        "the delivered "
-                                                        "projection did not run in this pass. "
-                                                        "No VAMP attribution this run.")
+                                                    # 19gt: a SKIP and a FAILURE must not read
+                                                    # alike. The sentinel says which.
+                                                    if isinstance(getattr(_ic_vt,
+                                                                          "_LAST_VAMP_TERMS",
+                                                                          None), str):
+                                                        log("   [vterms] NOT COMPUTED — scored "
+                                                            "and delivered agreed on the first "
+                                                            "projection, so the four terms and "
+                                                            "three counterfactuals were skipped "
+                                                            "([forensic] above says by how much "
+                                                            "they agreed, and what it saved). "
+                                                            "They are not zero, they are "
+                                                            "unmeasured; a run that fails to "
+                                                            "reconcile computes them "
+                                                            "automatically.")
+                                                    else:
+                                                        log("   [vterms] stash ABSENT — the "
+                                                            "delivered projection did not run in "
+                                                            "this pass, or it failed. No VAMP "
+                                                            "attribution this run.")
                                                 else:
                                                     _vtd = _vt.copy()
                                                     for _c in ("post", "cf_norenorm", "cf_nopass",
