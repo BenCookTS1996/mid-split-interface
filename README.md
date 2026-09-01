@@ -296,5 +296,5 @@ queries/               the pipeline's BigQuery extracts
 app/streamlit_app.py   the app (4 tabs)
 app/impact_calcs.py    before→after impact projection + config templates
 app/tab_configs.py     the "Generate configs" tab
-config/settings.yaml   VAMP pipeline settings (the app mirrors this)
+config/vamp_settings.yaml   VAMP pipeline settings (the app mirrors this)
 ```

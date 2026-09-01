@@ -2,7 +2,7 @@
 
     python main.py                              # visa
     python main.py --scheme mastercard
-    python main.py --scheme visa --config config/settings.yaml
+    python main.py --scheme visa --config config/vamp_settings.yaml
     python main.py --pre data/outputs/AUG/TotalAV/visa   # no run: load + preview
     python main.py --show-pre                            # run, then preview
 
@@ -42,9 +42,9 @@ GCP_PROJECT = "sapient-tangent-172609"
 # scheme -> (default config, adapter name, pre-loader name, label). The ONLY
 # per-scheme differences, in one place, so a third scheme is a row not a file.
 SCHEMES = {
-    "visa": ("config/settings.yaml", "run_vamp_pipeline",
+    "visa": ("config/vamp_settings.yaml", "run_vamp_pipeline",
              "load_pre_forecast", "VAMP"),
-    "mastercard": ("config/settings_mastercard.yaml", "run_mastercard_pipeline",
+    "mastercard": ("config/mastercard_settings.yaml", "run_mastercard_pipeline",
                    "load_mc_pre_forecast", "MASTERCARD"),
 }
 

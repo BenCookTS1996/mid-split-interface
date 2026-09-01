@@ -6,7 +6,7 @@ Mastercard baseline columns (Sim_CBs / CB_Pre) rather than the VAMP ones.
 
 Three jobs:
   1. build_mc_pipeline_config    - map the Forecast tab's settings onto the exact
-                                   settings_mastercard.yaml schema the pipeline expects.
+                                   mastercard_settings.yaml schema the pipeline expects.
   2. run_mastercard_pipeline     - run DataExtractor -> ActuarialEngine ->
                                    AllocationEngine -> ExportManager (needs BigQuery).
   3. load_mc_pre_forecast        - read the pipeline's 'pre' (do-nothing) output and

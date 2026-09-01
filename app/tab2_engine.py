@@ -9112,7 +9112,15 @@ def render():
                                 # ROUTING_KERNEL_AB=0 skips the block, ROUTING_KERNEL_AB_REPS
                                 # tunes the reps (default 15 — 5 left a floor that swallowed three
                                 # of the four variants retired against it in 19ar).
-                                if os.environ.get("ROUTING_KERNEL_AB", "1") != "0":
+                                # 19ft: DEFAULT FLIPPED TO OFF. routing.env pinned this to 0 on
+                                # every run, and that file is deleted, so the default had to carry
+                                # the intent or removing it would have silently switched a ~150s
+                                # measurement block back ON. The standing verdict is in routing.env's
+                                # own note: every [kernel-ab] variant already has one (C, D, E dead;
+                                # F real but answer-moving; G and chunking adopted), so the block
+                                # cannot currently change a decision. ROUTING_KERNEL_AB=1 brings it
+                                # back the moment a new idea needs deciding — which is what it is for.
+                                if os.environ.get("ROUTING_KERNEL_AB", "0") != "0":
                                     try:
                                         import time as _kt
                                         from routing_optimiser import band_projection as _kbp

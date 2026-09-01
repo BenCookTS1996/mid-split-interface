@@ -1,7 +1,7 @@
 """Headless forecast run + baseline preview — a SHIM. The runner is main.py (19fl).
 
-    python scripts/run_vamp_forecast_pipeline.py --settings config/settings.yaml
-      ==  python main.py --config config/settings.yaml --show-pre
+    python scripts/run_vamp_forecast_pipeline.py --settings config/vamp_settings.yaml
+      ==  python main.py --config config/vamp_settings.yaml --show-pre
 
     python scripts/run_vamp_forecast_pipeline.py --pre <outputs dir>
       ==  python main.py --pre <outputs dir>
@@ -22,7 +22,7 @@ from main import run  # noqa: E402
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--settings", default="config/settings.yaml")
+    ap.add_argument("--settings", default="config/vamp_settings.yaml")
     ap.add_argument("--pre", default=None,
                     help="Skip the live run; load pre from this outputs dir/CSV.")
     ap.add_argument("--gcp-project", default=None)

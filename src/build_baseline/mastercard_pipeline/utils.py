@@ -48,7 +48,7 @@ def load_config(filepath: str) -> Dict[str, Any]:
     Loads the YAML configuration file containing dates, targets, and overrides.
 
     Args:
-        filepath (str): The relative or absolute path to the settings_mastercard.yaml file.
+        filepath (str): The relative or absolute path to the mastercard_settings.yaml file.
 
     Returns:
         Dict[str, Any]: A nested dictionary of the configuration settings.

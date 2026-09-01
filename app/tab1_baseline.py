@@ -341,8 +341,8 @@ def render():
                     st.markdown("<div style='height:0.4rem;'></div>", unsafe_allow_html=True)
                     _ds1, _ds2 = st.columns(2)
                     use_yaml_asis = _ds1.checkbox(
-                        "Use config/settings.yaml as-is (repo parity)", value=False,
-                        help="Run the pipeline straight from config/settings.yaml, like your repo.")
+                        "Use config/vamp_settings.yaml as-is (repo parity)", value=False,
+                        help="Run the pipeline straight from config/vamp_settings.yaml, like your repo.")
                     reuse_cached_curves = _ds2.checkbox(
                         "Reuse cached actuarial curves", value=True,
                         help="Reuse cached reference_curves (load_curves_from_cache).")
@@ -578,7 +578,7 @@ def render():
                     yaml.safe_dump(pipeline_config, sort_keys=False), language="yaml")
                 st.download_button("Download settings.yaml",
                                    yaml.safe_dump(pipeline_config, sort_keys=False),
-                                   file_name="settings.yaml", mime="text/yaml")
+                                   file_name="vamp_settings.yaml", mime="text/yaml")
         # ── RUN LOG ───────────────────────────────────────────────────────────────────────────
         # 19eq: the container is created UP IN THE ROW-2 RIGHT COLUMN, next to the config
         # captions — that is what makes it one column wide rather than full page, and it takes
@@ -647,15 +647,15 @@ def render():
                     log("── Input settings used ──")
                     log(f"   mode: {_mode}")
                     if run_live and use_yaml_asis:
-                        log("   NOTE: 'Use config/settings.yaml as-is' is ON — the widget settings below are "
-                            "IGNORED; the pipeline runs straight from config/settings.yaml.")
+                        log("   NOTE: 'Use config/vamp_settings.yaml as-is' is ON — the widget settings below are "
+                            "IGNORED; the pipeline runs straight from config/vamp_settings.yaml.")
                     log(f"   company={_fs['company']} · scheme={_fs['card_scheme']} · month={_fs['month_var']} · "
                         f"month_0={_fs['month_0']}")
                     log(f"   split_go_live={_fs['split_go_live_date']} · future_anchor={_fs['future_anchor_date']}")
                     log(f"   use_live_actuals={_fs['use_live_actuals']} · "
                         f"actuals_window={_fs['start_date']} → {_fs['end_date']}")
                     log(f"   force_actuals_for={_fs['force_actuals_for'] or '(none)'}")
-                    log(f"   use config/settings.yaml as-is={use_yaml_asis} · "
+                    log(f"   use config/vamp_settings.yaml as-is={use_yaml_asis} · "
                         f"reuse_cached_curves={_fs['reuse_cached_curves']}")
                     log(f"   use_cached_inputs={_fs['use_cached_inputs']} · "
                         f"cached_inputs_path={_fs['cached_inputs_path'] or '(none)'}")
@@ -676,8 +676,8 @@ def render():
                         log(f"• Running {_scheme_lbl} pipeline (BigQuery); pipeline logs:")
                         try:
                             if use_yaml_asis:
-                                _yaml_name = ("settings_mastercard.yaml" if _is_mc
-                                              else "settings.yaml")
+                                _yaml_name = ("mastercard_settings.yaml" if _is_mc
+                                              else "vamp_settings.yaml")
                                 with open(os.path.join(PROJECT_ROOT, "config",
                                                        _yaml_name)) as _f:
                                     pipeline_config = yaml.safe_load(_f)

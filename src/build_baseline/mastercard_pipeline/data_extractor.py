@@ -128,7 +128,7 @@ class DataExtractor:
     def _read_sql_file(self, filename: str) -> str:
         """
         Reads a raw .sql file and injects the target boundary dates from
-        settings_mastercard.yaml so BigQuery queries the correct time window.
+        mastercard_settings.yaml so BigQuery queries the correct time window.
         Replaces {MONTH_0_START_DATE}, {ACTUALS_START_DATE}, {ACTUALS_END_DATE}.
         """
         cfg_dir = self.config.get('paths', {}).get('queries_dir')
