@@ -30,7 +30,9 @@ SQL_DIR = os.path.join(_HERE, "..", "queries")
 # 19fk: was ".cache" at the repo root. Renamed to sit beside
 # data/build_baseline_cached_input_data and to say WHOSE cache it is: this one holds the
 # ROUTING ENGINE's inputs (attempts_success, m0_weightings, processor_benchmark, pool_comp,
-# riskmin, ga_perf.json), not the baseline forecast's. A dot-prefixed folder also hid ~600 MB
+# ga_perf.json), not the baseline forecast's. ("riskmin" used to be listed here too; the
+# riskmin_<key>.pkl cache belonged to the tilt CMA-ES risk-min endpoint, whose loader and writer
+# were deleted in 19gf and whose files are gone.) A dot-prefixed folder also hid ~600 MB
 # from a plain `ls`, which is not a good property for the largest thing in the repo after
 # the baseline cache.
 CACHE_DIR = os.path.join(_HERE, "..", "data", "routing_engine_cached_input_data")

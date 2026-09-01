@@ -5390,10 +5390,10 @@ def render():
                         # it. Trivialise it (1 seed, 1 gen) — the block still defines every variable the
                         # delivery path needs; only _comp_share_G (greedy+LP seed) and ctx matter here.
                         if engine_key == "genetic_fullmatrix":
-                            # The tilt CMA-ES risk-min search is SKIPPED ENTIRELY for full-matrix (the actual
-                            # search call at _ga_solve_with_correction is bypassed below). These cosmetic
-                            # pop/gen values only feed the (discarded) perf/ETA readouts now; the CMA-ES does
-                            # not run at all.
+                            # The tilt CMA-ES risk-min search does not exist any more — 19gf deleted
+                            # _ga_solve_with_correction and its call site outright (the engine moved to
+                            # legacy_engines.midtilt_cmaes in 19gd). These cosmetic pop/gen values feed
+                            # only the perf/ETA readouts.
                             _ga_pop, _ga_gen = 4, 1
                             log("   [full-matrix] the full-matrix GA is the delivered search; it starts from "
                                 "the band-aware warm-start seed. No preliminary endpoint search is run.")
@@ -5404,9 +5404,11 @@ def render():
                             _N_SEED = 1       # short-circuit: single trivial seed (result discarded)
                                               # (module constant, also read by the settings-aware ETA)
                         _GA_GAIN_MAX = 3.5   # wider per-MID gain range (was 2.0) → more cross-MID reach
-                        # CMA-ES self-adapts (covariance + step size) and ranks feasibility-first, so the
-                        # legacy GA knobs (breach-targeted mutation, smart init, adaptive λ) no longer
-                        # apply — run_midtilt_ga accepts them for compatibility and ignores them.
+                        # 19gf/19ga: the legacy GA knobs (breach-targeted mutation, smart init,
+                        # adaptive λ) applied to the per-cell GA that the tilt CMA-ES replaced. 19ga
+                        # DELETED all fifteen of them from run_midtilt_ga's signature — they were
+                        # accepted and never read — and 19gf deleted the wiring that passed them. This
+                        # comment described a compatibility shim that no longer exists.
                         _rev_of = lambda _sh: float((np.asarray(_sh, float) * _rev_coef).sum())
                         # Tilt/CMA-ES search log lines are noise for the full-matrix engine (its tilt search
                         # is short-circuited to 1 gen and DISCARDED). Route them through _tlog: a no-op for
@@ -6193,7 +6195,12 @@ def render():
                                          "restarts": int(max(1, int(ss.get("ga_restarts", 4) or 4))),
                                          "nvar": 1, "n": int(len(G))}
                         _save_ga_perf(ss["ga_perf"])
-                        # (_ga_solve_with_correction resets risk_min_w / band_weight on exit.)
+                        # 19gf: a note here said "_ga_solve_with_correction resets risk_min_w /
+                        # band_weight on exit". That function is deleted, and NOTHING was relying on
+                        # the reset — `risk_min_w` and `band_weight` appear nowhere else in this file
+                        # (checked), so no consumer lost anything. Recorded rather than silently
+                        # dropped because a deleted side effect is exactly the kind of thing that
+                        # looks like a regression six weeks later.
                         _ga_wall_tot = _gatime.time() - _ga_wall0
                         # ---- ④ SETTINGS-EFFICIENCY SELF-REPORT --------------------------------
                         # So each run says how much search its settings bought and how efficiently.
