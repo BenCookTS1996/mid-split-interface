@@ -26,8 +26,12 @@ Thumbs.db
 .streamlit/secrets.toml
 
 # ─────────────── Caches (regenerated automatically) ───────────
+# 19fj/19fk: both caches renamed to say whose inputs they hold.
+# Old names kept so a working copy that still has them stays ignored.
 .cache/
 data/cache/
+data/build_baseline_cached_input_data/
+data/routing_engine_cached_input_data/
 
 # ────────── Generated pipeline outputs (large; regenerated) ────
 data/outputs/

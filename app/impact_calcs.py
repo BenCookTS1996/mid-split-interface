@@ -2873,7 +2873,9 @@ def pool_targeted_compression(ss, split_ideal, *, target_pools, sig, wallet_ctx,
     # split skips the whole (multi-pass k-means) search.
     _dpath = None
     try:
-        _cdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".cache")
+        # 19fk: renamed from ".cache" — see app_common.CACHE_DIR.
+        _cdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                             "data", "routing_engine_cached_input_data")
         _dk = _pool_disk_key(split_ideal, target_pools=target_pools, wallet_ctx=wallet_ctx,
                              brand_name=brand_name, brand_key=brand_key, go_live=go_live,
                              mid_list_path=mid_list_path, date_tag=date_tag, mode=mode,

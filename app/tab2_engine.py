@@ -183,10 +183,9 @@ def render():
         # dispatched directly by the app (not a registry engine). CONSOLIDATED: the former separate
         # 'genetic' (NumPy) and 'genetic_numba' options are gone — there is now ONE genetic engine:
         # the Numba fused kernel (verify-or-fallback to NumPy, so it can never produce a different
-        # split) run on a rule-safe PRE-CLUSTERED problem (near-lossless; see routing_optimiser.
-        # precluster). It keys as 'genetic_numba' so all engine logic is unchanged; pre-clustering is
-        # turned on for it below (ss['ga_precluster']; set ROUTING_GA_PRECLUSTER=0 to disable as an
-        # escape hatch). If Numba is unavailable it self-falls-back to the NumPy path.
+        # split). If Numba is unavailable it self-falls-back to the NumPy path.
+        # 19fk: the rule-safe PRE-CLUSTERING this paragraph used to describe is deleted — it was
+        # reachable only under the 'genetic_numba' key, which no longer exists in `choices`.
         # OPT-IN full-matrix BIN-grain GA (genetic_fullmatrix). Reuses the genetic
         # block's ctx + enforcement; only the DELIVERED endpoint is swapped for the
         # full-matrix GA's split (see the override just before `_deliver_G` below).
@@ -403,12 +402,13 @@ def render():
                 engine_key = st.selectbox("Split engine", keys, index=default_idx,
                                           format_func=lambda k: labels[k], key="engine_key_select",
                                           help="Method used to choose the split.")
-                # The single genetic engine ('genetic_numba') ALWAYS runs Numba + pre-clustering.
-                # Record the intent in ss — the GA block reads ss['ga_precluster'] to swap in the
-                # pre-clustering wrapper at the call. Escape hatch: ROUTING_GA_PRECLUSTER=0 disables
-                # pre-clustering (falls back to the plain Numba search) for debugging / A/B.
-                ss["ga_precluster"] = (engine_key == "genetic_numba"
-                                       and os.environ.get("ROUTING_GA_PRECLUSTER", "1") != "0")
+                # 19fk: `ss['ga_precluster']` and ROUTING_GA_PRECLUSTER are DELETED with
+                # routing_optimiser.precluster. The flag was `engine_key == "genetic_numba"`, and
+                # `choices` has held exactly one entry — ("genetic_fullmatrix", "Genetic
+                # Algorithm") — since the other engines left the dropdown, so it could not become
+                # True. Pre-clustering never ran; the wrapper import behind it never executed.
+                # If it is ever wanted again it is one import and one branch, and the module is
+                # in git history.
                 # These two flags keep the rest of the tab from special-casing the genetic key.
                 # ('genetic' is retained here only so any legacy session/state value still resolves.)
                 # genetic_fullmatrix reuses the SAME genetic block (ctx build + greedy/LP
@@ -2911,18 +2911,13 @@ def render():
                     # constraint is applied CROSS-CELL, per vampMid, afterwards.
                     from routing_optimiser import optimiser as _optmod
                     from routing_optimiser.optimiser import (enforce_mid_vamp_caps, enforce_mid_volume_caps)
+                    # 19fk: the pre-clustering swap that used to sit here is gone with
+                    # routing_optimiser.precluster — it was gated on `ss['ga_precluster']`, which
+                    # could not be True once the dropdown held only 'genetic_fullmatrix'.
+                    # `_run_midtilt_ga` IS the plain search, and it is called for real: the numba
+                    # warm-up, the loky seed workers, and the single-seed in-process path all use
+                    # it to produce the tilt seed the full-matrix GA warm-starts from.
                     from routing_optimiser.genetic_global import run_midtilt_ga as _run_midtilt_ga
-                    # The Genetic engine runs on a rule-safe PRE-CLUSTERED problem by default
-                    # (ss['ga_precluster'], set above; ROUTING_GA_PRECLUSTER=0 disables it). The wrapper
-                    # is a drop-in for run_midtilt_ga — it rule-safely clusters cells, runs the SAME GA on
-                    # the reduced problem, and expands the result back (near-lossless; see
-                    # routing_optimiser.precluster). Same call/return contract, so every call site (incl.
-                    # the parallel loky workers and the numba pre-compile) is unchanged. If it's off,
-                    # `_run_midtilt_ga` stays the plain Numba search.
-                    if bool(ss.get("ga_precluster")):
-                        from routing_optimiser.precluster import run_midtilt_ga_preclustered as _run_midtilt_ga
-                        log("   pre-clustering ON → GA runs on rule-safe pre-clustered cells "
-                            "(near-lossless; expand-back before enforcement).")
                     # The parenthetical used to read "(expect 2026-07-16-vamp-frontier-lp — if not,
                     # clear __pycache__)". The shipped module is 2026-07-29-…, i.e. NEWER than the
                     # literal, so that line told the operator to clear __pycache__ on every single
@@ -6660,7 +6655,10 @@ def render():
 
                         _rm_path = None; _safe_G = _inf2 = None
                         try:
-                            _rm_path = os.path.join(PROJECT_ROOT, ".cache", f"riskmin_{_riskmin_key()}.pkl")
+                            # 19fk: renamed from ".cache" — see app_common.CACHE_DIR.
+                            _rm_path = os.path.join(PROJECT_ROOT, "data",
+                                                    "routing_engine_cached_input_data",
+                                                    f"riskmin_{_riskmin_key()}.pkl")
                             if os.path.exists(_rm_path):
                                 import pickle as _pk_rm
                                 with open(_rm_path, "rb") as _f_rm:

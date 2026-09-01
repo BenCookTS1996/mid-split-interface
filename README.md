@@ -228,7 +228,8 @@ If a query returns a 403, ask your admin for access to the `sapient-tangent-1726
 
 A live forecast then works: on tab 1 pick **"Run VAMP pipeline"**, or run it headless:
 ```bash
-python main.py
+python main.py                      # visa
+python main.py --scheme mastercard   # mastercard
 ```
 Extracts are cached to parquet under `data/build_baseline_cached_input_data/`, so later runs only re-query BigQuery when
 something new is needed (a new month or company).

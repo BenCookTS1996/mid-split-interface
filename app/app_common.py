@@ -27,7 +27,13 @@ ss = st.session_state
 _HERE = os.path.dirname(__file__)
 PROJECT_ROOT = os.path.abspath(os.path.join(_HERE, ".."))
 SQL_DIR = os.path.join(_HERE, "..", "queries")
-CACHE_DIR = os.path.join(_HERE, "..", ".cache")
+# 19fk: was ".cache" at the repo root. Renamed to sit beside
+# data/build_baseline_cached_input_data and to say WHOSE cache it is: this one holds the
+# ROUTING ENGINE's inputs (attempts_success, m0_weightings, processor_benchmark, pool_comp,
+# riskmin, ga_perf.json), not the baseline forecast's. A dot-prefixed folder also hid ~600 MB
+# from a plain `ls`, which is not a good property for the largest thing in the repo after
+# the baseline cache.
+CACHE_DIR = os.path.join(_HERE, "..", "data", "routing_engine_cached_input_data")
 INPUTS_DIR = os.path.join(_HERE, "..", "config", "inputs")
 GCP_PROJECT = "sapient-tangent-172609"  # matches the VAMP repo's BigQuery project
 
@@ -1204,7 +1210,7 @@ def active_gateway_fids(master_mid_list_path=None):
         md5 of the same set in FILE ORDER                     86a67d55822668cb965e82d14a4da67f
 
     SORTED, and not cosmetic: sql_runner.cache_path_for hashes the rendered parameter into the
-    cache filename, so file order would miss every existing .cache parquet and re-run the query.
+    cache filename, so file order would miss every existing cached parquet and re-run the query.
     The 2026-08-26 note claimed both orderings matched "byte for byte" — that was a SET comparison
     written up as a string comparison, and it was wrong.
 
