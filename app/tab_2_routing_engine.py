@@ -1364,8 +1364,16 @@ def render():
                                    "routing_optimiser.s1_extract.success_rates", "routing_optimiser.s2_forecast.vamp_forecast_pipeline",
                                    "routing_optimiser.s1_extract.data_loader", "routing_optimiser.s1_extract.sql_runner",
                                    "routing_optimiser.s3_problem.constraints", "routing_optimiser.engines.base",
-                                   "routing_optimiser.engines.softmax", "routing_optimiser.engines.thompson",
-                                   "routing_optimiser.s4_search.seed_search", "routing_optimiser.engines.portfolio",
+                                   # 19fv: softmax / thompson / portfolio / entropy live in
+                                   # legacy_engines/ since 2026-08-31 -- retired from the UI but
+                                   # still REGISTERED in engines.ENGINES. Asking engines.* for them
+                                   # printed "(import failed)" on all three EVERY run, which is
+                                   # exactly what this block exists to catch, aimed at itself.
+                                   "routing_optimiser.legacy_engines.softmax",
+                                   "routing_optimiser.legacy_engines.thompson",
+                                   "routing_optimiser.legacy_engines.portfolio",
+                                   "routing_optimiser.legacy_engines.entropy",
+                                   "routing_optimiser.s4_search.seed_search",
                                    "routing_optimiser.s4_search.band_projection"]:
                             _diag(f"      {_m.split('.')[-1]:16s} {_bmark(_m)}")
                         # impact_calcs is imported by-name (from impact_calcs import ...), so the module
@@ -8444,7 +8452,13 @@ def render():
                                                 "REPORT only; the projector itself is unaffected.")
                                     _ppn = list(getattr(_bpm, "_PROJ_PAR_NOTES", []) or [])
                                     for _pn_msg in _ppn:
-                                        log(f"   [proj-par] {_pn_msg}")
+                                        # 19fv: the list now also carries the projector's one-off
+                                        # BUILD verdicts ([vconst-frozen], the aged-row hoist, the
+                                        # frozen lift, index width, cell-blocked layout), which
+                                        # bring their own tag. Don't bury a tag under [proj-par] --
+                                        # these are the lines you grep for.
+                                        log(f"   {_pn_msg}" if str(_pn_msg).startswith("[")
+                                            else f"   [proj-par] {_pn_msg}")
                                     if not _ppn:
                                         log("   [proj-par] the projector reported NOTHING about candidate "
                                             "parallelism THIS pass."

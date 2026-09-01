@@ -704,7 +704,7 @@ _PROJ_CHUNK_ON = os.environ.get("ROUTING_PROJ_CHUNK", "1") != "0"
 # [FN-010b]
 def _pnote(msg):
     """Record a projection-parallelism note for the run log, and echo it to stdout."""
-    if len(_PROJ_PAR_NOTES) < 64:
+    if len(_PROJ_PAR_NOTES) < 96:   # 19fv: +5 one-off verdicts now share this list
         _PROJ_PAR_NOTES.append(str(msg))
     print(f"[band_projection] {msg}")
 
@@ -1619,7 +1619,7 @@ class PopulationBandProjector:
                 _vconst)                                              # vconst (19cz)
             self._ix32 = dict(_ixs)
             _n_nar = int(_ixs.get("narrowed", 0)); _n_ref = int(_ixs.get("refused", 0))
-            print(f"[band_projection] index width: {_n_nar} array(s) narrowed to int32, "
+            _pnote(f"index width: {_n_nar} array(s) narrowed to int32, "
                   f"{_n_ref} kept at int64. Largest index {_ixs.get('hi', 0):,} of the "
                   f"{_I32_MAX:,} int32 ceiling "
                   f"({_ixs.get('hi', 0) / _I32_MAX:.4%} of it) — "
@@ -1628,7 +1628,7 @@ class PopulationBandProjector:
                   + "Values are unchanged, so the projection is bit-identical; only the bytes "
                     "moved per index change. Adopted 19bi from [kernel-ab] variant G.")
             _h = self._nb_hoist
-            print(f"[band_projection] aged-row hoist (19cz/19dd/19fs): no-origin "
+            _pnote(f"aged-row hoist (19cz/19dd/19fs): no-origin "
                   f"{_h['no_origin']:,} + zero-pool {_h['zero_pool']:,} + FROZEN-ORIGIN "
                   f"{_h['frozen']:,} = {_h['static']:,} of {_h['total']:,} "
                   f"banded aged row(s) ({100.0 * _h['static'] / max(_h['total'], 1):.1f}%) are "
@@ -1640,7 +1640,7 @@ class PopulationBandProjector:
                   "pass the loop always made AND the two the 19cy age renormalise adds, so read "
                   "[gen-gap]'s `eval` row against the previous run before concluding anything "
                   "about what the renormalise cost.")
-            print(f"[band_projection] [vconst-frozen] 19fs added the THIRD class: "
+            _pnote(f"[vconst-frozen] 19fs added the THIRD class: "
                   f"{_h['frozen']:,} aged row(s) whose ORIGIN CELL IS FROZEN (no GA share "
                   f"column maps to it, so psum is 0 there for every candidate). "
                   + ("Their contribution is the SAME constant the other two classes have "
@@ -1749,7 +1749,7 @@ class PopulationBandProjector:
                 ~cell_live[np.asarray(self._gcode, np.int64)])[0].astype(np.int64)
             self._lift_frozen_cells = np.where(~cell_live)[0].astype(np.int64)
             self._lift_primed = None
-            print(f"[band_projection] frozen-scaffold LIFT ON: the flat passes skip "
+            _pnote(f"frozen-scaffold LIFT ON: the flat passes skip "
                   f"{len(self._lift_frozen_rows):,} of {nR:,} rows "
                   f"({len(self._lift_frozen_rows) / max(nR, 1):.1%}) in "
                   f"{len(self._lift_frozen_cells):,} of {ncell:,} frozen cells "
@@ -2077,7 +2077,7 @@ class PopulationBandProjector:
                 "primed": None,
             }
             self._cb = cb
-            print(f"[band_projection] cell-blocked layout built: {cb['nLR']:,} live rows in "
+            _pnote(f"cell-blocked layout built: {cb['nLR']:,} live rows in "
                   f"{cells.size:,} cells (~{cb['nLR'] / max(cells.size, 1):.1f} rows/cell), "
                   f"{froz.size:,} frozen rows parked in the tail. The multi-pass block now runs "
                   "one cell at a time (an L1-sized working set) instead of ~15 passes over the "
