@@ -664,7 +664,7 @@ _Total: 431 functions across 37 files · analogy coverage: 431/431._
   *Analogy:* Rewards candidates in sparse areas to keep the options varied.
 - **[FN-086]** `_select_nsga2(M, k)` — Pick k indices from M (P,k_obj) minimisation objectives via NSGA-II (fronts + crowding).  
   *Analogy:* Picks the survivors — best tiers first, variety as the tie-break.
-- **[FN-087]** `run(ctx, lam)` — Drop-in for genetic_global.run_midtilt_ga. Returns (best_shares (N,), info).  
+- **[FN-087]** `run(ctx, lam)` — Drop-in for midtilt_cmaes.run_midtilt_ga. Returns (best_shares (N,), info).  
   *Analogy:* The whole NSGA-II search — an alternative breeding programme.
 - **[FN-088]** `_best_index(obj, viol)` — Feasibility-first: among feasible (viol<=tol) pick max obj; else min viol (tie max obj).  
   *Analogy:* Among the rule-abiding finalists, picks the top scorer.
@@ -699,7 +699,7 @@ _Total: 431 functions across 37 files · analogy coverage: 431/431._
 - **[FN-102]** `run_fullmatrix_ga.pick()` — (small helper — see source)  
   *Analogy:* Crowns the winning matrix at the end.
 
-## `src/routing_optimiser/genetic_global.py`
+## `src/routing_optimiser/midtilt_cmaes.py`
 *How it ties in:* The genetic (CMA-ES) search: breed better splits over many rounds.
 
 - **[FN-103]** `_mid_sums(vol, mid_rows, M, S)` — Per-MID column sums of `vol` (P, N) -> (P, M).  
@@ -882,7 +882,7 @@ _Total: 431 functions across 37 files · analogy coverage: 431/431._
   *Analogy:* The bolt that attaches the compiler to the function.
 - **[FN-186]** `_fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fine, nec_col, fl_col, capN_col, has_floor, has_cap, cv, risk, rc, has_vcap, vcap, has_volcap, volcap, n_bands, b_mi, b_bval, b_ceil, b_floor, b_has_ceil, b_has_floor, b_pmul, has_base, base_vol, wm, max_share, floor_val, rmw, has_vfr, vfr, bfix, qwt, pexp, has_elig, ecs, ecc, e_has_ban, e_ban, e_has_w, e_w_incap, e_w_wf, e_has_u, e_u_incap, e_u_wf)` — One fused pass: ACTUAL genome batch G (P, 3M[+K]) -> (obj (P,), viol (P,)).  
   *Analogy:* instead of building each intermediate array and handing it to the next NumPy step (like shipping half-finished parts between factory stations), this does the whole decode → eligibility → score on ONE workbench per candidate. The bulky in-between arrays never exist — which is where the speed comes from — while the maths and the summation ORDER stay the same, so the answer matches the NumPy path to float64 rounding.
-- **[FN-187]** `_prep_cols(cell_starts, cell_counts, elig, cap, floor)` — Per-column nec / floor / capN constants, matching `genetic_global._cap_floor_prep`  
+- **[FN-187]** `_prep_cols(cell_starts, cell_counts, elig, cap, floor)` — Per-column nec / floor / capN constants, matching `midtilt_cmaes._cap_floor_prep`  
   *Analogy:* Pre-cutting each door's cap/floor constants so the conveyor never pauses to recompute them.
 - **[FN-188]** `make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig, cap, floor, fine_idx, zr_cell, n_fine, cv, risk, rc, ctx)` — Return a callable `eval_actual(G)->(obj, viol)` (G in ACTUAL genome space) backed by  
   *Analogy:* Builds and hands you the ready-tuned fast scorer.
@@ -926,7 +926,7 @@ _Total: 431 functions across 37 files · analogy coverage: 431/431._
   *Analogy:* Shrinks the problem to one representative per bucket.
 - **[FN-205]** `reduce_ctx._take(name)` — (small helper — see source)  
   *Analogy:* Pulls the representative row out of a bucket.
-- **[FN-206]** `run_midtilt_ga_preclustered(ctx)` — OPT-IN drop-in for `genetic_global.run_midtilt_ga` (same call/return contract). Clusters the  
+- **[FN-206]** `run_midtilt_ga_preclustered(ctx)` — OPT-IN drop-in for `midtilt_cmaes.run_midtilt_ga` (same call/return contract). Clusters the  
   *Analogy:* Runs the search on the shrunken problem, then copies answers back — same result, less work.
 - **[FN-207]** `run_midtilt_ga_preclustered._red(w)` — (small helper — see source)  
   *Analogy:* The reduced-problem helper inside that run.

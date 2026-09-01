@@ -6,7 +6,7 @@ raises, even when Numba is not installed.
 
 Why it exists
 -------------
-The per-generation hot loop is `_obj_viol(_decode(genome))` in `genetic_global.py`. In
+The per-generation hot loop is `_obj_viol(_decode(genome))` in `midtilt_cmaes.py`. In
 NumPy that materialises several (population × gateways) intermediates per generation
 (the exp array, the per-cell reduceat sums, the water-fill temporaries, the per-MID
 sparse sums). This kernel FUSES the whole decode+objective into a single pass over one
@@ -130,7 +130,7 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
         # ---- decode: per-column tilt score `a`, then STABILISED softmax -------------
         # First store `a` per eligible column; the per-cell exp below subtracts that cell's MAX
         # `a` (shift-invariant → identical result) so exp can never overflow to +inf — which used
-        # to give inf/inf = NaN for a large tilt·z. Mirrors genetic_global._decode_midtilt3.
+        # to give inf/inf = NaN for a large tilt·z. Mirrors midtilt_cmaes._decode_midtilt3.
         for g in range(N):
             if elig[g] > 0.5:
                 m = mid_id[g]
@@ -382,7 +382,7 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
 # --------------------------------------------------------------------------- builder
 # [FN-187]
 def _prep_cols(cell_starts, cell_counts, elig, cap, floor):
-    """Per-column nec / floor / capN constants, matching `genetic_global._cap_floor_prep`
+    """Per-column nec / floor / capN constants, matching `midtilt_cmaes._cap_floor_prep`
     but as dense (N,) arrays the fused kernel can index directly."""
     cs = np.ascontiguousarray(cell_starts, dtype=np.intp)
     cc = np.ascontiguousarray(cell_counts, dtype=np.intp)
@@ -434,7 +434,7 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
         volcap = np.full(M, np.inf, np.float64)
 
     # EXACT BANDS (gate 2): when ctx['exact_bands'] is set, the per-MID month bands are scored
-    # EXACTLY per generation OUTSIDE the kernel (genetic_global eval wrapper + band_scoring), so
+    # EXACTLY per generation OUTSIDE the kernel (midtilt_cmaes eval wrapper + band_scoring), so
     # the kernel must NOT also apply the volume-ratio PROXY band term — otherwise it'd double-count
     # and break lockstep with _obj_viol (which drops the proxy term under the same flag).
     _bands = [] if ctx.get("exact_bands") else (ctx.get("midband") or [])
@@ -463,7 +463,7 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
     base_vol = np.asarray(_base, np.float64) if _base is not None else np.zeros(M, np.float64)
     # Per-MID VIOLATION weight (volume-weighting, #4). SAME helper the NumPy _obj_viol uses, so
     # the two hard-verified paths stay bit-identical. All-ones ⇒ un-weighted (back-compat).
-    from .genetic_global import _mid_viol_weights
+    from .midtilt_cmaes import _mid_viol_weights
     wm = np.ascontiguousarray(_mid_viol_weights(ctx, M), dtype=np.float64)
 
     max_share = float(ctx.get("max_share", 1.0) or 1.0)
@@ -472,11 +472,11 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
     _vfr = ctx.get("vamp_floor_route")
     has_vfr = 1 if _vfr is not None else 0
     vfr = np.asarray(_vfr, np.float64) if _vfr is not None else np.zeros(M, np.float64)
-    # Breach penalty (must match genetic_global._obj_viol._pen): fixed hit + quadratic overage.
+    # Breach penalty (must match midtilt_cmaes._obj_viol._pen): fixed hit + quadratic overage.
     bfix = float(ctx.get("breach_fixed", 0.0) or 0.0)
     qwt = float(ctx.get("breach_quad", 1.0) or 1.0)
     # penalty shape: 0 = quadratic (qwt·over²), 1 = exponential (qwt·(exp(over)−1), over clipped 50).
-    # MUST match genetic_global._obj_viol._pen — verify() cross-checks and falls back on mismatch.
+    # MUST match midtilt_cmaes._obj_viol._pen — verify() cross-checks and falls back on mismatch.
     pexp = 1 if str(ctx.get("breach_shape", "quadratic")).lower() == "exponential" else 0
 
     # ---- eligibility operator (mirror eligibility.apply_elig_pop inside the kernel) -------

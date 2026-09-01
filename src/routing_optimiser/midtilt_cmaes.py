@@ -1,5 +1,27 @@
 """
-Genetic-algorithm router — CROSS-CELL per-vampMid tilt search.
+CROSS-CELL per-vampMid TILT SEARCH (Active CMA-ES) — the SEED the full-matrix GA
+warm-starts from, plus the reference fitness every fast kernel is checked against.
+
+RENAMED FROM `genetic_global.py` (19fl). The old name said neither what the module
+searches nor what it is for, and "genetic" was wrong twice over: this is CMA-ES, not a
+GA, and the project's actual GA lives next door in `genetic_fullmatrix.py`. Reading the
+old name, it was easy to conclude the file was a legacy engine that nothing used. It is
+not. Nothing runs without it:
+
+  run_midtilt_ga            the tilt search itself — CALLED for real by tab 2 at three
+                            sites: the Numba warm-up verify, the loky multi-seed workers,
+                            and the single-seed in-process path. Its output is one of the
+                            seeds the full-matrix GA warm-starts from (the run log's
+                            "8 seeds x 2 restarts").
+  _obj_viol                 THE REFERENCE FITNESS. numba_kernels._fused_eval and
+                            band_scoring are written to match it, and verify() cross-checks
+                            against it and falls back on mismatch. Delete this and the fast
+                            path has nothing left to be validated by.
+  _build_mid_incidence      builds ctx["_mid_S"], the per-MID incidence (tab2 ~5961)
+  band_greedy_shares_multi  the band-greedy seed feeding _feas_starts (tab2 ~6102)
+  _project_capped_simplex_cells   imported by exact_band_solver
+  _mid_viol_weights         imported by numba_kernels
+  __build__                 part of the riskmin cache key
 
 `run_midtilt_ga` is the live entry point (an Active-CMA-ES search). Its genome is a
 THREE-axis per-vampMid tilt — [θr | θq | g] per MID plus optional per-cell fine tilts,
@@ -1435,7 +1457,7 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
         ga_numba_info["reason"] = ""
         from . import numba_kernels as _nbk
         _nb_build = getattr(_nbk, "__build__", "")
-        _nb_ctx = (f"genetic_global build={__build__}; numba_kernels build={_nb_build}; "
+        _nb_ctx = (f"midtilt_cmaes build={__build__}; numba_kernels build={_nb_build}; "
                    f"D={D}, M={M}, N={N}, K={_K}, seed={seed}, numba_trust={bool(numba_trust)}, "
                    f"bfix={float(ctx.get('breach_fixed', 0.0) or 0.0)}")
         if not _nbk.NUMBA_OK:

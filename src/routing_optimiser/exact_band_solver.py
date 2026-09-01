@@ -1,6 +1,6 @@
 """EXACT projector-defined band solver — the "fragile hand-derivation".
 
-This is the exact counterpart to the heuristic `genetic_global.band_greedy_shares` seed. Where the
+This is the exact counterpart to the heuristic `midtilt_cmaes.band_greedy_shares` seed. Where the
 heuristic nudges shares with a multiplicative band-correction and hopes the breach falls, this module
 optimises the SAME objective the GA actually scores — the TRUE `PopulationBandProjector` band values —
 using a closed-form analytic Jacobian of that projector, so a proper NLP solver can be used.
@@ -392,7 +392,7 @@ class ExactBandModel:
 def _project_capped_simplex_cells(s, cell_starts, cell_counts, elig, cap, budget):
     """Euclidean projection of each cell onto {0 ≤ x ≤ cap over eligible rows, Σ = budget[c]}.
     Reused from the heuristic's closed-form bisection (kept local to avoid a hard import cycle)."""
-    from .genetic_global import _project_capped_simplex_cells as _p
+    from .midtilt_cmaes import _project_capped_simplex_cells as _p
     return _p(s, cell_starts, cell_counts, elig, cap, budget)
 
 

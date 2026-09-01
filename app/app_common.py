@@ -600,7 +600,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # fallback ships the KNOWN-GOOD path, it does not hide it.
                            # ROUTING_BLOCK_RESTRICT=0 / ROUTING_ELIG_INPLACE=0 revert.
                            # NOTE eligibility is shared with the TILT engine
-                           # (genetic_global), which is why the check is on the function.
+                           # (midtilt_cmaes), which is why the check is on the function.
                            # 19bi/bj, on Ben's instructions from the 14:09 run.
                            # 19bi ADOPTED G: every index array the band kernel reads is
                            # int32 now (half the index bandwidth, identical values).

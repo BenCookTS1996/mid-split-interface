@@ -284,7 +284,7 @@ src/routing_optimiser/
   success_rates.py     per-door success rates (smoothed for thin data)
   data_loader.py       load the baseline forecast → one problem per cell
   engines/             base + softmax / thompson / portfolio (genetic runs separately)
-  genetic_global.py    the genetic (CMA-ES) search
+  midtilt_cmaes.py    the genetic (CMA-ES) search
   numba_kernels.py     the fast, compiled version of the genetic scoring loop
   band_scoring.py      per-MID monthly-target scoring during the search
   band_projection.py   the exact risk projection those targets are scored against

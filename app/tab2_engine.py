@@ -179,7 +179,7 @@ def render():
         # `optimise_split(agg_problems, ref_settings)` call below. Removing them from the
         # registry would break all three; removing them from this list only hides them.
         choices = []
-        # The Genetic algorithm is the cross-cell per-vampMid tilt GA (genetic_global.run_midtilt_ga),
+        # The Genetic algorithm is the cross-cell per-vampMid tilt GA (midtilt_cmaes.run_midtilt_ga),
         # dispatched directly by the app (not a registry engine). CONSOLIDATED: the former separate
         # 'genetic' (NumPy) and 'genetic_numba' options are gone — there is now ONE genetic engine:
         # the Numba fused kernel (verify-or-fallback to NumPy, so it can never produce a different
@@ -1363,7 +1363,7 @@ def render():
                                    "routing_optimiser.data_loader", "routing_optimiser.sql_runner",
                                    "routing_optimiser.constraints", "routing_optimiser.engines.base",
                                    "routing_optimiser.engines.softmax", "routing_optimiser.engines.thompson",
-                                   "routing_optimiser.genetic_global", "routing_optimiser.engines.portfolio",
+                                   "routing_optimiser.midtilt_cmaes", "routing_optimiser.engines.portfolio",
                                    "routing_optimiser.band_projection"]:
                             _diag(f"      {_m.split('.')[-1]:16s} {_bmark(_m)}")
                         # impact_calcs is imported by-name (from impact_calcs import ...), so the module
@@ -2917,7 +2917,7 @@ def render():
                     # `_run_midtilt_ga` IS the plain search, and it is called for real: the numba
                     # warm-up, the loky seed workers, and the single-seed in-process path all use
                     # it to produce the tilt seed the full-matrix GA warm-starts from.
-                    from routing_optimiser.genetic_global import run_midtilt_ga as _run_midtilt_ga
+                    from routing_optimiser.midtilt_cmaes import run_midtilt_ga as _run_midtilt_ga
                     # The parenthetical used to read "(expect 2026-07-16-vamp-frontier-lp — if not,
                     # clear __pycache__)". The shipped module is 2026-07-29-…, i.e. NEWER than the
                     # literal, so that line told the operator to clear __pycache__ on every single
@@ -4679,9 +4679,11 @@ def render():
                         # end up worse than softmax on revenue; the output then runs through
                         # the exact enforcement, so it matches softmax on compliance. λ (from
                         # the slider) still shapes the GA's own search.
-                        import routing_optimiser.genetic_global as _gg
-                        log(f"   genetic build: {getattr(_gg, '__build__', '?')} — global GA, "
-                            "own revenue-greedy reference (genetic_ref, not softmax) + exact hard enforcement.")
+                        import routing_optimiser.midtilt_cmaes as _gg
+                        log(f"   midtilt_cmaes build: {getattr(_gg, '__build__', '?')} — the "
+                            "CROSS-CELL per-vampMid tilt search (Active CMA-ES) that produces the "
+                            "seed the full-matrix GA warm-starts from; own revenue-greedy "
+                            "reference (genetic_ref, not softmax) + exact hard enforcement.")
                         # From the 30D attempts, build the SAME quantities tab 4 uses for
                         # incremental revenue: avg ticket + cell attempts + raw gateway SR,
                         # keyed by (currency, parent-bank[, gateway]).
@@ -5117,7 +5119,7 @@ def render():
                         if _ga_bands and _mid_month_rules:
                             try:
                                 import scipy.sparse as _spx
-                                from routing_optimiser.genetic_global import run_midtilt_ga as _plain_ga
+                                from routing_optimiser.midtilt_cmaes import run_midtilt_ga as _plain_ga
                                 from routing_optimiser.band_scoring import ExactBandPenalty as _EBP, BandSpec as _BSpec
                                 _pbp_x = _get_pbp()
                                 if _pbp_x is None:
@@ -5667,7 +5669,7 @@ def render():
                                         _wbuild = getattr(_gg, "__build__", "?")
                                         log("   GA-Numba pre-compile FAILED — failing loudly (no silent "
                                             f"NumPy fallback).\n      error: {type(_we).__name__}: {_we}\n"
-                                            f"      genetic_global build: {_wbuild}\n"
+                                            f"      midtilt_cmaes build: {_wbuild}\n"
                                             f"      traceback:\n{_wtb.format_exc()}")
                                         raise
 

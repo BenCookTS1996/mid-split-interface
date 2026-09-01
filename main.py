@@ -1,25 +1,31 @@
-"""Standalone pipeline runner — Visa or Mastercard, one file.
+"""Standalone pipeline runner — Visa or Mastercard, one file, one implementation.
 
-Runs the four phases against BigQuery and writes the export CSVs to
-data/outputs/{month_var}/{company}/{scheme}/. Config comes from
-config/settings.yaml (visa) or config/settings_mastercard.yaml (mastercard).
-
-    python main.py                      # visa (the default)
+    python main.py                              # visa
     python main.py --scheme mastercard
     python main.py --scheme visa --config config/settings.yaml
+    python main.py --pre data/outputs/AUG/TotalAV/visa   # no run: load + preview
+    python main.py --show-pre                            # run, then preview
 
-This is optional: the app's Build Baseline tab does the same thing in-process.
-Use this when you'd rather run the heavy pipeline separately (in an environment
-where BigQuery is authenticated) and then point the app's "Use a previously
-created forecast" at the outputs.
+Optional: the app's Build Baseline tab does the same thing in-process. Use this
+when you'd rather run the heavy pipeline separately (in an environment where
+BigQuery is authenticated) and then point the app's "Use a previously created
+forecast" at the outputs.
 
-19fk CONSOLIDATION. This was two files, main.py and main_mastercard.py, that
-differed in five lines out of eighty: the package they import, the config path,
-one extra kwarg on the Mastercard ExportManager, and two log labels. Everything
-else — the chdir, the sys.path insert, the four phase calls, the failure
-handler — was duplicated, which is how main.py came to be missing the explicit
-`queries_dir` that main_mastercard.py sets. One file cannot drift from itself.
-Run from the project root so queries/ resolves.
+19fk/19fl CONSOLIDATION — three files became one, and one implementation.
+
+  main.py                          had its own copy of the four phase calls
+  main_mastercard.py               had a second copy, differing in five lines
+  scripts/run_forecast_pipeline.py called the ADAPTER, plus a --pre preview
+
+The adapters (`forecast_pipeline.run_vamp_pipeline` /
+`mastercard_forecast_pipeline.run_mastercard_pipeline`) are what the Streamlit
+app runs, and they are strictly richer than the copies here were: deep-copied
+config, absolute queries_dir and mid_list_file, per-phase shape diagnostics that
+shout when a source has rows but zero transactions. Reimplementing the phases in
+a CLI meant the terminal path was the one WITHOUT those checks — and that is the
+path used when something is already going wrong. So this file no longer runs the
+phases at all; it builds the config, calls the adapter, and prints. The four
+phases exist in exactly one place per scheme.
 """
 import argparse
 import os
@@ -33,12 +39,13 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 
 GCP_PROJECT = "sapient-tangent-172609"
 
-# scheme -> (package, default config, label). The ONLY per-scheme differences,
-# in one place, so adding a third scheme is a row rather than a third file.
+# scheme -> (default config, adapter name, pre-loader name, label). The ONLY
+# per-scheme differences, in one place, so a third scheme is a row not a file.
 SCHEMES = {
-    "visa": ("vamp_pipeline", "config/settings.yaml", "VAMP"),
-    "mastercard": ("mastercard_pipeline", "config/settings_mastercard.yaml",
-                   "MASTERCARD"),
+    "visa": ("config/settings.yaml", "run_vamp_pipeline",
+             "load_pre_forecast", "VAMP"),
+    "mastercard": ("config/settings_mastercard.yaml", "run_mastercard_pipeline",
+                   "load_mc_pre_forecast", "MASTERCARD"),
 }
 
 
@@ -49,66 +56,49 @@ def load_config(config_path):
         return yaml.safe_load(file)
 
 
-def run(scheme="visa", config_path=None):
+def _preview(pre, label="pre"):
+    """The preview scripts/run_forecast_pipeline.py existed for."""
+    try:
+        _cells = pre[["rpgt", "currency", "bin"]].drop_duplicates().shape[0]
+    except Exception:  # noqa: BLE001 - a preview must never fail a run
+        _cells = "?"
+    print(f"Baseline '{label}' forecast: {len(pre):,} rows across {_cells} cells")
+    print(pre.head(10).to_string(index=False))
+
+
+def run(scheme="visa", config_path=None, pre=None, show_pre=False,
+        gcp_project=None):
     import importlib
 
     if scheme not in SCHEMES:
         raise SystemExit(f"--scheme must be one of {sorted(SCHEMES)}, got {scheme!r}")
-    pkg_name, default_cfg, label = SCHEMES[scheme]
-    pkg = importlib.import_module(pkg_name)
-    logger = pkg.setup_logger(__name__)
+    default_cfg, adapter_name, loader_name, label = SCHEMES[scheme]
+    ro = importlib.import_module("routing_optimiser")
+    load_pre = getattr(ro, loader_name)
+
+    if pre:                                  # skip the run entirely
+        print(f"Loading a previously-run {label} baseline from {pre}")
+        _preview(load_pre(pre))
+        return pre
+
+    import logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    logger = logging.getLogger(__name__)
 
     logger.info(f"🚀 Starting {label} Master Pipeline...")
     config = load_config(config_path or default_cfg)
-    # Set explicitly rather than relying on the chdir above: the SQL resolvers
-    # try `paths.queries_dir` first, and main_mastercard.py set this while
-    # main.py did not — a difference that had no reason to exist.
-    config.setdefault("paths", {})["queries_dir"] = os.path.join(ROOT, "queries")
-
-    from google.cloud import bigquery
-    bq_client = bigquery.Client(project=GCP_PROJECT)
-
-    logger.info("=== PHASE 1: DATA EXTRACTION ===")
-    extractor = pkg.DataExtractor(config, bq_client)
-    extractor.extract_all()
-    mr_weights = extractor._fetch_mr_daily_weights()
-
-    logger.info("=== PHASE 2: ACTUARIAL ENGINE ===")
-    actuarial = pkg.ActuarialEngine(
-        config=config,
-        fcast_data=extractor.fcast_data_df,
-        mapping_data=extractor.gw_mapping_df,
-        longterm_fcast_pre=extractor.longterm_fcast_df,
-        attempts_df=extractor.attempts_df,
-    )
-    final_attempts_df = actuarial.run_engine()
-
-    logger.info("=== PHASE 3: ALLOCATION ENGINE ===")
-    allocator = pkg.AllocationEngine(
-        config=config,
-        attempts_df=final_attempts_df,
-        split_df=extractor.split_df,
-        mr_weights=mr_weights,
-    )
-    pre_df, post_df = allocator.execute_time_aware_routing()
-
-    logger.info("=== PHASE 4: EXPORT MANAGER ===")
-    # Mastercard's ExportManager takes mr_weights; Visa's does not. Passed by
-    # INSPECTION rather than by an `if scheme ==` so that adding it to the Visa
-    # side later needs no change here.
-    import inspect
-    _ex_kw = dict(config=config, mid_df=extractor.mid_df,
-                  attempts_df=extractor.attempts_df)
-    if "mr_weights" in inspect.signature(pkg.ExportManager).parameters:
-        _ex_kw["mr_weights"] = mr_weights
-    exporter = pkg.ExportManager(**_ex_kw)
-    exporter.run_all_exports(pre_df, post_df)
-
-    out = config["paths"]["output_dir"].format(
-        month_var=config["run_settings"]["month_var"],
-        company=config["run_settings"]["company"])
-    logger.info(f"🎉 {label} Master Pipeline complete. Outputs in {out}")
-    return out
+    try:
+        out_dir = getattr(ro, adapter_name)(
+            config, ROOT, gcp_project=gcp_project or GCP_PROJECT)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"❌ PIPELINE FAILED WITH A FATAL ERROR:\n{e}", exc_info=True)
+        raise
+    logger.info(f"🎉 {label} Master Pipeline complete. Outputs in {out_dir}")
+    if show_pre:
+        _preview(load_pre(out_dir))
+    return out_dir
 
 
 def main(argv=None):
@@ -117,15 +107,16 @@ def main(argv=None):
                     help="Card scheme to run (default: visa).")
     ap.add_argument("--config", default=None,
                     help="Override the settings YAML for this scheme.")
+    ap.add_argument("--pre", default=None,
+                    help="Skip the run: load the baseline from this outputs "
+                         "directory (or CSV) and print a preview.")
+    ap.add_argument("--show-pre", action="store_true",
+                    help="After the run, print a preview of the baseline.")
+    ap.add_argument("--gcp-project", default=None,
+                    help=f"BigQuery project (default {GCP_PROJECT}).")
     args = ap.parse_args(argv)
-    pkg_name = SCHEMES[args.scheme][0]
-    try:
-        return run(args.scheme, args.config)
-    except Exception as e:  # noqa: BLE001
-        import importlib
-        importlib.import_module(pkg_name).setup_logger(__name__).error(
-            f"❌ PIPELINE FAILED WITH A FATAL ERROR:\n{e}", exc_info=True)
-        raise
+    return run(args.scheme, args.config, args.pre, args.show_pre,
+               args.gcp_project)
 
 
 if __name__ == "__main__":

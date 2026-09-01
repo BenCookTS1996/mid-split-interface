@@ -2,7 +2,7 @@
 
 WHY THIS EXISTS
 ---------------
-The production "genetic" engine (`genetic_global.run_midtilt_ga`) searches a
+The production "genetic" engine (`midtilt_cmaes.run_midtilt_ga`) searches a
 COMPACT genome — 3 knobs per vampMid (risk-tilt, return-tilt, gain) — applied as
 a tilt around a reference split, scored on *pooled* Bank x Currency success
 rates. That is fast, stable and hard-compliant, but it can only reach splits that
