@@ -181,7 +181,9 @@ def render():
         # `optimise_split(agg_problems, ref_settings)` call below. Removing them from the
         # registry would break all three; removing them from this list only hides them.
         choices = []
-        # The Genetic algorithm is the cross-cell per-vampMid tilt GA (seed_search.run_midtilt_ga),
+        # 19gd: the "Genetic Algorithm" option is the FULL-MATRIX GA
+        # (genetic_fullmatrix.run_fullmatrix_ga). The cross-cell tilt CMA-ES it replaced is in
+        # legacy_engines.midtilt_cmaes and is not reachable,
         # dispatched directly by the app (not a registry engine). CONSOLIDATED: the former separate
         # 'genetic' (NumPy) and 'genetic_numba' options are gone — there is now ONE genetic engine:
         # the Numba fused kernel (verify-or-fallback to NumPy, so it can never produce a different
@@ -2906,10 +2908,24 @@ def render():
                     # 19fk: the pre-clustering swap that used to sit here is gone with
                     # routing_optimiser.precluster — it was gated on `ss['ga_precluster']`, which
                     # could not be True once the dropdown held only 'genetic_fullmatrix'.
-                    # `_run_midtilt_ga` IS the plain search, and it is called for real: the numba
-                    # warm-up, the loky seed workers, and the single-seed in-process path all use
-                    # it to produce the tilt seed the full-matrix GA warm-starts from.
-                    from routing_optimiser.s4_search.seed_search import run_midtilt_ga as _run_midtilt_ga
+                    #
+                    # 19gd — THIS COMMENT USED TO BE WRONG, and it cost a wrong answer. It read:
+                    # "`_run_midtilt_ga` IS the plain search, and it is called for real: the numba
+                    # warm-up, the loky seed workers, and the single-seed in-process path all use it
+                    # to produce the tilt seed the full-matrix GA warm-starts from." Every clause of
+                    # that is false under `genetic_fullmatrix`, which is the ONLY selectable engine:
+                    #   * the three call sites all sit inside `_ga_solve_with_correction`;
+                    #   * its ONE caller is the `elif _safe_G is None:` further down, and the branch
+                    #     ABOVE it returns early for genetic_fullmatrix, logging "no preliminary
+                    #     endpoint search is run";
+                    #   * the numba warm-up site is additionally gated on engine_key ==
+                    #     "genetic_numba", a key no longer in `choices`.
+                    # The tilt seed the full-matrix GA actually warm-starts from is the BAND-AWARE
+                    # seed from `band_greedy_shares_multi`, not this. The module now lives in
+                    # legacy_engines/ (19gd); this import is kept only so the unreachable branch
+                    # still resolves if it is ever revived.
+                    from routing_optimiser.legacy_engines.midtilt_cmaes import (
+                        run_midtilt_ga as _run_midtilt_ga)
                     # The parenthetical used to read "(expect 2026-07-16-vamp-frontier-lp — if not,
                     # clear __pycache__)". The shipped module is 2026-07-29-…, i.e. NEWER than the
                     # literal, so that line told the operator to clear __pycache__ on every single
@@ -5132,7 +5148,10 @@ def render():
                         if _ga_bands and _mid_month_rules:
                             try:
                                 import scipy.sparse as _spx
-                                from routing_optimiser.s4_search.seed_search import run_midtilt_ga as _plain_ga
+                                # 19gd: moved to legacy_engines/ — unreachable, see the note at
+                                # the _run_midtilt_ga import above.
+                                from routing_optimiser.legacy_engines.midtilt_cmaes import (
+                                    run_midtilt_ga as _plain_ga)
                                 from routing_optimiser.s4_search.band_scoring import ExactBandPenalty as _EBP, BandSpec as _BSpec
                                 # ── [band-setup] 19fn: the block that used to be silent ───────
                                 # Everything from here to the [inc-build] line below ran with no

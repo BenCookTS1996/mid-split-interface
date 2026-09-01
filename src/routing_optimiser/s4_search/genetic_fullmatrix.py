@@ -4,7 +4,7 @@ WHY THIS EXISTS
 ---------------
 19gc — READ THIS FIRST: THIS MODULE *IS* THE PRODUCTION ENGINE. `run_fullmatrix_ga` is the
 only selectable engine and the delivered search. The paragraph below describes the tilt
-CMA-ES it replaced (`seed_search.run_midtilt_ga`), which is NOT reachable any more: tab 2
+CMA-ES it replaced (`legacy_engines.midtilt_cmaes.run_midtilt_ga`), not reachable any more: tab 2
 skips it explicitly for genetic_fullmatrix ("no preliminary endpoint search is run"). It used
 to say "The production 'genetic' engine" about that one, which read as though this module were
 the opt-in alternative rather than the thing that ships.
