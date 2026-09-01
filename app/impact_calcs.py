@@ -234,6 +234,60 @@ def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mid
 
 
 # [FN-251]
+# [FN-clean-uniq]
+def _clean_col(sr, lower=False, strip=True):
+    """`sr.astype(str)[.str.strip()][.str.lower()]`, done once per DISTINCT VALUE instead of once
+    per row. Returns an object ndarray, character-for-character identical to the per-row chain.
+
+    WHY (19fx). The key-normalise step in compute_vamp_prepost_granular was 14.0s of the 172.9s
+    [cvp-timing] measured, and it runs AFTER inject_capable_rows has grown the frame to 6,477,850
+    rows. Measured on the real AUG/TotalAV/visa export at that width, those six columns hold
+    10,251 distinct values between them:
+
+        Currency                  5        Country                  2
+        paymentMethodProvider     3        RPGT                     8
+        vampMid                  21        BIN                 10,212
+
+    So the per-row chain lowercases the string "usd" about 1.3 million times to learn one fact.
+    Trim-and-lowercase is deterministic -- same input, same output, always -- so doing it once per
+    distinct value CANNOT change an answer. That is what makes this the rare speedup with no
+    bit-identity risk to weigh at all.
+
+    NOT AS BIG AS THE RATIO LOOKS, and the honest number is 1.84x, not 1000x. Two full-width
+    passes survive: pd.factorize still hashes all 6.5M strings, and the take at the end still
+    builds a 6.5M object array. Only the CLEANING between them becomes free. Measured 6.60s ->
+    3.59s at the run's real width; all six columns verified exactly identical by factorize
+    fingerprint (uniques + codes) against the live export.
+
+    NULLS FALL BACK TO THE SLOW CHAIN, and this is not caution -- it is a bug the edge-case test
+    caught before this shipped. pd.factorize treats None and NaN as the SAME missing value and
+    collapses them into one category, so a column holding both rendered BOTH as "nan", where the
+    per-row chain renders None as "none" and NaN as "nan":
+
+        pd.Series([None, nan]).astype(str).str.lower()  ->  ['none', 'nan']    the truth
+        _clean_col without this guard                   ->  ['nan',  'nan']    WRONG
+
+    The live export has no nulls in these six columns, so it would not have bitten today -- but
+    `_vamp_post_core` takes an arbitrary pre-loaded frame. `isna().any()` is one cheap vectorised
+    pass (~10 ms at 6.5M rows) and buys exactness for the case the fast path cannot represent.
+    """
+    sr = pd.Series(sr) if not isinstance(sr, pd.Series) else sr
+    if bool(sr.isna().any()):
+        s = sr.astype(str)
+        if strip:
+            s = s.str.strip()
+        if lower:
+            s = s.str.lower()
+        return s.to_numpy()
+    codes, uniq = pd.factorize(sr, use_na_sentinel=False)
+    u = pd.Series(uniq).astype(str)
+    if strip:
+        u = u.str.strip()
+    if lower:
+        u = u.str.lower()
+    return u.to_numpy()[codes]
+
+
 def compute_vamp_post_from_prorata(pp_path, prop_items, excluded_mids=frozenset(),
                                    kill_eff=(), month_0=None, scoped_rpgts=()):
     """Accurate proposed-split VAMP forecast using the pipeline pro-rata export.
@@ -259,11 +313,12 @@ def _vamp_post_core(pp, prop_items, excluded_mids=frozenset(), kill_eff=(), mont
     """Core projection on a PRE-LOADED pro-rata dataframe, so the per-MID cap
     feedback loop can re-project candidate splits without re-reading the CSV."""
     pp = pp.copy()
-    pp["Currency"] = pp["Currency"].astype(str).str.strip().str.lower()
-    pp["BIN"] = pp["BIN"].astype(str).str.strip()
-    pp["vampMid"] = pp["vampMid"].astype(str).str.strip()
+    # 19fx: cleaned once per DISTINCT VALUE, not once per row -- see _clean_col. Identical output.
+    pp["Currency"] = _clean_col(pp["Currency"], lower=True)
+    pp["BIN"] = _clean_col(pp["BIN"])
+    pp["vampMid"] = _clean_col(pp["vampMid"])
     rpgt_col = "RPGT" if "RPGT" in pp.columns else "rpgt"
-    pp["RPGT"] = pp[rpgt_col].astype(str)
+    pp["RPGT"] = _clean_col(pp[rpgt_col], strip=False)
     pp["pro_rata"] = pd.to_numeric(pp.get("pro_rata", 0.0), errors="coerce").fillna(0.0)
     # fcp1_frac: fraction of the cell the pipeline actually reroutes (fcpNumber==1 /
     # attempt==1 for restricted RPGTs). Missing (old export) -> 1.0 = prior behaviour.
@@ -1404,18 +1459,19 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
             if _n_inj:
                 globals()["_LAST_INJECTED"] = int(_n_inj)
     _cv_mark("inject_capable_rows (zero rows for capable doors)")
-    pp["Currency"] = pp["Currency"].astype(str).str.strip().str.lower()
-    pp["BIN"] = pp["BIN"].astype(str).str.strip()
-    pp["vampMid"] = pp["vampMid"].astype(str).str.strip()
+    # 19fx: cleaned once per DISTINCT VALUE, not once per row -- see _clean_col. Identical output.
+    pp["Currency"] = _clean_col(pp["Currency"], lower=True)
+    pp["BIN"] = _clean_col(pp["BIN"])
+    pp["vampMid"] = _clean_col(pp["vampMid"])
     rpgt_col = "RPGT" if "RPGT" in pp.columns else "rpgt"
-    pp["RPGT"] = pp[rpgt_col].astype(str)
+    pp["RPGT"] = _clean_col(pp[rpgt_col], strip=False)
     pp["pro_rata"] = pd.to_numeric(pp.get("pro_rata", 0.0), errors="coerce").fillna(0.0)
     pp["fcp1_frac"] = pd.to_numeric(pp.get("fcp1_frac", 1.0), errors="coerce").fillna(1.0).clip(0.0, 1.0)
     # Keep pmp / Country sub-cells (default '_all_' when the export lacks them) so the
     # projection can apply the pipeline's per-sub-cell wallet / USA-only enforcement.
-    pp["_pmp"] = (pp["paymentMethodProvider"].astype(str).str.strip().str.lower()
+    pp["_pmp"] = (_clean_col(pp["paymentMethodProvider"], lower=True)
                   if "paymentMethodProvider" in pp.columns else "_all_")
-    pp["_ctry"] = (pp["Country"].astype(str).str.strip().str.lower()
+    pp["_ctry"] = (_clean_col(pp["Country"], lower=True)
                    if "Country" in pp.columns else "_all_")
     _cv_mark("key normalise (string strip/lower on 6 columns)")
     pp = pp.groupby(["vampMid", "RPGT", "BIN", "Currency", "_pmp", "_ctry", "period", "t"],
