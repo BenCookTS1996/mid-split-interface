@@ -144,7 +144,12 @@ class _StopCheck:
 # [FN-218]
 def make_stop_check(target: str):
     """Return a zero-arg predicate for a GA's `stop_check` param: True once the flag exists.
-    Usage:  run_midtilt_ga(ctx, lam, stop_check=make_stop_check(runs_dir))."""
+    Usage:  run_fullmatrix_ga(problem, stop_check=make_stop_check(runs_dir)).
+
+    19gc: the example used to read `run_midtilt_ga(ctx, lam, ...)`. Two things wrong with it —
+    `lam` was deleted from that signature in 19ga, and run_midtilt_ga is not reachable in the
+    shipped configuration anyway (genetic_fullmatrix is the only selectable engine and it skips
+    the tilt search). The live consumer of stop_check is the full-matrix GA."""
     return _StopCheck(_stop_path(target))
 
 

@@ -2,12 +2,18 @@
 
 WHY THIS EXISTS
 ---------------
-The production "genetic" engine (`seed_search.run_midtilt_ga`) searches a
-COMPACT genome — 3 knobs per vampMid (risk-tilt, return-tilt, gain) — applied as
-a tilt around a reference split, scored on *pooled* Bank x Currency success
-rates. That is fast, stable and hard-compliant, but it can only reach splits that
-are tilts/scalings of the reference, and it optimises a pooled approximation of
-what actually ships.
+19gc — READ THIS FIRST: THIS MODULE *IS* THE PRODUCTION ENGINE. `run_fullmatrix_ga` is the
+only selectable engine and the delivered search. The paragraph below describes the tilt
+CMA-ES it replaced (`seed_search.run_midtilt_ga`), which is NOT reachable any more: tab 2
+skips it explicitly for genetic_fullmatrix ("no preliminary endpoint search is run"). It used
+to say "The production 'genetic' engine" about that one, which read as though this module were
+the opt-in alternative rather than the thing that ships.
+
+The tilt CMA-ES searched a COMPACT genome — 3 knobs per vampMid (risk-tilt, return-tilt, gain)
+— applied as a tilt around a reference split, scored on *pooled* Bank x Currency success
+rates. That was fast, stable and hard-compliant, but it could only reach splits that are
+tilts/scalings of the reference, and it optimised a pooled approximation of what actually
+ships. (The Bank x Currency score grain it used was itself removed in 19gb.)
 
 This module is the deliberate opposite, mirroring a co-worker's DEAP design while
 keeping our guarantees:
