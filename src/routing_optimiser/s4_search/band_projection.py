@@ -94,6 +94,30 @@ import pandas as pd
 # 2026-08-22 16:13 run, which silently re-used an 11:20 module and reproduced the previous run
 # byte-for-byte. `[loaded]` now reports the live module's real state as well, because a marker
 # nobody remembers to bump is not a guard.
+# ── [vconst-frozen] 19fs: THE THIRD CANDIDATE-INDEPENDENT CLASS OF AGED ROW ──────────────
+# 19cz and 19dd already hoist two classes out of the per-candidate aged loop and into the
+# per-band constant `vconst`: rows with NO ORIGIN (t > period, transactions that predate the
+# split) and rows in a ZERO-POOL group (nothing movable to hand out). This adds the third:
+# rows whose ORIGIN CELL IS FROZEN — no GA share column maps to it, so psum is 0 there for
+# every candidate, for ever.
+# Their contribution is the same constant the other two classes have:
+#     _gks over a frozen cell is 0 (vshare is 0 wherever psum is 0) -> o = -1
+#     -> mpc = 0, psh = 0  ->  vamp += pc_vc[j] * (1 - 0) + pc_pool[j] * 0  ==  pc_vc[j]
+# So this needs NO kernel change at all — it widens the mask the existing `vconst` machinery
+# already consumes.
+# NOT BIT-IDENTICAL, and measured rather than argued: pre-summing those rows instead of adding
+# them one at a time reorders the additions. On the live export at period 5 the worst of the 15
+# bands moves 5.09e-11 units, which as an OVERSHOOT FRACTION (what the penalty actually reads)
+# is 2.04e-14 — and ExactBandPenalty._pen zeroes any overshoot below 1e-9. The worst band is
+# 49,085x inside that dust guard, so the breach penalty, the ranking and the shipped split are
+# unchanged; only the last digits of a reported band value move.
+# THE END-TO-END CHECK IS ALREADY IN THE RUN: RECONCILIATION ERROR is
+# Σ|delivered − GA-fitness|, delivery is computed by an untouched code path, so if this moved
+# anything that matters that number stops reading 0.
+# ROUTING_VCONST_FROZEN=0 reverts. That switch is here for ONE verification run and should be
+# deleted once the default is trusted.
+_VCONST_FROZEN_ON = os.environ.get("ROUTING_VCONST_FROZEN", "1") != "0"
+
 __build__ = ("2026-08-19bz-float32-optin"
              "+2026-08-19by-lane-cap-16-measured-on-the-cell-blocked-kernel"
              "+2026-08-19bt-cell-blocked-kernel"
@@ -1528,6 +1552,16 @@ class PopulationBandProjector:
             else:
                 _zero_pool = np.zeros(len(_pool_arr), bool)
             _pc_static = (np.asarray(self._pc_org) < 0) | _zero_pool
+            # ── 19fs: THIRD CLASS — the origin cell is FROZEN. See the module note. ──
+            _org = np.asarray(self._pc_org, np.int64)
+            _frz_rows = np.zeros(len(_org), bool)
+            _fzc = self._frozen_cell_mask() if _VCONST_FROZEN_ON else None
+            if _fzc is not None:
+                _gc_all = np.asarray(self._gcode, np.int64)
+                _oi_c = np.where(_org >= 0, _org, 0)
+                _frz_rows = (_org >= 0) & _fzc[_gc_all[_oi_c]]
+                _frz_rows &= ~_pc_static          # count each row in ONE class only
+                _pc_static = _pc_static | _frz_rows
             _n_static = int(_pc_static.sum())
             _vconst = np.bincount(np.asarray(self._pc_bandcol)[_pc_static],
                                   weights=np.asarray(self._pc_vc, float)[_pc_static],
@@ -1537,7 +1571,10 @@ class PopulationBandProjector:
             self._nb_hoist = {"static": _n_static, "live": int(_lv.sum()),
                               "total": int(_pc_static.size),
                               "no_origin": int((np.asarray(self._pc_org) < 0).sum()),
-                              "zero_pool": int((_zero_pool & (np.asarray(self._pc_org) >= 0)).sum())}
+                              "zero_pool": int((_zero_pool & (np.asarray(self._pc_org) >= 0)).sum()),
+                              "frozen": int(_frz_rows.sum()),
+                              "frozen_on": bool(_VCONST_FROZEN_ON),
+                              "frozen_known": bool(_fzc is not None)}
             self._nbcache = (
                 _I(self._propidx),
                 self._pw,                    # 19dt: float weight, was a bool mask
@@ -1591,8 +1628,9 @@ class PopulationBandProjector:
                   + "Values are unchanged, so the projection is bit-identical; only the bytes "
                     "moved per index change. Adopted 19bi from [kernel-ab] variant G.")
             _h = self._nb_hoist
-            print(f"[band_projection] aged-row hoist (19cz/19dd): no-origin {_h['no_origin']:,} + "
-                  f"zero-pool {_h['zero_pool']:,} = {_h['static']:,} of {_h['total']:,} "
+            print(f"[band_projection] aged-row hoist (19cz/19dd/19fs): no-origin "
+                  f"{_h['no_origin']:,} + zero-pool {_h['zero_pool']:,} + FROZEN-ORIGIN "
+                  f"{_h['frozen']:,} = {_h['static']:,} of {_h['total']:,} "
                   f"banded aged row(s) ({100.0 * _h['static'] / max(_h['total'], 1):.1f}%) are "
                   f"CANDIDATE-INDEPENDENT — `no-origin` are cohorts whose transactions "
                   f"predate the split, `zero-pool` are layers with nothing movable to hand out "
@@ -1602,6 +1640,24 @@ class PopulationBandProjector:
                   "pass the loop always made AND the two the 19cy age renormalise adds, so read "
                   "[gen-gap]'s `eval` row against the previous run before concluding anything "
                   "about what the renormalise cost.")
+            print(f"[band_projection] [vconst-frozen] 19fs added the THIRD class: "
+                  f"{_h['frozen']:,} aged row(s) whose ORIGIN CELL IS FROZEN (no GA share "
+                  f"column maps to it, so psum is 0 there for every candidate). "
+                  + ("Their contribution is the SAME constant the other two classes have "
+                     "(pc_vc[j]), so this needs no kernel change - it widens the mask vconst "
+                     "already consumes. NOT bit-identical: pre-summing reorders the additions, "
+                     "worst band measured at 5.09e-11 units = 2.04e-14 as an overshoot fraction, "
+                     "against the penalty's 1e-9 dust guard - 49,085x inside it, so the ranking "
+                     "and the shipped split are unchanged. RECONCILIATION ERROR is the "
+                     "end-to-end check: delivery is an untouched path, so if this moved anything "
+                     "that matters it stops reading 0. ROUTING_VCONST_FROZEN=0 reverts."
+                     if _h["frozen_on"] and _h["frozen_known"] else
+                     "OFF this run: ROUTING_VCONST_FROZEN=0 is set."
+                     if not _h["frozen_on"] else
+                     "NOT APPLIED: the GA incidence had not reached the projector when these "
+                     "arrays were built, so frozen cells could not be identified. "
+                     "set_lift_incidence() invalidates this cache, so a later build picks it "
+                     "up - if this line persists, that call is not happening."))
         return self._nbcache
 
     # [FN-022]
@@ -1685,23 +1741,7 @@ class PopulationBandProjector:
             return self._lift_full_rows, self._lift_full_cells
 
         if getattr(self, "_lift_rows", None) is None:
-            inc = self._lift_inc
-            K = int(inc.shape[0])
-            try:
-                nnz = np.asarray((inc != 0).sum(axis=1)).ravel()
-            except Exception:                                  # noqa: BLE001 - dense incidence
-                nnz = (np.asarray(inc) != 0).sum(axis=1)
-            reach = np.zeros(K, bool)
-            reach[: len(nnz)] = np.asarray(nnz) > 0
-            pi = np.asarray(self._propidx, np.int64)
-            mk = np.asarray(self._excl, bool) | np.asarray(self._emask, bool)
-            ok_idx = (pi >= 0) & (pi < K)
-            live_row = (~mk) & ok_idx & reach[np.clip(pi, 0, max(K - 1, 0))]
-            # bincount, NOT reduceat: gcode is not sorted, and reduceat over unsorted codes
-            # mis-groups silently. Same trap noted in the [frozen-scaffold] measurement.
-            per = np.bincount(np.asarray(self._gcode, np.int64),
-                              weights=live_row.astype(float), minlength=ncell)
-            cell_live = per > 0.0
+            cell_live = self._frozen_cell_mask(invert=True)
             self._lift_cells = _ix32(np.where(cell_live)[0])
             self._lift_rows = _ix32(
                 np.where(cell_live[np.asarray(self._gcode, np.int64)])[0])
@@ -1742,6 +1782,40 @@ class PopulationBandProjector:
                 self._lift_primed = key
         return self._lift_rows, self._lift_cells
 
+    # [FN-022b2]
+    def _frozen_cell_mask(self, invert=False):
+        """Which scaffold cells are FROZEN — psum == 0 for every candidate, for ever.
+
+        ONE DEFINITION, two callers: the lift (which skips their rows in the flat passes) and
+        the 19fs aged-row hoist (which folds their aged rows into `vconst`). It was inline in
+        `_lift_arrays` until 19fs; a second private copy is how the two would come to disagree
+        about which cells are frozen, and they must not.
+
+        A cell is frozen when EVERY one of its rows is either masked (excl | emask) or sits on a
+        prop-key with an all-zero incidence row — a prop-key no GA share column maps to.
+        Returns the FROZEN mask, or the live mask when `invert`. None if the incidence is absent.
+        """
+        inc = getattr(self, "_lift_inc", None)
+        if inc is None:
+            return None
+        K = int(inc.shape[0])
+        try:
+            nnz = np.asarray((inc != 0).sum(axis=1)).ravel()
+        except Exception:                                  # noqa: BLE001 - dense incidence
+            nnz = (np.asarray(inc) != 0).sum(axis=1)
+        reach = np.zeros(K, bool)
+        reach[: len(nnz)] = np.asarray(nnz) > 0
+        pi = np.asarray(self._propidx, np.int64)
+        mk = np.asarray(self._excl, bool) | np.asarray(self._emask, bool)
+        ok_idx = (pi >= 0) & (pi < K)
+        live_row = (~mk) & ok_idx & reach[np.clip(pi, 0, max(K - 1, 0))]
+        # bincount, NOT reduceat: gcode is not sorted, and reduceat over unsorted codes
+        # mis-groups silently. Same trap noted in the [frozen-scaffold] measurement.
+        per = np.bincount(np.asarray(self._gcode, np.int64),
+                          weights=live_row.astype(float), minlength=int(self._ngc))
+        cell_live = per > 0.0
+        return cell_live if invert else ~cell_live
+
     # [FN-022c]
     def set_lift_incidence(self, incidence):
         """Give the projector the GA's column→prop-key incidence so it can find frozen cells.
@@ -1752,6 +1826,10 @@ class PopulationBandProjector:
         self._lift_inc = incidence
         self._lift_rows = None                      # force a rebuild + re-prime
         self._lift_primed = None
+        # 19fs: the aged-row hoist's third class (frozen-origin rows) can only be identified
+        # from the incidence, and `_nb_arrays` may already have cached without it. Invalidate,
+        # or the widened mask would never take effect and the log would report it as if it had.
+        self._nbcache = None
 
     # [FN-023]
     def project_pop_numba(self, prop_raw: np.ndarray):
