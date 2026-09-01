@@ -114,9 +114,11 @@ import pandas as pd
 # THE END-TO-END CHECK IS ALREADY IN THE RUN: RECONCILIATION ERROR is
 # Σ|delivered − GA-fitness|, delivery is computed by an untouched code path, so if this moved
 # anything that matters that number stops reading 0.
-# ROUTING_VCONST_FROZEN=0 reverts. That switch is here for ONE verification run and should be
-# deleted once the default is trusted.
-_VCONST_FROZEN_ON = os.environ.get("ROUTING_VCONST_FROZEN", "1") != "0"
+# 19gm: THE SWITCH IS DELETED — this is now simply how vconst works, alongside 19cz (no-origin)
+# and 19dd (zero-pool). It was here for one verification run and that run happened: 2026-09-01
+# 20:01 hoisted 4,572 frozen-origin rows and reported a RECONCILIATION ERROR of 0 across all 15
+# bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
+# end-to-end proof that nothing which matters moved.
 
 __build__ = ("2026-08-19bz-float32-optin"
              "+2026-08-19by-lane-cap-16-measured-on-the-cell-blocked-kernel"
@@ -1785,12 +1787,41 @@ class PopulationBandProjector:
         # Precompute, per reduced Pc row, the appearance-cell t0 pro_rata. Sourced from a t0 row of the
         # SAME sub-cell at the appearance period (cell key = cur|bin|rpgt|pmp|ctry|per, no mid — pro_rata
         # is a per-cell go-live weight). Verified bit-exact against compute_vamp_prepost_granular.
-        _t0_cellkey = (T0["cur"].astype(str) + "|" + T0["bin"].astype(str) + "|" + T0["rpgt"].astype(str)
-                       + "|" + T0["pmp"].astype(str) + "|" + T0["ctry"].astype(str) + "|"
-                       + T0["per"].astype(str)).to_numpy()
+        # 19gn: the two 6-part STRING keys this lookup used to build are gone. [pbp-inside] priced
+        # this block ("reduced Pc") at 22.9s — 65% of the whole constructor — and the cause was the
+        # same one 19fy fixed in _static and _origin_map: ~6.45M concatenated labels on the Pc side
+        # and ~1.94M on the T0 side, built only so pandas could hash them. `_codes_pair` gives both
+        # sides ONE shared integer code space, decided per DISTINCT VALUE, and a value absent from
+        # T0 codes -1 — which is exactly the "no such cell" the string reindex expressed as NaN.
         _t0_pr = (T0["pr"].to_numpy(float) if "pr" in T0.columns else np.ones(len(T0)))
-        _pr_by_cell = pd.Series(_t0_pr, index=_t0_cellkey)
-        _pr_by_cell = _pr_by_cell[~_pr_by_cell.index.duplicated(keep="first")]
+        _CK = ["cur", "bin", "rpgt", "pmp", "ctry", "per"]
+        _t0_ck = np.zeros(len(T0), np.int64)
+        _pc_ck_full = np.zeros(len(Pc), np.int64)
+        _ck_bad = np.zeros(len(Pc), bool)
+        _ck_ok = True
+        for _c in _CK:
+            _pair = _codes_pair(T0[_c], Pc[_c])
+            if _pair is None:
+                _ck_ok = False
+                break
+            _tc, _pc_c = _pair
+            _k = int(max(_tc.max(), _pc_c.max())) + 1 if len(T0) and len(Pc) else 1
+            if _k and max(_t0_ck.max(initial=0), _pc_ck_full.max(initial=0)) > (2 ** 62) // _k:
+                _ck_ok = False
+                break
+            _t0_ck = _t0_ck * _k + _tc
+            _ck_bad |= (_pc_c < 0)
+            _pc_ck_full = _pc_ck_full * _k + np.where(_pc_c < 0, 0, _pc_c)
+        if _ck_ok:
+            _pr_by_cell = pd.Series(_t0_pr, index=_t0_ck)
+            _pr_by_cell = _pr_by_cell[~_pr_by_cell.index.duplicated(keep="first")]
+        else:
+            # EXACT fallback: the original string join, unchanged.
+            _t0_cellkey = (T0["cur"].astype(str) + "|" + T0["bin"].astype(str) + "|" + T0["rpgt"].astype(str)
+                           + "|" + T0["pmp"].astype(str) + "|" + T0["ctry"].astype(str) + "|"
+                           + T0["per"].astype(str)).to_numpy()
+            _pr_by_cell = pd.Series(_t0_pr, index=_t0_cellkey)
+            _pr_by_cell = _pr_by_cell[~_pr_by_cell.index.duplicated(keep="first")]
         # 19cw WAS TRIED HERE AND IS WRONG — DO NOT "FIX" THIS AGAIN.
         # The export's own pro_rata column IS origin-keyed (0.0 when t > period, 0.6774 at
         # t == period, 1.0 below), which reads like this lookup should use `per - t`. It should
@@ -1804,9 +1835,14 @@ class PopulationBandProjector:
         # Rows with t > period are frozen anyway, on BOTH sides, and not by pro_rata: their origin
         # month has no t0 row, so delivery's orig_m merge finds nothing and `pc_org` here is -1.
         # That is the guard, and it already works.
-        _pc_cellkey = (Pc["cur"].astype(str) + "|" + Pc["bin"].astype(str) + "|" + Pc["rpgt"].astype(str)
-                       + "|" + Pc["pmp"].astype(str) + "|" + Pc["ctry"].astype(str) + "|"
-                       + Pc["per"].astype(str)).to_numpy()[pc_keep]
+        if _ck_ok:
+            # -1 for a cell T0 never had: cannot match, so it lands on the same 0.0 the string
+            # reindex produced via NaN.
+            _pc_cellkey = np.where(_ck_bad, -1, _pc_ck_full)[pc_keep]
+        else:
+            _pc_cellkey = (Pc["cur"].astype(str) + "|" + Pc["bin"].astype(str) + "|" + Pc["rpgt"].astype(str)
+                           + "|" + Pc["pmp"].astype(str) + "|" + Pc["ctry"].astype(str) + "|"
+                           + Pc["per"].astype(str)).to_numpy()[pc_keep]
         self._pc_prapp = (_pr_by_cell.reindex(_pc_cellkey).fillna(0.0).to_numpy(float)
                           if len(pc_keep) else np.zeros(0, float))
 
@@ -1816,13 +1852,60 @@ class PopulationBandProjector:
         # month the transactions happened in. They differ by exactly `t`, which is why one key
         # cannot serve both.
         if len(pc_keep):
-            _gk_key = (Pc["cur"].astype(str) + "|" + Pc["bin"].astype(str) + "|"
-                       + Pc["rpgt"].astype(str) + "|" + Pc["pmp"].astype(str) + "|"
-                       + Pc["ctry"].astype(str) + "|" + Pc["per"].astype(str) + "|"
-                       + (Pc["t"].astype(str) if "t" in Pc.columns else "0")).to_numpy()[pc_keep]
-            _codes, _uniq = pd.factorize(_gk_key)
-            self._pc_gk = _codes.astype(np.int64)
-            self._n_gk = int(len(_uniq))
+            # 19gn: the (cell, appearance period, age) group key. Built the same 7-part string for
+            # all 6.45M aged rows just to factorise it. Now: mix the per-column codes into one
+            # int64, factorise THAT, and build the string ONLY for the distinct groups — there are
+            # ~4 orders of magnitude fewer of those than rows. The strings still exist because a
+            # diagnostic names groups with them (19dl, below); they are simply not built per row.
+            # THE GROUP KEY IS BUILT FROM Pc's OWN VALUES, and must NOT reuse the T0-shared code
+            # space above. Verified on the live export: sharing it merged every cell absent from T0
+            # onto one sentinel and collapsed 858,108 groups into 842,329 — a silently different
+            # renormalise. The string key never consulted T0, so neither does this.
+            _gk_int = None
+            _gk_cols = _CK + (["t"] if "t" in Pc.columns else [])
+            _gi = np.zeros(len(Pc), np.int64)
+            for _c in _gk_cols:
+                _rc, _ru = pd.factorize(Pc[_c], use_na_sentinel=False)
+                _mc, _mu = pd.factorize(pd.Series(_ru).astype(str).to_numpy(), use_na_sentinel=False)
+                if any("|" in str(_x) for _x in _mu):
+                    _gi = None
+                    break
+                _cc = np.asarray(_mc, np.int64)[_rc]
+                _k = int(_cc.max()) + 1 if len(_cc) else 1
+                if _k and _gi.max(initial=0) > (2 ** 62) // _k:
+                    _gi = None
+                    break
+                _gi = _gi * _k + _cc
+            if _gi is not None:
+                _gk_int = _gi[pc_keep]
+            if _gk_int is not None:
+                _codes, _uniq_i = pd.factorize(_gk_int)
+                self._pc_gk = _codes.astype(np.int64)
+                self._n_gk = int(len(_uniq_i))
+                # names for the DISTINCT groups only — one row per group, not one per aged row
+                _first = np.full(len(_uniq_i), -1, np.int64)
+                _seen = np.zeros(len(_uniq_i), bool)
+                for _i, _cd in enumerate(_codes):
+                    if not _seen[_cd]:
+                        _seen[_cd] = True
+                        _first[_cd] = _i
+                _kidx = np.asarray(pc_keep)[_first]
+                _nm = (Pc["cur"].astype(str).to_numpy()[_kidx] + "|"
+                       + Pc["bin"].astype(str).to_numpy()[_kidx] + "|"
+                       + Pc["rpgt"].astype(str).to_numpy()[_kidx] + "|"
+                       + Pc["pmp"].astype(str).to_numpy()[_kidx] + "|"
+                       + Pc["ctry"].astype(str).to_numpy()[_kidx] + "|"
+                       + Pc["per"].astype(str).to_numpy()[_kidx] + "|"
+                       + Pc["t"].astype(str).to_numpy()[_kidx])
+                _uniq = _nm
+            else:
+                _gk_key = (Pc["cur"].astype(str) + "|" + Pc["bin"].astype(str) + "|"
+                           + Pc["rpgt"].astype(str) + "|" + Pc["pmp"].astype(str) + "|"
+                           + Pc["ctry"].astype(str) + "|" + Pc["per"].astype(str) + "|"
+                           + (Pc["t"].astype(str) if "t" in Pc.columns else "0")).to_numpy()[pc_keep]
+                _codes, _uniq = pd.factorize(_gk_key)
+                self._pc_gk = _codes.astype(np.int64)
+                self._n_gk = int(len(_uniq))
             # 19dl — RETAIN THE KEY STRINGS. Diagnostic only; nothing in the kernels reads this.
             # `_pc_gk` is a factorised CODE, so a group can be counted but never NAMED, and the
             # passthrough-disagreement dump in [vterms-is] needs to print which (cell, period, t)
@@ -1878,7 +1961,9 @@ class PopulationBandProjector:
             _tag = ""
             if _lbl in _exp:
                 _before, _after = _exp[_lbl]
-                if _d > _before * 0.6:
+                # 19gn: a floor, so a tiny fixture cannot trip the warning. At 4 rows every
+                # step is 0.0s and `0.0 > 0.0 * 0.6` fired on all four.
+                if _d > 0.25 and _d > _before * 0.6:
                     _tag = (f"  ⚠ EXPECTED ~{_after:.1f}s at this row count (was ~{_before:.1f}s) — "
                             "this step did NOT speed up: the fast path declined (a value containing "
                             "'|', or a radix overflow), or this module is stale")
@@ -1957,7 +2042,7 @@ class PopulationBandProjector:
             # ── 19fs: THIRD CLASS — the origin cell is FROZEN. See the module note. ──
             _org = np.asarray(self._pc_org, np.int64)
             _frz_rows = np.zeros(len(_org), bool)
-            _fzc = self._frozen_cell_mask() if _VCONST_FROZEN_ON else None
+            _fzc = self._frozen_cell_mask()
             if _fzc is not None:
                 _gc_all = np.asarray(self._gcode, np.int64)
                 _oi_c = np.where(_org >= 0, _org, 0)
@@ -1975,7 +2060,6 @@ class PopulationBandProjector:
                               "no_origin": int((np.asarray(self._pc_org) < 0).sum()),
                               "zero_pool": int((_zero_pool & (np.asarray(self._pc_org) >= 0)).sum()),
                               "frozen": int(_frz_rows.sum()),
-                              "frozen_on": bool(_VCONST_FROZEN_ON),
                               "frozen_known": bool(_fzc is not None)}
             self._nbcache = (
                 _I(self._propidx),
@@ -2052,10 +2136,10 @@ class PopulationBandProjector:
                      "against the penalty's 1e-9 dust guard - 49,085x inside it, so the ranking "
                      "and the shipped split are unchanged. RECONCILIATION ERROR is the "
                      "end-to-end check: delivery is an untouched path, so if this moved anything "
-                     "that matters it stops reading 0. ROUTING_VCONST_FROZEN=0 reverts."
-                     if _h["frozen_on"] and _h["frozen_known"] else
-                     "OFF this run: ROUTING_VCONST_FROZEN=0 is set."
-                     if not _h["frozen_on"] else
+                     "that matters it stops reading 0. Verified end-to-end on the 2026-09-01 "
+                     "20:01 run (reconciliation error 0), so 19gm deleted the kill switch — this "
+                     "is now simply how vconst works."
+                     if _h["frozen_known"] else
                      "NOT APPLIED: the GA incidence had not reached the projector when these "
                      "arrays were built, so frozen cells could not be identified. "
                      "set_lift_incidence() invalidates this cache, so a later build picks it "

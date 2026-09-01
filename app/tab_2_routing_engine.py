@@ -1381,10 +1381,21 @@ def render():
                             return _L.get(name, default)
                         # [FN-309]
                         def _bmark(modpath):
+                            # 19gl: print the NEWEST tag only. A __build__ is a "+"-joined history —
+                            # eligibility's ran to 340 characters across nine tags — and the whole
+                            # string was unreadable, so nobody read it and it stopped working as a
+                            # staleness check. The newest tag is what CHANGES when the file changes,
+                            # so it carries the entire signal; the rest is archaeology. The count is
+                            # kept so a shrinking history is still visible.
                             try:
-                                return getattr(_il.import_module(modpath), "__build__", "(no __build__)")
+                                _b = getattr(_il.import_module(modpath), "__build__", None)
                             except Exception as _e:  # noqa: BLE001
                                 return f"(import failed: {_e})"
+                            if not _b:
+                                return "(no __build__)"
+                            _parts = [x for x in str(_b).split("+") if x]
+                            return (f"{_parts[0]}  (+{len(_parts) - 1} earlier)"
+                                    if len(_parts) > 1 else str(_b))
                         # [FN-310]
                         def _finfo(p):
                             try:
@@ -2963,8 +2974,12 @@ def render():
                     # run and trained everyone to ignore a real staleness warning. A pinned literal
                     # cannot track the module, so report the build and only warn when the marker is
                     # genuinely ABSENT — which is the actual stale-bytecode signature.
+                    # 19gl: was "optimiser build:", which named the FILE rather than the JOB. This
+                    # module builds the MAXIMUM-REVENUE SPLIT REFERENCE — the conversion-optimal
+                    # split, ignoring risk — which the GA then tilts AWAY from to satisfy the bands.
+                    # It is the starting point, not the search.
                     _ob = getattr(_optmod, "__build__", None)
-                    log(f"   optimiser build: {_ob or 'UNKNOWN'}"
+                    log(f"   maximum revenue split reference (build {_ob or 'UNKNOWN'})"
                         + ("" if _ob else "  ⚠ no __build__ marker — this IS the stale-bytecode "
                                          "signature; clear __pycache__ and re-run."))
                     # Softmax and Thompson are per-cell engines: the reference IS their
