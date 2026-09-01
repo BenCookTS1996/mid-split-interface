@@ -2911,7 +2911,7 @@ def render():
 
                     # Reference = conversion-optimal split (no per-cell cap). The risk
                     # constraint is applied CROSS-CELL, per vampMid, afterwards.
-                    from routing_optimiser import optimiser as _optmod
+                    from routing_optimiser.s3_problem import optimiser as _optmod
                     from routing_optimiser.s3_problem.optimiser import (enforce_mid_vamp_caps, enforce_mid_volume_caps)
                     # 19fk: the pre-clustering swap that used to sit here is gone with
                     # routing_optimiser.precluster — it was gated on `ss['ga_precluster']`, which
@@ -3363,7 +3363,7 @@ def render():
                         # movable fraction WITHOUT the pool would make fraud arrive that never left.
                         # ROUTING_SEARCH_RPGT_SCOPE=0 reverts.
                         if os.environ.get("ROUTING_SEARCH_RPGT_SCOPE", "1") != "0" and _sel_rpgts:
-                            from routing_optimiser import band_projection as _bpsc
+                            from routing_optimiser.s4_search import band_projection as _bpsc
                             _scfn = getattr(_bpsc, "rpgt_scope_mask", None)
                             if _scfn is None:
                                 log("   [rpgt-scope] \u26a0 band_projection has no rpgt_scope_mask, which means a "
@@ -7808,7 +7808,7 @@ def render():
                                     # identical to four decimals to the 16:50 run's because it had
                                     # never measured its own.
                                     try:
-                                        from routing_optimiser import band_projection as _nr_bp
+                                        from routing_optimiser.s4_search import band_projection as _nr_bp
                                         _nr_fn = getattr(_nr_bp, "proj_new_run", None)
                                         if _nr_fn is not None:
                                             _nr_fn()
@@ -8424,7 +8424,7 @@ def render():
                                 # which is the only in-run evidence that the parallel kernel is
                                 # bit-identical on THIS machine's data rather than in a container.
                                 try:
-                                    from routing_optimiser import band_projection as _bpm
+                                    from routing_optimiser.s4_search import band_projection as _bpm
                                     # 19ce: the CONFIGURATION first, unconditionally. The notes
                                     # below are drained and deleted, so on a SECOND run in the same
                                     # process they are empty and the log says nothing about the
@@ -9123,7 +9123,7 @@ def render():
                                 if os.environ.get("ROUTING_KERNEL_AB", "0") != "0":
                                     try:
                                         import time as _kt
-                                        from routing_optimiser import band_projection as _kbp
+                                        from routing_optimiser.s4_search import band_projection as _kbp
                                         _kp = _fm_eb.projector
                                         _ka = _kp._nb_arrays()
                                         _kpr1 = np.ascontiguousarray(_fm_s2pr(
@@ -9774,7 +9774,7 @@ def render():
                                             "decision from adopting it, and one that has to be "
                                             "made on the drift, not on the speed.")
                                         try:
-                                            from routing_optimiser import band_projection as _kf_bp
+                                            from routing_optimiser.s4_search import band_projection as _kf_bp
                                             _kf_all = getattr(_kf_bp, "_F32_OK", {}) or {}
                                             _kf_m = _kf_all.get("live")
                                             if not isinstance(_kf_m, dict):
@@ -9938,7 +9938,7 @@ def render():
                                     _kg_t0 = None
                                     try:
                                         import time as _kgt
-                                        from routing_optimiser import band_projection as _kgbp
+                                        from routing_optimiser.s4_search import band_projection as _kgbp
                                         _KG_NC = [13, 14, 15, 16, 17]     # cap_* argument positions
                                         _KG_NA = [8, 9, 10, 11, 12, 18]     # pc_*  argument positions
                                         _KG_LR, _KG_LC = 23, 24
@@ -14468,7 +14468,7 @@ def render():
             err = ss["_tab3_error"]
             st.error(f"{err['type']}: {err['msg']}")
             try:
-                from routing_optimiser import sql_runner as _sr
+                from routing_optimiser.s1_extract import sql_runner as _sr
                 st.caption(f"sql_runner build: `{getattr(_sr, '__build__', 'UNKNOWN — stale bytecode?')}`")
             except Exception: pass
             st.markdown("**Full traceback:**")
