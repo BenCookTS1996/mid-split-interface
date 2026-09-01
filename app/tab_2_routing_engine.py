@@ -462,22 +462,37 @@ def render():
                 # single-gateway cell, so the search stays feasible.
                 ss["explore_min_cell_vol"] = 0
                 _grc1, _grc2 = st.columns(2)
+                # 19gb: "Bank × Currency" REMOVED from both grains. It pooled RPGT into one cell /
+                # one blended rate, and every run has used a per-RPGT grain for months. Its code
+                # paths were dead weight that still had to be reasoned about at every change - and
+                # because it could be re-selected, `_opt_by_rpgt` had to be threaded through
+                # fifteen sites for a configuration nobody runs.
+                _SCORE_GRAINS = ["Bank × Currency × RPGT"]
+                _OPT_GRAINS = ["Bank × Currency × RPGT", "Bank × Currency × RPGT × pmp × Country"]
+                # A session still holding a removed value would make st.selectbox RAISE (the
+                # session_state value is not among the options), so drop a stale key rather than
+                # greeting the user with a traceback after an upgrade.
+                for _gk_st, _gk_ok in (("eng_score_grain", _SCORE_GRAINS),
+                                       ("eng_opt_grain", _OPT_GRAINS)):
+                    if _gk_st in ss and ss[_gk_st] not in _gk_ok:
+                        del ss[_gk_st]
                 _score_grain = _grc1.selectbox(
                     "Engine Score grain",
-                    ["Bank × Currency", "Bank × Currency × RPGT"], index=0, key="eng_score_grain",
-                    help="How the gateway SUCCESS RATE is pooled. Bank × Currency: one blended rate per "
-                         "gateway per bank×currency (pools all RPGTs — more data, stabler). Bank × Currency "
-                         "× RPGT: a separate rate per RPGT (more specific, thinner data → noisier).")
+                    _SCORE_GRAINS, index=0, key="eng_score_grain",
+                    help="How the gateway SUCCESS RATE is pooled: a separate rate per RPGT, from that "
+                         "RPGT's own attempts. The Bank × Currency option (one blended rate per gateway "
+                         "per bank×currency, pooling all RPGTs) was removed — it had not been used in "
+                         "months and its code paths had to be reasoned about at every change.")
                 _opt_grain = _grc2.selectbox(
                     "Optimisation grain",
-                    ["Bank × Currency", "Bank × Currency × RPGT",
-                     "Bank × Currency × RPGT × pmp × Country"], index=1, key="eng_opt_grain",
+                    _OPT_GRAINS, index=0, key="eng_opt_grain",
                     help="The cell grain at which the split is MADE and traffic is MOVED to meet risk "
-                         "constraints. Bank × Currency: ONE split per bank×currency applied across RPGTs. "
-                         "Bank × Currency × RPGT: a separate split per RPGT, with the VAMP cap enforced at "
-                         "the per-RPGT level. Can differ from the score grain (e.g. score Bank×Currency for "
-                         "a stable rate, optimise per RPGT). A score finer than the optimisation is pooled "
-                         "up; a score coarser is broadcast to each RPGT cell.")
+                         "constraints. Bank × Currency × RPGT: a separate split per RPGT, with the VAMP cap "
+                         "enforced at the per-RPGT level. × pmp × Country: finer still — a separate split "
+                         "per (payment-method-provider, country) sub-cell, so wallet and USA-only "
+                         "eligibility apply exactly rather than as a blended fraction. The Bank × Currency "
+                         "option was removed, and with it the score↔optimisation grain alignment: both "
+                         "grains are per-RPGT now, so they always match.")
 
                 # --- Engine settings / temperature (moved here from Data & Pre-Processing) ---
                 params = {}
@@ -1703,11 +1718,13 @@ def render():
                     _sel_rpgts = {str(r).strip().lower() for r in (_rpgt_selected or [])}
                     _all_rpgts = {str(r).strip().lower() for r in _rpgt_opts}
                     _do_rpgt_filter = bool(_sel_rpgts and _sel_rpgts != _all_rpgts)
-                    _score_by_rpgt = (_score_grain == "Bank × Currency × RPGT")
-                    # Sub-cell grain (× pmp × Country) is per-RPGT too, so it's also "by_rpgt".
+                    # 19gb: both are STRUCTURALLY True now - every remaining grain is per-RPGT.
+                    # Kept as named constants rather than deleted because ~15 sites read them and
+                    # they are still the honest description of the cell key; they no longer VARY.
+                    _score_by_rpgt = True
+                    _opt_by_rpgt = True
+                    # This one still varies - the sub-cell grain is the only remaining choice.
                     _opt_subcell = (_opt_grain == "Bank × Currency × RPGT × pmp × Country")
-                    _opt_by_rpgt = (_opt_grain in ("Bank × Currency × RPGT",
-                                                   "Bank × Currency × RPGT × pmp × Country"))
                     # The RPGT filter that narrows attempts/forecast to the SELECTED RPGTs is
                     # applied further down (after the currency / switch-off cleanups) — NOT here.
                     # Why: in Bank×Currency mode the ENGINE SCORE must pool ALL RPGTs for the cell
@@ -1771,11 +1788,9 @@ def render():
                     except Exception as e:
                         log(f"   [Warning] volume-override filter skipped: {e}")
 
-                    # Keep an ALL-RPGT (cleaned) copy for the engine SCORE in Bank×Currency mode
-                    # (the score pools every transaction type for the cell). Then narrow the
-                    # attempts/forecast to the SELECTED RPGTs, which drive eligibility, the volume
-                    # routed and the VAMP cap ('all for score, selected for volume/VAMP').
-                    _adf_all_rpgts = adf.copy()
+                    # Narrow the attempts/forecast to the SELECTED RPGTs, which drive eligibility,
+                    # the volume routed and the VAMP cap. 19gb deleted the ALL-RPGT copy kept here:
+                    # it fed the Bank×Currency score and nothing else.
                     if _do_rpgt_filter:
                         _n0, _f0 = len(adf), len(forecast_temp)
                         if "rpgt" in adf.columns:
@@ -1785,7 +1800,7 @@ def render():
                                 forecast_temp["rpgt"].astype(str).str.strip().str.lower().isin(_sel_rpgts)].copy()
                         log(f"   RPGT scope: volume/eligibility/VAMP restricted to {len(_sel_rpgts)} RPGT(s) "
                             f"({len(adf):,}/{_n0:,} attempts, {len(forecast_temp):,}/{_f0:,} forecast rows); "
-                            f"score {'per selected RPGT' if _score_by_rpgt else 'pooled over ALL RPGTs'}.")
+                            f"score per selected RPGT.")
                         if getattr(adf, "empty", True) or getattr(forecast_temp, "empty", True):
                             raise ValueError(
                                 "RPGT scope removed all rows — the selected RPGTs in tab 2 don't "
@@ -1861,8 +1876,7 @@ def render():
                     # Bank×Currency×RPGT keeps RPGT in the cell key (a split per RPGT). Cell keys
                     # use `_gk`. The Engine Score grain (_score_by_rpgt) is separate and is aligned
                     # to these cells below.
-                    _gk = (["rpgt", "currency", "parent_bank"] if _opt_by_rpgt
-                           else ["currency", "parent_bank"])
+                    _gk = ["rpgt", "currency", "parent_bank"]
                     # Name the grain ACTUALLY selected. Until 2026-08-19ad this printed
                     # "Bank×Currency×RPGT (per-RPGT cells)" whenever _opt_by_rpgt was true, which
                     # is ALSO true at the 5-part sub-cell grain — so the 2026-08-21 21:24 run,
@@ -1870,11 +1884,8 @@ def render():
                     # A log that misstates its own grain is how a cell count gets attributed to
                     # the wrong configuration.
                     _grain_lbl = ("Bank×Currency×RPGT×pmp×Country (per-(pmp,Country) SUB-CELLS)"
-                                  if _opt_subcell else
-                                  "Bank×Currency×RPGT (per-RPGT cells)" if _opt_by_rpgt else
-                                  "Bank×Currency (RPGT collapsed)")
-                    log(f"   Optimisation grain: {_grain_lbl}; "
-                        f"Engine Score grain: {'per-RPGT' if _score_by_rpgt else 'Bank×Currency (pooled)'}.")
+                                  if _opt_subcell else "Bank×Currency×RPGT (per-RPGT cells)")
+                    log(f"   Optimisation grain: {_grain_lbl}; Engine Score grain: per-RPGT.")
 
                     # Total forecast volume to route per cell.
                     # The forecast is used ONLY for how much volume to route, not
@@ -1886,8 +1897,6 @@ def render():
                     # with attempts in the window is a candidate the engine may use.
                     agg_adf = agg_adf[agg_adf["attempts"] > 0]
                     agg_adf = agg_adf.groupby(_gk + ["gateway"]).sum(numeric_only=True).reset_index()
-                    if not _opt_by_rpgt:
-                        agg_adf["rpgt"] = "ALL_RPGTS"
                     agg_adf["bin"] = agg_adf["parent_bank"]
 
                     # Build the routing cells from those attempts-based gateways.
@@ -1961,8 +1970,6 @@ def render():
                     att["volume"] = att["fc_volume"] * att["baseline_share"]
 
                     agg_forecast = att[_gk + ["gateway", "volume", "baseline_share"]].copy()
-                    if not _opt_by_rpgt:
-                        agg_forecast["rpgt"] = "ALL_RPGTS"
                     agg_forecast["bin"] = agg_forecast["parent_bank"]
 
                     # Attach period-0 risk from `orig_forecast["risk_rate"]`, volume-weighted
@@ -1986,7 +1993,7 @@ def render():
                         rf["_vw"] = pd.to_numeric(rf["risk_rate"], errors="coerce").fillna(0.0) * pd.to_numeric(rf["volume"], errors="coerce").fillna(0.0)
                         # Risk rate follows the OPTIMISATION (cell) grain: per-RPGT when cells are
                         # per-RPGT, else pooled across RPGTs (classic behaviour).
-                        _rkeys = (["_rk"] if _opt_by_rpgt else []) + ["_ck", "_pk", "_gwk"]
+                        _rkeys = ["_rk", "_ck", "_pk", "_gwk"]
                         rr = rf.groupby(_rkeys).agg(_vw=("_vw", "sum"), _v=("volume", "sum")).reset_index()
                         rr["risk_cb"] = np.where(rr["_v"] > 0, rr["_vw"] / rr["_v"], np.nan)
                         agg_forecast["_ck"] = agg_forecast["currency"].astype(str).str.strip().str.lower()
@@ -2177,6 +2184,9 @@ def render():
                                     if _expl_min_vol > 0 and _cell_vol_map.get(_ck, 0.0) < _expl_min_vol:
                                         _pruned_cells.add(_ck)          # near-empty cell → skip exploration
                                         continue
+                                    # 19gb: the "ALL_RPGTS" default is unreachable now (every
+                                    # cell carries a real rpgt); kept as a loud, wrong-looking
+                                    # value so a missing key shows up instead of defaulting quietly.
                                     _rp = _cd.get("rpgt", "ALL_RPGTS")
                                     _nr = {k: _cd[k] for k in _gk}
                                     _nr.update({"bin": _cd["bin"], "gateway": _g, "volume": 0.0,
@@ -2207,15 +2217,13 @@ def render():
                     # window and the Bank x Currency prior, matching the All-Time
                     # columns. Eligibility above stays on the 30D window; the rate
                     # estimate uses all available history for a stabler number.
-                    # SCORE source: Bank×Currency pools ALL RPGTs for the cell (use the all-RPGT
-                    # copy); Bank×Currency×RPGT scores each selected RPGT from its own rows.
-                    agg_adf_full = (adf.copy() if _score_by_rpgt else _adf_all_rpgts.copy())
+                    # SCORE source: each selected RPGT is scored from its own rows (19gb - the
+                    # Bank×Currency all-RPGT pooling alternative is gone).
+                    agg_adf_full = adf.copy()
                     if "date" not in agg_adf_full.columns and "Date" in agg_adf_full.columns:
                         agg_adf_full = agg_adf_full.rename(columns={"Date": "date"})
                     agg_adf_full["parent_bank"] = agg_adf_full["bin"].map(bin_to_bank).fillna(agg_adf_full["bin"])
                     agg_adf_full = agg_adf_full[agg_adf_full["attempts"] > 0].copy()
-                    if not _score_by_rpgt:
-                        agg_adf_full["rpgt"] = "ALL_RPGTS"   # per-RPGT keeps real rpgt -> per-RPGT rates
                     agg_adf_full["bin"] = agg_adf_full["parent_bank"]
 
                     # Pass the DATED rows (NOT pre-summed) so the time-decay half-life
@@ -2250,38 +2258,12 @@ def render():
                             f"({len(xborder_fids)} cross-border FIDs)")
                     ss["xborder_fids"] = xborder_fids
 
-                    # Align the Engine-Score grain to the Optimisation (cell) grain so the score
-                    # attaches to every cell. build_cell_problems joins on (rpgt, currency, bank,
-                    # gateway), so agg_sr's rpgt values must match agg_forecast's:
-                    #   • score coarser than opt (score=Bank×Currency, opt=per-RPGT): BROADCAST the
-                    #     pooled bank rate to each RPGT cell.
-                    #   • score finer than opt (score=per-RPGT, opt=Bank×Currency): POOL the per-RPGT
-                    #     rates up to one bank rate (attempt-weighted), tagged ALL_RPGTS.
-                    if _opt_by_rpgt and not _score_by_rpgt:
-                        _rpgts_opt = sorted(agg_forecast["rpgt"].astype(str).unique().tolist())
-                        _base_sr = agg_sr.drop(columns=[c for c in ["rpgt"] if c in agg_sr.columns])
-                        agg_sr = pd.concat([_base_sr.assign(rpgt=_rp) for _rp in _rpgts_opt], ignore_index=True)
-                        log(f"   score→opt align: broadcast pooled Bank×Currency score to {len(_rpgts_opt)} RPGT cell-grain(s).")
-                    elif (not _opt_by_rpgt) and _score_by_rpgt:
-                        _s = agg_sr.copy()
-                        _s["_w"] = pd.to_numeric(_s["attempts"], errors="coerce").fillna(0.0)
-                        if "success" not in _s.columns:
-                            _s["success"] = _s["success_rate"] * _s["_w"]
-                        if "prior_rate" not in _s.columns:
-                            _s["prior_rate"] = _s["success_rate"]
-                        _s["_wr"] = _s["success_rate"] * _s["_w"]
-                        _s["_wp"] = _s["prior_rate"] * _s["_w"]
-                        _aggc = dict(attempts=("attempts", "sum"), success=("success", "sum"),
-                                     _wr=("_wr", "sum"), _wp=("_wp", "sum"), _w=("_w", "sum"))
-                        if "kappa" in _s.columns:
-                            _aggc["kappa"] = ("kappa", "first")
-                        _agg = _s.groupby(["currency", "bin", "gateway"], as_index=False).agg(**_aggc)
-                        _agg["success_rate"] = np.where(_agg["_w"] > 0, _agg["_wr"] / _agg["_w"],
-                                                        np.where(_agg["attempts"] > 0, _agg["success"] / _agg["attempts"], 0.0))
-                        _agg["prior_rate"] = np.where(_agg["_w"] > 0, _agg["_wp"] / _agg["_w"], _agg["success_rate"])
-                        _agg["rpgt"] = "ALL_RPGTS"
-                        agg_sr = _agg.drop(columns=["_wr", "_wp", "_w"])
-                        log("   score→opt align: pooled per-RPGT score up to Bank×Currency (attempt-weighted).")
+                    # 19gb: the score→opt GRAIN ALIGNMENT is gone with the Bank × Currency option.
+                    # It existed for the two MISMATCHED combinations only — broadcast a pooled
+                    # Bank×Currency score onto per-RPGT cells, or pool per-RPGT scores up to one
+                    # bank rate. Both grains are per-RPGT now, so agg_sr's rpgt values already match
+                    # agg_forecast's and build_cell_problems joins on (rpgt, currency, bank, gateway)
+                    # with no realignment. 25 lines deleted.
 
                     # Seed the injected exploration candidates at the bank×currency AVERAGE rate
                     # (a WEAK prior). For each injected (currency, bank, rpgt) cell we take the mean
@@ -2996,9 +2978,8 @@ def render():
                         log("   pro-rata export not found — using period-0 risk rates for MID caps.")
 
                     # Build the cross-cell input and enforce per-vampMid caps. The cell key
-                    # includes RPGT so that in per-RPGT mode traffic is moved within each
-                    # (currency, bank, RPGT) cell; in Bank×Currency mode rpgt is a constant
-                    # ("ALL_RPGTS"), so the key collapses to currency|bank (unchanged).
+                    # includes RPGT, so traffic is moved within each (currency, bank, RPGT) cell.
+                    # 19gb: the Bank×Currency mode that collapsed rpgt to a constant is gone.
                     _mc = ref_agg.copy()
                     _rp_key = (_mc["rpgt"].astype(str).str.strip().str.lower()
                                if "rpgt" in _mc.columns else "all_rpgts")
@@ -4210,23 +4191,19 @@ def render():
                     # [FN-323]
                     def _prop_items_from_gran(gran):
                         # Proposed shares the pro-rata projection consumes (matches the tab-4 VAMP
-                        # impact table). At Bank×Currency grain → (Currency, BIN, vampMid, share).
-                        # At Bank×Currency×RPGT grain → (Currency, BIN, RPGT, vampMid, share), so a
+                        # impact table). Keys are (Currency, BIN, RPGT, vampMid, share), so a
                         # per-RPGT split is projected/enforced per RPGT (e.g. move addon sales off a
                         # MID without touching its other RPGTs) instead of one share across RPGTs.
                         # The backup catch-all (Stage 4) is folded in so the GA scores actual routing.
+                        # 19gb: the 3-part (Currency, BIN, vampMid) `else` branch is deleted — it
+                        # served the Bank × Currency grain, which no longer exists.
                         g = gran.copy()
                         g["_vm"] = g["gateway"].astype(str).str.strip().str.lower().map(fid2vamp)
                         g = g.dropna(subset=["_vm"])
-                        if _opt_by_rpgt:
-                            pr = g.groupby(["currency", "bin", "rpgt", "_vm"], as_index=False)["share"].sum()
-                            _prop = tuple((str(c).lower(), str(b), str(rp), str(v), float(s))
-                                          for c, b, rp, v, s in
-                                          pr[["currency", "bin", "rpgt", "_vm", "share"]].itertuples(index=False))
-                        else:
-                            pr = g.groupby(["currency", "bin", "_vm"], as_index=False)["share"].sum()
-                            _prop = tuple((str(c).lower(), str(b), str(v), float(s))
-                                          for c, b, v, s in pr[["currency", "bin", "_vm", "share"]].itertuples(index=False))
+                        pr = g.groupby(["currency", "bin", "rpgt", "_vm"], as_index=False)["share"].sum()
+                        _prop = tuple((str(c).lower(), str(b), str(rp), str(v), float(s))
+                                      for c, b, rp, v, s in
+                                      pr[["currency", "bin", "rpgt", "_vm", "share"]].itertuples(index=False))
                         return _blend_ga(_prop)
 
                     # ---- GATE-1 diagnostic: collapsed BandProjector vs the TRUE _project_capped ----
@@ -5353,9 +5330,7 @@ def render():
                             # 21:24 sub-cell run reported its 23,791 SUB-CELLS as if they were
                             # 3-part cells.
                             _fm_grain_lbl = ("rpgt×currency×bank×pmp×ctry SUB-CELLS"
-                                             if _opt_subcell else
-                                             "rpgt×currency×bank" if _opt_by_rpgt else
-                                             "currency×bank")
+                                             if _opt_subcell else "rpgt×currency×bank")
                             log(f"   full-matrix problem size: {_n_cells} cells ({_fm_grain_lbl}), "
                                 f"{int(len(G))} cell×gateway rows, {_n_mid} vampMids.")
                         else:
@@ -14251,7 +14226,7 @@ def render():
                     ss["opt_by_rpgt"] = bool(_opt_by_rpgt)
                     ss["mid_constraints"] = list(params.get("mid_constraints", []) or [])
 
-                    ss["agg_sr"] = agg_sr            # ALL_RPGTS rates the engine actually uses
+                    ss["agg_sr"] = agg_sr            # per-RPGT rates the engine actually uses
                     ss["agg_raw_att"] = agg_adf_full.groupby(  # UN-decayed parent attempts, for verification
                         ["currency", "parent_bank", "gateway"], as_index=False)["attempts"].sum()
                     ss["bin_to_bank"] = bin_to_bank  # BIN -> parent bank, for Engine Score lookup
