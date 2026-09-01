@@ -1566,7 +1566,62 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             # 19eg: pass counters by grain, and the softmax time split out of the loop time.
             # 19ef shipped a restriction that fired ONCE in a whole run and nothing in the log
             # said so. These three numbers make that failure mode visible next time.
-            "pc": 0, "un": 0, "sm": 0.0}
+            "pc": 0, "un": 0, "sm": 0.0,
+            # 19fe: working passes per call. The point of the headroom rule is that ONE pass is
+            # always enough on a feasible cell; `pass_max` is the number that proves or refutes
+            # it on live data, and it must be read before any timing claim.
+            "pass_max": 0, "pass_tot": 0}
+    # ── [msr-headroom] 19fe: WHICH REDISTRIBUTION RULE THE REPAIR USES ────────────────────
+    # Both rules clip the over-cap row(s) to the target and hand the excess to the siblings, so
+    # the cell still sums to 1 and no share is invented. They disagree about WHO gets it:
+    #
+    #   proportional (pre-19fe, ROUTING_MSR_HEADROOM=0)
+    #       siblings scale by (1 + excess/free) — the excess is split in proportion to the share
+    #       each sibling ALREADY holds.
+    #   headroom (19fe, DEFAULT)
+    #       each sibling gets excess x (target - share) / Σ(target - share) — in proportion to how
+    #       much room it has left before IT would hit the cap.
+    #
+    # WHY HEADROOM IS THE RIGHT ONE. It is what DELIVERY does: impact_calcs._cap_rows, the water-
+    # fill inside build_split_exports, is headroom-weighted, and build_split_exports produces the
+    # template that actually ships. So the proportional rule was the SEARCH's private variant of
+    # production's rule, and any cell where the cap bit was a cell where the search optimised
+    # something other than what gets deployed. On the 2026-08-31 23:22 run that divergence
+    # measured ZERO (RECONCILIATION ERROR = 0 across all 15 bands) because at cap 0.97 the
+    # recipients are always tiny, so the two rules agree to within float dust on most cells --
+    # this closes a LATENT divergence, not an observed error.
+    #
+    # WHY IT IS ALSO SIMPLER. The proportional rule can push a recipient over the cap, so it needs
+    # a loop and a whole-cell revert for the cells it fails to fix. The headroom rule cannot, and
+    # there is a closed-form reason: Σ(target - share) over the present, not-over rows equals
+    # (present_rows x target) - 1 + excess, so Σheadroom >= excess exactly when
+    # present_rows x target >= 1. At target 0.97 that holds for EVERY cell with two or more live
+    # rows, and a one-live-row cell has nowhere to put the excess under either rule. Verified
+    # offline on 198,766 random cells at caps 0.97/0.9/0.5/0.3/0.1: zero feasible cells needed a
+    # second sweep, cap respected to 2.2e-16, per-cell mass preserved to 6.7e-16.
+    #
+    # THE 8-PASS LOOP IS KEPT. Not because the rule needs it, but because a loop that never runs
+    # a second pass costs one `over.any()` test, and removing it would mean asserting the closed
+    # form instead of measuring it. `pass_max` in the [ms-repair] summary is that measurement.
+    #
+    # NOT A NO-OP, AND NOT CLAIMED TO BE. Measured on the live-shape fixture: 16,781 of 5,404,175
+    # share entries move, largest single move 0.0146 share points. It needs a verification cycle.
+    # ROUTING_MSR_HEADROOM=0 restores the proportional rule exactly.
+    #
+    # OFFLINE VERIFICATION, 2026-09-01, at the live shape (14,852 cells x 154,405 rows, P=35)
+    # across 12 fixtures incl. length-2 cells, non-live caps, per-row caps differing inside a
+    # cell, excess-with-no-free-mass, sibling-lift, P=1, 100%-affected, and caps of 0.50/0.30:
+    #   * with ROUTING_MSR_HEADROOM=0 the refactored kernel is BIT-IDENTICAL (np.array_equal)
+    #     to the pre-19fe inline arithmetic on all 12 - so the switch really does return the old
+    #     behaviour, and the refactor is not carrying a change of its own.
+    #   * headroom used exactly ONE working pass on every fixture, including the 0.30 cap where
+    #     the proportional rule hits the 8-pass ceiling and the whole-cell revert fires.
+    #   * no NaN/inf, no cell left newly over cap, per-cell sums within 6.66e-16 of 1.0.
+    #   * against DELIVERY's own _cap_rows on the same cells: max|delta| 9.7e-10, which is the
+    #     1e-9 target back-off and nothing else. Before 19fe the same comparison was 1.46e-2.
+    #     That factor of ~15 million is the point of the change.
+    _MSR_HEADROOM = _os_gf.environ.get("ROUTING_MSR_HEADROOM", "1") != "0"
+    _MSR_EPS = 1e-12
     # [msr-restrict] 19ef: restrict each repair pass to the cells that can actually change.
     # Bit-identical by construction and self-checked on the first call. ROUTING_MSR_RESTRICT=0
     # reverts to the full-width loop.
@@ -1632,6 +1687,60 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _livep = None                     # 19eg per-candidate grain: (cand, cell) pairs still live
         _nP = int(_lg2.shape[0])
 
+        def _msr_pass(_s, _t, _o, _seg, _len, _ax):
+            """ONE repair pass over segmented shares. Returns (repaired, ok).
+
+            ONE implementation for all four call sites (per-candidate, full-width, union-grain,
+            and the self-check's reference loop), because the previous four hand-written copies
+            of this arithmetic are exactly how a rule change becomes a rule change in three
+            places out of four. `_ax` is None for the flat per-candidate element list and 1 for
+            a (P, R) block; the two differ only in the axis the reduceat / repeat run along.
+
+            `_o` (the over-target mask) is passed in rather than recomputed, so each call site
+            keeps its own early exit on `_o.any()`.
+
+            `ok` is False for a cell that has excess but nowhere to put it — under EITHER rule
+            that cell is left alone and falls through to the whole-cell revert below.
+            """
+            if _ax is None:
+                _rd = lambda _x: np.add.reduceat(_x, _seg)            # noqa: E731
+                _rp = lambda _x: np.repeat(_x, _len)                  # noqa: E731
+            else:
+                _rd = lambda _x: np.add.reduceat(_x, _seg, axis=1)    # noqa: E731
+                _rp = lambda _x: np.repeat(_x, _len, axis=1)          # noqa: E731
+            _exc = _rd(np.where(_o, _s - _t, 0.0))
+            if _MSR_HEADROOM:
+                # Room left on each row that is PRESENT and not over. A row at zero is excluded,
+                # matching _cap_rows' `(W > 1e-12) & ~over & (W < cap - 1e-12)` recipient test:
+                # giving share to a row the candidate put at zero would be inventing a door.
+                #
+                # `_ceil` IS NOT `_t`, AND THE DIFFERENCE IS A CRASH. `p.max_share` is PER ROW,
+                # and a row whose cap is not live (>= 1, <= 0, or non-finite) carries
+                # `_tgt = inf`. Its headroom would then be `inf - share = inf`, the cell's pool
+                # would be `inf`, every share of it would be `exc/inf = 0.0`, and the update
+                # would evaluate `inf * 0.0` = NaN — silently poisoning that cell's shares and,
+                # through the log() encode, the candidate's logits. Delivery never meets this
+                # because `_cap_rows` takes ONE scalar cap for the whole frame. Clipping the
+                # ceiling to 1.0 gives an uncapped row the only headroom that means anything
+                # here — "it could go to 100%" — and keeps the arithmetic finite. Caught by the
+                # offline fixture's non-live-cap case, which raised
+                # "RuntimeWarning: invalid value encountered in multiply".
+                _ceil = np.minimum(_t, 1.0)
+                _room = np.where(~_o & (_s > _MSR_EPS) & (_s < _ceil), _ceil - _s, 0.0)
+                _pool = _rd(_room)
+                _ok = (_exc > 0.0) & (_pool > _MSR_EPS)
+                _okr = _rp(_ok)
+                _f = _rp(np.where(_ok, _exc / np.where(_pool > _MSR_EPS, _pool, 1.0), 0.0))
+                return np.where(_okr & _o, _t,
+                                np.where(_okr, _s + _room * _f, _s)), _ok
+            _free = _rd(np.where(_o, 0.0, _s))
+            _ok = (_exc > 0.0) & (_free > 0.0)
+            _okr = _rp(_ok)
+            _sc = _rp(np.where(_ok, 1.0 + _exc / np.where(_free > 0.0, _free, 1.0), 1.0))
+            return np.where(_okr & _o, _t, np.where(_okr, _s * _sc, _s)), _ok
+
+        _msr_np = 0        # working passes in THIS call
+
         def _msr_rows(_cells):
             """Row indices of a set of cells, plus their lengths. Cells are contiguous runs."""
             _cs = np.asarray(p.cell_start)[_cells]
@@ -1696,20 +1805,15 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 _o = _s > _t
                 if not _o.any():
                     break
-                _exc = np.add.reduceat(np.where(_o, _s - _t, 0.0), _lst)
-                _free = np.add.reduceat(np.where(_o, 0.0, _s), _lst)
-                # A cell with excess but NO free mass cannot be repaired without inventing share.
-                _ok = (_exc > 0.0) & (_free > 0.0)
+                _new, _ok = _msr_pass(_s, _t, _o, _lst, _cln, None)
                 if not _ok.any():
                     break
                 _any = True
+                _msr_np += 1
                 _msr["cells"] += int(_ok.sum())
                 _msr["restr"] += 1
                 _msr["pc"] += 1
-                _sc = np.where(_ok, 1.0 + _exc / np.where(_free > 0.0, _free, 1.0), 1.0)
-                _okr = np.repeat(_ok, _cln)
-                _scr = np.repeat(_sc, _cln)
-                _sh[_ci, _ri] = np.where(_okr & _o, _t, np.where(_okr, _s * _scr, _s))
+                _sh[_ci, _ri] = _new
                 _livep = (_pc[_ok], _pk[_ok])
                 continue
 
@@ -1718,19 +1822,13 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 _over = _sh > _tgt
                 if not _over.any():
                     break
-                _exc = np.add.reduceat(np.where(_over, _sh - _tgt, 0.0), p.cell_start, axis=1)
-                _free = np.add.reduceat(np.where(_over, 0.0, _sh), p.cell_start, axis=1)
-                # A cell with excess but NO free mass cannot be repaired without inventing share.
-                _ok = (_exc > 0.0) & (_free > 0.0)
+                _new, _ok = _msr_pass(_sh, _tgt, _over, p.cell_start, p.cell_len, 1)
                 if not _ok.any():
                     break
                 _any = True
+                _msr_np += 1
                 _msr["cells"] += int(_ok.sum())
-                _sc = np.where(_ok, 1.0 + _exc / np.where(_free > 0.0, _free, 1.0), 1.0)
-                _okr = np.repeat(_ok, p.cell_len, axis=1)
-                _scr = np.repeat(_sc, p.cell_len, axis=1)
-                _sh = np.where(_okr & _over, _tgt,
-                               np.where(_okr, _sh * _scr, _sh))
+                _sh = _new
                 _live = None          # full width every pass once this path is taken
                 _livep = None
                 _msr["full"] += 1
@@ -1745,20 +1843,15 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             _o = _s > _t
             if not _o.any():
                 break
-            _exc = np.add.reduceat(np.where(_o, _s - _t, 0.0), _lst, axis=1)
-            _free = np.add.reduceat(np.where(_o, 0.0, _s), _lst, axis=1)
-            # A cell with excess but NO free mass cannot be repaired without inventing share.
-            _ok = (_exc > 0.0) & (_free > 0.0)
+            _new, _ok = _msr_pass(_s, _t, _o, _lst, _cl, 1)
             if not _ok.any():
                 break
             _any = True
+            _msr_np += 1
             _msr["cells"] += int(_ok.sum())
             _msr["restr"] += 1
             _msr["un"] += 1
-            _sc = np.where(_ok, 1.0 + _exc / np.where(_free > 0.0, _free, 1.0), 1.0)
-            _okr = np.repeat(_ok, _cl, axis=1)
-            _scr = np.repeat(_sc, _cl, axis=1)
-            _sh[:, _rows] = np.where(_okr & _o, _t, np.where(_okr, _s * _scr, _s))
+            _sh[:, _rows] = _new
             _live = _hit[_ok.any(axis=0)]
         # ── [msr-restrict] ONE-SHOT SELF-CHECK ON THE LIVE SCAFFOLD ──────────────────────
         # The offline proof used a synthetic fixture. This runs the ORIGINAL full-width loop
@@ -1768,20 +1861,20 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         if _MSR_R_ON and not _MSR_R_CHECK["done"] and _msr["restr"] > 0:
             _MSR_R_CHECK["done"] = True
             _snap = dict(_msr)
+            # 19fe: the reference runs through `_msr_pass` too, so it uses WHICHEVER rule is
+            # active. Before 19fe it was a hand-written copy of the proportional arithmetic; left
+            # that way it would have compared a headroom-repaired result against a proportional
+            # reference and reported a bit-identity failure on every run — a self-check that
+            # tests the wrong thing is worse than none.
             _ref = _orig.copy()
             for _ in range(8):
                 _rov = _ref > _tgt
                 if not _rov.any():
                     break
-                _rex = np.add.reduceat(np.where(_rov, _ref - _tgt, 0.0), p.cell_start, axis=1)
-                _rfr = np.add.reduceat(np.where(_rov, 0.0, _ref), p.cell_start, axis=1)
-                _rok = (_rex > 0.0) & (_rfr > 0.0)
+                _ref2, _rok = _msr_pass(_ref, _tgt, _rov, p.cell_start, p.cell_len, 1)
                 if not _rok.any():
                     break
-                _rsc = np.where(_rok, 1.0 + _rex / np.where(_rfr > 0.0, _rfr, 1.0), 1.0)
-                _ref = np.where(np.repeat(_rok, p.cell_len, axis=1) & _rov, _tgt,
-                                np.where(np.repeat(_rok, p.cell_len, axis=1),
-                                         _ref * np.repeat(_rsc, p.cell_len, axis=1), _ref))
+                _ref = _ref2
             _msr.clear(); _msr.update(_snap)
             if np.array_equal(_sh, _ref):
                 log("[fullmatrix-ga] [msr-restrict] ✓ SELF-CHECK PASSED on the live scaffold: "
@@ -1798,6 +1891,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     "the restriction, not in the repair; the split is unaffected.")
                 _sh = _ref
 
+        _msr["pass_tot"] += _msr_np
+        _msr["pass_max"] = max(_msr["pass_max"], _msr_np)
         if not _any:
             _msr["secs"] += time.perf_counter() - _t0r
             return lg
@@ -2474,13 +2569,41 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             f"repair(s). Mean share moved per repaired candidate {_mv:.4g}; largest single-row "
             f"move {_msr['worst']:.4g}. The cap itself is UNCHANGED and still hard — nothing "
             "above it ships, before or after this change.")
+        # ── 19fe: THE RULE, AND THE PASS COUNT THAT JUSTIFIES IT ──────────────────────────
+        log(f"[ms-repair]    [msr-headroom] redistribution rule: "
+            + ("HEADROOM-WEIGHTED (19fe default) — the excess goes to each sibling in "
+               "proportion to (target - share), the room it has left. This is the SAME rule "
+               "delivery uses (impact_calcs._cap_rows, the water-fill inside "
+               "build_split_exports), so the search and the shipped template now cap a cell the "
+               "same way. ROUTING_MSR_HEADROOM=0 restores the pre-19fe proportional rule."
+               if _MSR_HEADROOM else
+               "PROPORTIONAL (pre-19fe, ROUTING_MSR_HEADROOM=0 is set) — the excess is split in "
+               "proportion to the share each sibling ALREADY holds. This is NOT the rule "
+               "delivery applies, so a cell where the cap bites is a cell the search is "
+               "optimising differently from what ships."))
+        log(f"[ms-repair]    [msr-headroom] working passes: {_msr.get('pass_tot', 0):,} over "
+            f"{_msr['seen']:,} candidate decode(s), MAX {_msr.get('pass_max', 0)} in any single "
+            "call. "
+            + ("The headroom rule is single-pass BY CONSTRUCTION on a feasible cell: "
+               "Sum(target - share) over the present rows equals (present_rows x target) - 1 + "
+               "excess, so it is >= excess whenever present_rows x target >= 1 — true for every "
+               "cell with 2+ live rows at a 0.97 cap. A MAX of 1 above is that closed form "
+               "holding on live data; a MAX of 2+ would mean it does not, and the arithmetic "
+               "above says that can only happen in a cell with fewer than 2 live rows, which "
+               "cannot be repaired under either rule anyway."
+               if _MSR_HEADROOM else
+               "The proportional rule is NOT single-pass: lifting a sibling can push it over "
+               "the cap. Measured offline it needs 1 pass at a 0.97 cap but hits the 8-pass "
+               "ceiling at caps of 0.5 and below, after which the whole-cell revert fires."))
         if _msr["stuck_c"]:
             log(f"[ms-repair]    {_msr['stuck_c']:,} candidate(s) could NOT be fully repaired "
                 f"({_msr['stuck_k']:,} cell(s)): the over-cap row was the only row in its cell "
-                "holding any share, so the excess had nowhere proportional to go. Those cells "
+                "holding any share, so the excess had nowhere to go. Those cells "
                 "keep their original shares and the candidate is rejected exactly as before — "
-                "spreading the excess onto rows the seed holds at zero would be inventing "
-                "routing, not repairing it.")
+                "spreading the excess onto rows the candidate holds at zero would be inventing "
+                "routing, not repairing it. Under the headroom rule this is the ONLY way a "
+                "repair can fail, and it is a DATA problem (a cell with one live door), not a "
+                "repair problem.")
         else:
             log("[ms-repair]    every over-cap cell had somewhere to put the excess; no "
                 "candidate was left illegal.")
