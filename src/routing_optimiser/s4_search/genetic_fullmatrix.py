@@ -85,7 +85,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19ee-maxshare-repair"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gu-decode-cap+19ee-maxshare-repair"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -688,6 +688,72 @@ def _fx_selfcheck(a, b, rate, strength, cell_start, cell_len, rng, cell_w, refin
     return _ref
 
 
+# ── [decode-cap] 19gu: THE CAP IS A PROPERTY OF THE DECODE ──────────────────────────────────
+# Until now the cap was a REPAIR. `_repair_maxshare` decoded the whole population to shares,
+# water-filled the over-cap cells, and re-encoded the result with log() back into logits, which
+# `_eval_with_bands` then decoded AGAIN. 98.4% of candidates needed it (a softmax cannot express
+# an upper bound: it gives every live door a positive share and normalises to 1), so on the
+# 2026-09-01 22:09 run that was 91.3s — 20% of the whole search — and three decodes of the
+# population per generation instead of one.
+#
+# It also meant "the search respects the cap" was true only because a separate pass made it true
+# afterwards. Now the DECODE cannot produce an over-cap split at all, so no candidate exists that
+# violates it — which is what that sentence should have meant all along.
+#
+# THE RULE IS THE ONE DELIVERY USES, unchanged: the excess goes to each sibling in proportion to
+# (target - share), the room it has left before IT would hit the cap — impact_calcs._cap_rows'
+# water-fill, `_fm_cap`'s reduceat form and `_msr_pass`'s are all this same arithmetic. Single
+# pass, because Sum(target - share) over a cell's present rows equals (present_rows x target) - 1
+# + excess, so it covers the excess whenever present_rows x target >= 1 — every cell with 2+ live
+# rows at a 0.97 cap.
+#
+# THREE IMPLEMENTATIONS HAVE TO AGREE, and a divergence between them is a scored-vs-delivered
+# bug: the numpy reference, the fused numpy path, and the numba kernel's per-cell inner loop.
+# The reference is `_cap_shares_ref` below; the fused path calls it (the water-fill is not the
+# hot part — the decode is); the kernel carries its own copy and is verified against numpy by
+# make_fused_eval's existing verify gate, which now compares capped output on both sides.
+#
+# ROUTING_DECODE_CAP=0 restores the pre-19gu behaviour exactly: the decode stops capping and
+# `_repair_maxshare` goes back to doing it afterwards.
+_DECODE_CAP = _os_gf.environ.get("ROUTING_DECODE_CAP", "1") != "0"
+_DC_EPS = 1e-12
+_DC_BACKOFF = 1.0 - 1e-9        # the same target back-off `_repair_maxshare` used
+
+
+def _cap_shares_ref(sh, cell_start, cell_len, max_share):
+    """(P,R) shares -> (P,R) shares with no row above `max_share`. THE REFERENCE.
+
+    A row whose cap is not live (>= 1, <= 0, non-finite) is uncapped: its target is +inf, so it
+    is never over, and its HEADROOM is clipped to 1.0 rather than left infinite — an infinite
+    pool would make every share of the excess 0/inf = 0.0 and the update inf * 0.0 = NaN, which
+    would silently poison the cell. That clip is the same one `_msr_pass` carries and for the
+    same reason.
+
+    A row the candidate put at zero is NOT a recipient. Giving it share would be inventing a
+    door, and `_cap_rows` excludes it too (`W > 1e-12`).
+
+    A cell that cannot absorb its own excess (fewer live rows than 1/cap) is left ALONE, exactly
+    as `_cap_rows` leaves a row with fewer than 2 present gateways. It is counted, not hidden."""
+    _s = np.asarray(sh, float)
+    _cap = np.asarray(max_share, float)
+    _tgt = np.where(np.isfinite(_cap) & (_cap > 0.0) & (_cap < 1.0),
+                    _cap * _DC_BACKOFF, np.inf)
+    _o = _s > _tgt
+    if not _o.any():
+        return _s
+    _exc = np.add.reduceat(np.where(_o, _s - _tgt, 0.0), cell_start, axis=1)
+    _ceil = np.minimum(_tgt, 1.0)
+    _room = np.where(~_o & (_s > _DC_EPS) & (_s < _ceil), _ceil - _s, 0.0)
+    _pool = np.add.reduceat(_room, cell_start, axis=1)
+    _ok = (_exc > 0.0) & (_pool > _DC_EPS)
+    if not _ok.any():
+        return _s
+    _okr = np.repeat(_ok, cell_len, axis=1)
+    _f = np.repeat(np.where(_ok, _exc / np.where(_pool > _DC_EPS, _pool, 1.0), 0.0),
+                   cell_len, axis=1)
+    return np.where(_okr & _o, _tgt, np.where(_okr, _s + _room * _f, _s))
+
+
 def _segment_softmax_serial(logits, cell_start, cell_len):
     """Per-cell softmax over contiguous row segments. THE REFERENCE.
 
@@ -707,8 +773,12 @@ def _segment_softmax_serial(logits, cell_start, cell_len):
     return ex / row_sum
 
 
-def _segment_softmax(logits, cell_start, cell_len):
-    """Row-parallel wrapper (2026-08-19bn). [gen-cost] put this at 13.2% of a generation, all of it
+def _segment_softmax(logits, cell_start, cell_len, max_share=None):
+    """Row-parallel wrapper (2026-08-19bn).
+
+    19gu: `max_share` makes the CAP PART OF THE DECODE — see [decode-cap] above. Passing None
+    (or ROUTING_DECODE_CAP=0) gives the uncapped softmax exactly as before, which is what the
+    kill switch and the fused-softmax self-check reference both need. [gen-cost] put this at 13.2% of a generation, all of it
     single-threaded numpy. The transform is candidate-independent (see the reference above), so the
     population is split across threads; `rowpar` verifies bit-identity on its second call and
     reverts to serial on any mismatch. ROUTING_ROW_PARALLEL=0 disables it."""
@@ -736,7 +806,14 @@ def _segment_softmax(logits, cell_start, cell_len):
                 "process; the reference softmax is what ships. Report this.")
         print(_SM_OK["msg"])
     _fn = _segment_softmax_fast if _SM_OK["use"] else _segment_softmax_serial
-    return _rowpar(lambda _sub: _fn(_sub, cell_start, cell_len), _lg, "softmax")
+    if max_share is None or not _DECODE_CAP:
+        return _rowpar(lambda _sub: _fn(_sub, cell_start, cell_len), _lg, "softmax")
+    # The cap is applied INSIDE the threaded body, not after it: row p of the capped output still
+    # depends only on row p of the input (the water-fill is per (candidate, cell)), so rowpar's
+    # candidate-independence premise holds and its bit-identity check still means what it says.
+    return _rowpar(lambda _sub: _cap_shares_ref(_fn(_sub, cell_start, cell_len),
+                                                cell_start, cell_len, max_share),
+                   _lg, "softmax")
 
 
 def _vwsr(shares, vol, succ, total_vol):
@@ -886,12 +963,27 @@ def _key_of(vwsr, viol, band=0.0):
 # ---------------------------------------------------------------------------
 def _fused_eval_kernel(logits, cell_starts, cell_counts, vol, succ, risk,
                        mid_id, max_share, mid_hard, mid_soft, total_vol, n_mid,
-                       mid_band_metric, mid_band_lo, mid_band_hi, global_vamp_cap):
+                       mid_band_metric, mid_band_lo, mid_band_hi, global_vamp_cap,
+                       decode_cap, cap_backoff, cap_eps, buf_len):
     """One-pass VWSR + violation for a whole population. Numba-compatible: only
     scalar loops + preallocated arrays (no reduceat / np.add.at / fancy index).
 
     Returns (vwsr[P], viol[P]) — bit-for-bit the same quantities as
     ``_vwsr(_segment_softmax(...))`` and ``_violation(_segment_softmax(...))``.
+
+    19gu [decode-cap]: with `decode_cap` the per-cell shares are WATER-FILLED before they are
+    accumulated, so this kernel decodes the same capped shares `_segment_softmax(..., max_share)`
+    does. That is the whole reason it lives here rather than in a wrapper: the numpy path and this
+    one must decode the SAME object, and any divergence between them is a scored-vs-delivered bug
+    (see the note on -inf logits below, which exists for exactly the same reason).
+
+    THE COST IS ONE EXTRA PASS OVER A CELL, and only when that cell has an over-cap row. The
+    shares are held in `buf` — one scratch array per candidate, sized to the widest cell — instead
+    of being consumed as they are produced, which is the only structural change to the loop.
+
+    `share_over` is left in and still accumulated. With the cap folded in it should read 0.0 for
+    every candidate; if it ever does not, the water-fill did not hold and the engineering key is
+    the thing that says so.
     """
     P = logits.shape[0]
     n_cells = cell_starts.shape[0]
@@ -906,6 +998,7 @@ def _fused_eval_kernel(logits, cell_starts, cell_counts, vol, succ, risk,
         share_over = 0.0
         mnum = np.zeros(n_mid)
         mden = np.zeros(n_mid)
+        buf = np.zeros(buf_len)          # per-candidate scratch, widest cell (19gu)
         for c in range(n_cells):
             s = cell_starts[c]
             n = cell_counts[c]
@@ -919,8 +1012,43 @@ def _fused_eval_kernel(logits, cell_starts, cell_counts, vol, succ, risk,
             for j in range(n):
                 ssum += np.exp(logits[i, s + j] - m)
             for j in range(n):
+                buf[j] = np.exp(logits[i, s + j] - m) / ssum
+            if decode_cap:
+                # ── THE WATER-FILL, in the same order as `_cap_shares_ref` ────────────
+                # target = cap x back-off; a non-live cap gives an infinite target (never
+                # over) and a headroom CEILING clipped to 1.0 — an infinite pool would make
+                # every share of the excess 0/inf = 0.0 and the update inf * 0.0 = NaN.
+                exc = 0.0
+                pool = 0.0
+                for j in range(n):
+                    ms = max_share[s + j]
+                    if ms > 0.0 and ms < 1.0:
+                        tg = ms * cap_backoff
+                    else:
+                        tg = np.inf
+                    if buf[j] > tg:
+                        exc += buf[j] - tg
+                    else:
+                        cl = tg if tg < 1.0 else 1.0
+                        if buf[j] > cap_eps and buf[j] < cl:
+                            pool += cl - buf[j]
+                if exc > 0.0 and pool > cap_eps:
+                    f = exc / pool
+                    for j in range(n):
+                        ms = max_share[s + j]
+                        if ms > 0.0 and ms < 1.0:
+                            tg = ms * cap_backoff
+                        else:
+                            tg = np.inf
+                        if buf[j] > tg:
+                            buf[j] = tg
+                        else:
+                            cl = tg if tg < 1.0 else 1.0
+                            if buf[j] > cap_eps and buf[j] < cl:
+                                buf[j] += (cl - buf[j]) * f
+            for j in range(n):
                 r = s + j
-                sh = np.exp(logits[i, r] - m) / ssum
+                sh = buf[j]
                 w = vol[r] * sh
                 num_v += w * succ[r]
                 mid = mid_id[r]
@@ -1168,7 +1296,7 @@ def make_fused_eval(problem, *, use_numba=False, verify=True, rng=None):
     total_vol = _cell_volume_total(p)
 
     def _numpy_eval(logits):
-        shares = _segment_softmax(logits, p.cell_start, p.cell_len)
+        shares = _segment_softmax(logits, p.cell_start, p.cell_len, p.max_share)
         return (_vwsr(shares, p.vol, p.succ, total_vol), _violation(shares, p))
 
     if not use_numba or not _HAS_NUMBA:
@@ -1202,12 +1330,20 @@ def make_fused_eval(problem, *, use_numba=False, verify=True, rng=None):
     _k_nm = int(p.n_mids)
 
     _k_gvc = float(getattr(p, "global_vamp_cap", np.inf))
+    # 19gu [decode-cap]: the kernel now water-fills each cell before accumulating, so it decodes
+    # the SAME capped shares `_numpy_eval` does. `buf_len` sizes the per-candidate scratch to the
+    # widest cell — passed in rather than derived inside, so the kernel stays allocation-free
+    # except for that one array and numba can type it.
+    _k_dc = bool(_DECODE_CAP)
+    _k_bo = float(_DC_BACKOFF)
+    _k_ce = float(_DC_EPS)
+    _k_bl = int(max(1, int(np.asarray(p.cell_len).max()) if len(p.cell_len) else 1))
 
     def _numba_eval(logits):
         return _fused_eval_kernel(
             np.ascontiguousarray(logits, dtype=np.float64), _k_cs, _k_cc,
             _k_vol, _k_succ, _k_risk, _k_mid, _k_ms, _k_mh, _k_msoft, _k_tv, _k_nm,
-            _k_bm, _k_blo, _k_bhi, _k_gvc)
+            _k_bm, _k_blo, _k_bhi, _k_gvc, _k_dc, _k_bo, _k_ce, _k_bl)
 
     if verify:
         rng = rng or np.random.default_rng(0)
@@ -1223,7 +1359,12 @@ def make_fused_eval(problem, *, use_numba=False, verify=True, rng=None):
             return _numpy_eval, {"backend": "numpy", "reason": "verify mismatch",
                                  "max_dv": float(np.max(np.abs(v1 - v2))),
                                  "max_dx": float(np.max(np.abs(x1 - x2)))}
-        return _numba_eval, {"backend": "numba", "verified": True}
+        # 19gu: this gate now covers the CAPPED decode on both sides, which is exactly what it is
+        # for — the numpy path and the kernel must decode the same object, and the water-fill is
+        # the newest way they could stop doing so. The sample is random logits, so it exercises
+        # over-cap cells: with a 0.97 cap and ~10 rows a cell, some rows land over it.
+        return _numba_eval, {"backend": "numba", "verified": True,
+                             "decode_cap": bool(_DECODE_CAP)}
     return _numba_eval, {"backend": "numba", "verified": False}
 
 
@@ -1279,7 +1420,7 @@ def _greedy_reference(p: "FullMatrixProblem"):
     """Fallback seed if the caller gives no reference: per-cell softmax over
     success (a conversion-greedy split). Returns shares (R,)."""
     logits = p.succ * 6.0   # mild temperature; only a SEED, GA refines from here
-    return _segment_softmax(logits[None, :], p.cell_start, p.cell_len)[0]
+    return _segment_softmax(logits[None, :], p.cell_start, p.cell_len, p.max_share)[0]
 
 
 def _crossover(a, b, cell_start, cell_len, rng):
@@ -1473,7 +1614,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             at the per-vampMid grain — so the regularizer's target IS the split tab-3
             would ship. On any failure we fall back to the internal volume-weighted
             k-means codebook (logged, never silent), so the search never stalls."""
-            _s = _segment_softmax(np.asarray(logits_row, float)[None, :], p.cell_start, p.cell_len)
+            _s = _segment_softmax(np.asarray(logits_row, float)[None, :], p.cell_start,
+                                  p.cell_len, p.max_share)
             _fd = _deliver_full(_s)
             _sd = _deliver_kept(_s, _fd)                          # (1, R) delivered shares
             if callable(codebook_fn):
@@ -1502,7 +1644,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _need_comp = _compress_on and _cb["cent"] is not None
         if not (_need_band or _need_comp):
             return v, x, _band
-        _sh = _segment_softmax(logits, p.cell_start, p.cell_len)
+        _sh = _segment_softmax(logits, p.cell_start, p.cell_len, p.max_share)
         _fd = _deliver_full(_sh)                                  # shared delivery — computed ONCE
         if _need_band:
             _band = np.asarray(band_penalty_fn(_fd if _have_full else _sh), dtype=float)
@@ -1519,7 +1661,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         projection). Returns (vwsr, keep_other, keep_band)."""
         _bv, _ = eval_pop(logits)
         if _compress_on and _cb["cent"] is not None:
-            _sh = _segment_softmax(logits, p.cell_start, p.cell_len)
+            _sh = _segment_softmax(logits, p.cell_start, p.cell_len, p.max_share)
             _fd = _deliver_full(_sh)
             _sd = _deliver_kept(_sh, _fd)
             _bv = _bv - _clam * np.asarray(
@@ -1657,6 +1799,12 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         invented anywhere. A candidate that needs no repair is returned BIT-IDENTICAL — its
         logits are not round-tripped through the softmax at all."""
         nonlocal _MSR_R_ON, _MSR_PC_ON
+        if _DECODE_CAP:
+            # 19gu: RETIRED. The decode itself water-fills now ([decode-cap]), so there is no
+            # over-cap candidate left for this to repair — and running it anyway would decode the
+            # whole population a second time to discover that. This is the ONE reason the repair
+            # existed; it stays in the file because ROUTING_DECODE_CAP=0 brings it straight back.
+            return lg
         if not _MSR_ON:
             return lg
         _t0r = time.perf_counter()
@@ -1932,14 +2080,59 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # to exactly 0 would let EVERY repaired child win the engineering key outright — including
     # ones that convert WORSE, since key 2 is decided before conversion is read. Repaired, all
     # candidates tie at 0.0 and the ranking falls through to vwsr, which is the whole point.
-    if _MSR_ON:
+    if _MSR_ON and not _DECODE_CAP:
         _sl0 = np.asarray(seed_logits, float)
         seed_logits = np.asarray(_repair_maxshare(_sl0[None, :]), float)[0]
         if not np.array_equal(seed_logits, _sl0):
             log(_MSR_SEED_NOTE)
+    # 19gu: with the cap in the decode the seed needs no special treatment. Its float-dust
+    # violation (rows sitting at exactly 97.0000%) is capped when it is decoded, like every other
+    # candidate, so it cannot be out-ranked on the engineering key by children that repaired to an
+    # exact 0.0 — which was the whole reason the seed had to be repaired separately.
+
+    # ── [decode-cap] SELF-CHECK ON THE LIVE SEED (19gu) ───────────────────────────────────
+    # Two claims, both checked on this run's own data rather than asserted: the capped decode
+    # HOLDS the cap, and it is the same object `_cap_shares_ref` produces from the uncapped
+    # decode. The second is what stops the numpy and numba paths drifting apart — make_fused_eval's
+    # verify gate covers the kernel, this covers the wrapper.
+    if _DECODE_CAP:
+        try:
+            _dc_lg = np.asarray(seed_logits, float)[None, :]
+            _dc_raw = _segment_softmax(_dc_lg, p.cell_start, p.cell_len)
+            _dc_got = _segment_softmax(_dc_lg, p.cell_start, p.cell_len, p.max_share)
+            _dc_ref = _cap_shares_ref(_dc_raw, p.cell_start, p.cell_len, p.max_share)
+            _dc_cap = np.asarray(p.max_share, float)
+            _dc_liv = np.isfinite(_dc_cap) & (_dc_cap > 0.0) & (_dc_cap < 1.0)
+            _dc_over_before = int(((_dc_raw[0] > _dc_cap) & _dc_liv).sum())
+            _dc_over_after = int(((_dc_got[0] > _dc_cap) & _dc_liv).sum())
+            _dc_moved = float(np.abs(_dc_got - _dc_raw).sum())
+            _dc_same = _fx_same(_dc_ref, _dc_got)
+            _dc_sums = float(np.abs(
+                np.add.reduceat(_dc_got[0], np.asarray(p.cell_start, np.intp)) - 1.0).max())
+            if _dc_over_after == 0 and _dc_same:
+                log(f"[fullmatrix-ga] [decode-cap] ✓ SELF-CHECK PASSED on the live seed: the "
+                    f"uncapped decode held {_dc_over_before:,} row(s) above the cap, the capped "
+                    f"decode holds 0, and it is BIT-IDENTICAL to the reference water-fill applied "
+                    f"to the uncapped decode (int64 bit-pattern comparison on "
+                    f"1x{_dc_got.shape[1]:,}, stricter than array_equal). Total share moved "
+                    f"{_dc_moved:.4g}; worst cell sum error {_dc_sums:.2e} (each cell must still "
+                    "sum to 1 — the water-fill moves share between rows, it never creates or "
+                    "destroys any).")
+            else:
+                log(f"[fullmatrix-ga] [decode-cap] ⚠⚠ SELF-CHECK FAILED on the live seed: "
+                    f"{_dc_over_after:,} row(s) are STILL above the cap after the capped decode"
+                    + ("" if _dc_same else ", and the capped decode is NOT bit-identical to the "
+                                           "reference water-fill")
+                    + f" (worst cell sum error {_dc_sums:.2e}). The engineering key below is the "
+                      "backstop and will show it, but do NOT trust this run's split. Set "
+                      "ROUTING_DECODE_CAP=0 and re-run.")
+        except Exception as _dce:  # noqa: BLE001
+            log(f"[fullmatrix-ga] [decode-cap] self-check SKIPPED "
+                f"({type(_dce).__name__}: {_dce}) — MEASUREMENT ONLY, the decode is unaffected, "
+                "but this run has no live proof the cap holds.")
 
     # remember the elite seed's key for the never-worse guarantee (bands included)
-    s0 = _segment_softmax(seed_logits[None, :], p.cell_start, p.cell_len)
+    s0 = _segment_softmax(seed_logits[None, :], p.cell_start, p.cell_len, p.max_share)
     seed_vwsr = _vwsr(s0, p.vol, p.succ, total_vol)[0]
     seed_other = _violation(s0, p)[0]           # engineering viol (global cap + max-share) — secondary
     seed_band = 0.0                              # exact M5 band breach — strict primary key
@@ -2363,7 +2556,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     _mid_extra = ""
                     if band_report_fn is not None:
                         try:
-                            _bsh = _segment_softmax(best_logits[None, :], p.cell_start, p.cell_len)
+                            _bsh = _segment_softmax(best_logits[None, :], p.cell_start,
+                                                    p.cell_len, p.max_share)
                             _rep = band_report_fn(_deliver_full(_bsh) if _have_full else _bsh)
                             # band_report_fn may return (count, penalty) or (count, penalty, [names]).
                             _n_unmet, _mid_pen = _rep[0], _rep[1]
@@ -2583,6 +2777,31 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                        f"(\u0394 {_cb_bf - best_vwsr:+.3g})."
                        if _cb_bf > float('-inf') else "NO child was ever compliant."))
 
+    # ── [decode-cap] 19gu: the cap, now that it is part of the decode ────────────────────
+    if _DECODE_CAP:
+        log("")
+        log("[decode-cap] the max-share cap is now a PROPERTY OF THE DECODE, not a repair after "
+            "it. Every path that turns the logit genome into shares — the numpy reference, the "
+            "fused numpy path and the numba eval kernel — water-fills each cell as it decodes, "
+            "so an over-cap split is not something a candidate can express. The search does not "
+            "reject or correct them; they do not exist.")
+        log("[decode-cap]    WHAT THIS REPLACED: [ms-repair], which decoded the whole population, "
+            "water-filled the over-cap cells and re-encoded the result through log() back into "
+            "logits, which the evaluator then decoded AGAIN. 98.4% of candidates needed it on the "
+            "2026-09-01 22:09 run — a softmax cannot express an upper bound — so it cost 91.3s, "
+            "20% of that search, and three decodes of the population per generation instead of "
+            "one.")
+        log("[decode-cap]    THE RULE IS UNCHANGED and is still delivery's: the excess goes to "
+            "each sibling in proportion to (target - share), the room it has left before IT would "
+            "hit the cap (impact_calcs._cap_rows). Single pass, because Σ(target - share) over a "
+            "cell's present rows is (present_rows × target) - 1 + excess.")
+        log("[decode-cap]    THE ENGINEERING KEY should now read 0.0000 for every candidate, "
+            "because none can violate. If `viol` above is ever non-zero on the max-share term, "
+            "the water-fill did not hold and that key is what says so.")
+        log("[decode-cap]    NOT BIT-IDENTICAL to the pre-19gu search, and it does not pretend to "
+            "be: the repair round-tripped its result through log() and back, this does not. "
+            "RECONCILIATION ERROR is the end-to-end check — delivery is an untouched path. "
+            "ROUTING_DECODE_CAP=0 restores the decode-then-repair behaviour exactly.")
     # ── [ms-repair] 19ee: what the repair actually did ───────────────────────────────────
     if _MSR_ON and _msr["seen"]:
         _mv = (_msr["moved"] / max(_msr["cands"], 1))
@@ -2780,7 +2999,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         log("[ga-census]    Read-only measurement; nothing above changed what the search did. "
             "ROUTING_GA_CENSUS=0 removes it, ROUTING_GA_CENSUS_DECOMP=0 just the decomposition.")
 
-    best_shares_sorted = _segment_softmax(best_logits[None, :], p.cell_start, p.cell_len)[0]
+    best_shares_sorted = _segment_softmax(best_logits[None, :], p.cell_start, p.cell_len,
+                                          p.max_share)[0]
     # restore original row order
     inv = np.empty_like(p.order)
     inv[p.order] = np.arange(len(p.order))
