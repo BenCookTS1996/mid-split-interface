@@ -640,11 +640,28 @@ def render():
                         st.error("⚠ Start date must be before the End date.")
                     # Cross-border penalty + Max pools, directly beneath the date range.
                     _xb1, _xb2 = st.columns(2)
+                    # 19gh: WHOLE NUMBERS. The bounds/value/step were floats, so Streamlit typed the
+                    # widget as a float and rendered "60.00" while accepting 60.25. Integer params
+                    # make it an int widget: whole steps, and a fractional entry is rejected rather
+                    # than silently kept. The `/ 100.0` below is unchanged — the widget has always
+                    # been a PERCENT and the engine has always received the FRACTION.
+                    #
+                    # The stored widget value is migrated first: `key` state persists across an app
+                    # restart, and a float 60.0 sitting in session_state against int min/max makes
+                    # st.number_input raise ("Value has type float, but min_value has type int").
+                    # Same class of stale-key break as 19gb's grain options. The unit is unchanged
+                    # (percent before, percent after), so rounding is all that is needed.
+                    if "xborder_inp" in ss and not isinstance(ss["xborder_inp"], int):
+                        try:
+                            ss["xborder_inp"] = int(round(float(ss["xborder_inp"])))
+                        except (TypeError, ValueError):
+                            del ss["xborder_inp"]
                     xborder_penalty = _xb1.number_input(
-                        "Cross-border penalty (%)", min_value=0.0, max_value=100.0, value=60.0, step=5.0,
+                        "Cross-border penalty (%)", min_value=0, max_value=100, value=60, step=5,
                         key="xborder_inp",
                         help="Gateways flagged isCrossBorder = TRUE in Master_MID_List have their Engine "
-                             "Score multiplied by this %, lowering their proposed share. 60% turns 60% into 36%.") / 100.0
+                             "Score multiplied by this %, lowering their proposed share. 60% turns 60% into 36%. "
+                             "Whole numbers only.") / 100.0
                     max_configs = _xb2.number_input(
                         "Max pools (0 = no compression)", min_value=0, max_value=20000, value=500, step=50,
                         key="max_configs_inp",
