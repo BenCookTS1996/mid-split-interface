@@ -1374,7 +1374,23 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     serve Non-USA) so the projection tracks the pipeline more closely. Result is collapsed
     back to (vampMid, RPGT, BIN, Currency, period, t) for the filterable table.
     """
+    # ── [cvp-timing] 19fn: WHERE THE PROJECTION'S TIME GOES ────────────────────────────
+    # This function IS the cost of a delivery projection: 185.1s of the 187.6s [never-worse]
+    # spent on one candidate on the 2026-09-01 12:23 run, against 2.5s for build_split_exports.
+    # Offline I could only account for ~25s of it, so ~160s sat inside one function with no
+    # breakdown at all. Marks are recorded in execution order and stashed on the module as
+    # `_LAST_CVP_TIMING` for the caller to print — the same stash pattern as the other `_LAST_*`
+    # by-products, so it survives [proj-memo]'s snapshot/restore.
+    import time as _cv_time
+    _cv = {"t": _cv_time.perf_counter(), "rows": []}
+
+    def _cv_mark(_label):
+        _n = _cv_time.perf_counter()
+        _cv["rows"].append((_label, _n - _cv["t"]))
+        _cv["t"] = _n
+
     pp = pd.read_csv(pp_path)
+    _cv_mark("read_csv (the pro-rata export off disk)")
     # 19da — COMPLETE THE MOVABLE LAYERS. Without this the pool of a sparse layer is shared only
     # across the MIDs that happened to have fraud originating in that month, so volume routed to
     # anyone else has no row to land in and the pool circulates back to the incumbents. `capability`
@@ -1387,6 +1403,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
             pp, _n_inj = inject_capable_rows(pp, capability, _cellk)
             if _n_inj:
                 globals()["_LAST_INJECTED"] = int(_n_inj)
+    _cv_mark("inject_capable_rows (zero rows for capable doors)")
     pp["Currency"] = pp["Currency"].astype(str).str.strip().str.lower()
     pp["BIN"] = pp["BIN"].astype(str).str.strip()
     pp["vampMid"] = pp["vampMid"].astype(str).str.strip()
@@ -1400,10 +1417,12 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
                   if "paymentMethodProvider" in pp.columns else "_all_")
     pp["_ctry"] = (pp["Country"].astype(str).str.strip().str.lower()
                    if "Country" in pp.columns else "_all_")
+    _cv_mark("key normalise (string strip/lower on 6 columns)")
     pp = pp.groupby(["vampMid", "RPGT", "BIN", "Currency", "_pmp", "_ctry", "period", "t"],
                     as_index=False).agg(
         vampCount=("vampCount", "sum"), VI_Txn_Count=("VI_Txn_Count", "sum"),
         pro_rata=("pro_rata", "first"), fcp1_frac=("fcp1_frac", "first"))
+    _cv_mark("collapse groupby (8 string keys)")
 
     # prop_items 4-tuples (…, vampMid, prop_raw) or 5-tuples (…, RPGT, vampMid, prop_raw)
     # at Bank×Currency×RPGT grain — see _vamp_post_core for the rationale.
@@ -1435,7 +1454,9 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     if _enforced:
         prop["_pmp"] = prop["_pmp"].astype(str).str.strip().str.lower()
         prop["_ctry"] = prop["_ctry"].astype(str).str.strip().str.lower()
+        _cv_mark("prop frame build (prop_items -> DataFrame + keys)")
         pp = _inject_backfill_rows(pp, prop, _prop_name_map)   # #3 add zero-baseline back-fill target rows
+        _cv_mark("_inject_backfill_rows (zero-baseline recipients)")
 
     grp = ["Currency", "BIN", "RPGT", "_pmp", "_ctry", "period"]
     if _enforced:
@@ -1483,8 +1504,12 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         t0["_prop_from_coarse"] = 0.0
     if "_bf_inj" not in t0.columns:
         t0["_bf_inj"] = 0
+    _cv_mark("t0 slice + the prop merge")
     # Effective-date-gated switch-off (see _vamp_post_core / _mid_keep_fraction).
     _apply_keep(t0, excluded_mids, kill_eff, month_0)
+    # _mid_keep_fraction inside this runs a PYTHON for-loop over every t0 row whenever
+    # kill_eff is non-empty, which is why it is marked on its own.
+    _cv_mark("_apply_keep (switch-off gating; per-row Python loop)")
     t0["prop_raw"] = t0["prop_raw"] * t0["_keep"]
     # PIPELINE ENFORCEMENT (static masks): wallet-incapable gateways can't serve wallet-pmp
     # sub-cells; USA-only gateways can't serve Non-USA sub-cells — zero their proposed share
@@ -1512,6 +1537,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     t0["prop_raw"] = np.where(t0["_psum_pre"] > 0, t0["prop_raw"] * 100.0 / t0["_psum_pre"], t0["prop_raw"])
     t0["prop_sum"] = t0.groupby(grp)["prop_raw"].transform("sum")
     t0["prop_share"] = np.where(t0["prop_sum"] > 0, t0["prop_raw"] / t0["prop_sum"], t0["base_share"])
+    _cv_mark("per-cell transforms (cell_tot / _at / base_share / prop_sum)")
     # EXPLORATION FLOOR (replicate the AllocationEngine): every ELIGIBLE gateway in a routed cell
     # keeps >= floor of the redistributed share, then renormalise. This is the primary reason a
     # 0%-rule incumbent (e.g. Braintree in a restricted RPGT) still retains volume in tab 5 — the
@@ -1842,6 +1868,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # correct, and the in-search projector should get the same pass) or a MID the aged frame never
     # carries for that cell at all (ABSENT — the frame is short and both sides are wrong). This
     # splits the missing share mass across those two classes and names who carries each.
+    _cv_mark("recipient share + move fractions (_move / _pshare / VAMP_Post)")
     if os.environ.get("ROUTING_PSHARE_WHY", "1") != "0":
         _pw_t_0 = _time.perf_counter()
         try:
@@ -1937,6 +1964,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # all of it in the ROUTED leg, 79% of it in the PROJECTOR-swap step) lives on VAMP. Stash the
     # four terms plus three single-variable counterfactuals so the reconcile can attribute it.
     # Nothing here is consumed downstream; see patch note for why these three counterfactuals.
+    _cv_mark("[pshare-why] diagnostic stash (ROUTING_PSHARE_WHY=0 skips)")
     if os.environ.get("ROUTING_VTERMS", "1") != "0":
         try:
             _vt_vc = pd.to_numeric(pp["vampCount"], errors="coerce").fillna(0.0)
@@ -2027,6 +2055,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     pp = pp.merge(_tp, on=_sub + ["vampMid", "period"], how="left")
     pp["VI_Txn_Pre"] = np.where(pp["t"] == 0, pp["VI_Txn_Count"], 0.0)
     pp["VI_Txn_Post"] = np.where(pp["t"] == 0, pp["post_txn"].fillna(0.0), 0.0)
+    _cv_mark("[vterms] diagnostic stash (ROUTING_VTERMS=0 skips) + the txn merge")
     _dump_projection_diag(t0, pp_path, prop_items, _enforced, _by_rpgt)   # heavy diagnostics
     # SELF-CHECK: VAMP (and VI-Txn) must conserve per period — Σ Post == Σ Pre. Warn (non-fatally) if
     # either drifts, so any future regression of the redistribution / passthrough logic is caught.
@@ -2043,9 +2072,13 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
                         stacklevel=2)
     except Exception:  # noqa: BLE001
         pass
+    _cv_mark("conservation check")
     # Collapse the pmp / Country sub-cells back to the reported grain (sums are exact).
-    return (pp.groupby(["vampMid", "RPGT", "BIN", "Currency", "period", "t"], as_index=False)
-              [["VAMP_Pre", "VAMP_Post", "VI_Txn_Pre", "VI_Txn_Post"]].sum())
+    _cv_out = (pp.groupby(["vampMid", "RPGT", "BIN", "Currency", "period", "t"], as_index=False)
+               [["VAMP_Pre", "VAMP_Post", "VI_Txn_Pre", "VI_Txn_Post"]].sum())
+    _cv_mark("final collapse back to the reported grain")
+    globals()["_LAST_CVP_TIMING"] = list(_cv["rows"])
+    return _cv_out
 
 
 # [FN-261]

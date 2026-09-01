@@ -4417,11 +4417,26 @@ def render():
 
                     # [FN-328]
                     def _get_pbp():
-                        """Build & cache the population band projector on this run's real scaffold."""
+                        """Build & cache the population band projector on this run's real scaffold.
+
+                        19fn: TIMED. This is the first call's cost and it was unlabelled — the run
+                        log went quiet for ~130s between "auto-block (pre-GA)" and "[inc-build]"
+                        on the 2026-09-01 12:23 run, and [inc-build] itself accounts for 0.5s of
+                        it. Two things happen here and they are very different objects: building
+                        the SCAFFOLD FRAMES (_band_frames: the t0 / aged / pool arrays over
+                        millions of rows) and constructing the PROJECTOR over them (which
+                        factorises keys and precomputes the static collapse). Timing them apart
+                        is what says which one to attack.
+                        """
                         if _band_diag_state["pbp"] is not None:
                             return _band_diag_state["pbp"]
+                        import time as _pbp_time
+                        _pbp_t0 = _pbp_time.perf_counter()
                         _fr = _band_frames()
+                        _pbp_t1 = _pbp_time.perf_counter()
                         if _fr is None:
+                            log(f"   [pbp-build] _band_frames() returned nothing after "
+                                f"{_pbp_t1 - _pbp_t0:.1f}s — no cap scaffold this run.")
                             return None
                         from routing_optimiser.band_projection import PopulationBandProjector as _PBP
                         _T0a, _Pca, _poolarr, _bset, _byr = _fr
@@ -4434,6 +4449,19 @@ def render():
                                                        # 19dw: the GA must score the same
                                                        # recipient set delivery ships.
                                                        vamp_off_mids=_vamp_off_mids)
+                        _pbp_t2 = _pbp_time.perf_counter()
+                        try:
+                            _pbp_nR = int(len(_T0a))
+                            _pbp_nP = int(len(_Pca))
+                        except Exception:  # noqa: BLE001
+                            _pbp_nR = _pbp_nP = -1
+                        log(f"   [pbp-build] band projector built in {_pbp_t2 - _pbp_t0:.1f}s "
+                            f"= {_pbp_t1 - _pbp_t0:.1f}s _band_frames (assemble the t0 / aged / "
+                            f"pool arrays: {_pbp_nR:,} t0 row(s), {_pbp_nP:,} aged row(s)) "
+                            f"+ {_pbp_t2 - _pbp_t1:.1f}s PopulationBandProjector (factorise the "
+                            "keys, precompute the static collapse). ONE-OFF per run, charged to "
+                            "no search stage — it is part of the ~130s that used to sit unlabelled "
+                            "before [inc-build].")
                         return _band_diag_state["pbp"]
 
                     # [FN-329]
@@ -5121,12 +5149,28 @@ def render():
                                 import scipy.sparse as _spx
                                 from routing_optimiser.midtilt_cmaes import run_midtilt_ga as _plain_ga
                                 from routing_optimiser.band_scoring import ExactBandPenalty as _EBP, BandSpec as _BSpec
+                                # ── [band-setup] 19fn: the block that used to be silent ───────
+                                # Everything from here to the [inc-build] line below ran with no
+                                # label at all: ~130s on the 2026-09-01 12:23 run, the single
+                                # largest unlabelled thing in the log. Each step is now timed, in
+                                # the order it runs, so the next run says which of them it is
+                                # instead of leaving it to be inferred from timestamps.
+                                import time as _bs_time
+                                _bs = {"t": _bs_time.perf_counter(), "rows": []}
+
+                                def _bs_mark(_label):
+                                    _n = _bs_time.perf_counter()
+                                    _bs["rows"].append((_label, _n - _bs["t"]))
+                                    _bs["t"] = _n
+
                                 _pbp_x = _get_pbp()
+                                _bs_mark("_get_pbp (see [pbp-build] for its own split)")
                                 if _pbp_x is None:
                                     raise RuntimeError("no cap scaffold — exact bands need the pro-rata projection")
                                 _byr = bool(_opt_by_rpgt)
                                 _rpgt_g = (G["rpgt"].astype(str).str.strip().str.lower().tolist()
                                            if "rpgt" in G.columns else [""] * len(G))
+                                _bs_mark("G rpgt -> python list")
                                 # parent(bank) → its BIN-level banks, per (currency, rpgt) [explode replicate]
                                 _of = orig_forecast[["currency", "bin", "rpgt"]].drop_duplicates().copy()
                                 _of["_cur"] = _of["currency"].astype(str).str.strip().str.lower()
@@ -5135,10 +5179,12 @@ def render():
                                 _of["_pb"] = _of["bin"].map(
                                     lambda b: bin_to_bank.get(b, bin_to_bank.get(str(b).strip().lower(), b))
                                 ).astype(str).str.strip().str.lower()
+                                _bs_mark("orig_forecast key normalise (_of)")
                                 _bins_by = {}
                                 for _cx, _pbx, _rkx, _binx in zip(_of["_cur"], _of["_pb"],
                                                                   _of["_rk"], _of["_bin"]):
                                     _bins_by.setdefault((_cx, _pbx, _rkx), []).append(_binx)
+                                _bs_mark(f"_bins_by dict over {len(_of):,} forecast key(s)")
                                 # ── [inc-build] TIMED (2026-08-31) ────────────────────────────
                                 # This is the 102 unlogged seconds between "auto-block (pre-GA)"
                                 # and "[breach-scale]" on the 2026-08-31 16:00 run. It builds the
@@ -5182,6 +5228,17 @@ def render():
                                     f"row(s) · csr assembly {_ib_t3 - _ib_t2:.1f}s. "
                                     f"{len(_rows):,} non-zero(s) into a "
                                     f"{max(len(_pbp_x.prop_keys), 1):,}x{len(G):,} matrix.")
+                                _bs_mark("[inc-build] incidence matrix")
+                                _bs_tot = sum(_v for _, _v in _bs["rows"])
+                                log(f"   ── [band-setup] the {_bs_tot:.1f}s between "
+                                    f"'auto-block (pre-GA)' and here, step by step ──")
+                                for _bl, _bv in sorted(_bs["rows"], key=lambda kv: -kv[1]):
+                                    log(f"      {_bv:8.1f}s  ({100.0 * _bv / max(_bs_tot, 1e-9):>5.1f}%)  {_bl}")
+                                log("      Ordered LARGEST FIRST, not in execution order — the "
+                                    "point of the block is which step to attack. It is a ONE-OFF "
+                                    "per run and is charged to no search stage, so it does not "
+                                    "appear in [gen-gap] and cannot be found by making the search "
+                                    "faster.")
                                 log("   [inc-build] THE PER-ROW LOOP IS THE COST and it is pure "
                                     "Python: one f-string prop-key per (row, BIN) plus a dict "
                                     "lookup. It is also where the [incidence self-check]'s column "
@@ -8655,9 +8712,32 @@ def render():
                                         _pj["t_cvp"] += _t2 - _t1
                                         log(f"   [proj-memo] '{_tag}' projected in {_t2 - _t0:.1f}s "
                                             f"= {_t1 - _t0:.1f}s enforced_prop_items/build_split_exports "
-                                            f"+ {_t2 - _t1:.1f}s compute_vamp_prepost_granular. THIS SPLIT of "
-                                            "the cost has never been measured before; it decides where any "
-                                            "further work on this block goes.")
+                                            f"+ {_t2 - _t1:.1f}s compute_vamp_prepost_granular.")
+                                        # 19fn: and WHERE inside that second number. The projection
+                                        # is ~99% of a delivery call, and until now it was one
+                                        # opaque figure. Largest first, because the point is which
+                                        # step to attack.
+                                        try:
+                                            _cvt = list(getattr(_pj_ic, "_LAST_CVP_TIMING", []) or [])
+                                            if _cvt:
+                                                _cvs = sum(_v for _, _v in _cvt)
+                                                log(f"   [cvp-timing] inside compute_vamp_prepost_"
+                                                    f"granular ({_cvs:.1f}s of the "
+                                                    f"{_t2 - _t1:.1f}s above; the remainder is "
+                                                    "function entry/exit) ──")
+                                                for _cl, _cvv in sorted(_cvt, key=lambda kv: -kv[1]):
+                                                    log(f"      {_cvv:8.1f}s  "
+                                                        f"({100.0 * _cvv / max(_cvs, 1e-9):>5.1f}%)  {_cl}")
+                                                log("      Two of these steps are DIAGNOSTIC "
+                                                    "stashes that nothing in a normal run reads — "
+                                                    "[pshare-why] and [vterms]. If either is large, "
+                                                    "ROUTING_PSHARE_WHY=0 / ROUTING_VTERMS=0 is a "
+                                                    "free saving that changes no shipped number, "
+                                                    "and it costs only the ability to attribute a "
+                                                    "future drift.")
+                                        except Exception as _cvE:  # noqa: BLE001
+                                            log(f"   [cvp-timing] unavailable "
+                                                f"({type(_cvE).__name__}) — measurement only.")
                                         _PJ_MEMO[_k] = (_ep, _g5,
                                                         {_a: getattr(_pj_ic, _a, None)
                                                          for _a in _pj_stash_keys(_pj_ic)})

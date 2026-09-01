@@ -2199,7 +2199,11 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     _t0 = time.perf_counter()
     # [gen-gap] 19ct — see the patch note. Segments SUM to the real generation by construction.
     _gg = {"gen": [], "refresh": 0.0, "rank": 0.0, "build": 0.0, "beat": 0.0,
-           "eval": 0.0, "tail": 0.0, "init": 0.0, "beats": 0}
+           "eval": 0.0, "tail": 0.0, "init": 0.0, "beats": 0,
+           # 19fn: `init` was one number for the whole per-restart block, and 51.5s of a 456s
+           # search with no breakdown is not something a decision can be made about. These
+           # three SUM to it (i_rest is the remainder by construction, so nothing hides).
+           "i_pop": 0.0, "i_rep": 0.0, "i_eval": 0.0, "i_rest": 0.0, "i_n": 0}
     _PROG_EVERY_S = 15.0                        # throttle for the live progress line (like the tilt poller)
     _last_prog = _t0
 
@@ -2276,11 +2280,20 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             _el = min(elite, max(1, _pn // 8))
             _gg_i0 = time.perf_counter()
             pop = _init_pop(best_logits, _pn, _rng)
+            _gg_i1 = time.perf_counter()
             # 19ee: 3/4 of this population is unanchored noise and essentially all of it breaks
             # the cap. Repairing here is what makes generation 0's elites legal candidates
             # rather than a pool the ranking has already written off.
             pop = np.asarray(_repair_maxshare(pop), float)
+            _gg_i2 = time.perf_counter()
             vwsr, other, band = _eval_with_bands(pop)
+            _gg_i3 = time.perf_counter()
+            # 19fn: the three parts of `init`, timed separately. `i_rest` is picked up at the
+            # end of the block as (total - these three), so it cannot silently absorb anything.
+            _gg["i_pop"] += _gg_i1 - _gg_i0
+            _gg["i_rep"] += _gg_i2 - _gg_i1
+            _gg["i_eval"] += _gg_i3 - _gg_i2
+            _gg["i_n"] += 1
             # [ga-census] the STARTING population. pp[0] is the incumbent itself; the rest are
             # 1/4 incumbent+N(0,0.3) full-width and 3/4 unanchored N(0,1.5). If almost none of
             # them is compliant, the restart begins with nothing to select from but the incumbent.
@@ -2292,7 +2305,10 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                                      float(best_vwsr), float(best_other))
             _cen_g0 = None                          # (compliant, mean breach) of generation 0
             _cen_gl = None                          # ... and of the last generation run
-            _gg["init"] += time.perf_counter() - _gg_i0
+            _gg_i9 = time.perf_counter()
+            _gg["init"] += _gg_i9 - _gg_i0
+            _gg["i_rest"] += (_gg_i9 - _gg_i0) - ((_gg_i1 - _gg_i0) + (_gg_i2 - _gg_i1)
+                                                  + (_gg_i3 - _gg_i2))
             evaluated += pop.shape[0]
             stale = 0
             for gen in range(generations):
@@ -2813,9 +2829,21 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             f"({_gg['beat']:,.1f}s over {_gg['beats']:,} call(s), {1000.0 * _gg['beat'] / max(_gg['beats'], 1):,.0f} "
             "ms each) — it runs a FULL _deliver_full plus a band report, and the generations that "
             "do NOT fire it pay none of it")
-        log(f"      OUTSIDE the generation loop entirely: per-restart _init_pop + _eval_with_bands "
+        log(f"      OUTSIDE the generation loop entirely: the per-restart start-up cost "
             f"{_gg['init']:,.1f}s over the run — charged to no stage anywhere else, and it scales "
-            "with RESTARTS, not generations")
+            f"with RESTARTS, not generations ({_gg['i_n']:,} restart(s), "
+            f"{_gg['init'] / max(_gg['i_n'], 1):,.1f}s each)")
+        # 19fn: WHICH PART of the start-up. Before this the whole block was one number, so the
+        # only available lever was "fewer restarts" — a budget decision, not a fix. The four
+        # lines below SUM to the number above by construction: `remainder` is computed as the
+        # total minus the other three, so a part nobody thought to time still shows up.
+        for _il, _iv in (("_init_pop (build the population)", _gg["i_pop"]),
+                         ("_repair_maxshare (legalise it)  ", _gg["i_rep"]),
+                         ("_eval_with_bands (score it)     ", _gg["i_eval"]),
+                         ("remainder (census, bookkeeping) ", _gg["i_rest"])):
+            log(f"         {_il}  {_iv:,.1f}s  "
+                f"({100.0 * _iv / max(_gg['init'], 1e-9):>5.1f}%) · "
+                f"{1000.0 * _iv / max(_gg['i_n'], 1):,.0f} ms per restart")
         # SELF-CHECK. "The segments SUM to it" is the block's whole claim over [gen-cost]; it is
         # true by the interval algebra only while every EXIT from the loop records what it spent.
         # There are two (fall-through and the patience break), so the claim is checked rather than
