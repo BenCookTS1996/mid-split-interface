@@ -1856,20 +1856,34 @@ class PopulationBandProjector:
         # steps 19fx/19fy/19fz rewrote, with what they measured on the live-export fixture. A step
         # sitting near its BEFORE number means the fast path DECLINED (a value containing "|", or a
         # radix overflow) or the module on disk is stale -- both of which this states outright.
-        _exp = {"_static(T0) full frame  [19fy: int64 codes]": (9.6, 1.1),
-                "_static(R) reduced frame  [19fy: int64 codes]": (9.6, 1.1),
-                "_origin_map  [19fy: int64 join]": (3.7, 1.2),
-                "prop-key index  [19fz: K strings not nR]": (8.1, 1.3)}
+        # 19gk: EXPECTATIONS ARE RATES, NOT SECONDS — the 2026-09-01 20:01 run flagged
+        # `_origin_map` as "did NOT speed up" at 4.7s against a hard-coded 1.2s, and it was a FALSE
+        # ALARM I raised at myself. Every figure came from one fixture of 1,731,787 rows, but the
+        # steps do not all walk the same frame: three walk T0 (1.94M here) while _origin_map walks
+        # the AGED frame Pc (6.45M here, 3.7x the fixture). Scaled properly it wanted 4.58s and took
+        # 4.7s — dead on. A guard that cries wolf on a healthy step is worse than no guard, because
+        # the next real one gets ignored.
+        # (label -> (before_per_Mrow, after_per_Mrow, which frame it walks))
+        _FIX_ROWS = 1.731787                     # the fixture, in millions of rows
+        _exp_rate = {
+            "_static(T0) full frame  [19fy: int64 codes]": (9.6 / _FIX_ROWS, 1.1 / _FIX_ROWS, "t0"),
+            "_static(R) reduced frame  [19fy: int64 codes]": (9.6 / _FIX_ROWS, 1.1 / _FIX_ROWS, "t0"),
+            "_origin_map  [19fy: int64 join]": (3.7 / _FIX_ROWS, 1.2 / _FIX_ROWS, "pc"),
+            "prop-key index  [19fz: K strings not nR]": (8.1 / _FIX_ROWS, 1.3 / _FIX_ROWS, "t0"),
+        }
+        _mrows = {"t0": max(len(R), 1) / 1e6, "pc": max(len(Pc), 1) / 1e6}
+        _exp = {_k: (_b * _mrows[_w], _a * _mrows[_w]) for _k, (_b, _a, _w) in _exp_rate.items()}
         _lines = []
         for _lbl, _d in sorted(_pbp_rows, key=lambda r: -r[1]):
             _tag = ""
             if _lbl in _exp:
                 _before, _after = _exp[_lbl]
                 if _d > _before * 0.6:
-                    _tag = (f"  ⚠ EXPECTED ~{_after:.1f}s (was ~{_before:.1f}s) — this step did NOT "
-                            "speed up: the fast path declined, or this module is stale")
+                    _tag = (f"  ⚠ EXPECTED ~{_after:.1f}s at this row count (was ~{_before:.1f}s) — "
+                            "this step did NOT speed up: the fast path declined (a value containing "
+                            "'|', or a radix overflow), or this module is stale")
                 else:
-                    _tag = f"  ✓ vs ~{_before:.1f}s before 19fy/19fz"
+                    _tag = f"  ✓ vs ~{_before:.1f}s before 19fy/19fz, scaled to this run's rows"
             _lines.append(f"{_d:8.1f}s  ({100.0 * _d / max(_pbp_tot, 1e-9):5.1f}%)  {_lbl}{_tag}")
         _bnote("[pbp-inside] PopulationBandProjector.__init__ = "
                f"{_pbp_tot:.1f}s, largest first (these SUM to the constructor, no residual):\n      "
