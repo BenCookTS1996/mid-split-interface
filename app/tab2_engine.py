@@ -8479,6 +8479,191 @@ def render():
                                     #    figure, no longer the thing that decides. ─────────────
                                     _nw_ga = float(_fm_breach(np.asarray(_fm_full, float)))
                                     _nw_seed = float(_fm_breach(np.asarray(_fm_seed, float)))
+                                    # ── [proj-memo] 19fi: PROJECT EACH SPLIT ONCE, NOT TWICE ─────────────────
+                                    # [never-worse] projects BOTH candidates through the full delivery chain to
+                                    # decide what ships, and the authoritative reconcile then projects the SHIPPED
+                                    # split through the SAME chain again. The shipped split is, by definition, one
+                                    # of the two the guard just projected — so on every run one entire projection
+                                    # is recomputed from scratch. On the 2026-08-31 23:22 run the guard's two calls
+                                    # cost 191.2s + 155.7s, so this duplicate is worth 155-191s of a 1,337s run.
+                                    #
+                                    # WHY IT WAS NOT ALREADY FREE. The two call sites did NOT pass the same
+                                    # arguments: the guard passed kill_eff=() and month_0=None while the reconcile
+                                    # passed the real ones. That is not only why a cache could not hit — it is a
+                                    # DEFECT in its own right. The guard's docstring says it scores "via the SAME
+                                    # chain as the authoritative reconcile", and with 20 gateways carrying
+                                    # target=0 + apply_to:"trx" + an effective_date in this config, `kill_eff` is
+                                    # not empty. It happens not to bite today because every one of those dates is
+                                    # BEFORE month_0, so the date-graded keep and the binary zero agree at 0 — but
+                                    # a future-dated switch-off would silently make the guard score something other
+                                    # than what ships. Both sites now take the values computed HERE, once.
+                                    #
+                                    # `_RECON_MIDS` is hoisted for the same reason: the reconcile sets it before
+                                    # its projection so impact_calcs stashes the banded-TXN denominators. Setting
+                                    # it before the GUARD's calls too makes the three calls genuinely identical
+                                    # (and gives the losing candidate the same diagnostics the winner gets).
+                                    #
+                                    # WHAT IS MEMOISED, AND WHY NOT st.cache_data. `_c_prepost_granular` exists and
+                                    # tab 3 uses it, but it caches the FRAME only —
+                                    # `compute_vamp_prepost_granular` also writes eleven `_LAST_*` module globals
+                                    # on every call (VAMP terms, txn terms/denominator, move gates, passthru,
+                                    # pshare-why, injected count, delivered max-share), and every attribution block
+                                    # downstream reads them. A cache hit would skip the body and leave whichever
+                                    # call ran LAST in those globals: the numbers would still be right, the
+                                    # explanations silently wrong. This memo snapshots and restores them, which is
+                                    # the whole reason it is written here rather than reused from there.
+                                    #
+                                    # The key is the delivered split's own content hash, so the `enforced_prop_items`
+                                    # -> `build_split_exports` half is skipped on a hit too — that half was never
+                                    # separately timed, and the per-stage timers added below are what will say which
+                                    # half the 155-191s actually is.
+                                    from impact_calcs import (
+                                        enforced_prop_items as _pj_epi,
+                                        compute_vamp_prepost_granular as _pj_cvp)
+                                    from routing_optimiser.backup_blend import (
+                                        blend_prop_items as _pj_bpi)
+                                    _pj = {"ke": (), "m0": None, "ready": False, "hits": 0,
+                                           "miss": 0, "t_epi": 0.0, "t_cvp": 0.0}
+                                    # CAPTURED IN THE ENCLOSING SCOPE, ON PURPOSE. `locals()`
+                                    # inside a nested def returns that def's OWN locals, so
+                                    # reading `_excluded_mids` / `_sel_rpgts` from inside
+                                    # `_pj_chain` would silently get nothing and project an
+                                    # UNSCOPED, nothing-switched-off split — the numbers would
+                                    # look plausible and be wrong. They are read here, where
+                                    # `locals()` is the scope that holds them.
+                                    _pj_excl = frozenset(
+                                        locals().get("_excluded_mids") or frozenset())
+                                    _pj_scoped = tuple(locals().get("_sel_rpgts") or ())
+                                    _pj_floor = (0.0 if os.environ.get(
+                                        "ROUTING_PROJ_FLOOR", "0") == "0"
+                                        else float(ss.get("exploration_floor", 0.0) or 0.0))
+                                    _PJ_MEMO = {}          # split-hash -> (ep, m5 frame, {_LAST_*: value})
+
+                                    _pj_eb = locals().get("_fm_eb")     # same scope caveat
+                                    def _pj_setup():
+                                        """kill_eff / month_0 / _RECON_MIDS, computed ONCE for all three calls."""
+                                        if _pj["ready"]:
+                                            return
+                                        _pj["ready"] = True
+                                        try:
+                                            from impact_calcs import build_kill_eff as _pj_bke
+                                            from routing_optimiser.forecast_pipeline import (
+                                                _canonical_gateway as _pj_cg)
+                                            _feff = {}
+                                            _ovr = ss.get("gateway_volume_overrides")
+                                            for _gw, _cfg in (_ovr.items() if isinstance(_ovr, dict) else []):
+                                                if not isinstance(_cfg, dict):
+                                                    continue
+                                                if (pd.to_numeric(_cfg.get("target"), errors="coerce") == 0
+                                                        and str(_cfg.get("apply_to", "")).strip().lower()
+                                                        in ("trx", "both") and _cfg.get("effective_date")):
+                                                    _feff[str(_pj_cg(_gw)).strip().lower()] = str(
+                                                        _cfg.get("effective_date"))
+                                            _v2f = {}
+                                            for _f3, _v3 in (fid2vamp or {}).items():
+                                                _v2f.setdefault(_v3, set()).add(str(_pj_cg(_f3)).strip().lower())
+                                            _pj["ke"] = _pj_bke(_v2f, _feff)
+                                            _pj["m0"] = str(pd.to_datetime(
+                                                (ss.get("forecast_settings", {}) or {}).get("month_0")).date())
+                                        except Exception as _pje:  # noqa: BLE001
+                                            _pj["ke"], _pj["m0"] = (), None
+                                            log(f"   [proj-memo] kill_eff/month_0 unavailable "
+                                                f"({type(_pje).__name__}: {_pje}) — both the guard and the "
+                                                "reconcile fall back to ungated switch-offs, TOGETHER, so they "
+                                                "still agree with each other.")
+                                        try:
+                                            import impact_calcs as _pj_ic
+                                            _pj_ic._RECON_MIDS = {
+                                                str(getattr(_sp, "midl", "")).strip().lower()
+                                                for _sp in (getattr(_pj_eb, "specs", []) or [])
+                                                if str(getattr(_sp, "metric", "")).lower() == "txn"}
+                                        except Exception:  # noqa: BLE001
+                                            pass
+
+                                    def _pj_hash(_df):
+                                        """Content hash of a delivered split frame. Vectorised, ~0.2s at 2M rows.
+
+                                        Columns are SORTED and the index dropped before hashing, so
+                                        the guard's `_gr` and the reconcile's `_comp_gran` — built
+                                        by the same chain but assembled in different functions —
+                                        cannot miss on column order alone. A miss is always SAFE
+                                        (it just projects for real); it is only slow, and the
+                                        per-call log line says which happened.
+                                        """
+                                        import hashlib as _hl
+                                        _h = pd.util.hash_pandas_object(
+                                            _df.sort_index(axis=1).reset_index(drop=True),
+                                            index=False).values
+                                        return _hl.blake2b(_h.tobytes(), digest_size=16).hexdigest()
+
+                                    def _pj_stash_keys(_mod):
+                                        return [_a for _a in dir(_mod) if _a.startswith("_LAST_")]
+
+                                    def _pj_chain(_gr, _tag):
+                                        """delivered split -> (enforced+blended prop items, period-5 projection).
+
+                                        Memoised on the split's content. A hit restores impact_calcs' `_LAST_*`
+                                        stashes so every downstream attribution block reads the numbers that
+                                        belong to THIS split, not to whichever call ran last.
+                                        """
+                                        import time as _pjt
+                                        import impact_calcs as _pj_ic
+                                        _pj_setup()
+                                        _k = _pj_hash(_gr)
+                                        if _k in _PJ_MEMO:
+                                            _ep, _g5, _stash = _PJ_MEMO[_k]
+                                            for _a, _v in _stash.items():
+                                                setattr(_pj_ic, _a, _v)
+                                            _pj["hits"] += 1
+                                            log(f"   [proj-memo] '{_tag}' served from the projection already "
+                                                f"computed for an identical split — one full delivery projection "
+                                                f"skipped.")
+                                            return _ep, _g5
+                                        _pj["miss"] += 1
+                                        _wc = ss.get("wallet_ctx", {}) or {}
+                                        _t0 = _pjt.perf_counter()
+                                        _ep = _pj_epi(
+                                            _gr,
+                                            str((ss.get("forecast_settings", {}) or {}).get("company", "TotalAV")),
+                                            str(ss.get("split_go_live_date", "")),
+                                            wallet_incapable=set(_wc.get("incapable", set())),
+                                            fid2vamp=_wc.get("fid2vamp"),
+                                            mid_list_path=os.path.join(PROJECT_ROOT, "data", "mappings",
+                                                                       "Master_MID_List.csv"),
+                                            usa_only=set(_wc.get("usa_only", set())),
+                                            country_pres=_wc.get("country_pres", {}),
+                                            max_share=float(_wc.get("max_share", 0.97)))
+                                        _bc = ss.get("backup_catchall") or {}
+                                        if _bc and _ep and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
+                                            _ep = _pj_bpi(_ep, _bc, _wc.get("fid2vamp") or fid2vamp)
+                                        _t1 = _pjt.perf_counter()
+                                        _ppp = os.path.join(out_dir, "vamp_t_period_prorata_export.csv")
+                                        if not _ep or not os.path.exists(_ppp):
+                                            raise RuntimeError(
+                                                f"cannot project '{_tag}' on the DELIVERED basis: "
+                                                + ("enforced_prop_items returned nothing" if not _ep
+                                                   else f"pro-rata export missing at {_ppp}"))
+                                        _g = _pj_cvp(
+                                            _ppp, _ep, _pj_excl,
+                                            _pj["ke"], _pj["m0"], _pj_scoped,
+                                            exploration_floor=_pj_floor,
+                                            capability=_deliv_cap, vamp_off_mids=_vamp_off_mids,
+                                            max_share=float(_wc.get("max_share", 0.97)))
+                                        _g5 = _g[_g["period"] == 5]
+                                        _t2 = _pjt.perf_counter()
+                                        _pj["t_epi"] += _t1 - _t0
+                                        _pj["t_cvp"] += _t2 - _t1
+                                        log(f"   [proj-memo] '{_tag}' projected in {_t2 - _t0:.1f}s "
+                                            f"= {_t1 - _t0:.1f}s enforced_prop_items/build_split_exports "
+                                            f"+ {_t2 - _t1:.1f}s compute_vamp_prepost_granular. THIS SPLIT of "
+                                            "the cost has never been measured before; it decides where any "
+                                            "further work on this block goes.")
+                                        _PJ_MEMO[_k] = (_ep, _g5,
+                                                        {_a: getattr(_pj_ic, _a, None)
+                                                         for _a in _pj_stash_keys(_pj_ic)})
+                                        if len(_PJ_MEMO) > 3:                    # only ever 2 candidates + slack
+                                            _PJ_MEMO.pop(next(iter(_PJ_MEMO)))
+                                        return _ep, _g5
                                     _nw_units = os.environ.get("ROUTING_NW_DELIVERED", "1") != "0"
 
                                     def _nw_scored_units(_sv):
@@ -8520,53 +8705,15 @@ def render():
                                                 _gr, _blk_pairs_pre, float(floor),
                                                 bin_to_bank=bin_to_bank, group_keys=_gk)
                                         _gr = _restrict(_gr)
+                                        # 19fi: ONE shared, memoised chain (see [proj-memo]).
+                                        # This block used to hold its own copy of
+                                        # enforced_prop_items -> blend -> cvp, which is how it
+                                        # came to pass kill_eff=() / month_0=None while the
+                                        # reconcile passed the real values: two copies of one
+                                        # chain drift, and the guard's whole promise is that it
+                                        # scores the chain that ships.
                                         _wc = ss.get("wallet_ctx", {}) or {}
-                                        _ep = _nw_epi(
-                                            _gr,
-                                            str((ss.get("forecast_settings", {}) or {}).get(
-                                                "company", "TotalAV")),
-                                            str(ss.get("split_go_live_date", "")),
-                                            wallet_incapable=set(_wc.get("incapable", set())),
-                                            fid2vamp=_wc.get("fid2vamp"),
-                                            mid_list_path=os.path.join(
-                                                PROJECT_ROOT, "data", "mappings",
-                                                "Master_MID_List.csv"),
-                                            usa_only=set(_wc.get("usa_only", set())),
-                                            country_pres=_wc.get("country_pres", {}),
-                                            max_share=float(_wc.get("max_share", 0.97)))
-                                        _bc = ss.get("backup_catchall") or {}
-                                        if (_bc and _ep and os.environ.get(
-                                                "ROUTING_BACKUP_BLEND", "1") != "0"):
-                                            # fid2vamp is REQUIRED (blend_prop_items signature is
-                                            # (prop_items, catchall, fid2vamp, by_rpgt=None)) and
-                                            # the same fallback the reconcile uses at ~7693. The
-                                            # first draft here omitted it, which would have raised
-                                            # TypeError on every run with a catch-all configured —
-                                            # missed locally because backup_blend.py was absent
-                                            # from the container working copy.
-                                            _ep = _nw_bpi(_ep, _bc,
-                                                          _wc.get("fid2vamp") or fid2vamp)
-                                        _ppp = os.path.join(
-                                            out_dir, "vamp_t_period_prorata_export.csv")
-                                        if not _ep or not os.path.exists(_ppp):
-                                            raise RuntimeError(
-                                                f"cannot score '{_tag}' on the DELIVERED basis: "
-                                                + ("enforced_prop_items returned nothing"
-                                                   if not _ep else
-                                                   f"pro-rata export missing at {_ppp}"))
-                                        # 19df — max_share, from `_wc`, the same dict the
-                                        # enforced_prop_items call at :7924 reads. Without it the
-                                        # never-worse guard scores candidates on an UNCAPPED
-                                        # delivery while the search caps, so the drift it reports
-                                        # carries the divergence rather than the candidate.
-                                        _g5 = _nw_cvp(
-                                            _ppp, _ep,
-                                            frozenset(_nw_excl), (), None, tuple(_nw_scoped),
-                                            exploration_floor=_nw_floor,
-                                            capability=_deliv_cap,   # 19du
-                                            vamp_off_mids=_vamp_off_mids,   # 19dw
-                                            max_share=float(_wc.get("max_share", 0.97)))
-                                        _g5 = _g5[_g5["period"] == 5]
+                                        _ep, _g5 = _pj_chain(_gr, _tag)
                                         _dv = {str(_k).strip().lower(): float(_v) for _k, _v in
                                                _g5.groupby("vampMid")["VAMP_Post"].sum().items()}
                                         _dt = {str(_k).strip().lower(): float(_v) for _k, _v in
@@ -8604,18 +8751,12 @@ def render():
 
                                     _nw_dg = _nw_ds = None
                                     if _nw_units:
+                                        # 19fi: the epi / blend / cvp imports and the
+                                        # excl / scoped / floor reads that used to sit here are
+                                        # gone — [proj-memo] owns that chain now, and owning it
+                                        # in one place is what stops the two callers passing
+                                        # different arguments to it.
                                         import impact_calcs as _nw_ic
-                                        from impact_calcs import (
-                                            enforced_prop_items as _nw_epi,
-                                            compute_vamp_prepost_granular as _nw_cvp)
-                                        from routing_optimiser.backup_blend import (
-                                            blend_prop_items as _nw_bpi)
-                                        _nw_excl = (locals().get("_excluded_mids")
-                                                    or frozenset())
-                                        _nw_scoped = (locals().get("_sel_rpgts") or ())
-                                        _nw_floor = (0.0 if os.environ.get(
-                                            "ROUTING_PROJ_FLOOR", "0") == "0"
-                                            else float(ss.get("exploration_floor", 0.0) or 0.0))
                                         # BANNER MOVED HERE (2026-08-31). It used to print AFTER
                                         # the two projections below, so on the 2026-08-31 16:00 run
                                         # the log went silent from 16:17:20 to 16:22:31 — 311s,
@@ -8630,7 +8771,10 @@ def render():
                                             "the FULL delivery chain (the same one the authoritative "
                                             "reconcile uses). This is the slow, honest basis: the "
                                             "GA's own fitness is blind to delivery drift, so the two "
-                                            "cannot be compared on it. Two full projections. ──")
+                                            "cannot be compared on it. Two full projections — and "
+                                            "as of 19fi the reconcile REUSES whichever of the two "
+                                            "belongs to the split that ships, so the run pays for "
+                                            "two in total rather than three. ──")
                                         _nw_t0 = _nw_time.perf_counter()
                                         _nw_dg, _nw_bg, _nw_stg = _nw_delivered_units(
                                             _fm_full, "GA output")
@@ -10294,13 +10438,18 @@ def render():
                                 _rec_scoped = tuple(locals().get("_sel_rpgts") or ())
                                 _rec_floor = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"
                                               else float(ss.get("exploration_floor", 0.0) or 0.0))
-                                _rec_ep = _rec_epi(
-                                    _comp_gran, _rec_brand, _rec_gl,
-                                    wallet_incapable=set(_rec_wc.get("incapable", set())),
-                                    fid2vamp=_rec_wc.get("fid2vamp"), mid_list_path=_rec_mm,
-                                    usa_only=set(_rec_wc.get("usa_only", set())),
-                                    country_pres=_rec_wc.get("country_pres", {}),
-                                    max_share=float(_rec_wc.get("max_share", 0.97)))
+                                # 19fi: THE SHARED, MEMOISED CHAIN. `_comp_gran` IS the shipped
+                                # split, and [never-worse] just projected it under one of its two
+                                # candidate names — so this is normally a cache hit and the whole
+                                # enforced_prop_items -> blend -> cvp chain is skipped. When
+                                # enforcement is on, or the guard was disabled
+                                # (ROUTING_NW_DELIVERED=0), it misses and runs for real; either
+                                # way the arguments are the ones [proj-memo] owns, so this call and
+                                # the guard's cannot drift apart again.
+                                # `_rec_ep` comes back ALREADY BLENDED, which is why the blend
+                                # block below is gated on `_rec_pre_blended`.
+                                _rec_ep, _rec_p5m = _pj_chain(_comp_gran, "the shipped split")
+                                _rec_pre_blended = True
                                 # ── MIRROR TAB 3 EXACTLY (fixed 2026-08-17) ────────────────────────
                                 # This block claims its number IS tab-3's 'Now'. It was NOT: tab 3
                                 # (tab3_impact.py ~4026) folds the BACKUP CATCH-ALL into the enforced
@@ -10448,7 +10597,18 @@ def render():
                                         f"({type(_cazE).__name__})")
                                 _rec_notes = []
                                 _rec_bc = ss.get("backup_catchall") or {}
-                                if _rec_bc and _rec_ep and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
+                                if locals().get("_rec_pre_blended"):
+                                    # 19fi: already folded in by [proj-memo], on the SAME items
+                                    # with the SAME fid2vamp fallback. Blending twice would
+                                    # renormalise an already-renormalised cell.
+                                    _rec_notes.append(
+                                        "backup catch-all blended inside [proj-memo]"
+                                        if (_rec_bc and os.environ.get(
+                                            "ROUTING_BACKUP_BLEND", "1") != "0")
+                                        else ("backup catch-all present but DISABLED "
+                                              "(ROUTING_BACKUP_BLEND=0)" if _rec_bc
+                                              else "no backup catch-all configured"))
+                                elif _rec_bc and _rec_ep and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
                                     try:
                                         from routing_optimiser.backup_blend import (
                                             blend_prop_items as _rec_bpi)
@@ -10478,35 +10638,20 @@ def render():
                                 elif _rec_bc:
                                     _rec_notes.append("backup catch-all present but DISABLED "
                                                       "(ROUTING_BACKUP_BLEND=0)")
-                                # switched-off vampMids + effective-date gating, as tab 3 passes them
+                                # 19fi: switched-off vampMids + effective-date gating come from
+                                # [proj-memo], which computed them ONCE for the guard and this
+                                # block together. This is the fix for the real defect the memo
+                                # work uncovered: the guard used to pass kill_eff=() / month_0=None
+                                # here while this block passed the built values, so the two were
+                                # scoring different chains — harmless only because every
+                                # target=0 + apply_to:"trx" effective_date in this config predates
+                                # month_0, which makes the date-graded keep and the binary zero
+                                # agree at 0. A future-dated switch-off would have separated them
+                                # silently. The ~25 lines that rebuilt kill_eff here are deleted:
+                                # one definition, one caller set.
                                 _rec_excl = frozenset(locals().get("_excluded_mids") or frozenset())
-                                _rec_ke, _rec_m0 = (), None
-                                try:
-                                    from impact_calcs import build_kill_eff as _rec_bke
-                                    from routing_optimiser.forecast_pipeline import (
-                                        _canonical_gateway as _cg_rec)
-                                    _rec_feff = {}
-                                    for _gwid, _cfg2 in ((ss.get("gateway_volume_overrides") or {}).items()
-                                                         if isinstance(ss.get("gateway_volume_overrides"), dict)
-                                                         else []):
-                                        if not isinstance(_cfg2, dict):
-                                            continue
-                                        if (pd.to_numeric(_cfg2.get("target"), errors="coerce") == 0
-                                                and str(_cfg2.get("apply_to", "")).strip().lower()
-                                                in ("trx", "both") and _cfg2.get("effective_date")):
-                                            _rec_feff[str(_cg_rec(_gwid)).strip().lower()] = str(
-                                                _cfg2.get("effective_date"))
-                                    _rec_v2f = {}
-                                    for _f3, _v3 in (fid2vamp or {}).items():
-                                        _rec_v2f.setdefault(_v3, set()).add(
-                                            str(_cg_rec(_f3)).strip().lower())
-                                    _rec_ke = _rec_bke(_rec_v2f, _rec_feff)
-                                    _rec_m0 = str(pd.to_datetime((ss.get("forecast_settings", {}) or {}).get(
-                                        "month_0")).date())
-                                except Exception as _ke2:  # noqa: BLE001
-                                    _rec_ke, _rec_m0 = (), None
-                                    _rec_notes.append(f"⚠ kill_eff/month_0 unavailable "
-                                                      f"({type(_ke2).__name__}) — switch-off gating defaulted")
+                                _pj_setup()
+                                _rec_ke, _rec_m0 = _pj["ke"], _pj["m0"]
                                 _rec_notes.append(f"{len(_rec_excl)} switched-off vampMid(s), "
                                                   f"month_0={_rec_m0}, scoped_rpgts={len(_rec_scoped)}")
                                 _substep("④·5  DELIVER AND RECONCILE")
@@ -10514,6 +10659,11 @@ def render():
                                 # Ask impact_calcs to stash the per-row numerator / per-cell
                                 # denominator for the banded TXN MIDs (see the [denom] block).
                                 # Must be set BEFORE the projection; harmless if it fails.
+                                # 19fi: [proj-memo]'s `_pj_setup` already set this, before the
+                                # guard's projections, so all three calls stash the same way and
+                                # the memo key means the same thing for each. Kept here as a
+                                # belt-and-braces idempotent write for the paths where the guard
+                                # never ran (ROUTING_NW_DELIVERED=0).
                                 try:
                                     import impact_calcs as _ic_rq
                                     _ic_rq._RECON_MIDS = {
@@ -10531,13 +10681,12 @@ def render():
                                     # `_rec_wc`, the SAME dict the enforced_prop_items call at
                                     # :11607 reads, so enforcement and delivery cannot disagree
                                     # about what the cap is.
-                                    _rec_g = _rec_cvp(_rec_pp, _rec_ep, _rec_excl, _rec_ke, _rec_m0,
-                                                      _rec_scoped,
-                                                      exploration_floor=_rec_floor,
-                                                      capability=_deliv_cap,   # 19du
-                                                      vamp_off_mids=_vamp_off_mids,   # 19dw
-                                                      max_share=float(_rec_wc.get("max_share", 0.97)))
-                                    _rec_p5 = _rec_g[_rec_g["period"] == 5]
+                                    # 19fi: the projection came back from [proj-memo] above. Only
+                                    # the period-5 slice is used here and downstream (checked: every
+                                    # `_rec_g` reference was `_rec_g[_rec_g["period"] == 5]`), so
+                                    # that is what is memoised — a sixth of the frame, which is
+                                    # what keeps holding two of them cheap.
+                                    _rec_p5 = _rec_p5m
                                     _rec_vl = {str(k).strip().lower(): float(v) for k, v in
                                                _rec_p5.groupby("vampMid")["VAMP_Post"].sum().items()}
                                     _rec_tl = {str(k).strip().lower(): float(v) for k, v in
