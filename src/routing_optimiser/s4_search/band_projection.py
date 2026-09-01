@@ -1071,6 +1071,38 @@ def _prop_key_str(k, by_rpgt: bool, by_subcell: bool = False) -> str:
 
 
 # [FN-011c]
+def f32_noise_floor():
+    """What float32 costs the RECONCILIATION DETECTOR, measured on THIS run — or None if off.
+
+    19gv. RECONCILIATION ERROR is Σ|delivered − GA-fitness| across the bands. With float32 on,
+    GA-fitness comes from a float32 kernel and delivery is still float64, so a non-zero error is
+    EXPECTED and says nothing. The number that matters is how big an error the setting can produce
+    on its own — everything at or below that is indistinguishable from rounding, and everything
+    above it is a real disagreement the detector can still see.
+
+    The projector already measures its own drift every run, on the live scaffold, at the live
+    candidate width. This just hands that measurement to the caller so the reconciliation line can
+    subtract it instead of the reader having to.
+
+    `bound` is CONSERVATIVE and deliberately so: it adds the vamp and txn sums, and a band only
+    ever reads one of the two metrics, so the true per-band total is at most this. Quoting a
+    tighter figure would need a per-spec metric map the drift probe does not carry. Erring wide
+    means the detector's stated resolution is never better than it really is.
+
+    Returns None when float32 is off (the detector is exact) or when the drift has not been
+    measured yet (no projection has run)."""
+    if not _F32_OK.get("use"):
+        return None
+    _m = _F32_OK.get("live") or _F32_OK.get("first")
+    if not isinstance(_m, dict):
+        return None
+    _dv = float(_m.get("dv_sum", 0.0) or 0.0)
+    _dt = float(_m.get("dt_sum", 0.0) or 0.0)
+    return {"at_P": int(_m.get("at_P", 0) or 0), "dv_sum": _dv, "dt_sum": _dt,
+            "bound": _dv + _dt, "live": _F32_OK.get("live") is not None
+                                        and isinstance(_F32_OK.get("live"), dict)}
+
+
 def _grp_codes(df, cols):
     """`pd.factorize(df[cols].astype(str).agg("|".join, axis=1))[0]` -- WITHOUT building the strings.
 

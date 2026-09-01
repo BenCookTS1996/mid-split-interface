@@ -8645,6 +8645,34 @@ def render():
                                             _fx_bar = float(os.environ.get("ROUTING_RECON_BAR", "1") or 1)
                                         except Exception:  # noqa: BLE001
                                             _fx_bar = 1.0
+                                        # ── [f32-floor] 19gv: DO NOT RE-PROJECT TO EXPLAIN ROUNDING ────
+                                        # With float32 on, GA-fitness comes from a float32 kernel and
+                                        # delivery is still float64, so a small drift is the SETTING, not a
+                                        # defect — and on the 2026-09-01 23:12 run it cost 159s of forensic
+                                        # re-projection to attribute 1 unit of it. The projector measures
+                                        # its own drift every run on the live scaffold at the live width;
+                                        # the bar is now raised to cover it, so the second projection is
+                                        # spent on disagreements float32 cannot account for.
+                                        _fx_f32 = None
+                                        try:
+                                            from routing_optimiser.s4_search.band_projection import (
+                                                f32_noise_floor as _f32nf)
+                                            _fx_f32 = _f32nf()
+                                        except Exception:  # noqa: BLE001
+                                            _fx_f32 = None
+                                        if _fx_f32:
+                                            _fx_bar = max(_fx_bar, float(_fx_f32["bound"]))
+                                            log(f"   [f32-floor] float32 is ON, so the reconciliation "
+                                                f"detector is no longer exact. Measured on THIS run's "
+                                                f"scaffold at P={_fx_f32['at_P']}: up to "
+                                                f"{_fx_f32['bound']:,.1f} unit(s) of drift "
+                                                f"({_fx_f32['dv_sum']:,.2f} vamp + {_fx_f32['dt_sum']:,.2f} "
+                                                f"txn) come from float32 alone. The bar for 'this run does "
+                                                f"not reconcile' is raised to that, so rounding does not "
+                                                f"trigger a 159s forensic re-projection — and a REAL "
+                                                f"disagreement smaller than it is now invisible. That is "
+                                                f"the price of the setting, stated as a number. "
+                                                f"ROUTING_PROJ_FLOAT32=0 restores an exact detector.")
                                         # Σ|delivered − scored| over the banded MIDs. `_per_band` values are
                                         # (delivered, projector_now, ceil, floor, metric, over).
                                         _fx_drift = None
@@ -13829,6 +13857,36 @@ def render():
                                             f"{_n_band} band(s) · worst = {_worst_drift[0]} "
                                             f"({_worst_drift[1]:,.0f}). Until this is small, no breach "
                                             "figure and no feasibility verdict means anything.")
+                                        # ── [f32-floor] 19gv: SAY WHAT THE DETECTOR CAN STILL SEE ──
+                                        # With float32 on this number is no longer a clean 0/non-0
+                                        # test. Print the measured noise floor beside it so the
+                                        # reader is never left comparing a float32 run's error
+                                        # against a float64 run's expectation.
+                                        _rc_f32 = None
+                                        try:
+                                            from routing_optimiser.s4_search.band_projection import (
+                                                f32_noise_floor as _rcf32)
+                                            _rc_f32 = _rcf32()
+                                        except Exception:  # noqa: BLE001
+                                            _rc_f32 = None
+                                        if _rc_f32:
+                                            _rc_b = float(_rc_f32["bound"])
+                                            log(f"      ══ float32 NOISE FLOOR "
+                                                f"{_rc_b:,.1f} unit(s), measured on this run's own "
+                                                f"scaffold at P={_rc_f32['at_P']} "
+                                                f"({_rc_f32['dv_sum']:,.2f} vamp + "
+                                                f"{_rc_f32['dt_sum']:,.2f} txn). "
+                                                + (f"{_sum_absdrift:,.0f} is INSIDE it, so this run "
+                                                   "reconciles as well as float32 permits — it is "
+                                                   "NOT evidence of a defect, and it is NOT proof "
+                                                   f"of correctness either: a real bug up to "
+                                                   f"{_rc_b:,.1f} unit(s) would look the same."
+                                                   if float(_sum_absdrift) <= _rc_b else
+                                                   f"{_sum_absdrift:,.0f} is ABOVE it — float32 "
+                                                   "cannot account for this error and something "
+                                                   "else is wrong. Read the released blocks below.")
+                                                + " ROUTING_PROJ_FLOAT32=0 restores an exact "
+                                                  "detector (and costs ~40s of search).")
                                         # 19co: THIS number is the one that should open the muted
                                         # reconciliation families, and it is not knowable until
                                         # here — a thousand lines after those families were
@@ -13838,6 +13896,12 @@ def render():
                                                 "ROUTING_RECON_BAR", "1") or 1)
                                         except Exception:  # noqa: BLE001
                                             _rc_bar = 1.0
+                                        # 19gv: the SAME raised bar the [forensic] gate uses. The
+                                        # release exists to explain a chain that does not
+                                        # reconcile; float32 rounding is not that, and releasing
+                                        # ten families to attribute it buries the run log.
+                                        if _rc_f32:
+                                            _rc_bar = max(_rc_bar, float(_rc_f32["bound"]))
                                         if (os.environ.get("ROUTING_RECON_RELEASE", "1") != "0"
                                                 and float(_sum_absdrift) > _rc_bar):
                                             _log_release(
