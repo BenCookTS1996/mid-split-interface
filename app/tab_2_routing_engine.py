@@ -1397,21 +1397,28 @@ def render():
                               f"pandas {pd.__version__} · numpy {np.__version__}")
                         _diag(f"   APP_BUILD: {APP_BUILD.split(' · ')[0]}")
                         _diag("   backend build markers (if any ≠ expected → stale bytecode; clear __pycache__):")
+                        # 19gj: TWO RULES for this list, because it was noise on both counts.
+                        #  1. ONLY modules this run actually uses. softmax / thompson / portfolio /
+                        #     entropy were listed and are RETIRED (legacy_engines, not selectable),
+                        #     so four of thirteen lines described code that never ran.
+                        #  2. ONLY modules that CARRY a __build__. success_rates, data_loader,
+                        #     constraints, band_scoring and config_generator have none, so they
+                        #     printed "(no __build__)" — a line that cannot go stale and cannot warn.
+                        #     They are still used; they are simply not checkable here, and a row of
+                        #     blanks made the rows that DO matter harder to find.
+                        # genetic_fullmatrix was MISSING and is now listed — it is the delivered
+                        # engine, so it is the one whose staleness matters most. kmeans_compress is
+                        # deliberately absent: it only runs when a pool target is set.
                         for _m in ["routing_optimiser.s3_problem.optimiser", "routing_optimiser.s3_problem.eligibility",
-                                   "routing_optimiser.s1_extract.success_rates", "routing_optimiser.s2_forecast.vamp_forecast_pipeline",
-                                   "routing_optimiser.s1_extract.data_loader", "routing_optimiser.s1_extract.sql_runner",
-                                   "routing_optimiser.s3_problem.constraints", "routing_optimiser.engines.base",
-                                   # 19fv: softmax / thompson / portfolio / entropy live in
-                                   # legacy_engines/ since 2026-08-31 -- retired from the UI but
-                                   # still REGISTERED in engines.ENGINES. Asking engines.* for them
-                                   # printed "(import failed)" on all three EVERY run, which is
-                                   # exactly what this block exists to catch, aimed at itself.
-                                   "routing_optimiser.legacy_engines.softmax",
-                                   "routing_optimiser.legacy_engines.thompson",
-                                   "routing_optimiser.legacy_engines.portfolio",
-                                   "routing_optimiser.legacy_engines.entropy",
+                                   "routing_optimiser.s2_forecast.vamp_forecast_pipeline",
+                                   "routing_optimiser.s1_extract.sql_runner",
+                                   "routing_optimiser.engines.base", "routing_optimiser.engines.genetic_ref",
                                    "routing_optimiser.s4_search.seed_search",
-                                   "routing_optimiser.s4_search.band_projection"]:
+                                   "routing_optimiser.s4_search.genetic_fullmatrix",
+                                   "routing_optimiser.s4_search.band_projection",
+                                   "routing_optimiser.s4_search.numba_kernels",
+                                   "routing_optimiser.s4_search.exact_band_solver",
+                                   "routing_optimiser.s4_search.rowpar"]:
                             _diag(f"      {_m.split('.')[-1]:16s} {_bmark(_m)}")
                         # impact_calcs is imported by-name (from impact_calcs import ...), so the module
                         # object isn't in scope — import it explicitly so its build marker is ALWAYS
@@ -1500,8 +1507,6 @@ def render():
                               f"time_decay={('on ' + str(_gv('decay_half')) + 'd') if _gv('apply_decay') else 'off'} · "
                               f"xborder_penalty={_gv('xborder_penalty')}")
                         _diag(f"      max_pools_target={_gv('max_configs')}")
-                        _diag("      band scoring=EXACT in-search (per-generation pro-rata projection; "
-                              "no proxy, no post-hoc correction)")
                         _pk = {k: params.get(k) for k in ("temperature", "temp_method", "n_variations")
                                if isinstance(params, dict) and k in params}
                         _diag(f"      engine_params={_pk}")
@@ -2677,8 +2682,6 @@ def render():
                         _diag(f"      cells={len(agg_problems):,} · total gateway-rows={int(_ng.sum()):,} · "
                               f"total forecast volume={_vols.sum():,.0f}")
                         if len(_ng):
-                            _diag(f"      gateways/cell: min={int(_ng.min())} p50={int(_q(_ng,0.5))} "
-                                  f"mean={_ng.mean():.1f} p95={int(_q(_ng,0.95))} max={int(_ng.max())}")
                             _diag(f"      cells with 1 gateway (cap unsatisfiable): {int((_ng <= 1).sum()):,} · "
                                   f"cells >50 gateways: {int((_ng > 50).sum()):,}")
                         _diag(f"      gateway-rows on POOLED prior (no per-cell attempts): {_npool:,} · "
@@ -2686,8 +2689,13 @@ def render():
                         # currency / bank / RPGT spread
                         _curs = sorted({str(p.currency) for p in agg_problems})
                         _rpgts = sorted({str(p.rpgt) for p in agg_problems})
-                        _banks = len({(str(p.currency), str(p.bin)) for p in agg_problems})
-                        _diag(f"      currencies={_curs} · distinct banks(×cur)={_banks:,} · rpgt grain values={_rpgts[:8]}"
+                        # 19gj: called "banks" until now, and it was wrong under TRUE BIN GRAIN —
+                        # `p.bin` holds the BIN, and the parent-bank collapse is DISABLED for
+                        # genetic_fullmatrix (see the "[full-matrix] TRUE BIN GRAIN" line above), so
+                        # this counts distinct BINs per currency. Under a parent-bank collapse the
+                        # same field WOULD hold the bank, which is where the old name came from.
+                        _bins_n = len({(str(p.currency), str(p.bin)) for p in agg_problems})
+                        _diag(f"      currencies={_curs} · distinct BINs(×cur)={_bins_n:,} · rpgt grain values={_rpgts[:8]}"
                               + (" …" if len(_rpgts) > 8 else ""))
                     except Exception as _e:  # noqa: BLE001
                         _diag(f"   [cell diagnostics failed: {_e}]")
@@ -2734,7 +2742,8 @@ def render():
                     weights = [round(float(w), 2) for w in np.linspace(0.0, 0.0, _N_VARIATIONS)]
                     _progress(_f_eng, "Running engine…")   # adaptive ETA (see _f_* above)
                     _stage(f"④ Run {engine_key} engine across the Risk↔Conversion axis")
-                    log(f"   {_N_VARIATIONS} dials: {', '.join(str(int(round(w * 100))) for w in weights)}")
+                    # 19gj: the "N dials: 0" line is deleted — the multi-dial slider and the Pareto
+                    # frontier were removed long ago, so it printed "1 dials: 0" every run.
 
                     mapping_df = orig_forecast[["rpgt", "currency", "bin"]].drop_duplicates()
                     mapping_df["parent_bank"] = mapping_df["bin"].map(bin_to_bank).fillna(mapping_df["bin"])
@@ -3158,9 +3167,10 @@ def render():
                         return float(_PRIORITY_GAP ** (1 - max(int(_p), 1)))
                     try:
                         _prios_used = sorted({int(_v) for _v in _prio_lookup.values()})
-                        log("   priority→band weight (GAP={:.0f}): ".format(_PRIORITY_GAP)
-                            + " · ".join("prio{}={:.4g}".format(_p, _prio_mult(_p)) for _p in _prios_used)
-                            + "  (higher weight ⇒ the GA works harder to satisfy that tier)")
+                        log("   Per MID x Month Priority Weightings : "
+                            + " , ".join("P{} ={:.4g}".format(_p, _prio_mult(_p)) for _p in _prios_used)
+                            + "  (higher weight ⇒ the GA works harder to satisfy that tier"
+                            + ", GAP={:.0f})".format(_PRIORITY_GAP))
                     except Exception:  # noqa: BLE001 - logging must never break a run
                         pass
                     for _rec in _all_rules:
