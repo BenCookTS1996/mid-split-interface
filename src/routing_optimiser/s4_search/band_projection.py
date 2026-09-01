@@ -672,6 +672,7 @@ _LOADED_SENTINEL = "19dt"
 # DECLINES once the cap already covers the candidate width, instead of proposing 128.
 # COST: the scratch is P lanes' worth (~1.26 GB at P=35 on this scaffold) rather than the cap's.
 # ROUTING_PROJ_LANES=32 reverts.
+import time as _time_mod   # 19fw: [lift-ab] timing
 _PROJ_LANE_CAP = max(1, int(os.environ.get("ROUTING_PROJ_LANES", "64") or 64))
 _PROJ_PAR_ON = os.environ.get("ROUTING_PROJ_PARALLEL", "1") != "0"
 _PROJ_PAR_SAID = {}
@@ -1039,6 +1040,97 @@ def _origin_map(T0: pd.DataFrame, Pc: pd.DataFrame) -> np.ndarray:
     pcjoin = (Pc["cur"] + "|" + Pc["bin"] + "|" + Pc["rpgt"] + "|" + Pc["pmp"] + "|"
               + Pc["ctry"] + "|" + Pc["midl"] + "|" + om.astype(str)).to_numpy()
     return t0pos.reindex(pcjoin).fillna(-1).to_numpy().astype(np.int64)
+
+
+# [FN-015a]
+def lift_ab_report(proj, reps=3):
+    """MEASURE the frozen-scaffold lift's worth, on the live scaffold, at this run's width.
+
+    WHY THIS EXISTS (19fw). [frozen-scaffold] used to say the worth was "measured live in
+    [kernel-ab] below". Then 19ft flipped ROUTING_KERNEL_AB's default to 0, so [kernel-ab] no
+    longer runs and that sentence pointed at nothing -- the lift has been ON and UNMEASURED since.
+    A stale fitted curve was deliberately deleted in 19ax for being wrong (it predicted 1.08x
+    where [kernel-ab] measured 1.276x on the same run), so the honest options were to measure it
+    or to say nothing. This measures it, in about 6 projections.
+
+    HOW. Time `reps` projections with the lift ON, then `reps` with `_PROJ_LIFT_ON` forced off and
+    the lift's caches invalidated so the flag actually takes effect, then restore both. Compare
+    the two OUTPUTS bit-for-bit: the lift's whole claim is that the passes it skips are provable
+    no-ops, so a single differing bit is a defect, not a rounding difference.
+
+    Returns a dict, or None when there is nothing to measure. Never raises -- it is a report.
+    """
+    global _PROJ_LIFT_ON
+    pr = getattr(proj, "_ab_last", None)
+    if pr is None or not len(getattr(proj, "_gcode", ())):
+        return None
+    _was = _PROJ_LIFT_ON
+    # Snapshot every cache the flag reaches, so OFF is a true revert and ON is restored exactly.
+    _snap = {k: getattr(proj, k, None) for k in
+             ("_lift_rows", "_lift_cells", "_lift_frozen_rows", "_lift_frozen_cells",
+              "_lift_primed", "_lift_full_nR")}
+
+    def _drop():
+        for _k in ("_lift_rows", "_lift_cells", "_lift_frozen_rows", "_lift_frozen_cells"):
+            setattr(proj, _k, None)
+        proj._lift_primed = None
+        proj._lift_full_nR = -1
+
+    def _time(n):
+        proj.project_pop_numba(pr)                     # warm: numba compile + scratch priming
+        _v, _t = proj.project_pop_numba(pr)
+        _v, _t = np.array(_v, copy=True), np.array(_t, copy=True)
+        _t0 = _time_mod.perf_counter()
+        for _ in range(max(1, int(n))):
+            proj.project_pop_numba(pr)
+        return (_time_mod.perf_counter() - _t0) / max(1, int(n)) * 1e3, _v, _t
+
+    try:
+        _PROJ_LIFT_ON = True
+        _drop()
+        ms_on, v_on, t_on = _time(reps)
+        _PROJ_LIFT_ON = False
+        _drop()
+        ms_off, v_off, t_off = _time(reps)
+    except Exception as _e:            # noqa: BLE001 -- a report must not break a run
+        _PROJ_LIFT_ON = _was
+        _drop()
+        for _k, _v in _snap.items():
+            setattr(proj, _k, _v)
+        _pnote(f"[lift-ab] NOT MEASURED ({type(_e).__name__}: {_e}) — MEASUREMENT ONLY, the run "
+               "is unaffected and the lift itself is untouched.")
+        return None
+
+    _PROJ_LIFT_ON = _was
+    _drop()
+    for _k, _v in _snap.items():
+        setattr(proj, _k, _v)
+    proj._ab_last = None               # let the (P x K) proposal go
+
+    _same = bool(np.array_equal(v_on, v_off) and np.array_equal(t_on, t_off))
+    _P = int(np.asarray(pr).shape[0]) if np.asarray(pr).ndim == 2 else 1
+    _sp = ms_off / ms_on if ms_on > 0 else float("nan")
+    # RESOLUTION FLOOR. Two timings this short are not separable below a few percent, so say what
+    # the measurement can and cannot support instead of quoting a ratio to three decimals.
+    _floor = 0.05
+    _real = abs(_sp - 1.0) > _floor
+    _pnote(f"[lift-ab] frozen-scaffold LIFT measured on THIS run's scaffold at P={_P}: "
+           f"ON {ms_on:.1f} ms/call vs OFF {ms_off:.1f} ms/call ⇒ {_sp:.3f}x "
+           f"({(ms_off - ms_on):+.1f} ms per call, {reps} rep(s) each after a warm-up). "
+           + ("ABOVE the 5% resolution floor, so this is a real difference. "
+              if _real else
+              "INSIDE the 5% resolution floor — this run cannot tell the two apart, so treat the "
+              "ratio as 1.0x and do not quote it. ")
+           + ("Outputs are BIT-IDENTICAL (np.array_equal on vamp AND txn), which is the lift's "
+              "whole claim: the passes it skips are provable no-ops. "
+              if _same else
+              "⚠ OUTPUTS DIFFER between lift ON and lift OFF. The lift is supposed to be "
+              "bit-identical, so this is a DEFECT, not a rounding artefact — ROUTING_PROJ_LIFT=0 "
+              "and report it. ")
+           + "It scales with candidate width, because the flat passes it skips are per-candidate, "
+             "so this number is this run's, not a constant. ROUTING_PROJ_LIFT=0 reverts.")
+    return {"P": _P, "ms_on": ms_on, "ms_off": ms_off, "speedup": _sp,
+            "identical": _same, "above_floor": _real, "reps": int(reps)}
 
 
 # [FN-015]
@@ -2478,6 +2570,13 @@ class PopulationBandProjector:
     # [FN-025]
     def project_pop(self, prop_raw: np.ndarray):
         """prop_raw : (P, K) proposed share per `prop_keys`. Returns (vamp[P,B], txn[P,B])."""
+        # 19fw: keep a REFERENCE (not a copy) to the last real proposal, so lift_ab_report() can
+        # re-time the projection at this run's OWN candidate width and OWN values. Both matter: the
+        # lift skips per-candidate flat passes, so its worth scales with P, and the frozen set
+        # depends on which cells the candidate actually put volume in. A synthetic all-ones
+        # prop_raw would make every cell live and measure a lift that is not the one running.
+        # A reference costs nothing while the search holds the array anyway; the report drops it.
+        self._ab_last = prop_raw
         prop_raw = np.asarray(prop_raw, float)
         P = prop_raw.shape[0]
         if not len(self._gcode):                     # no constrained cells this build

@@ -8178,12 +8178,35 @@ def render():
                                         # on THIS run's width a few lines below, against a floor;
                                         # a stale curve printed beside that only invites the
                                         # reader to believe the wrong number.
-                                        log(f"      frozen row share {_fs_share:.1%}. The lift's WORTH is "
-                                            "measured live in [kernel-ab] below (row B = lift OFF) at "
-                                            "this run's candidate width, against that block's own "
-                                            "resolution floor — it scales with the width, because the "
-                                            "flat passes it skips are per-candidate, so there is no "
-                                            "single number to quote here.")
+                                        # 19fw: this used to say the worth was "measured live in
+                                        # [kernel-ab] below". 19ft flipped ROUTING_KERNEL_AB's
+                                        # default to 0, so that block no longer runs and the
+                                        # sentence pointed at nothing — the lift had been ON and
+                                        # UNMEASURED. Measure it here instead, in ~6 projections on
+                                        # the live scaffold at this run's own candidate width.
+                                        log(f"      frozen row share {_fs_share:.1%}. It scales with "
+                                            "candidate width, because the flat passes it skips are "
+                                            "per-candidate — see [lift-ab] for THIS run's measured "
+                                            "number.")
+                                        try:
+                                            _lab = getattr(_bpm, "lift_ab_report", None)
+                                            if _lab is None:
+                                                log("      [lift-ab] unavailable — this "
+                                                    "band_projection predates 19fw, so the lift is "
+                                                    "running unmeasured.")
+                                            elif _fsp is None:
+                                                log("      [lift-ab] NOT MEASURED: no projector on "
+                                                    "the exact-band hook, so there is no scaffold "
+                                                    "to time.")
+                                            elif _lab(_fsp) is None:
+                                                log("      [lift-ab] NOT MEASURED: the projector "
+                                                    "held no recorded proposal (nothing called "
+                                                    "project_pop, or an older module). The lift is "
+                                                    "unaffected — only its measurement is missing.")
+                                        except Exception as _labE:  # noqa: BLE001
+                                            log(f"      [lift-ab] skipped "
+                                                f"({type(_labE).__name__}: {_labE}) — MEASUREMENT "
+                                                "ONLY, the run and the lift are unaffected.")
                                         if _fs_share < 0.10:
                                             log("      ⇒ barely worth having: at this share the "
                                                 "lift is inside measurement noise. ROUTING_PROJ_"
@@ -14174,8 +14197,45 @@ def render():
                                     f"(≥{int(_bmin)} most-recent consecutive failed attempts) → capped to the "
                                     f"exploration floor ({_tot_cap} split row(s) capped across dials).")
                                 if _tot_cap == 0:
-                                    log("   [Warning] auto-block: flagged pairs matched no split rows "
-                                        "(bank/gateway naming mismatch?) — no shares were capped.")
+                                    # 19fw: the old line said "naming mismatch?" for ALL THREE ways
+                                    # this reaches 0, and named the least likely one. Read the
+                                    # counters and say which it actually was.
+                                    import app_common as _acbs
+                                    _bs = dict(getattr(_acbs, "LAST_BLOCKED_CAP_STATS", {}) or {})
+                                    _bs_m = int(_bs.get("matched", 0) or 0)
+                                    _bs_a = int(_bs.get("above_floor", 0) or 0)
+                                    _bs_nr = int(_bs.get("no_recip", 0) or 0)
+                                    if _bs_m == 0:
+                                        log("   [Warning] auto-block: NO SPLIT ROW matched a flagged "
+                                            f"(bank, gateway) pair — this IS a key mismatch. "
+                                            f"{len(_bpairs)} flagged pair(s) vs "
+                                            f"{_bs.get('split_rows', 0):,} split row(s).")
+                                        log(f"      flagged pairs (first 5): "
+                                            f"{_bs.get('sample_pairs', '(unavailable)')}")
+                                        log(f"      split (bin, gateway) (first 5): "
+                                            f"{_bs.get('sample_split', '(unavailable)')}")
+                                        log("      COMPARE THE TWO LISTS. Same gateway spelling but a "
+                                            "different bin/bank form ⇒ the BIN→bank rename; a "
+                                            "different gateway spelling ⇒ the Master-MID canonical "
+                                            "form. The pre-GA pass matched rows, so the pairs "
+                                            "themselves are sound — only this grain is not.")
+                                    elif _bs_a == 0:
+                                        log(f"   auto-block: NOTHING TO CAP, and that is CORRECT — "
+                                            f"{_bs_m:,} split row(s) DID match a flagged pair, but "
+                                            f"every one already sits at or below the exploration "
+                                            f"floor {float(_bs.get('floor', 0)):.4g} (largest matched "
+                                            f"share {float(_bs.get('max_matched_share', 0)):.6g}). The "
+                                            "pre-enforcement pass capped them inside enforcement; this "
+                                            "pass has nothing left to take off them. NOT a naming "
+                                            "mismatch — the keys matched fine.")
+                                    else:
+                                        log(f"   [Warning] auto-block: {_bs_m:,} row(s) matched and "
+                                            f"{_bs_a:,} sit ABOVE the floor, but none was capped — "
+                                            f"{_bs_nr:,} of those are in a cell with NO unblocked "
+                                            "gateway to receive the freed share, so the cell is left "
+                                            "untouched by design. If that does not account for all "
+                                            f"{_bs_a:,}, the redistribution grain "
+                                            f"({_vgk}) is the next thing to look at.")
                         except Exception as _be:  # noqa: BLE001
                             log(f"   [Warning] auto-block detection skipped ({type(_be).__name__}: {_be}).")
 

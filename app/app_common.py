@@ -66,6 +66,14 @@ _MID_LIST_CACHE: dict = {}
 # how a mojibake'd MID list would go unnoticed.
 LAST_MID_LIST_ENCODING: str = ""
 LAST_MID_LIST_NOTE: str = ""
+# 19fw: why did the post-GA auto-block cap NOTHING? `_apply_blocked_caps` returns ONE number --
+# rows whose share actually went DOWN -- and the caller printed "naming mismatch?" whenever it was
+# 0. That is only ONE of three ways to reach 0, and on the 2026-09-01 15:17 run it was almost
+# certainly the benign one: the pre-enforcement pass had ALREADY capped those rows to the
+# exploration floor, so there was nothing left to take off them. The warning was accusing the
+# BIN->bank rename of a crime that had not happened. These counters separate the three cases.
+# Written on every call; read by the caller immediately after.
+LAST_BLOCKED_CAP_STATS: dict = {}
 
 # Excel on macOS saves "CSV" as Mac Roman, not UTF-8 — a single curly quote, en-dash or
 # non-breaking space in a URL/description column is enough to make pd.read_csv raise
@@ -549,8 +557,11 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
     so a BIN-vs-parent grain mismatch can't silently cap nothing here while the pre-GA auto-block
     excludes the same rows. Returns (new_split, n_rows_capped). Deterministic; no-op when
     `blocked_pairs` is empty or nothing matches."""
+    LAST_BLOCKED_CAP_STATS.clear()
     if not blocked_pairs or split is None or getattr(split, "empty", True) \
             or not {"bin", "gateway", "share"}.issubset(split.columns):
+        LAST_BLOCKED_CAP_STATS.update(reason="no pairs / no split / missing column(s)",
+                                      matched=0, above_floor=0, no_recip=0, capped=0)
         return split, 0
     blocked_pairs = set(blocked_pairs)   # O(1) membership in the per-row checks below
     d = split.copy()
@@ -568,6 +579,15 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
     else:
         _isb = np.array([(_b, _g) in blocked_pairs for _b, _g in zip(_bk, _gw)])
     if not _isb.any():
+        # CASE 1 -- a genuine key mismatch. Record samples from BOTH key spaces so the caller can
+        # print them: an accusation of "naming mismatch" is only useful with the two names beside
+        # each other.
+        LAST_BLOCKED_CAP_STATS.update(
+            reason="NO ROW MATCHED a blocked (bank, gateway) pair", matched=0,
+            above_floor=0, no_recip=0, capped=0,
+            sample_pairs=sorted(blocked_pairs)[:5],
+            sample_split=sorted({(b, g) for b, g in zip(_bk, _gw)})[:5],
+            split_rows=int(len(d)))
         return d, 0
     # REDISTRIBUTION GROUP. The default omits `ctry`, so freed share from a bank-blocked row is
     # spread across the USA and Non-USA sub-cells of a (rpgt, currency, BIN, pmp) group TOGETHER.
@@ -591,7 +611,18 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
     _new = np.where(_has_recip, _cap + _add, _sh)
     d["share"] = _new
     d = d.drop(columns=["_freed", "_rw"])
-    return d, int((_isb & _has_recip & (_new < _sh - 1e-12)).sum())
+    _capped = int((_isb & _has_recip & (_new < _sh - 1e-12)).sum())
+    # CASE 2 vs CASE 3. `matched` rows paired with a blocked gateway. Of those, `above_floor` sit
+    # ABOVE the cap and so have something to give up; `no_recip` are in a cell with no unblocked
+    # gateway to give it to. matched > 0 with above_floor == 0 is the BENIGN zero -- the rows were
+    # already at or below the floor, which is what the pre-enforcement pass leaves behind.
+    _above = int((_isb & (_sh > float(floor) + 1e-12)).sum())
+    LAST_BLOCKED_CAP_STATS.update(
+        reason="", matched=int(_isb.sum()), above_floor=_above,
+        no_recip=int((_isb & (_sh > float(floor) + 1e-12) & ~_has_recip).sum()),
+        capped=_capped, floor=float(floor), split_rows=int(len(d)),
+        max_matched_share=float(_sh[_isb].max()) if _isb.any() else 0.0)
+    return d, _capped
 
 
 _TAV_FIDS = [
