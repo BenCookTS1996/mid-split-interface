@@ -7898,6 +7898,15 @@ def render():
                                             log(f"   [proj-config] unavailable "
                                                 f"({type(_pce2).__name__}: {_pce2}) — this is the "
                                                 "REPORT only; the projector itself is unaffected.")
+                                    # 19gi: the projector's one-off BUILD verdicts live in their
+                                    # own list, because proj_new_run() clears _PROJ_PAR_NOTES at
+                                    # SEARCH start — after the projector was built — which silently
+                                    # ate [pbp-inside] and [vconst-frozen] on the 2026-09-01 17:59
+                                    # run. Drained FIRST so the build story reads before the
+                                    # per-call dispatch notes.
+                                    for _bn_msg in list(getattr(_bpm, "_BUILD_NOTES", []) or []):
+                                        log(f"   {_bn_msg}" if str(_bn_msg).startswith("[")
+                                            else f"   [band-build] {_bn_msg}")
                                     _ppn = list(getattr(_bpm, "_PROJ_PAR_NOTES", []) or [])
                                     for _pn_msg in _ppn:
                                         # 19fv: the list now also carries the projector's one-off

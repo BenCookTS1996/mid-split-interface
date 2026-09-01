@@ -686,6 +686,15 @@ _PROJ_PAR_SAID = {}
 # appended here, and tab2 drains this list into the run log after the search. Bounded so a
 # pathological caller cannot grow it without limit.
 _PROJ_PAR_NOTES = []
+# 19gi: ONE-OFF BUILD VERDICTS GO IN THEIR OWN LIST, and this is a bug fix, not tidiness.
+# 19fv/19fz appended [pbp-inside], [vconst-frozen], the aged-row hoist, the frozen lift, index
+# width and the cell-blocked layout to _PROJ_PAR_NOTES. They never reached the run log: the
+# projector is BUILT first, then tab 2 calls proj_new_run() at the start of the search, which does
+# `del _PROJ_PAR_NOTES[:]` — correctly, so a warm Streamlit process cannot report a previous run's
+# dispatch paths. The build verdicts were collateral. They belong to the BUILD, so they live here
+# and are cleared at the top of PopulationBandProjector.__init__ instead: exactly one build's worth,
+# and proj_new_run() leaves them alone.
+_BUILD_NOTES = []
 # FROZEN-SCAFFOLD LIFT switch. ON by default as of 2026-08-19ae; ROUTING_PROJ_LIFT=0 restores the
 # full-range kernel, which is the same body with arange() index arrays — a true revert, not a
 # similar path.
@@ -705,8 +714,16 @@ _PROJ_CHUNK_ON = os.environ.get("ROUTING_PROJ_CHUNK", "1") != "0"
 # [FN-010b]
 def _pnote(msg):
     """Record a projection-parallelism note for the run log, and echo it to stdout."""
-    if len(_PROJ_PAR_NOTES) < 96:   # 19fv: +5 one-off verdicts now share this list
+    if len(_PROJ_PAR_NOTES) < 64:
         _PROJ_PAR_NOTES.append(str(msg))
+    print(f"[band_projection] {msg}")
+
+
+# [FN-010b2]
+def _bnote(msg):
+    """Record a one-off BUILD verdict for the run log, and echo it to stdout. See _BUILD_NOTES."""
+    if len(_BUILD_NOTES) < 32:
+        _BUILD_NOTES.append(str(msg))
     print(f"[band_projection] {msg}")
 
 
@@ -1633,6 +1650,7 @@ class PopulationBandProjector:
         # next run does not show that, this block says which step failed to move instead of
         # leaving it to another round of inference. Marks are cumulative-exclusive and SUM to the
         # constructor, so there is no residual to argue about.
+        del _BUILD_NOTES[:]        # 19gi: exactly ONE build's worth of verdicts
         _pbp_t = [_time_mod.perf_counter()]
         _pbp_rows = []
 
@@ -1853,7 +1871,7 @@ class PopulationBandProjector:
                 else:
                     _tag = f"  ✓ vs ~{_before:.1f}s before 19fy/19fz"
             _lines.append(f"{_d:8.1f}s  ({100.0 * _d / max(_pbp_tot, 1e-9):5.1f}%)  {_lbl}{_tag}")
-        _pnote("[pbp-inside] PopulationBandProjector.__init__ = "
+        _bnote("[pbp-inside] PopulationBandProjector.__init__ = "
                f"{_pbp_tot:.1f}s, largest first (these SUM to the constructor, no residual):\n      "
                + "\n      ".join(_lines)
                + "\n      Ordered largest-first, not in execution order — the point is which step "
@@ -1989,7 +2007,7 @@ class PopulationBandProjector:
                 _vconst)                                              # vconst (19cz)
             self._ix32 = dict(_ixs)
             _n_nar = int(_ixs.get("narrowed", 0)); _n_ref = int(_ixs.get("refused", 0))
-            _pnote(f"index width: {_n_nar} array(s) narrowed to int32, "
+            _bnote(f"index width: {_n_nar} array(s) narrowed to int32, "
                   f"{_n_ref} kept at int64. Largest index {_ixs.get('hi', 0):,} of the "
                   f"{_I32_MAX:,} int32 ceiling "
                   f"({_ixs.get('hi', 0) / _I32_MAX:.4%} of it) — "
@@ -1998,7 +2016,7 @@ class PopulationBandProjector:
                   + "Values are unchanged, so the projection is bit-identical; only the bytes "
                     "moved per index change. Adopted 19bi from [kernel-ab] variant G.")
             _h = self._nb_hoist
-            _pnote(f"aged-row hoist (19cz/19dd/19fs): no-origin "
+            _bnote(f"aged-row hoist (19cz/19dd/19fs): no-origin "
                   f"{_h['no_origin']:,} + zero-pool {_h['zero_pool']:,} + FROZEN-ORIGIN "
                   f"{_h['frozen']:,} = {_h['static']:,} of {_h['total']:,} "
                   f"banded aged row(s) ({100.0 * _h['static'] / max(_h['total'], 1):.1f}%) are "
@@ -2010,7 +2028,7 @@ class PopulationBandProjector:
                   "pass the loop always made AND the two the 19cy age renormalise adds, so read "
                   "[gen-gap]'s `eval` row against the previous run before concluding anything "
                   "about what the renormalise cost.")
-            _pnote(f"[vconst-frozen] 19fs added the THIRD class: "
+            _bnote(f"[vconst-frozen] 19fs added the THIRD class: "
                   f"{_h['frozen']:,} aged row(s) whose ORIGIN CELL IS FROZEN (no GA share "
                   f"column maps to it, so psum is 0 there for every candidate). "
                   + ("Their contribution is the SAME constant the other two classes have "
@@ -2119,7 +2137,7 @@ class PopulationBandProjector:
                 ~cell_live[np.asarray(self._gcode, np.int64)])[0].astype(np.int64)
             self._lift_frozen_cells = np.where(~cell_live)[0].astype(np.int64)
             self._lift_primed = None
-            _pnote(f"frozen-scaffold LIFT ON: the flat passes skip "
+            _bnote(f"frozen-scaffold LIFT ON: the flat passes skip "
                   f"{len(self._lift_frozen_rows):,} of {nR:,} rows "
                   f"({len(self._lift_frozen_rows) / max(nR, 1):.1%}) in "
                   f"{len(self._lift_frozen_cells):,} of {ncell:,} frozen cells "
@@ -2202,11 +2220,22 @@ class PopulationBandProjector:
         self._nbcache = None
 
     # [FN-023]
+    def _stash_ab(self, prop_raw):
+        """19gi: remember the last REAL proposal for lift_ab_report().
+
+        19fw put this in `project_pop` only — and the live search never calls it. band_scoring
+        dispatches to `project_pop_numba` whenever numba is available, which is every real run, so
+        `_ab_last` stayed None and [lift-ab] correctly reported "the projector held no recorded
+        proposal". Hooked on BOTH entry points now. A reference, not a copy; the report drops it.
+        """
+        self._ab_last = prop_raw
+
     def project_pop_numba(self, prop_raw: np.ndarray):
         """Numba-accelerated project_pop — bit-identical, ~7× faster on the real scaffold.
         Falls back to the NumPy path if numba is unavailable or the scaffold is empty.
         Working arrays are pooled (see _nb_buffers); consume the result before the next call."""
         prop_raw = np.ascontiguousarray(prop_raw, dtype=np.float64)
+        self._stash_ab(prop_raw)                       # 19gi: the LIVE path
         if not _HAVE_NUMBA or not len(self._gcode):
             # SAY SO. This early return is a SILENT FALLBACK: the pure-NumPy `project_pop` is the
             # reference implementation (correct, but far slower and it allocates dense (P × nR)
@@ -2447,7 +2476,7 @@ class PopulationBandProjector:
                 "primed": None,
             }
             self._cb = cb
-            _pnote(f"cell-blocked layout built: {cb['nLR']:,} live rows in "
+            _bnote(f"cell-blocked layout built: {cb['nLR']:,} live rows in "
                   f"{cells.size:,} cells (~{cb['nLR'] / max(cells.size, 1):.1f} rows/cell), "
                   f"{froz.size:,} frozen rows parked in the tail. The multi-pass block now runs "
                   "one cell at a time (an L1-sized working set) instead of ~15 passes over the "
@@ -2854,7 +2883,7 @@ class PopulationBandProjector:
         # depends on which cells the candidate actually put volume in. A synthetic all-ones
         # prop_raw would make every cell live and measure a lift that is not the one running.
         # A reference costs nothing while the search holds the array anyway; the report drops it.
-        self._ab_last = prop_raw
+        self._stash_ab(prop_raw)
         prop_raw = np.asarray(prop_raw, float)
         P = prop_raw.shape[0]
         if not len(self._gcode):                     # no constrained cells this build
