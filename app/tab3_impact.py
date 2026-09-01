@@ -2962,10 +2962,21 @@ def render():
                     # 19ez: same guard, same reason — these come from optional enrichment blocks
                     # above, and four of the reads below are the BARE form with no pd.to_numeric,
                     # so a missing column crashed on `.fillna` rather than reading as zero.
+                    # 19fm: "Avg txn value (Bank x Cur)" IS DELIBERATELY NOT IN THIS LIST.
+                    # 19ez put it here and that CAUSED a crash. The `_bcv` merge ~20 lines below
+                    # brings a column of exactly that name; pandas will not overwrite an existing
+                    # column on merge, it SUFFIXES both sides into `..._x` / `..._y`. So ensuring
+                    # the column first made the plain name DISAPPEAR at the merge, the next line's
+                    # `.get(name, 0)` returned the bare int default, and `pd.to_numeric(0).fillna`
+                    # raised "AttributeError: 'int' object has no attribute 'fillna'" — the exact
+                    # error ensure_cols exists to prevent, reintroduced by the fix for it.
+                    # THE RULE: never ensure a column that a later merge supplies. Nothing between
+                    # here and that merge reads it, and the if/else there defines it on both
+                    # branches, so it needs no default.
                     ensure_cols(workings_full, (
                         ("All_Time_Attempts", 0.0), ("All-Time Raw SR", 0.0),
                         ("Engine Score (Smoothed SR)", 0.0), ("raw_amount", 0.0),
-                        ("raw_succ", 0.0), ("Avg txn value (Bank x Cur)", 0.0),
+                        ("raw_succ", 0.0),
                         ("Expected_Rev", 0.0), ("Expected_Attempts", 0.0),
                         ("Expected_Success", 0.0), ("curr_vol", 0.0),
                         ("Baseline_Success", 0.0)))
@@ -2986,6 +2997,14 @@ def render():
                     # the SAME figure that drives every revenue-impact number.
                     _bcv = cache.get("bc_val")
                     if _bcv is not None:
+                        # 19fm: DROP FIRST, MERGE SECOND. A merge that brings a column the left
+                        # frame already has produces `..._x` / `..._y` and NEITHER is the name the
+                        # code reads — a silent rename that surfaces as a scalar-default crash
+                        # further down. Dropping makes the merge authoritative and idempotent, so
+                        # it survives both the 19ez-style pre-ensure and a re-render on a frame
+                        # that already went through this block once.
+                        workings_full = workings_full.drop(
+                            columns=["Avg txn value (Bank x Cur)"], errors="ignore")
                         workings_full = workings_full.merge(
                             _bcv[["currency_join", "bin_join", "avg_txn_value"]].rename(
                                 columns={"avg_txn_value": "Avg txn value (Bank x Cur)"}),
@@ -3043,6 +3062,11 @@ def render():
                             _raw_rpgt = _rs
                             _pre_raw_map = _rs.groupby("gateway_join", as_index=False)["pre_rev_raw"].sum()
                             if "gateway_join" in workings_full.columns:
+                                # 19fm: same drop-first rule as the `_bcv` merge above. `pre_rev_raw`
+                                # is not currently pre-created anywhere, so this is prevention, not
+                                # a fix — and it is the cheap half of the pair.
+                                workings_full = workings_full.drop(
+                                    columns=["pre_rev_raw"], errors="ignore")
                                 workings_full = workings_full.merge(_pre_raw_map, on="gateway_join", how="left")
                     except Exception as _rre:  # noqa: BLE001
                         # 19ey: SAY SO. This swallowed a KeyError from the `bin_join` rename and
