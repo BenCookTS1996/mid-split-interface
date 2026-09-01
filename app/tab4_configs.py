@@ -68,7 +68,7 @@ def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
     # Never locked: configs are generated from the exported-rules FOLDER below, so a computed split is
     # NOT required. The dial is only shown when variations exist. (`if True:` keeps the body indent.)
     if True:
-        from routing_optimiser.connector_pool_configs import (
+        from routing_optimiser.s5_deliver.connector_pool_configs import (
             BRANDS as _POOL_BRANDS, company_to_brand_key as _co2brand,
             generate_configs as _gen_cfgs, scheme_code as _scheme_code)
 

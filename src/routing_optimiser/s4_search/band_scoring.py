@@ -1,6 +1,6 @@
 """Exact per-generation band scoring for the GA (gate 2, increments 1–2).
 
-The GA fitness (`midtilt_cmaes._obj_viol` and the lock-stepped `numba_kernels._fused_eval`)
+The GA fitness (`seed_search._obj_viol` and the lock-stepped `numba_kernels._fused_eval`)
 adds a per-MID month-band VIOLATION. NOTE (2026-08-19bb): the paragraph below describes the
 volume-ratio PROXY this module was built to REPLACE — it is history, not what runs. The only
 penalty class here is `ExactBandPenalty`, the full-matrix GA is called with
@@ -149,7 +149,7 @@ class ExactBandPenalty:
     def _pen(self, overshoot):
         """The fine schedule for being `overshoot` fraction over a band (0 = at/under the limit).
 
-        IDENTICAL to midtilt_cmaes._obj_viol._pen: a tiny dust-guard (ignore sub-1e-9 rounding),
+        IDENTICAL to seed_search._obj_viol._pen: a tiny dust-guard (ignore sub-1e-9 rounding),
         then a flat hit the moment you cross plus a smoothly-growing surcharge (quadratic by
         default, exponential if selected). Kept byte-identical so the GA scores the same.
         """

@@ -586,11 +586,11 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
         _is_mc = (_scheme == "mastercard")
         try:
             if _is_mc:
-                from routing_optimiser.mastercard_forecast_pipeline import (
+                from routing_optimiser.s2_forecast.mastercard_forecast_pipeline import (
                     build_mc_pipeline_config as build_pipeline_config,
                     run_mastercard_pipeline as run_vamp_pipeline)
             else:
-                from routing_optimiser.vamp_forecast_pipeline import (build_pipeline_config,
+                from routing_optimiser.s2_forecast.vamp_forecast_pipeline import (build_pipeline_config,
                                                                  run_vamp_pipeline)
         except Exception as _ie:  # noqa: BLE001
             st.error(f"Could not import the pipeline runner: {type(_ie).__name__}: {_ie}")

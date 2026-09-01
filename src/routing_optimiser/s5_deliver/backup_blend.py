@@ -35,7 +35,7 @@ from typing import Dict, Tuple
 
 import pandas as pd
 
-from .schema import TEMPLATE_META_COLUMNS, TEMPLATE_TRAILING_COLUMNS
+from routing_optimiser.s1_extract.schema import TEMPLATE_META_COLUMNS, TEMPLATE_TRAILING_COLUMNS
 
 __build__ = "2026-07-22-backup-blend+rules-to-split+cell-level-catchall"
 

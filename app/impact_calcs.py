@@ -61,7 +61,7 @@ def build_vamp_off_mids(fid2vamp, overrides):
     Returns a frozenset, so it is hashable and stable as an st.cache_data key component.
     """
     from app_common import _vamp_off_gateways
-    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
+    from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway
 
     def _nf(x):
         return str(_canonical_gateway(x)).strip().lower()
@@ -2792,7 +2792,7 @@ def count_pools_for_split(split_long, brand_name, go_live, *, wallet_incapable=f
     that affects the pool count (brand, wallet/country context, mode, caps) is threaded
     through so the count matches what the real export/config-gen will output.
     """
-    from routing_optimiser.connector_pool_configs import generate_configs
+    from routing_optimiser.s5_deliver.connector_pool_configs import generate_configs
     _exp = build_split_exports(
         split_long, brand_name, str(go_live),
         wallet_incapable=wallet_incapable, fid2vamp=fid2vamp, mid_list_path=mid_list_path,
@@ -2816,7 +2816,7 @@ def pool_targeted_core(split_ideal, *, target_pools, wallet_ctx, brand_name, bra
     output. `pool_targeted_compression` wraps this with the ss cache.
     """
     from functools import partial as _partial
-    from routing_optimiser.kmeans_compress import compress_to_pool_budget
+    from routing_optimiser.s5_deliver.kmeans_compress import compress_to_pool_budget
     wc = wallet_ctx or {}
     _si = split_ideal.copy()
     if "cell_volume" not in _si.columns:

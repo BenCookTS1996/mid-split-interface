@@ -254,7 +254,7 @@ def _switched_off_gateways(ov: dict) -> set:
     """Canonicalised, lower-cased gateway ids that are SWITCHED OFF in an already-loaded
     gateway_volume_overrides dict — i.e. target == 0 with apply_to in ("trx", "both").
     Centralises the identical set-building duplicated across the app."""
-    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
+    from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway
     out = set()
     if not isinstance(ov, dict):
         return out
@@ -308,7 +308,7 @@ def _vamp_off_gateways(ov: dict) -> set:
     "both" appears in both helpers deliberately: a gateway switched off for everything takes no
     transactions AND receives no VAMP.
     """
-    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
+    from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway
     out = set()
     if not isinstance(ov, dict):
         return out
@@ -600,7 +600,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # fallback ships the KNOWN-GOOD path, it does not hide it.
                            # ROUTING_BLOCK_RESTRICT=0 / ROUTING_ELIG_INPLACE=0 revert.
                            # NOTE eligibility is shared with the TILT engine
-                           # (midtilt_cmaes), which is why the check is on the function.
+                           # (seed_search), which is why the check is on the function.
                            # 19bi/bj, on Ben's instructions from the 14:09 run.
                            # 19bi ADOPTED G: every index array the band kernel reads is
                            # int32 now (half the index bandwidth, identical values).

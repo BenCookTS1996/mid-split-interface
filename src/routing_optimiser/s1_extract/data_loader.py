@@ -22,8 +22,8 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-from .engines import CellProblem
-from .success_rates import gateway_success_rates, load_success_data
+from routing_optimiser.engines import CellProblem
+from routing_optimiser.s1_extract.success_rates import gateway_success_rates, load_success_data
 
 
 # [FN-048]
@@ -56,7 +56,7 @@ def load_forecast(path: str | None, success_df: pd.DataFrame) -> pd.DataFrame:
     if path is None:
         return synthesise_forecast_from_success(success_df)
     if os.path.isdir(path):  # a pipeline output directory
-        from .vamp_forecast_pipeline import load_pre_forecast
+        from routing_optimiser.s2_forecast.vamp_forecast_pipeline import load_pre_forecast
         return load_pre_forecast(path)
     if path.endswith(".parquet"):
         df = pd.read_parquet(path)
@@ -64,7 +64,7 @@ def load_forecast(path: str | None, success_df: pd.DataFrame) -> pd.DataFrame:
         df = pd.read_csv(path)
     # If this is the VAMP pipeline's effective_rate_impact.csv, normalise its
     # baseline ('Sim_*') columns into the optimiser's forecast contract.
-    from .vamp_forecast_pipeline import (looks_like_effective_rate,
+    from routing_optimiser.s2_forecast.vamp_forecast_pipeline import (looks_like_effective_rate,
                                     normalise_pre_from_effective_rate)
     if looks_like_effective_rate(df):
         return normalise_pre_from_effective_rate(df)
@@ -226,7 +226,7 @@ def build_subcell_problems(
     stays at CELL — so success rates are joined on the CELL key (rpgt,currency,bin,gateway) and
     BROADCAST onto each sub-cell (no pmp/Country split of the thin conversion data). `forecast`
     must already carry `pmp` and `ctry` columns with the volume apportioned to sub-cells (see
-    `routing_optimiser.subcell.expand_forecast_to_subcells`). `bin` is the raw BIN and
+    `routing_optimiser.s3_problem.subcell.expand_forecast_to_subcells`). `bin` is the raw BIN and
     the sub-cell identity is carried on `CellProblem.pmp` / `.ctry`, so the band projector's
     sub-cell scaffold (keyed bin/pmp/ctry) still aligns.
 

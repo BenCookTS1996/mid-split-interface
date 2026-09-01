@@ -59,7 +59,7 @@ def scheme_code(card_scheme):
 # RPGT selector map now lives in schema.py (single source of truth). This module's copy was
 # the authoritative one (it carries SKU_TYPE_PRIMARY on 'Annual Sub Sale'); it has been hoisted
 # to schema so config_generator shares the exact same selectors.
-from .schema import RPGT_MAP
+from routing_optimiser.s1_extract.schema import RPGT_MAP
 
 PROVIDER_TAG = {"non_gp_ap": "", "APPLEPAY": "-ap", "GOOGLEPAY": "-gp"}
 

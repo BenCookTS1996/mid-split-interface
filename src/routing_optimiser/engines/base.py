@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..constraints import HardConstraints, SoftConstraints
+from routing_optimiser.s3_problem.constraints import HardConstraints, SoftConstraints
 
 __build__ = "2026-07-22-bounds-cache+qp-projection+feasible-guard"
 

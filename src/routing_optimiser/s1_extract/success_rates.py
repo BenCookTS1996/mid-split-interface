@@ -15,7 +15,7 @@ import warnings
 import numpy as np
 import pandas as pd
 
-from .schema import SCENARIO_TO_RPGT, SUCCESS_DATA_COLUMNS as C
+from routing_optimiser.s1_extract.schema import SCENARIO_TO_RPGT, SUCCESS_DATA_COLUMNS as C
 
 
 # [FN-226]
@@ -79,7 +79,7 @@ def load_success_data(source) -> pd.DataFrame:
     # non-'-x' sibling. Matches the same rule used for the pipeline forecast,
     # so the two datasets join cleanly per (rpgt, currency, bank, gateway).
     if "gateway" in df.columns:
-        from .vamp_forecast_pipeline import _canonical_gateway
+        from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway
         df["gateway"] = df["gateway"].map(_canonical_gateway)
 
     return df

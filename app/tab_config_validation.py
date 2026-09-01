@@ -17,7 +17,7 @@ import os
 import streamlit as st
 
 try:
-    from routing_optimiser.schema import RPGT_MAP
+    from routing_optimiser.s1_extract.schema import RPGT_MAP
 except Exception:  # noqa: BLE001 - schema should import, but never hard-fail the tab
     RPGT_MAP = {}
 

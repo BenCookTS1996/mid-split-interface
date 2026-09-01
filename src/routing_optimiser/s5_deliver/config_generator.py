@@ -16,7 +16,7 @@ import pandas as pd
 # RPGT selector map now lives in schema.py (single source of truth) — this used to be a
 # local copy that had drifted from connector_pool_configs (missing SKU_TYPE_PRIMARY on
 # 'Annual Sub Sale'). Imported so both generators emit identical selectors.
-from .schema import RPGT_MAP  # noqa: E402
+from routing_optimiser.s1_extract.schema import RPGT_MAP  # noqa: E402
 
 
 # [FN-032]

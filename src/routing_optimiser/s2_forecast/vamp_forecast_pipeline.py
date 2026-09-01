@@ -395,7 +395,7 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
     _is_mc = (("mastercardMid" in _cols) or bool({"CB_Pre", "Sim_CBs", "MC_Txn_Pre"} & _cols)) \
         and not bool({"vampMid", "VAMP_Pre", "Sim_VAMPs", "VI_Txn_Pre"} & _cols)
     if _is_mc:
-        from .mastercard_forecast_pipeline import _normalise_pre as _mc_normalise_pre
+        from routing_optimiser.s2_forecast.mastercard_forecast_pipeline import _normalise_pre as _mc_normalise_pre
         return _mc_normalise_pre(df)
 
     d = df.copy()

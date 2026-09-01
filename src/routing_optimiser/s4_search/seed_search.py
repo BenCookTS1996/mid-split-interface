@@ -1,12 +1,20 @@
 """
-CROSS-CELL per-vampMid TILT SEARCH (Active CMA-ES) — the SEED the full-matrix GA
-warm-starts from, plus the reference fitness every fast kernel is checked against.
+THE WARM-START SEED BUILDER + the reference fitness every fast kernel is checked against.
 
-RENAMED FROM `genetic_global.py` (19fl). The old name said neither what the module
-searches nor what it is for, and "genetic" was wrong twice over: this is CMA-ES, not a
-GA, and the project's actual GA lives next door in `genetic_fullmatrix.py`. Reading the
-old name, it was easy to conclude the file was a legacy engine that nothing used. It is
-not. Nothing runs without it:
+NAME HISTORY, because both previous names caused the same wrong conclusion twice:
+  genetic_global.py  ->  midtilt_cmaes.py  ->  seed_search.py   (19fl, 19fp)
+"genetic_global" said nothing about what it does. "midtilt_cmaes" named the ALGORITHM,
+and naming the algorithm made it read as a legacy CMA-ES engine that had been superseded
+— which it is not. So this name says the ROLE: it builds the seeds the full-matrix GA
+starts from. The CMA-ES inside it (`_cmaes`) is an implementation detail with exactly one
+caller, `run_midtilt_ga`, and that caller is live.
+
+MEASURED, so the question stops being reopened: of this module's 22 top-level functions,
+11 are called from OUTSIDE it and the other 11 are helpers those 11 need. ZERO are
+unreferenced. There is nothing to extract and nothing to leave behind — "take what the
+full-matrix engine needs into a new file" would copy the file.
+
+Nothing runs without it:
 
   run_midtilt_ga            the tilt search itself — CALLED for real by tab 2 at three
                             sites: the Numba warm-up verify, the loky multi-seed workers,
@@ -278,7 +286,7 @@ def _mid_over(shares, ctx, include_floor_shortfall=True):
     repair raises θr (sheds volume), which would push a floor-short MID further from feasibility."""
     _eop = ctx.get("elig_op")
     if _eop is not None:                                     # steer on the ACTUALLY-ROUTABLE shares
-        from .eligibility import apply_elig_pop              # (consistent with the _obj_viol scorer)
+        from routing_optimiser.s3_problem.eligibility import apply_elig_pop              # (consistent with the _obj_viol scorer)
         shares = apply_elig_pop(shares, _eop)
     mid_rows, M = ctx["mid_rows"], int(ctx["n_mid"])
     P = shares.shape[0]
@@ -587,7 +595,7 @@ def _obj_viol(shares, ctx):
         engine AND the numba kernel (`numba_kernels._fused_eval`) — keep all three in lock-step."""
     _eop = ctx.get("elig_op")
     if _eop is not None:                                     # score the ACTUALLY-ROUTABLE shares —
-        from .eligibility import apply_elig_pop              # bans + wallet/USA capability folded in
+        from routing_optimiser.s3_problem.eligibility import apply_elig_pop              # bans + wallet/USA capability folded in
         shares = apply_elig_pop(shares, _eop)                # so the search optimises what will route
     cv, risk, rc = ctx["cell_vol"], ctx["risk"], ctx["rev_coef"]
     mid_rows, M = ctx["mid_rows"], int(ctx["n_mid"])
@@ -698,7 +706,7 @@ def _violation_breakdown(shares, ctx, top_k=20):
     out = {"elig_l1": 0.0, "elig_zeroed": 0}
     _eop = ctx.get("elig_op")
     if _eop is not None:
-        from .eligibility import apply_elig_pop
+        from routing_optimiser.s3_problem.eligibility import apply_elig_pop
         shares = apply_elig_pop(shares, _eop)                # SAME masking _obj_viol scores through
         out["elig_l1"] = float(np.abs(shares - pre).sum())
         out["elig_zeroed"] = int(((pre > 1e-9) & (shares <= 1e-12)).sum())
@@ -1094,7 +1102,7 @@ def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mi
     first, so a band-closer start can be adopted, a worse one ignored. Pure / deterministic,
     unit-tested off the live pipeline; the caller wraps it and falls back to the base split on any
     error."""
-    from .band_scoring import shares_to_prop_raw
+    from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw
     s = np.asarray(base_shares, float).copy()
     elig = np.asarray(elig, float)
     starts = np.asarray(cell_starts, np.intp)
@@ -1377,7 +1385,7 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     _exact_bands = ctx.get("exact_bands")
     _band_inc = ctx.get("band_incidence")
     if _exact_bands is not None and _band_inc is not None:
-        from .band_scoring import shares_to_prop_raw as _s2pr
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
 
         # [FN-128]
         def _bands_pen(X):
@@ -1455,9 +1463,9 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
         # kernel silently optimising the wrong fitness is exactly what this prevents.)
         import traceback as _nb_tb
         ga_numba_info["reason"] = ""
-        from . import numba_kernels as _nbk
+        from routing_optimiser.s4_search import numba_kernels as _nbk
         _nb_build = getattr(_nbk, "__build__", "")
-        _nb_ctx = (f"midtilt_cmaes build={__build__}; numba_kernels build={_nb_build}; "
+        _nb_ctx = (f"seed_search build={__build__}; numba_kernels build={_nb_build}; "
                    f"D={D}, M={M}, N={N}, K={_K}, seed={seed}, numba_trust={bool(numba_trust)}, "
                    f"bfix={float(ctx.get('breach_fixed', 0.0) or 0.0)}")
         if not _nbk.NUMBA_OK:

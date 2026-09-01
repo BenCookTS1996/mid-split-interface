@@ -2,7 +2,7 @@
 
 WHY THIS EXISTS
 ---------------
-The production "genetic" engine (`midtilt_cmaes.run_midtilt_ga`) searches a
+The production "genetic" engine (`seed_search.run_midtilt_ga`) searches a
 COMPACT genome — 3 knobs per vampMid (risk-tilt, return-tilt, gain) — applied as
 a tilt around a reference split, scored on *pooled* Bank x Currency success
 rates. That is fast, stable and hard-compliant, but it can only reach splits that
@@ -51,7 +51,7 @@ import os as _os_gf
 
 import numpy as np
 
-from routing_optimiser.rowpar import row_parallel as _rowpar
+from routing_optimiser.s4_search.rowpar import row_parallel as _rowpar
 
 # Persistent Numba cache (same folder GA-Numba uses) so the one-time kernel compile
 # is NOT repaid every run — reclaimed time goes to search. setdefault => an explicit

@@ -12,8 +12,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .constraints import OptimiserSettings
-from .engines import CellProblem, get_engine
+from routing_optimiser.s3_problem.constraints import OptimiserSettings
+from routing_optimiser.engines import CellProblem, get_engine
 
 __build__ = "2026-07-29-vamp-lp-singlegw-fixed-cell-revival"
 

@@ -69,7 +69,7 @@ Also include it wherever `genetic`/`genetic_numba` are treated as genetic, e.g.:
 and after `_comp_share_G` exists, ~line 4205):**
 ```python
         if engine_key == "genetic_fullmatrix":
-            from routing_optimiser.genetic_fullmatrix import (
+            from routing_optimiser.s4_search.genetic_fullmatrix import (
                 problem_from_ctx, run_fullmatrix_ga, reconstruct_full_split)
             # soft ceiling: ride to 1.25x the hard cap in-search; enforcement
             # tightens back to the hard cap. Pull per-MID overrides from the

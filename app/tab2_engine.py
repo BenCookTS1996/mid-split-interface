@@ -112,7 +112,7 @@ def render():
                           "trigger this from a SECOND browser tab (or `touch runs/_stop`) to stop a "
                           "run already in progress."):
             try:
-                from routing_optimiser.run_bundle import request_stop as _rq_stop
+                from routing_optimiser.s5_deliver.run_bundle import request_stop as _rq_stop
                 _rd_stop = os.path.join(PROJECT_ROOT, "runs")
                 os.makedirs(_rd_stop, exist_ok=True)     # so the signal path is always runs/_stop
                 _rq_stop(_rd_stop)
@@ -179,7 +179,7 @@ def render():
         # `optimise_split(agg_problems, ref_settings)` call below. Removing them from the
         # registry would break all three; removing them from this list only hides them.
         choices = []
-        # The Genetic algorithm is the cross-cell per-vampMid tilt GA (midtilt_cmaes.run_midtilt_ga),
+        # The Genetic algorithm is the cross-cell per-vampMid tilt GA (seed_search.run_midtilt_ga),
         # dispatched directly by the app (not a registry engine). CONSOLIDATED: the former separate
         # 'genetic' (NumPy) and 'genetic_numba' options are gone — there is now ONE genetic engine:
         # the Numba fused kernel (verify-or-fallback to NumPy, so it can never produce a different
@@ -958,7 +958,7 @@ def render():
             # Mid-run STOP: clear any stale signal, then make a poller the GA checks each generation
             # (halts + keeps best-so-far when the sidebar 'Stop' writes the signal).
             try:
-                from routing_optimiser.run_bundle import clear_stop as _clr_stop, make_stop_check as _mk_stop
+                from routing_optimiser.s5_deliver.run_bundle import clear_stop as _clr_stop, make_stop_check as _mk_stop
                 _runs_dir_stop = os.path.join(PROJECT_ROOT, "runs")
                 os.makedirs(_runs_dir_stop, exist_ok=True)   # signal path is always runs/_stop
                 _clr_stop(_runs_dir_stop)
@@ -1358,13 +1358,13 @@ def render():
                               f"pandas {pd.__version__} · numpy {np.__version__}")
                         _diag(f"   APP_BUILD: {APP_BUILD.split(' · ')[0]}")
                         _diag("   backend build markers (if any ≠ expected → stale bytecode; clear __pycache__):")
-                        for _m in ["routing_optimiser.optimiser", "routing_optimiser.eligibility",
-                                   "routing_optimiser.success_rates", "routing_optimiser.vamp_forecast_pipeline",
-                                   "routing_optimiser.data_loader", "routing_optimiser.sql_runner",
-                                   "routing_optimiser.constraints", "routing_optimiser.engines.base",
+                        for _m in ["routing_optimiser.s3_problem.optimiser", "routing_optimiser.s3_problem.eligibility",
+                                   "routing_optimiser.s1_extract.success_rates", "routing_optimiser.s2_forecast.vamp_forecast_pipeline",
+                                   "routing_optimiser.s1_extract.data_loader", "routing_optimiser.s1_extract.sql_runner",
+                                   "routing_optimiser.s3_problem.constraints", "routing_optimiser.engines.base",
                                    "routing_optimiser.engines.softmax", "routing_optimiser.engines.thompson",
-                                   "routing_optimiser.midtilt_cmaes", "routing_optimiser.engines.portfolio",
-                                   "routing_optimiser.band_projection"]:
+                                   "routing_optimiser.s4_search.seed_search", "routing_optimiser.engines.portfolio",
+                                   "routing_optimiser.s4_search.band_projection"]:
                             _diag(f"      {_m.split('.')[-1]:16s} {_bmark(_m)}")
                         # impact_calcs is imported by-name (from impact_calcs import ...), so the module
                         # object isn't in scope — import it explicitly so its build marker is ALWAYS
@@ -1382,7 +1382,7 @@ def render():
                             import os as _os_l
                             import sys as _sys_l
                             import time as _time_l
-                            _lm = _sys_l.modules.get("routing_optimiser.band_projection")
+                            _lm = _sys_l.modules.get("routing_optimiser.s4_search.band_projection")
                             if _lm is None:
                                 _diag("   [loaded] band_projection is NOT imported yet — nothing "
                                       "to check.")
@@ -1598,7 +1598,7 @@ def render():
                     # together; it would bite the first time one is regenerated alone.
                     # Keying on ALL of them also removes the dependency on the resolution ORDER.
                     try:
-                        from routing_optimiser.vamp_forecast_pipeline import (
+                        from routing_optimiser.s2_forecast.vamp_forecast_pipeline import (
                             PRE_SOURCE_FILES as _FC_SRCS)
                     except Exception:  # noqa: BLE001 - never let a cache key break the run
                         _FC_SRCS = ["vamp_t_period_prorata_export.csv",
@@ -1721,7 +1721,7 @@ def render():
                     # the gateway IS in the list with real (non-EXCLUDED) currencies.
                     try:
                         if os.path.exists(mid_list_path) and {"gateway", "currency"}.issubset(adf.columns):
-                            from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
+                            from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway
                             _mm = load_mid_list(mid_list_path)
                             _cc = _norm_cols(_mm)
                             _gcol, _curcol = _cc.get("gatewayfid"), _cc.get("currency")
@@ -1748,7 +1748,7 @@ def render():
                         _ovr_path = os.path.join(PROJECT_ROOT, "config", "inputs", "gateway_volume_overrides.json")
                         if os.path.exists(_ovr_path) and "gateway" in adf.columns:
                             import json as _json
-                            from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
+                            from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway
                             with open(_ovr_path) as _fh:
                                 _ovr = _json.load(_fh)
                             _excl = _switched_off_gateways(_ovr)
@@ -2036,8 +2036,8 @@ def render():
                     # exploration floor. `_inj_fc_keys` tracks them for that seeding step.
                     _inj_fc_keys = []
                     try:
-                        from routing_optimiser.eligibility import load_explore_gateways as _load_expl
-                        from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_ex
+                        from routing_optimiser.s3_problem.eligibility import load_explore_gateways as _load_expl
+                        from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg_ex
                         _rr_p = os.path.join(PROJECT_ROOT, "config", "inputs", "routing_restrictions.json")
                         _explore = set(_load_expl(_rr_p))
                         _fid_cur = {}
@@ -2228,7 +2228,7 @@ def render():
                             _ccx = _norm_cols(_mmx)
                             _gx, _xb = _ccx.get("gatewayfid"), _ccx.get("iscrossborder")
                             if _gx and _xb:
-                                from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
+                                from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway
                                 _flag = _mmx[_xb].astype(str).str.strip().str.upper().isin(["TRUE", "T", "1", "YES", "Y"])
                                 xborder_fids = set(_mmx.loc[_flag, _gx].map(_canonical_gateway).astype(str).str.strip().str.lower())
                     except Exception as e:
@@ -2304,7 +2304,7 @@ def render():
                             # (a same-processor rate is a better prior than the bank×currency average).
                             _fid_pb = {}
                             try:
-                                from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_sib
+                                from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg_sib
                                 if os.path.exists(mid_list_path):
                                     _mms = load_mid_list(mid_list_path)
                                     _ccs = _norm_cols(_mms)
@@ -2400,7 +2400,7 @@ def render():
                     # case (~46% of volume on switched-off gateways, dragging Expected SR/revenue down).
                     # This is the single choke through which every candidate reaches build_cell_problems.
                     try:
-                        from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_off
+                        from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg_off
                         _ovr_off = ss.get("gateway_volume_overrides") or {}
                         _off_route = _switched_off_gateways(_ovr_off)
                         if _off_route and "gateway" in agg_forecast.columns:
@@ -2440,7 +2440,7 @@ def render():
                     if (os.environ.get("ROUTING_MIDLIST_FILTER", "1") != "0"
                             and "gateway" in agg_forecast.columns):
                         try:
-                            from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_mf
+                            from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg_mf
                             _mf_cur, _mf_brand, _mf_act, _mf_excl = {}, {}, {}, set()
                             if os.path.exists(mid_list_path):
                                 _mmf = load_mid_list(mid_list_path)
@@ -2566,9 +2566,9 @@ def render():
                         # (pmp, Country) sub-cells by the pro-rata export's VI-Txn fractions (volume
                         # glue), then assemble one problem per sub-cell (success rates BROADCAST from
                         # cell grain). build_cell_problems is left untouched for the cell-grain path.
-                        from routing_optimiser.subcell import (subcell_vi_fractions,
+                        from routing_optimiser.s3_problem.subcell import (subcell_vi_fractions,
                                                                expand_forecast_to_subcells)
-                        from routing_optimiser.data_loader import build_subcell_problems
+                        from routing_optimiser.s1_extract.data_loader import build_subcell_problems
                         _ppf_sc = (os.path.join(out_dir, "vamp_t_period_prorata_export.csv")
                                    if out_dir else None)
                         if not (_ppf_sc and os.path.exists(_ppf_sc)):
@@ -2593,7 +2593,7 @@ def render():
                         if (_mf_w and os.environ.get("ROUTING_MIDLIST_WALLET", "1") != "0"
                                 and "pmp" in _agg_sc.columns and "gateway" in _agg_sc.columns):
                             try:
-                                from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_w
+                                from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg_w
                                 _gw2 = _agg_sc["gateway"].map(_cg_w).astype(str).str.strip().str.lower().tolist()
                                 _wal2 = _agg_sc["pmp"].astype(str).str.strip().str.lower().isin(
                                     ["googlepay", "applepay"]).to_numpy()
@@ -2910,14 +2910,14 @@ def render():
                     # Reference = conversion-optimal split (no per-cell cap). The risk
                     # constraint is applied CROSS-CELL, per vampMid, afterwards.
                     from routing_optimiser import optimiser as _optmod
-                    from routing_optimiser.optimiser import (enforce_mid_vamp_caps, enforce_mid_volume_caps)
+                    from routing_optimiser.s3_problem.optimiser import (enforce_mid_vamp_caps, enforce_mid_volume_caps)
                     # 19fk: the pre-clustering swap that used to sit here is gone with
                     # routing_optimiser.precluster — it was gated on `ss['ga_precluster']`, which
                     # could not be True once the dropdown held only 'genetic_fullmatrix'.
                     # `_run_midtilt_ga` IS the plain search, and it is called for real: the numba
                     # warm-up, the loky seed workers, and the single-seed in-process path all use
                     # it to produce the tilt seed the full-matrix GA warm-starts from.
-                    from routing_optimiser.midtilt_cmaes import run_midtilt_ga as _run_midtilt_ga
+                    from routing_optimiser.s4_search.seed_search import run_midtilt_ga as _run_midtilt_ga
                     # The parenthetical used to read "(expect 2026-07-16-vamp-frontier-lp — if not,
                     # clear __pycache__)". The shipped module is 2026-07-29-…, i.e. NEWER than the
                     # literal, so that line told the operator to clear __pycache__ on every single
@@ -3215,7 +3215,7 @@ def render():
                     # vampMids fully switched off in overrides — excluded from the projection,
                     # matching the tab-4 VAMP impact table. (Defined before the scaffold below,
                     # which references it.)
-                    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _canon_gw
+                    from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _canon_gw
                     _ovr2 = ss.get("gateway_volume_overrides") or {}
                     _off2 = set()
                     for _gwid, _cfg in (_ovr2.items() if isinstance(_ovr2, dict) else []):
@@ -3583,8 +3583,8 @@ def render():
                         _uo_set = {str(x).strip().lower() for x in (_wc_es.get("usa_only") or set())}
                         _wc_pairs, _uo_pairs, _pair_src = set(), set(), "none"
                         try:
-                            from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_pk
-                            from routing_optimiser.eligibility import load_usa_only as _lu_pk
+                            from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg_pk
+                            from routing_optimiser.s3_problem.eligibility import load_usa_only as _lu_pk
                             _cap_w, _cap_a, _vc_of = {}, {}, {}
                             if os.path.exists(mid_list_path):
                                 # NB: locals here are suffixed _pk — `_mmp` further UP this function
@@ -3991,7 +3991,7 @@ def render():
                     # Applied to the exploded (per-RPGT) split: banned gateways are zeroed
                     # and volume redistributed to eligible ones; wallet-incapable gateways
                     # keep only their non-wallet share.
-                    from routing_optimiser.eligibility import (
+                    from routing_optimiser.s3_problem.eligibility import (
                         load_restrictions, load_usa_only, apply_restrictions, unenforceable_fields)
                     _rr_path = os.path.join(PROJECT_ROOT, "config", "inputs", "routing_restrictions.json")
                     _elig_rules = load_restrictions(_rr_path)
@@ -4152,7 +4152,7 @@ def render():
                     _bcatch_ga = ss.get("backup_catchall") or {}
                     if _bcatch_ga and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
                         try:
-                            from routing_optimiser.backup_blend import blend_cell_shares as _bcs4
+                            from routing_optimiser.s5_deliver.backup_blend import blend_cell_shares as _bcs4
                             from collections import defaultdict as _dd4
                             _ar, _cr = _dd4(lambda: _dd4(float)), _dd4(int)
                             _aa, _ca4 = _dd4(lambda: _dd4(float)), _dd4(int)
@@ -4281,7 +4281,7 @@ def render():
                             return
                         _band_diag_state["done"] = True
                         try:
-                            from routing_optimiser.band_projection import BandProjector as _BP
+                            from routing_optimiser.s4_search.band_projection import BandProjector as _BP
                             if _band_diag_state["bp"] is None:
                                 _fr = _band_frames()
                                 if _fr is None:
@@ -4327,7 +4327,7 @@ def render():
                         _band_diag_state["cost_done"] = True
                         try:
                             import time as _time
-                            from routing_optimiser.band_projection import PopulationBandProjector as _PBP
+                            from routing_optimiser.s4_search.band_projection import PopulationBandProjector as _PBP
                             _fr = _band_frames()
                             if _fr is None:
                                 log("   [gate-2 cost probe: no cap scaffold this run — skipped]")
@@ -4438,7 +4438,7 @@ def render():
                             log(f"   [pbp-build] _band_frames() returned nothing after "
                                 f"{_pbp_t1 - _pbp_t0:.1f}s — no cap scaffold this run.")
                             return None
-                        from routing_optimiser.band_projection import PopulationBandProjector as _PBP
+                        from routing_optimiser.s4_search.band_projection import PopulationBandProjector as _PBP
                         _T0a, _Pca, _poolarr, _bset, _byr = _fr
                         # max_share (0.97) folds the per-sub-cell max-share cap into the fitness
                         # projection so the GA scores the DELIVERED breach (proven: the cap is the
@@ -4534,7 +4534,7 @@ def render():
                         _band_diag_state["enab_done"] = True
                         try:
                             import time as _time
-                            from routing_optimiser.band_projection import PopulationBandProjector as _PBP
+                            from routing_optimiser.s4_search.band_projection import PopulationBandProjector as _PBP
                             _fr = _band_frames()
                             if _fr is None:
                                 log("   [gate-2 enabler probes: no cap scaffold this run — skipped]")
@@ -4707,8 +4707,8 @@ def render():
                         # end up worse than softmax on revenue; the output then runs through
                         # the exact enforcement, so it matches softmax on compliance. λ (from
                         # the slider) still shapes the GA's own search.
-                        import routing_optimiser.midtilt_cmaes as _gg
-                        log(f"   midtilt_cmaes build: {getattr(_gg, '__build__', '?')} — the "
+                        import routing_optimiser.s4_search.seed_search as _gg
+                        log(f"   seed_search build: {getattr(_gg, '__build__', '?')} — the "
                             "CROSS-CELL per-vampMid tilt search (Active CMA-ES) that produces the "
                             "seed the full-matrix GA warm-starts from; own revenue-greedy "
                             "reference (genetic_ref, not softmax) + exact hard enforcement.")
@@ -4932,8 +4932,8 @@ def render():
                         if (os.environ.get("ROUTING_GA_ELIG", "1") != "0"
                                 and (_elig_rules or _wallet_incapable or _usa_only)):
                             try:
-                                from routing_optimiser.eligibility import build_elig_operator as _build_elig_op
-                                import routing_optimiser.eligibility as _elig_mod_bl
+                                from routing_optimiser.s3_problem.eligibility import build_elig_operator as _build_elig_op
+                                import routing_optimiser.s3_problem.eligibility as _elig_mod_bl
                                 _rpgt_col = (G["rpgt"].astype(str).to_numpy() if "rpgt" in G.columns
                                              else np.array([str(c).split("|")[-1] for c in _cellk]))
                                 # pmp / ctry are what make the capability rules EXACT: at sub-cell
@@ -4975,7 +4975,7 @@ def render():
                                 # silently accept it.
                                 if _elig_op.get("n_rows") is None:
                                     log("   [elig-grain] \u26a0\u26a0 THE OPERATOR HAS NO `n_rows` KEY. "
-                                        "routing_optimiser.eligibility is an OLD build without "
+                                        "routing_optimiser.s3_problem.eligibility is an OLD build without "
                                         "+exact-subcell-capability, so the GA cannot see pure "
                                         "wallet / pure-USA sub-cells and will score a split it does "
                                         "not ship. This is what broke reconciliation at 17:21 on "
@@ -5147,8 +5147,8 @@ def render():
                         if _ga_bands and _mid_month_rules:
                             try:
                                 import scipy.sparse as _spx
-                                from routing_optimiser.midtilt_cmaes import run_midtilt_ga as _plain_ga
-                                from routing_optimiser.band_scoring import ExactBandPenalty as _EBP, BandSpec as _BSpec
+                                from routing_optimiser.s4_search.seed_search import run_midtilt_ga as _plain_ga
+                                from routing_optimiser.s4_search.band_scoring import ExactBandPenalty as _EBP, BandSpec as _BSpec
                                 # ── [band-setup] 19fn: the block that used to be silent ───────
                                 # Everything from here to the [inc-build] line below ran with no
                                 # label at all: ~130s on the 2026-09-01 12:23 run, the single
@@ -5411,7 +5411,7 @@ def render():
                             if _scx is not None and _epx_sc is not None and not _scx["done"]:
                                 _scx["done"] = True
                                 try:
-                                    from routing_optimiser.band_scoring import shares_to_prop_raw as _s2pr_chk
+                                    from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr_chk
                                     _projx = _epx_sc.projector
                                     _kpx = {str(k): i for i, k in enumerate(_projx.prop_keys)}
                                     _pr_inc = _s2pr_chk(np.asarray(_sh, float)[None, :], _scx["inc"])[0]
@@ -5566,7 +5566,7 @@ def render():
                                 # next backend / sequential path, byte-identical to before.
                                 import concurrent.futures as _cf, shutil as _shutil
                                 try:
-                                    from routing_optimiser.run_bundle import _ProgressWriter as _PW
+                                    from routing_optimiser.s5_deliver.run_bundle import _ProgressWriter as _PW
                                 except Exception:  # noqa: BLE001
                                     _PW = None
                                 # CRITICAL: keep the per-seed progress files on a LOCAL disk, NOT inside
@@ -5726,7 +5726,7 @@ def render():
                                         _wbuild = getattr(_gg, "__build__", "?")
                                         log("   GA-Numba pre-compile FAILED — failing loudly (no silent "
                                             f"NumPy fallback).\n      error: {type(_we).__name__}: {_we}\n"
-                                            f"      midtilt_cmaes build: {_wbuild}\n"
+                                            f"      seed_search build: {_wbuild}\n"
                                             f"      traceback:\n{_wtb.format_exc()}")
                                         raise
 
@@ -5948,7 +5948,7 @@ def render():
                                         _scx2 = ctx.get("_exact_bands_selfcheck") if isinstance(ctx, dict) else None
                                         _mcn2 = params.get("mid_constraints", []) if isinstance(params, dict) else []
                                         if _epx is not None and _scx2 is not None and _mcn2:
-                                            from routing_optimiser.band_scoring import shares_to_prop_raw as _s2pr_rep
+                                            from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr_rep
                                             _pr_rep = _s2pr_rep(np.asarray(_sh, float)[None, :], _scx2["inc"])
                                             _now_by = {}
                                             for _bd in _epx.report(_pr_rep):
@@ -6272,7 +6272,7 @@ def render():
                                 # Reaching 0 breach is a genuine feasibility CERTIFICATE (a compliant
                                 # split exists); non-zero is a strong — not proof — infeasibility signal.
                                 try:
-                                    from routing_optimiser.band_scoring import shares_to_prop_raw as _s2pr_seed
+                                    from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr_seed
                                     _inc_seed = ctx["_exact_bands_selfcheck"]["inc"]
                                     _v0 = float(ctx["exact_bands"].penalty(
                                         _s2pr_seed(np.asarray(_comp_share_G, float)[None, :], _inc_seed))[0])
@@ -6320,7 +6320,7 @@ def render():
                             # MIDs at 0 (the exact projector / global-LP below re-optimise WITHIN this floor).
                             if _catchall_row_mask is not None and _fm_catch_eps > 0:
                                 try:
-                                    from routing_optimiser.exact_band_solver import (
+                                    from routing_optimiser.s4_search.exact_band_solver import (
                                         floor_catchall_shares as _fcs_seed)
                                     _rg_mask = _catchall_row_mask & (np.asarray(ctx["elig"], float) > 0.5)
                                     _risk_greedy_G = _fcs_seed(
@@ -6354,7 +6354,7 @@ def render():
                                     and isinstance(ctx.get("_exact_bands_selfcheck"), dict)
                                     and ctx["_exact_bands_selfcheck"].get("inc") is not None):
                                 try:
-                                    from routing_optimiser.exact_band_solver import solve_least_breach as _slb
+                                    from routing_optimiser.s4_search.exact_band_solver import solve_least_breach as _slb
                                     _inc_x = ctx["_exact_bands_selfcheck"]["inc"]
                                     # Start the successive-LP from the BAND-AWARE seed (the greedy
                                     # constrained-projection split, breach ~0.07), NOT the revenue-greedy
@@ -6386,7 +6386,7 @@ def render():
                                         # NOT here is reachable. (Raw-share view: delivery only removes volume,
                                         # so a ceiling breach here is a strong signal; a floor may ease slightly.)
                                         try:
-                                            from routing_optimiser.band_scoring import (
+                                            from routing_optimiser.s4_search.band_scoring import (
                                                 shares_to_prop_raw as _s2pr_x)
                                             _pr_x = _s2pr_x(np.asarray(_exact_G, float)[None, :], _inc_x)
                                             _stuck = []
@@ -6423,7 +6423,7 @@ def render():
                                 # ≤ this seed's. Never-worse internally (returns base if it can't improve).
                                 _move_G = None
                                 try:
-                                    from routing_optimiser.exact_band_solver import (
+                                    from routing_optimiser.s4_search.exact_band_solver import (
                                         solve_targeted_moves as _stm)
                                     _stm_base = np.asarray(
                                         locals().get("_exact_G") if locals().get("_exact_G") is not None
@@ -6476,7 +6476,7 @@ def render():
                                     # If 'held' is far larger than expected, mv = pro_rata × fcp1_frac is
                                     # understated upstream. Read-only; never breaks the run.
                                     try:
-                                        from routing_optimiser.exact_band_solver import held_movable_report as _hm
+                                        from routing_optimiser.s4_search.exact_band_solver import held_movable_report as _hm
                                         _hm_split = np.asarray(
                                             locals().get("_exact_G") if locals().get("_exact_G") is not None
                                             else locals().get("_risk_greedy_G", _comp_share_G), float)
@@ -6493,7 +6493,7 @@ def render():
                                     # the cause. The config exploration_floor is passed only as a clearly-labelled
                                     # "what-if" (it is NOT enforced by this engine). Read-only; never breaks the run.
                                     try:
-                                        from routing_optimiser.exact_band_solver import floor_min_report as _fmin
+                                        from routing_optimiser.s4_search.exact_band_solver import floor_min_report as _fmin
                                         _fmin_split = np.asarray(
                                             locals().get("_exact_G") if locals().get("_exact_G") is not None
                                             else locals().get("_risk_greedy_G", _comp_share_G), float)
@@ -6512,7 +6512,7 @@ def render():
                                     # Cells where it's the SOLE VAMP gateway are structurally immovable by the
                                     # softmax engine. Read-only; never breaks the run.
                                     try:
-                                        from routing_optimiser.exact_band_solver import vamp_sibling_report as _vsib
+                                        from routing_optimiser.s4_search.exact_band_solver import vamp_sibling_report as _vsib
                                         _vsib_split = np.asarray(
                                             locals().get("_exact_G") if locals().get("_exact_G") is not None
                                             else locals().get("_risk_greedy_G", _comp_share_G), float)
@@ -6525,7 +6525,7 @@ def render():
                                     # #3 seed gradient, #4 vpsum, #5 usable-recipient. All one-shot at the seed;
                                     # never break the run.
                                     try:
-                                        from routing_optimiser.exact_band_solver import (
+                                        from routing_optimiser.s4_search.exact_band_solver import (
                                             incidence_selfcheck_report as _isc,
                                             seed_gradient_report as _sgr,
                                             vpsum_report as _vpr,
@@ -6560,7 +6560,7 @@ def render():
                                     # present as an eligible gateway-row? Answers "search failure vs true
                                     # cell-grain infeasibility". Changes NO share; never breaks the run.
                                     try:
-                                        from routing_optimiser.exact_band_solver import colocation_report as _colo
+                                        from routing_optimiser.s4_search.exact_band_solver import colocation_report as _colo
                                         _dg_split = np.asarray(
                                             locals().get("_exact_G") if locals().get("_exact_G") is not None
                                             else locals().get("_risk_greedy_G", _comp_share_G), float)
@@ -6582,7 +6582,7 @@ def render():
                                     # which it doesn't, in ONE format — so the seeds are directly comparable at
                                     # a glance (which one clears the most MIDs). Read-only; never breaks the run.
                                     try:
-                                        from routing_optimiser.exact_band_solver import unmet_summary as _unmet
+                                        from routing_optimiser.s4_search.exact_band_solver import unmet_summary as _unmet
                                         _sinc = ctx["_exact_bands_selfcheck"]["inc"]
                                         _seed_pairs = [("band-aware", locals().get("_risk_greedy_G")),
                                                        ("exact-proj", locals().get("_exact_G")),
@@ -6652,7 +6652,7 @@ def render():
                                 and isinstance(ctx.get("_exact_bands_selfcheck"), dict)
                                 and ctx["_exact_bands_selfcheck"].get("inc") is not None):
                             try:
-                                from routing_optimiser.band_scoring import shares_to_prop_raw as _s2pr_anc
+                                from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr_anc
                                 _inc_anc = ctx["_exact_bands_selfcheck"]["inc"]
                                 _cands = [("revenue-greedy compliant", np.asarray(_comp_share_G, float)),
                                           ("band-aware seed", np.asarray(_risk_greedy_G, float))]
@@ -6866,7 +6866,7 @@ def render():
                         # soft cap, then LP-tighten) is deferred until enforcement is re-wired.
                         if engine_key == "genetic_fullmatrix":
                             try:
-                                from routing_optimiser.genetic_fullmatrix import (
+                                from routing_optimiser.s4_search.genetic_fullmatrix import (
                                     problem_from_ctx as _fm_prob, run_fullmatrix_ga as _fm_run,
                                     reconstruct_full_split as _fm_recon)
                                 # ---- per-MID BAND constraints for the full-matrix problem ----
@@ -6912,7 +6912,7 @@ def render():
                                         "projector is unavailable (ctx['exact_bands'] / incidence missing). "
                                         "The 30-day linear proxy has been removed, so there is no fallback — "
                                         "fix the exact-bands build upstream. (engine=genetic_fullmatrix)")
-                                from routing_optimiser.band_scoring import shares_to_prop_raw as _fm_s2pr_raw
+                                from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _fm_s2pr_raw
                                 # ── Backup-blend FOLDED INTO the fitness ───────────────────────────────────
                                 # The deployed pipeline (tab 5) re-adds the backup catch-all incumbents onto any
                                 # gateway the split zeroed (its parser drops Share==0 and the catch-all back-fills),
@@ -7060,8 +7060,8 @@ def render():
                                     # projector's). Without it the GA scored the RAW pre-eligibility split, so
                                     # the live 'MID unmet' UNDER-counted vs tab 3's delivered breakdown (e.g. 3
                                     # vs 5). No-op if eligibility is disabled (ROUTING_GA_ELIG=0 / elig_op None).
-                                    from routing_optimiser.eligibility import apply_elig_pop as _apply_elig_pop
-                                    from routing_optimiser.rowpar import row_parallel as _fm_rowpar
+                                    from routing_optimiser.s3_problem.eligibility import apply_elig_pop as _apply_elig_pop
+                                    from routing_optimiser.s4_search.rowpar import row_parallel as _fm_rowpar
                                     _fm_elig_op = ctx.get("elig_op")
                                     def _fm_elig(_farr, _op=_fm_elig_op, _ap=_apply_elig_pop):
                                         return _ap(_farr, _op) if _op is not None else _farr
@@ -7282,7 +7282,7 @@ def render():
                                     # shape) and this keeps the two from ever meeting.
                                     _fm_rp_ok = True
                                     try:
-                                        import routing_optimiser.eligibility as _fm_elmod
+                                        import routing_optimiser.s3_problem.eligibility as _fm_elmod
                                         _fm_rp_ok = not bool(getattr(_fm_elmod, "_EP_INPLACE", False))
                                     except Exception:  # noqa: BLE001
                                         _fm_rp_ok = True
@@ -7490,7 +7490,7 @@ def render():
                                     # which is why this is a second block rather than a fix in place.
                                     if os.environ.get("ROUTING_SEED_BASIS", "1") != "0":
                                         try:
-                                            from routing_optimiser.exact_band_solver import (
+                                            from routing_optimiser.s4_search.exact_band_solver import (
                                                 unmet_summary as _sb_unmet)
                                             log("   [seed-basis] each candidate seed on BOTH bases — "
                                                 "RAW (what the summary above scores) vs DELIVERED "
@@ -8577,7 +8577,7 @@ def render():
                                     from impact_calcs import (
                                         enforced_prop_items as _pj_epi,
                                         compute_vamp_prepost_granular as _pj_cvp)
-                                    from routing_optimiser.backup_blend import (
+                                    from routing_optimiser.s5_deliver.backup_blend import (
                                         blend_prop_items as _pj_bpi)
                                     _pj = {"ke": (), "m0": None, "ready": False, "hits": 0,
                                            "miss": 0, "t_epi": 0.0, "t_cvp": 0.0}
@@ -8604,7 +8604,7 @@ def render():
                                         _pj["ready"] = True
                                         try:
                                             from impact_calcs import build_kill_eff as _pj_bke
-                                            from routing_optimiser.vamp_forecast_pipeline import (
+                                            from routing_optimiser.s2_forecast.vamp_forecast_pipeline import (
                                                 _canonical_gateway as _pj_cg)
                                             _feff = {}
                                             _ovr = ss.get("gateway_volume_overrides")
@@ -9440,7 +9440,7 @@ def render():
                                         # measured a path the run no longer takes would be worse
                                         # than no block at all.
                                         try:
-                                            import routing_optimiser.band_projection as _kbcb
+                                            import routing_optimiser.s4_search.band_projection as _kbcb
                                             if getattr(_kbcb, "_PROJ_CB_ON", False) and \
                                                     _kbcb._CB_OK.get("use"):
                                                 log("      NOTE: row A is the FLAT kernel, which "
@@ -10343,7 +10343,7 @@ def render():
                                     # diff against tab-3's VAMP_Post per RPGT and localise the scored-vs-
                                     # delivered gap. Read-only; never breaks the run.
                                     try:
-                                        from routing_optimiser.exact_band_solver import (
+                                        from routing_optimiser.s4_search.exact_band_solver import (
                                             insearch_rpgt_breakdown as _irb)
                                         for _ln in _irb(_fm_deliv(_dg)[0], _fm_eb, _fm_inc):
                                             log(_ln)
@@ -10366,7 +10366,7 @@ def render():
                                     log(f"   [elig-nocap] note unavailable "
                                         f"({type(_ncnE).__name__}: {_ncnE}) \u2014 MEASUREMENT ONLY.")
                                 try:
-                                    import routing_optimiser.rowpar as _rp_mod
+                                    import routing_optimiser.s4_search.rowpar as _rp_mod
                                     _rp_msgs = list(_rp_mod.messages())
                                     if _rp_msgs:
                                         for _rpm in _rp_msgs:
@@ -10690,7 +10690,7 @@ def render():
                                               else "no backup catch-all configured"))
                                 elif _rec_bc and _rec_ep and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
                                     try:
-                                        from routing_optimiser.backup_blend import (
+                                        from routing_optimiser.s5_deliver.backup_blend import (
                                             blend_prop_items as _rec_bpi)
                                         # Report the SHARE MASS the blend moves, not the item COUNT —
                                         # blend_prop_items renormalises every cell, so it can change
@@ -11386,7 +11386,7 @@ def render():
                                             #     (psum>0 AND vpsum>0) fires on different rows.
                                             #   POOL Δ ⇒ the two sides disagree on the pool itself.
                                             try:
-                                                import routing_optimiser.band_projection as _bpm_v
+                                                import routing_optimiser.s4_search.band_projection as _bpm_v
                                                 _dvt = getattr(_ic_t, "_LAST_VAMP_TERMS", None)
                                                 _vcp = np.asarray(getattr(_pj, "_vcpos", []), float)
                                                 _porg = np.asarray(getattr(_pj, "_pc_org", []), np.int64)
@@ -13340,7 +13340,7 @@ def render():
                                                     # it — silently, since the block is guarded.
                                                     import sys as _sys_vt
                                                     _bp_mod = _sys_vt.modules.get(
-                                                        "routing_optimiser.band_projection")
+                                                        "routing_optimiser.s4_search.band_projection")
                                                     _ar_on = bool(getattr(_bp_mod, "_AGE_RENORM", True))
                                                     # 19df FIX — READ THE FACT, NOT THE INTENT.
                                                     # This was `os.environ.get(
@@ -14123,7 +14123,7 @@ def render():
                         _company_pc = str(_fs_pc.get("company", "TotalAV"))
                         _gl_pc = ss.get("split_go_live_date", date.today())
                         try:
-                            from routing_optimiser.connector_pool_configs import (
+                            from routing_optimiser.s5_deliver.connector_pool_configs import (
                                 BRANDS as _POOL_BRANDS_PC, company_to_brand_key as _co2brand_pc)
                             _bk_pc = _co2brand_pc(_company_pc)
                             _bn_pc = _POOL_BRANDS_PC.get(_bk_pc, {}).get("name", _company_pc)
@@ -14267,7 +14267,7 @@ def render():
                     # Auto-save a reproducible run bundle (timestamped folder under runs/): the exact
                     # settings used + this run's full log. Best-effort, once per run; never breaks it.
                     try:
-                        from routing_optimiser.run_bundle import write_run_bundle as _wrb
+                        from routing_optimiser.s5_deliver.run_bundle import write_run_bundle as _wrb
                         _rb_cfg = {
                             "engine": str(engine_key),
                             "dials": [v.get("weight") for v in (ss.get("variations") or [])],

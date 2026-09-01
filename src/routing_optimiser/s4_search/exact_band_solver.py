@@ -1,6 +1,6 @@
 """EXACT projector-defined band solver — the "fragile hand-derivation".
 
-This is the exact counterpart to the heuristic `midtilt_cmaes.band_greedy_shares` seed. Where the
+This is the exact counterpart to the heuristic `seed_search.band_greedy_shares` seed. Where the
 heuristic nudges shares with a multiplicative band-correction and hopes the breach falls, this module
 optimises the SAME objective the GA actually scores — the TRUE `PopulationBandProjector` band values —
 using a closed-form analytic Jacobian of that projector, so a proper NLP solver can be used.
@@ -363,7 +363,7 @@ class ExactBandModel:
     # [FN-386]
     def spec_jacobian_shares(self, s: np.ndarray):
         """Exact (spec_values[S], d spec_value / d s[S, N]) in SHARE space via the incidence chain."""
-        from .band_scoring import shares_to_prop_raw
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw
         prop_raw = shares_to_prop_raw(np.asarray(s, float)[None, :], self.incidence)[0]
         _vals, Jprop = self.spec_jacobian_pr(prop_raw)
         Js = np.asarray(Jprop @ self.incidence)                 # (S, K)·(K, N) = (S, N)
@@ -374,7 +374,7 @@ class ExactBandModel:
     def breach(self, s: np.ndarray, *, weighted: bool = False) -> float:
         """Total RELATIVE band breach (same definition as band_greedy): Σ(now/ceil−1)_+ + Σ(1−now/floor)_+.
         This is the exact projector breach — the quantity the solver drives to 0."""
-        from .band_scoring import shares_to_prop_raw
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw
         prop_raw = shares_to_prop_raw(np.asarray(s, float)[None, :], self.incidence)[0]
         vals = self.spec_values(prop_raw)
         tot = 0.0
@@ -392,7 +392,7 @@ class ExactBandModel:
 def _project_capped_simplex_cells(s, cell_starts, cell_counts, elig, cap, budget):
     """Euclidean projection of each cell onto {0 ≤ x ≤ cap over eligible rows, Σ = budget[c]}.
     Reused from the heuristic's closed-form bisection (kept local to avoid a hard import cycle)."""
-    from .midtilt_cmaes import _project_capped_simplex_cells as _p
+    from routing_optimiser.s4_search.seed_search import _project_capped_simplex_cells as _p
     return _p(s, cell_starts, cell_counts, elig, cap, budget)
 
 
@@ -746,7 +746,7 @@ def colocation_report(split, exact_bands, incidence, *, mid_id, cell_starts, cel
     seed that left the band breached failed to SEARCH (not a real infeasibility). Few/none ⇒ a genuine
     cell-grain / RPGT-scope block (the headroom exists at MID level but not in the same cells)."""
     try:
-        from .band_scoring import shares_to_prop_raw as _s2pr
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         s = np.asarray(split, float)
         report = exact_bands.report(_s2pr(s[None, :], incidence))
         # (midl, metric) -> (headroom, now, ceil) for every ceiling band
@@ -839,7 +839,7 @@ def unmet_summary(split, exact_bands, incidence, *, max_list=8):
     satisfies, and names the ones it doesn't (a MID over its ceiling or under its floor). Used to
     compare warm-start seeds at a glance. Never raises — returns '' if it can't be computed."""
     try:
-        from .band_scoring import shares_to_prop_raw as _s2pr
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         rep = exact_bands.report(_s2pr(np.asarray(split, float)[None, :], incidence))
         total = 0
         unmet = []
@@ -877,7 +877,7 @@ def held_movable_report(split, exact_bands, incidence, *, max_list=15):
       * HELD ≥ ceiling  ⇒ STRUCTURALLY STUCK — no routing can clear it under this scope.
     Returns a list of log-line strings; never raises."""
     try:
-        from .band_scoring import shares_to_prop_raw as _s2pr
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         model = ExactBandModel(exact_bands, incidence)
         pr = _s2pr(np.asarray(split, float)[None, :], incidence)[0]
         held, mov = model.spec_decomposition(pr)
@@ -943,7 +943,7 @@ def floor_min_report(split, exact_bands, incidence, *, mid_id, cell_starts, cell
     are counted. ``whatif_floor`` > 0 adds a clearly-labelled hypothetical (min if a hard floor of that
     size WERE enforced — it is NOT, by this engine). Returns log lines; never raises."""
     try:
-        from .band_scoring import shares_to_prop_raw as _s2pr
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         model = ExactBandModel(exact_bands, incidence)
         s = np.asarray(split, float)
         base_vals = model.spec_values(_s2pr(s[None, :], incidence)[0])
@@ -1036,7 +1036,7 @@ def vamp_sibling_report(split, exact_bands, incidence, *, max_list=15):
     engine (not a solver bug). Works in the projector's own cell grain (`gcode`). Returns log lines;
     never raises."""
     try:
-        from .band_scoring import shares_to_prop_raw as _s2pr
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         model = ExactBandModel(exact_bands, incidence)
         base_vals = model.spec_values(_s2pr(np.asarray(split, float)[None, :], incidence)[0])
         specs = model.specs
@@ -1102,7 +1102,7 @@ def incidence_selfcheck_report(split, exact_bands, incidence, *, mid_id=None, mi
     represent) shows a HIGH dropped% here — localising the scored-vs-delivered under-count to that
     MID. Returns log lines; never raises."""
     try:
-        from .band_scoring import shares_to_prop_raw as _s2pr
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         s = np.asarray(split, float); N = int(s.size)
         try:                                              # sparse
             _colnnz = np.asarray(incidence.getnnz(axis=0)).ravel()
@@ -1241,7 +1241,7 @@ def vpsum_report(split, exact_bands, incidence, *, near_zero=1e-6, max_list=15):
     entries the conditioning guard had to zero). Reports the distribution of vpsum across each breached
     VAMP MID's cells and how many are near-zero. Returns log lines; never raises."""
     try:
-        from .band_scoring import shares_to_prop_raw as _s2pr
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         model = ExactBandModel(exact_bands, incidence)
         pr = _s2pr(np.asarray(split, float)[None, :], incidence)[0]
         base_vals = model.spec_values(pr)
@@ -1287,7 +1287,7 @@ def usable_recipient_report(split, exact_bands, incidence, *, max_list=15):
     move" count — the intersection of the co-location, VAMP-positive and headroom conditions. Returns
     log lines; never raises."""
     try:
-        from .band_scoring import shares_to_prop_raw as _s2pr
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         model = ExactBandModel(exact_bands, incidence)
         rep = exact_bands.report(_s2pr(np.asarray(split, float)[None, :], incidence)[0])
         base_vals = model.spec_values(_s2pr(np.asarray(split, float)[None, :], incidence)[0])
@@ -1355,7 +1355,7 @@ def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mi
     Many ⇒ reachable (search failure); few ⇒ the high-VAMP cells are sole-VAMP (structural — a real
     recipient must be made eligible there). Returns log lines; never raises."""
     try:
-        from .band_scoring import shares_to_prop_raw as _s2pr
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         model = ExactBandModel(exact_bands, incidence)
         pr = _s2pr(np.asarray(split, float)[None, :], incidence)[0]
         v, t, inter = model._forward_pr(pr)
@@ -1468,7 +1468,7 @@ def scoped_frozen_report(split, exact_bands, incidence, *, scoped_rpgts, max_mid
       * reachable-min ≥ ceiling ⇒ the scoped RPGTs alone can't reach the cap → widen scope / change cap.
     Requires the by-RPGT projector grain (prop-keys cur|bin|rpgt|mid). Returns log lines; never raises."""
     try:
-        from .band_scoring import shares_to_prop_raw as _s2pr
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         model = ExactBandModel(exact_bands, incidence)
         pr = _s2pr(np.asarray(split, float)[None, :], incidence)[0]
         v, t, inter = model._forward_pr(pr)
@@ -1548,7 +1548,7 @@ def insearch_rpgt_breakdown(split, exact_bands, incidence, *, max_mids=8):
     deployed tab-3 projection (what actually ships) disagree — e.g. if in-search 'monthly renewal' is
     far below tab-3's, that RPGT is where the ~380 gap lives. Requires the by-RPGT projector grain."""
     try:
-        from .band_scoring import shares_to_prop_raw as _s2pr
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         model = ExactBandModel(exact_bands, incidence)
         pr = _s2pr(np.asarray(split, float)[None, :], incidence)[0]
         v, t, inter = model._forward_pr(pr)
@@ -1907,7 +1907,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
     info = {"ok": False, "build": __build__, "reason": "", "breach0": float("nan"),
             "breach": float("nan"), "moved": 0.0, "n_moves": 0, "passes": 0, "mids": []}
     try:
-        from .band_scoring import shares_to_prop_raw as _s2pr
+        from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         s = np.asarray(base_shares, float).copy()
         cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
         elig = np.asarray(elig, float); mid_id = np.asarray(mid_id)

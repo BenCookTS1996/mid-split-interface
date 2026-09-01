@@ -297,7 +297,7 @@ def render():
                              "numbers match tab 5. Leave blank to use the raw exported split only.")
                     ss["backup_rules_dir"] = _bk_dir
                     try:
-                        from routing_optimiser.backup_blend import parse_backup_catchall as _pbc
+                        from routing_optimiser.s5_deliver.backup_blend import parse_backup_catchall as _pbc
                         if _bk_dir and os.path.isdir(_bk_dir):
                             _bk_sig = (_bk_dir, os.path.getmtime(_bk_dir))
                             if ss.get("_backup_catchall_sig") != _bk_sig:
@@ -309,7 +309,7 @@ def render():
                                 # consistent (fixes bancard/cwams reappearing with share).
                                 try:
                                     import json as _jbc
-                                    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cgbc
+                                    from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cgbc
                                     _ovp_bc = os.path.join(PROJECT_ROOT, "config", "inputs", "gateway_volume_overrides.json")
                                     _off_bc = set()
                                     if os.path.exists(_ovp_bc):

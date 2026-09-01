@@ -208,7 +208,7 @@ def render():
     if _vpr:
         with st.status("Populating impact from the validated split…", expanded=True) as _vst:
             try:
-                from routing_optimiser.backup_blend import parse_rules_to_split as _prs
+                from routing_optimiser.s5_deliver.backup_blend import parse_rules_to_split as _prs
                 _split_v = _prs(_vpr.get("rules_dir", ""))
                 if getattr(_split_v, "empty", True):
                     raise ValueError(f"No routing rules parsed from {_vpr.get('rules_dir')!r}.")
@@ -336,7 +336,7 @@ def render():
                 # count_only skips the payload build.
                 ss["validate_folder_pool_count"] = None
                 try:
-                    from routing_optimiser.connector_pool_configs import (
+                    from routing_optimiser.s5_deliver.connector_pool_configs import (
                         generate_configs as _gcfg, company_to_brand_key as _c2b, BRANDS as _BRANDS,
                         scheme_code as _scheme_code)
                     import glob as _glob_v
@@ -451,7 +451,7 @@ def render():
             _company_e0 = str(_fs_e0.get("company", "TotalAV"))
             _gl_e0 = ss.get("split_go_live_date", date.today())
             try:
-                from routing_optimiser.connector_pool_configs import (
+                from routing_optimiser.s5_deliver.connector_pool_configs import (
                     BRANDS as _POOL_BRANDS0, company_to_brand_key as _co2brand0)
                 _brand_key_e = _co2brand0(_company_e0)
                 _brand_name_e = _POOL_BRANDS0.get(_brand_key_e, {}).get("name", _company_e0)
@@ -555,7 +555,7 @@ def render():
                 _bc = ss.get("backup_catchall") or {}
                 if _bc and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
                     from collections import defaultdict as _dd
-                    from routing_optimiser.backup_blend import blend_cell_shares as _bcs
+                    from routing_optimiser.s5_deliver.backup_blend import blend_cell_shares as _bcs
                     _acc, _cnt = _dd(lambda: _dd(float)), _dd(int)
                     for (_cur, _rp, _pmp, _ct), _gw in _bc.items():
                         _cnt[(_cur, _rp)] += 1
@@ -598,7 +598,7 @@ def render():
                 # backup pool, or the baseline outer-merge).
                 try:
                     import json as _je
-                    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cge
+                    from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cge
                     _ovp_e = os.path.join(PROJECT_ROOT, "config", "inputs", "gateway_volume_overrides.json")
                     _off_e = set()
                     if os.path.exists(_ovp_e):
@@ -1350,7 +1350,7 @@ def render():
                     except Exception as _e:  # noqa: BLE001
                         # keep the raw _prop_r on any failure, but surface why the enforced basis fell back
                         st.caption(f"Enforced-share revenue basis unavailable ({type(_e).__name__}: {_e}); using raw split shares.")
-                    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_r
+                    from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg_r
                     _ovr_r = ss.get("gateway_volume_overrides") or {}
                     _off_r = set()
                     _fid_eff_r = {}
@@ -4197,7 +4197,7 @@ def render():
                     # vampMids fully switched off in gateway_volume_overrides (target=0,
                     # trx/both) — excluded from the post projection. A vampMid counts as
                     # off only if EVERY gatewayFid mapping to it is switched off.
-                    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
+                    from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway
                     # [FN-383]
                     def _normfid(x):
                         return str(_canonical_gateway(x)).strip().lower()
@@ -4306,7 +4306,7 @@ def render():
                     _bcatch = ss.get("backup_catchall") or {}
                     if _bcatch and _proj_prop and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
                         try:
-                            from routing_optimiser.backup_blend import blend_prop_items as _bpi
+                            from routing_optimiser.s5_deliver.backup_blend import blend_prop_items as _bpi
                             _proj_prop = _bpi(_proj_prop, _bcatch, fid2vamp)
                         except Exception:  # noqa: BLE001
                             pass   # any failure → keep the un-blended enforced split

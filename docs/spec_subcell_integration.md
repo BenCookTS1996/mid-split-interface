@@ -20,9 +20,9 @@ eligibility are already sub-cell-native; volume is apportioned by the pro-rata V
 
 ## Foundation (DONE + tested)
 
-- `routing_optimiser.subcell` — `subcell_vi_fractions`, `expand_forecast_to_subcells` (volume glue).
+- `routing_optimiser.s3_problem.subcell` — `subcell_vi_fractions`, `expand_forecast_to_subcells` (volume glue).
 - `CellProblem.pmp` / `.ctry` (defaulted `"_all_"`, backward-compatible).
-- `routing_optimiser.data_loader.build_subcell_problems` — sub-cell assembler, rates broadcast.
+- `routing_optimiser.s1_extract.data_loader.build_subcell_problems` — sub-cell assembler, rates broadcast.
 
 ## Ordered edits
 
