@@ -627,7 +627,7 @@ _Total: 431 functions across 37 files · analogy coverage: 431/431._
 - **[FN-422]** `ThompsonEngine._reference_split_impl(self, p)` — slider=100 reference: analytic probability-of-being-best over SUCCESS.  
   *Analogy:* Gives each door a share equal to its CHANCE of being the best — so barely-tested doors still get a look-in.
 
-## `src/routing_optimiser/forecast_pipeline.py`
+## `src/routing_optimiser/vamp_forecast_pipeline.py`
 - **[FN-070]** `build_pipeline_config(ui)` — Map the flat Forecast-tab settings onto the pipeline's settings.yaml schema.  
   *Analogy:* Translates the Forecast tab's simple settings into the pipeline's full config.
 - **[FN-071]** `run_vamp_pipeline(config, project_root, gcp_project)` — Run the full VAMP pipeline and return the output directory.  

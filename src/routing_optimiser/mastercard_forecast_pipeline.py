@@ -1,6 +1,6 @@
 """
 Adapter between the routing optimiser / Streamlit app and the MASTERCARD forecast
-pipeline (vendored under src/mastercard_pipeline/). Mirrors forecast_pipeline.py
+pipeline (vendored under src/mastercard_pipeline/). Mirrors vamp_forecast_pipeline.py
 (the Visa/VAMP adapter) but targets the Mastercard settings schema and reads the
 Mastercard baseline columns (Sim_CBs / CB_Pre) rather than the VAMP ones.
 

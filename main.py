@@ -15,9 +15,9 @@ forecast" at the outputs.
 
   main.py                          had its own copy of the four phase calls
   main_mastercard.py               had a second copy, differing in five lines
-  scripts/run_forecast_pipeline.py called the ADAPTER, plus a --pre preview
+  scripts/run_vamp_forecast_pipeline.py called the ADAPTER, plus a --pre preview
 
-The adapters (`forecast_pipeline.run_vamp_pipeline` /
+The adapters (`vamp_forecast_pipeline.run_vamp_pipeline` /
 `mastercard_forecast_pipeline.run_mastercard_pipeline`) are what the Streamlit
 app runs, and they are strictly richer than the copies here were: deep-copied
 config, absolute queries_dir and mid_list_file, per-phase shape diagnostics that
@@ -57,7 +57,7 @@ def load_config(config_path):
 
 
 def _preview(pre, label="pre"):
-    """The preview scripts/run_forecast_pipeline.py existed for."""
+    """The preview scripts/run_vamp_forecast_pipeline.py existed for."""
     try:
         _cells = pre[["rpgt", "currency", "bin"]].drop_duplicates().shape[0]
     except Exception:  # noqa: BLE001 - a preview must never fail a run

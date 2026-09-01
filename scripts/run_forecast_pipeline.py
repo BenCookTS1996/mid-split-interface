@@ -1,9 +1,9 @@
 """Headless forecast run + baseline preview — a SHIM. The runner is main.py (19fl).
 
-    python scripts/run_forecast_pipeline.py --settings config/settings.yaml
+    python scripts/run_vamp_forecast_pipeline.py --settings config/settings.yaml
       ==  python main.py --config config/settings.yaml --show-pre
 
-    python scripts/run_forecast_pipeline.py --pre <outputs dir>
+    python scripts/run_vamp_forecast_pipeline.py --pre <outputs dir>
       ==  python main.py --pre <outputs dir>
 
 Its docstring used to say it "mirrors the repo's main.py". It did not mirror it:

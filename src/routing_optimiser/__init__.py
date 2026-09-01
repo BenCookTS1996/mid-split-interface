@@ -11,7 +11,7 @@ from .optimiser import optimise_split, portfolio_summary, sweep_slider
 from .success_rates import (detect_blocked_gateways, gateway_success_rates,
                             load_success_data, rpgt_gateway_sensitivity)
 from .sql_runner import list_sql_files, run_sql_file
-from .forecast_pipeline import (build_pipeline_config, load_pre_forecast,
+from .vamp_forecast_pipeline import (build_pipeline_config, load_pre_forecast,
                                 normalise_pre_from_effective_rate,
                                 run_vamp_pipeline)
 from .mastercard_forecast_pipeline import (build_mc_pipeline_config,

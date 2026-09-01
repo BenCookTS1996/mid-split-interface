@@ -36,7 +36,7 @@ eligibility + cap are cheap and already sub-cell-native).
 
 | Item | Why unchanged |
 |---|---|
-| `forecast_pipeline` (`_prorata_to_pre`, `_normalise_pre`) | pro-rata export stays the finest source; forecast keeps cell-grain volume |
+| `vamp_forecast_pipeline` (`_prorata_to_pre`, `_normalise_pre`) | pro-rata export stays the finest source; forecast keeps cell-grain volume |
 | `success_rates.gateway_success_rates` | success-rate grain = scoring grain = cell; not split by pmp/Country |
 
 Consequence to stay conscious of: **decision grain ≠ scoring grain.** Sub-cells of the same cell see
@@ -116,6 +116,6 @@ instead of re-expanding. Output schema already has the columns.
 ## Overall
 
 A **medium project** across ~three files (`tab2_engine.py`, `band_projection.py`, `impact_calcs.py`), with
-**no change to `forecast_pipeline` or `success_rates`**. The optimiser already scores VAMP and emits configs
+**no change to `vamp_forecast_pipeline` or `success_rates`**. The optimiser already scores VAMP and emits configs
 at sub-cell grain; this makes the *decision* grain match — sub-cells differentiated by VAMP/eligibility, not
 conversion. Biggest practical watch-item is now **search size/perf**, not data sparsity.

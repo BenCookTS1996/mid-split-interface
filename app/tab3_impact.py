@@ -598,7 +598,7 @@ def render():
                 # backup pool, or the baseline outer-merge).
                 try:
                     import json as _je
-                    from routing_optimiser.forecast_pipeline import _canonical_gateway as _cge
+                    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cge
                     _ovp_e = os.path.join(PROJECT_ROOT, "config", "inputs", "gateway_volume_overrides.json")
                     _off_e = set()
                     if os.path.exists(_ovp_e):
@@ -1350,7 +1350,7 @@ def render():
                     except Exception as _e:  # noqa: BLE001
                         # keep the raw _prop_r on any failure, but surface why the enforced basis fell back
                         st.caption(f"Enforced-share revenue basis unavailable ({type(_e).__name__}: {_e}); using raw split shares.")
-                    from routing_optimiser.forecast_pipeline import _canonical_gateway as _cg_r
+                    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_r
                     _ovr_r = ss.get("gateway_volume_overrides") or {}
                     _off_r = set()
                     _fid_eff_r = {}
@@ -4197,7 +4197,7 @@ def render():
                     # vampMids fully switched off in gateway_volume_overrides (target=0,
                     # trx/both) — excluded from the post projection. A vampMid counts as
                     # off only if EVERY gatewayFid mapping to it is switched off.
-                    from routing_optimiser.forecast_pipeline import _canonical_gateway
+                    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
                     # [FN-383]
                     def _normfid(x):
                         return str(_canonical_gateway(x)).strip().lower()

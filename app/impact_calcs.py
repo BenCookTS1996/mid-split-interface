@@ -61,7 +61,7 @@ def build_vamp_off_mids(fid2vamp, overrides):
     Returns a frozenset, so it is hashable and stable as an st.cache_data key component.
     """
     from app_common import _vamp_off_gateways
-    from routing_optimiser.forecast_pipeline import _canonical_gateway
+    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
 
     def _nf(x):
         return str(_canonical_gateway(x)).strip().lower()

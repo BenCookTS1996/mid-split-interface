@@ -1359,7 +1359,7 @@ def render():
                         _diag(f"   APP_BUILD: {APP_BUILD.split(' · ')[0]}")
                         _diag("   backend build markers (if any ≠ expected → stale bytecode; clear __pycache__):")
                         for _m in ["routing_optimiser.optimiser", "routing_optimiser.eligibility",
-                                   "routing_optimiser.success_rates", "routing_optimiser.forecast_pipeline",
+                                   "routing_optimiser.success_rates", "routing_optimiser.vamp_forecast_pipeline",
                                    "routing_optimiser.data_loader", "routing_optimiser.sql_runner",
                                    "routing_optimiser.constraints", "routing_optimiser.engines.base",
                                    "routing_optimiser.engines.softmax", "routing_optimiser.engines.thompson",
@@ -1598,7 +1598,7 @@ def render():
                     # together; it would bite the first time one is regenerated alone.
                     # Keying on ALL of them also removes the dependency on the resolution ORDER.
                     try:
-                        from routing_optimiser.forecast_pipeline import (
+                        from routing_optimiser.vamp_forecast_pipeline import (
                             PRE_SOURCE_FILES as _FC_SRCS)
                     except Exception:  # noqa: BLE001 - never let a cache key break the run
                         _FC_SRCS = ["vamp_t_period_prorata_export.csv",
@@ -1721,7 +1721,7 @@ def render():
                     # the gateway IS in the list with real (non-EXCLUDED) currencies.
                     try:
                         if os.path.exists(mid_list_path) and {"gateway", "currency"}.issubset(adf.columns):
-                            from routing_optimiser.forecast_pipeline import _canonical_gateway
+                            from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
                             _mm = load_mid_list(mid_list_path)
                             _cc = _norm_cols(_mm)
                             _gcol, _curcol = _cc.get("gatewayfid"), _cc.get("currency")
@@ -1748,7 +1748,7 @@ def render():
                         _ovr_path = os.path.join(PROJECT_ROOT, "config", "inputs", "gateway_volume_overrides.json")
                         if os.path.exists(_ovr_path) and "gateway" in adf.columns:
                             import json as _json
-                            from routing_optimiser.forecast_pipeline import _canonical_gateway
+                            from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
                             with open(_ovr_path) as _fh:
                                 _ovr = _json.load(_fh)
                             _excl = _switched_off_gateways(_ovr)
@@ -2037,7 +2037,7 @@ def render():
                     _inj_fc_keys = []
                     try:
                         from routing_optimiser.eligibility import load_explore_gateways as _load_expl
-                        from routing_optimiser.forecast_pipeline import _canonical_gateway as _cg_ex
+                        from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_ex
                         _rr_p = os.path.join(PROJECT_ROOT, "config", "inputs", "routing_restrictions.json")
                         _explore = set(_load_expl(_rr_p))
                         _fid_cur = {}
@@ -2228,7 +2228,7 @@ def render():
                             _ccx = _norm_cols(_mmx)
                             _gx, _xb = _ccx.get("gatewayfid"), _ccx.get("iscrossborder")
                             if _gx and _xb:
-                                from routing_optimiser.forecast_pipeline import _canonical_gateway
+                                from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
                                 _flag = _mmx[_xb].astype(str).str.strip().str.upper().isin(["TRUE", "T", "1", "YES", "Y"])
                                 xborder_fids = set(_mmx.loc[_flag, _gx].map(_canonical_gateway).astype(str).str.strip().str.lower())
                     except Exception as e:
@@ -2304,7 +2304,7 @@ def render():
                             # (a same-processor rate is a better prior than the bank×currency average).
                             _fid_pb = {}
                             try:
-                                from routing_optimiser.forecast_pipeline import _canonical_gateway as _cg_sib
+                                from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_sib
                                 if os.path.exists(mid_list_path):
                                     _mms = load_mid_list(mid_list_path)
                                     _ccs = _norm_cols(_mms)
@@ -2400,7 +2400,7 @@ def render():
                     # case (~46% of volume on switched-off gateways, dragging Expected SR/revenue down).
                     # This is the single choke through which every candidate reaches build_cell_problems.
                     try:
-                        from routing_optimiser.forecast_pipeline import _canonical_gateway as _cg_off
+                        from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_off
                         _ovr_off = ss.get("gateway_volume_overrides") or {}
                         _off_route = _switched_off_gateways(_ovr_off)
                         if _off_route and "gateway" in agg_forecast.columns:
@@ -2440,7 +2440,7 @@ def render():
                     if (os.environ.get("ROUTING_MIDLIST_FILTER", "1") != "0"
                             and "gateway" in agg_forecast.columns):
                         try:
-                            from routing_optimiser.forecast_pipeline import _canonical_gateway as _cg_mf
+                            from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_mf
                             _mf_cur, _mf_brand, _mf_act, _mf_excl = {}, {}, {}, set()
                             if os.path.exists(mid_list_path):
                                 _mmf = load_mid_list(mid_list_path)
@@ -2593,7 +2593,7 @@ def render():
                         if (_mf_w and os.environ.get("ROUTING_MIDLIST_WALLET", "1") != "0"
                                 and "pmp" in _agg_sc.columns and "gateway" in _agg_sc.columns):
                             try:
-                                from routing_optimiser.forecast_pipeline import _canonical_gateway as _cg_w
+                                from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_w
                                 _gw2 = _agg_sc["gateway"].map(_cg_w).astype(str).str.strip().str.lower().tolist()
                                 _wal2 = _agg_sc["pmp"].astype(str).str.strip().str.lower().isin(
                                     ["googlepay", "applepay"]).to_numpy()
@@ -3215,7 +3215,7 @@ def render():
                     # vampMids fully switched off in overrides — excluded from the projection,
                     # matching the tab-4 VAMP impact table. (Defined before the scaffold below,
                     # which references it.)
-                    from routing_optimiser.forecast_pipeline import _canonical_gateway as _canon_gw
+                    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _canon_gw
                     _ovr2 = ss.get("gateway_volume_overrides") or {}
                     _off2 = set()
                     for _gwid, _cfg in (_ovr2.items() if isinstance(_ovr2, dict) else []):
@@ -3583,7 +3583,7 @@ def render():
                         _uo_set = {str(x).strip().lower() for x in (_wc_es.get("usa_only") or set())}
                         _wc_pairs, _uo_pairs, _pair_src = set(), set(), "none"
                         try:
-                            from routing_optimiser.forecast_pipeline import _canonical_gateway as _cg_pk
+                            from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cg_pk
                             from routing_optimiser.eligibility import load_usa_only as _lu_pk
                             _cap_w, _cap_a, _vc_of = {}, {}, {}
                             if os.path.exists(mid_list_path):
@@ -8604,7 +8604,7 @@ def render():
                                         _pj["ready"] = True
                                         try:
                                             from impact_calcs import build_kill_eff as _pj_bke
-                                            from routing_optimiser.forecast_pipeline import (
+                                            from routing_optimiser.vamp_forecast_pipeline import (
                                                 _canonical_gateway as _pj_cg)
                                             _feff = {}
                                             _ovr = ss.get("gateway_volume_overrides")

@@ -56,7 +56,7 @@ def load_forecast(path: str | None, success_df: pd.DataFrame) -> pd.DataFrame:
     if path is None:
         return synthesise_forecast_from_success(success_df)
     if os.path.isdir(path):  # a pipeline output directory
-        from .forecast_pipeline import load_pre_forecast
+        from .vamp_forecast_pipeline import load_pre_forecast
         return load_pre_forecast(path)
     if path.endswith(".parquet"):
         df = pd.read_parquet(path)
@@ -64,7 +64,7 @@ def load_forecast(path: str | None, success_df: pd.DataFrame) -> pd.DataFrame:
         df = pd.read_csv(path)
     # If this is the VAMP pipeline's effective_rate_impact.csv, normalise its
     # baseline ('Sim_*') columns into the optimiser's forecast contract.
-    from .forecast_pipeline import (looks_like_effective_rate,
+    from .vamp_forecast_pipeline import (looks_like_effective_rate,
                                     normalise_pre_from_effective_rate)
     if looks_like_effective_rate(df):
         return normalise_pre_from_effective_rate(df)

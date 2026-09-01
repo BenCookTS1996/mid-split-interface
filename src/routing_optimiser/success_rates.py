@@ -79,7 +79,7 @@ def load_success_data(source) -> pd.DataFrame:
     # non-'-x' sibling. Matches the same rule used for the pipeline forecast,
     # so the two datasets join cleanly per (rpgt, currency, bank, gateway).
     if "gateway" in df.columns:
-        from .forecast_pipeline import _canonical_gateway
+        from .vamp_forecast_pipeline import _canonical_gateway
         df["gateway"] = df["gateway"].map(_canonical_gateway)
 
     return df

@@ -254,7 +254,7 @@ def _switched_off_gateways(ov: dict) -> set:
     """Canonicalised, lower-cased gateway ids that are SWITCHED OFF in an already-loaded
     gateway_volume_overrides dict — i.e. target == 0 with apply_to in ("trx", "both").
     Centralises the identical set-building duplicated across the app."""
-    from routing_optimiser.forecast_pipeline import _canonical_gateway
+    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
     out = set()
     if not isinstance(ov, dict):
         return out
@@ -308,7 +308,7 @@ def _vamp_off_gateways(ov: dict) -> set:
     "both" appears in both helpers deliberately: a gateway switched off for everything takes no
     transactions AND receives no VAMP.
     """
-    from routing_optimiser.forecast_pipeline import _canonical_gateway
+    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway
     out = set()
     if not isinstance(ov, dict):
         return out
@@ -829,7 +829,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # catch-all blend, and with no catch-all configured it is
                            # identically ZERO. It now says so, and still reports a
                            # REAL gap as genuinely UNMEASURED when a catch-all
-                           # exists. forecast_pipeline also gains a __build__ marker
+                           # exists. vamp_forecast_pipeline also gains a __build__ marker
                            # — the header was asking it for one and printing
                            # "(no __build__)".
                            #  # [nw-attrib] the no-divergence line printed TWICE identically
@@ -1026,7 +1026,7 @@ def ensure_cols(df, spec):
         AttributeError: 'int' object has no attribute 'fillna'
 
     naming neither the column nor the frame that was actually missing. `_impact_eval_frame` below
-    already guards its own inputs this way (see its loop); `forecast_pipeline._reconcile_pre_...`
+    already guards its own inputs this way (see its loop); `vamp_forecast_pipeline._reconcile_pre_...`
     was silently doing nothing for two builds for the same reason (19au). Optional enrichment
     that did not run should leave a column of defaults behind, not a scalar landmine.
     """

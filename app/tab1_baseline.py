@@ -309,7 +309,7 @@ def render():
                                 # consistent (fixes bancard/cwams reappearing with share).
                                 try:
                                     import json as _jbc
-                                    from routing_optimiser.forecast_pipeline import _canonical_gateway as _cgbc
+                                    from routing_optimiser.vamp_forecast_pipeline import _canonical_gateway as _cgbc
                                     _ovp_bc = os.path.join(PROJECT_ROOT, "config", "inputs", "gateway_volume_overrides.json")
                                     _off_bc = set()
                                     if os.path.exists(_ovp_bc):
