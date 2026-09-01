@@ -3303,6 +3303,11 @@ def render():
                                 f"{_dce}) — scaffold stays baseline-anchored; expect the incidence "
                                 "self-check to show dropped share mass (scored != delivered).")
                     _T0 = _Pc = None
+                    # [scaffold-recon] row counts at every step between the pro-rata export on
+                    # disk and the scaffold the band projector actually walks. Collected as the
+                    # frame is built so the reconciliation is ARITHMETIC, not an after-the-fact
+                    # re-derivation that could disagree with what was built.
+                    _rc = {"inj": 0}
                     # Precomputed static structures for _project_capped (filled below when the
                     # scaffold is built) so it never re-hashes string keys per call.
                     _T0_pk = _T0_pk_rpgt = _T0_gcodes = _T0_excl_a = _T0_base_a = _T0_ctot_a = None
@@ -3315,6 +3320,7 @@ def render():
                     _grpk = ["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per"]
                     if _pp_full is not None and _capped_l:
                         _P = _pp_full.copy()
+                        _rc["disk"] = int(len(_P))          # [scaffold-recon] step 1
                         _rpc = "RPGT" if "RPGT" in _P.columns else "rpgt"
                         _P["_cur"] = _P["Currency"].astype(str).str.strip().str.lower()
                         _P["_bin"] = _P["BIN"].astype(str).str.strip()
@@ -3337,6 +3343,7 @@ def render():
                         _P = _P.groupby(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_mid", "_midl",
                                          "_per", "_t"], as_index=False).agg(
                             _vi=("_vi", "sum"), _vc=("_vc", "sum"), _pr=("_pr", "first"), _fcp=("_fcp", "first"))
+                        _rc["agg"] = int(len(_P))           # [scaffold-recon] step 2
                         # Cell key on the LOWER-CASED rpgt so it matches the prop-key grain
                         # (band_projection._prop_key lower-cases rpgt) and the candidate-door set.
                         # 19dq — RPGT SCOPE, EXPLICITLY, IN THE SEARCH. Delivery holds unscoped RPGTs at
@@ -3466,8 +3473,12 @@ def render():
                                     "with scaffold rows, so expect a slower search. Kill-switch: "
                                     "ROUTING_DOOR_COVER_CELLS=0.")
                         _P = _P[_cellk.isin(_keep)].copy()
+                        _rc["scoped"] = int(len(_P))        # [scaffold-recon] step 3
+                        _rc["cells"] = int(len(_keep))
+                        _rc["cells_band"] = int(_keep_base)
                         _P = _P.drop(columns=["_rkl"], errors="ignore")   # join-only helper
                         _T0 = _P[_P["_t"] == 0].copy()
+                        _rc["t0"] = int(len(_T0))           # [scaffold-recon] step 4
                         _T0["_bf"] = 0   # 0 = real baseline row, 1 = injected back-fill row
                         # ---- BACK-FILL sub-cell rows (mirror the tab-3 projection fix) --------
                         # A MID present in a cell but absent from one of its pmp/Country sub-cells
@@ -3525,7 +3536,9 @@ def render():
                                 _newbf = _newbf[["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_mid",
                                                  "_midl", "_per", "_t", "_vi", "_vc", "_pr", "_fcp", "_bf"]]
                                 _T0 = pd.concat([_T0, _newbf], ignore_index=True, sort=False)
-                                log(f"   back-fill sub-cell rows injected into cap scaffold: {len(_newbf):,}")
+                                _rc["inj"] = int(len(_newbf))   # [scaffold-recon] step 5
+                                log(f"   candidate-door zero rows injected into cap scaffold: "
+                                    f"{len(_newbf):,}")
                         _T0 = _T0.drop(columns=["_rkl"], errors="ignore")
                         # 19dt - back-fill rows are concatenated above and carry no `_keepf`; a NaN there
                         # would silently zero a live gateway's proposal, the opposite of the bug being
@@ -3640,6 +3653,61 @@ def render():
                         _Pc["_om"] = _Pc["_per"] - _Pc["_t"]
                         log(f"   per-MID cap projection scaffold: {len(_T0):,} t0 rows, "
                             f"{len(_Pc):,} capped-MID rows ({len(_keep):,} cells).")
+                        # ── [scaffold-recon] SCAFFOLD vs PRO-RATA EXPORT RECONCILIATION ────────
+                        # Two row counts get quoted side by side in this log — the pro-rata
+                        # export's and the band projector's scaffold — and they are NOT the same
+                        # population, so the difference between them is not an error and must not
+                        # be read as one. Every step from one to the other is printed below, with
+                        # a running total, so the two numbers can be tied together by arithmetic
+                        # instead of by assumption. Read-only; a failure here cannot affect the run.
+                        try:
+                            _rc["final"] = int(len(_T0))
+                            _rcD = int(_rc.get("disk", 0))
+                            _rcA = int(_rc.get("agg", _rcD))
+                            _rcS = int(_rc.get("scoped", _rcA))
+                            _rcT = int(_rc.get("t0", _rcS))
+                            _rcI = int(_rc.get("inj", 0))
+                            _rcF = int(_rc["final"])
+                            log("   ── Scaffold vs pro-rata export Reconciliation ── these two "
+                                "row counts measure DIFFERENT populations; here is every step "
+                                "between them ──")
+                            log(f"      {'step':<58}{'delta':>14}{'running':>14}")
+                            log(f"      {'1  pro-rata export rows on disk':<58}"
+                                f"{'':>14}{_rcD:>14,}")
+                            log(f"      {'2  collapse to (cur,bin,rpgt,pmp,ctry,mid,period,t)':<58}"
+                                f"{_rcA - _rcD:>+14,}{_rcA:>14,}")
+                            log(f"      {'3  drop cells with no banded MID (out of scope)':<58}"
+                                f"{_rcS - _rcA:>+14,}{_rcS:>14,}")
+                            log(f"      {'4  drop t > 0 (aged cohorts; scaffold is t0 only)':<58}"
+                                f"{_rcT - _rcS:>+14,}{_rcT:>14,}")
+                            log(f"      {'5  inject candidate-door zero rows':<58}"
+                                f"{_rcI:>+14,}{_rcT + _rcI:>14,}")
+                            log(f"      {'=  SCAFFOLD ROWS the band projector walks':<58}"
+                                f"{'':>14}{_rcF:>14,}")
+                            _rc_ok = (_rcT + _rcI) == _rcF
+                            log(f"      identity check: step 4 + step 5 == scaffold rows → "
+                                + ("✓ EXACT" if _rc_ok else
+                                   f"✗ OFF BY {_rcF - (_rcT + _rcI):+,} — a row was added or "
+                                   "dropped between the injection and here, and this block is the "
+                                   "only thing that would notice"))
+                            log(f"      cells: {_rc.get('cells', 0):,} scaffold cells "
+                                f"({_rc.get('cells_band', 0):,} with a banded MID's own baseline "
+                                f"row + {_rc.get('cells', 0) - _rc.get('cells_band', 0):,} "
+                                "candidate-door-only)")
+                            log("      WHAT EACH STEP IS. 2 sums duplicate rows that share the "
+                                "full key — the export can carry more than one row per key. 3 is "
+                                "the big one: the scaffold only needs cells a BANDED MID can be "
+                                "routed into, and everything else is held at baseline, so its "
+                                "contribution is a constant the projector never recomputes. 4 "
+                                "keeps only the origin-month (t == 0) rows, because the scaffold "
+                                "re-derives the aged cohorts from t0 rather than storing them. 5 "
+                                "ADDS rows the export does not have at all: a zero-volume row for "
+                                "every sub-cell a banded MID is a candidate door in, so routed "
+                                "volume has somewhere to land instead of renormalising onto the "
+                                "MIDs that happen to have history there.")
+                        except Exception as _rcE:  # noqa: BLE001
+                            log(f"   [scaffold-recon] skipped ({type(_rcE).__name__}: {_rcE}) — "
+                                "MEASUREMENT ONLY, the run is unaffected.")
 
                         # ---- Precompute the STATIC structure once, so _project_capped never
                         # re-hashes string keys on the ~50 calls/pass the LP finite-diff + greedy
@@ -10320,7 +10388,8 @@ def render():
                                         except Exception:  # noqa: BLE001
                                             _rec_rep = []
                                     # ELIGIBILITY-ADJUSTED (GA-fitness) band value: the SAME delivery transform the
-                                    # fitness scores — _fm_deliv = eligibility(block(raw)) [+min2 floor] — projected
+                                    # fitness scores — _fm_deliv = eligibility(block(raw)); the
+                                    # "[+min2 floor]" this line used to claim was DELETED in 19x — projected
                                     # through the band scaffold. This is what the GA ACTUALLY optimises; scored(raw)
                                     # is only a PRE-eligibility lower bound, inflated for txn bands by the USA-only/
                                     # wallet volume that enforcement zeroes. So GA-fitness is the honest yardstick for
@@ -13381,11 +13450,13 @@ def render():
                             except Exception as _rece:  # noqa: BLE001
                                 log(f"   [full-matrix] delivered-M5 reconcile skipped "
                                     f"({type(_rece).__name__}: {_rece}).")
-                        # ── BREACH ATTRIBUTION: how much each of the 4 tidy-up mechanisms moves the
-                        # scored→delivered wedge (opt-in, ROUTING_BREACH_ATTRIB=1; runs 5 EXACT tab-3
-                        # projections at build stages base→zeroing→backfill→waterfill→final, so it adds
-                        # ~3-4 min — OFF by default). Each Δ is that stage's contribution to a MID's
-                        # delivered M5; the 4 Δs sum to (delivered − base). Read-only, fully guarded.
+                        # ── BREACH ATTRIBUTION: how much each of the 3 tidy-up mechanisms moves the
+                        # scored→delivered wedge (opt-in, ROUTING_BREACH_ATTRIB=1; runs 4 EXACT tab-3
+                        # projections at build stages base→zeroing→waterfill→final, so it adds
+                        # ~3 min — OFF by default). Each Δ is that stage's contribution to a MID's
+                        # delivered M5; the 3 Δs sum to (delivered − base). Read-only, fully guarded.
+                        # The "backfill" stage was dropped 2026-09-01 with the <2-gateway back-fill
+                        # itself: it could only ever print +0 while costing a whole projection.
                         if os.environ.get("ROUTING_BREACH_ATTRIB", "0") == "1":
                             try:
                                 from impact_calcs import (enforced_prop_items as _at_epi,
@@ -13406,7 +13477,7 @@ def render():
                                         _at_ceil[_ml] = float(_sp.ceil)
                                         _at_metric[_ml] = str(getattr(_sp, "metric", "vamp")).strip().lower()
                                 if os.path.exists(_at_pp) and _at_ceil:
-                                    _stages = ["base", "zeroing", "backfill", "waterfill", "final"]
+                                    _stages = ["base", "zeroing", "waterfill", "final"]
                                     _at_m5 = {}
                                     for _stg in _stages:
                                         _ep = _at_epi(
@@ -13434,15 +13505,15 @@ def render():
                                                      _p5.groupby("vampMid")["VAMP_Post"].sum().items()},
                                             "txn": {str(k).strip().lower(): float(v) for k, v in
                                                     _p5.groupby("vampMid")["VI_Txn_Post"].sum().items()}}
-                                    log("   ── BREACH ATTRIBUTION (per-MID M5 through the 4 tidy-up mechanisms; "
-                                        "each Δ is that mechanism's share of the scored→delivered wedge; 5 EXACT "
+                                    log("   ── BREACH ATTRIBUTION (per-MID M5 through the 3 tidy-up mechanisms; "
+                                        "each Δ is that mechanism's share of the scored→delivered wedge; 4 EXACT "
                                         "tab-3 projections at build stages) ──")
                                     for _ml, _cl in sorted(_at_ceil.items()):
                                         _mt = _at_metric.get(_ml, "vamp")
                                         _seq = [_at_m5.get(_s, {}).get(_mt, {}).get(_ml) for _s in _stages]
                                         if any(v is None for v in _seq):
                                             continue
-                                        _base, _z, _b, _w, _f = _seq
+                                        _base, _z, _w, _f = _seq
                                         _wedge = _f - _base
                                         if _f <= _cl + 1e-6 and abs(_wedge) < 1.0:
                                             continue     # compliant and unmoved → not interesting
@@ -13451,8 +13522,8 @@ def render():
                                         log(f"      {_ml} [{_mt}] base {_base:,.0f} → delivered {_f:,.0f} "
                                             f"(total wedge {_wedge:+,.0f}){_fl}")
                                         log(f"          USA/wallet zero+renorm {_z - _base:+,.0f} · "
-                                            f"<2-gw back-fill {_b - _z:+,.0f} · max-share water-fill "
-                                            f"{_w - _b:+,.0f} · residual-push {_f - _w:+,.0f}")
+                                            f"max-share water-fill {_w - _z:+,.0f} · "
+                                            f"residual-push {_f - _w:+,.0f}")
                             except Exception as _ate:  # noqa: BLE001
                                 log(f"   [breach-attrib] skipped ({type(_ate).__name__}: {_ate}).")
                         _progress(_f_var, "Building variation…")

@@ -44,7 +44,7 @@ def _apply_keep(t0, excluded_mids, kill_eff, month_0):
     return t0
 
 __build__ = ("2026-08-17b-count-only-pool-search+subcell-exporter+staged-enforcement"
-             "+projection-mode-no-round+no-lt2-backfill+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zerocell+vamp-term-stash")
+             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zerocell+vamp-term-stash")
 
 
 # [FN-246b]
@@ -988,11 +988,16 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
 
 # [FN-259]
 def _inject_backfill_rows(pp, prop, prop_name_map=None):
-    """#3 ZERO-BASELINE BACK-FILL: build_split_exports can route to gateways (e.g. <2-gateway
-    back-fill fallbacks) that have NO baseline row in a cell. The LEFT merge drops them, so their
-    routed volume wrongly redistributes to present MIDs. Re-inject them into `pp` as zero-baseline
-    t=0 rows (vampCount=0, VI=0) so they RECEIVE the routed volume; VAMP stays 0 for them (no
-    historical VAMP to redistribute). Scoped to the enforced (7-tuple) path — only it back-fills.
+    """#3 ZERO-BASELINE ROW INJECTION. Nothing to do with the deleted <2-gateway share
+    back-fill — this adds ROWS, never share.
+
+    The optimiser can route volume to a gateway that has NO baseline row in a cell (it has never
+    served that sub-cell, so the pro-rata export has nothing there). The LEFT merge drops it, and
+    its routed volume then wrongly redistributes to the MIDs that DO have rows. Re-inject those
+    recipients into `pp` as zero-baseline t=0 rows (vampCount=0, VI=0) so they RECEIVE the routed
+    volume; VAMP stays 0 for them (no historical VAMP to redistribute).
+
+    Scoped to the enforced (7-tuple) path, which is the only one carrying per-sub-cell shares.
     """
     # Presence is judged at the pmp/Country SUB-CELL grain (Currency, BIN, RPGT, pmp, Country),
     # NOT the coarse cell — because the enforced table routes per sub-cell, and a MID present in
@@ -2272,7 +2277,11 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     usa_only = {str(x).strip().lower() for x in (usa_only or set())}
     country_pres = country_pres or {}
     _cap = float(max_share) if max_share else 1.0
-    # Stage gate (diagnostic). >=1 zeroing, >=2 back-fill, >=3 water-fill, >=4 round+push.
+    # Stage gate (diagnostic). >=1 zeroing, >=3 water-fill, >=4 round+push.
+    # THERE IS NO STAGE-2 MECHANISM ANY MORE. The <2-gateway back-fill it used to gate was
+    # deleted from this function (see the note further down), so stage 2 is IDENTICAL to stage 1.
+    # The "backfill" key is kept only so an old caller gets a DEFINED answer instead of silently
+    # falling through the `.get(..., 4)` default to "final"; nothing in the app passes it.
     _slvl = {"base": 0, "zeroing": 1, "backfill": 2, "waterfill": 3,
              "final": 4}.get(str(_stage).lower(), 4) if _stage is not None else 4
     # Source of truth: read processWallet straight from Master_MID_List so the
@@ -2282,24 +2291,10 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
         _vm = fid2vamp.get(_f)
         if _vm:
             wallet_incapable.add(_vm)
-    # Master-MID lookups (fid → currency, fid → active) so a wallet / Non-USA row that would
-    # collapse to <2 gateways can be back-filled with currency-matched, active, country-valid
-    # (and wallet-capable, for wallet rows) fallback gateways instead of going 100% or empty.
-    _fid_cur, _fid_active = {}, {}
-    try:
-        if mid_list_path and os.path.exists(mid_list_path):
-            _mm = load_mid_list(mid_list_path)
-            _cc = _norm_cols(_mm)
-            _gx, _cx, _ax = _cc.get("gatewayfid"), _cc.get("currency"), _cc.get("isactive")
-            if _gx and _cx:
-                for _i in range(len(_mm)):
-                    _f = str(_mm[_gx].iloc[_i]).strip().lower()
-                    if _f and _f not in ("", "nan", "none"):
-                        _fid_cur.setdefault(_f, str(_mm[_cx].iloc[_i]).strip().lower())
-                        if _ax:
-                            _fid_active.setdefault(_f, str(_mm[_ax].iloc[_i]).strip().lower() in ("true", "1", "yes", "t", "y"))
-    except Exception:  # noqa: BLE001
-        _fid_cur, _fid_active = {}, {}
+    # The fid → currency / fid → active lookups that used to be built here are GONE with the
+    # <2-gateway back-fill that was their only consumer. They cost a Master_MID_List load plus a
+    # per-row Python loop on EVERY projection call, so this is also the cheapest thing about the
+    # deletion.
     df = split.copy()
     df["RPGT"] = df["rpgt"].astype(str)
     df["Currency"] = df["currency"].astype(str).str.upper()
@@ -2336,25 +2331,6 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     def _is_usa_only(gw):
         g = gw.strip().lower()
         return g in usa_only
-
-    # [FN-271]
-    def _valid_candidates(cur_l, country, is_wallet):
-        """Template-column gateways eligible to serve this (currency, country, pmp): currency-
-        matched, active, USA-only excluded for Non-USA, and wallet-capable for wallet rows.
-        Used to back-fill rows that would otherwise collapse to <2 gateways."""
-        out = []
-        for gw in gateways:
-            g = gw.strip().lower()
-            if _fid_cur.get(g) != cur_l:                       # must match the cell's currency
-                continue
-            if _fid_active and not _fid_active.get(g, True):    # must be active
-                continue
-            if country == "Non-USA" and _is_usa_only(gw):       # USA-only can't serve Non-USA
-                continue
-            if is_wallet and _incap(gw):                        # wallet rows: wallet-capable only
-                continue
-            out.append(gw)
-        return out
 
     # [FN-272]
     def _cap_rows(V):
@@ -2394,12 +2370,11 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     # VECTORISED per-row engine. Replaces the old per-(cell × country × pmp) Python loop, which
     # ran a groupby + Series ops + a 50-sweep cap PER ROW and scaled super-linearly with the cell
     # count (measured: tens of minutes at ~17k cells). This applies the SAME transforms — base
-    # normalisation, Non-USA USA-only zeroing, wallet-incapable zeroing, <2-gateway back-fill,
-    # max-share water-fill, 2dp residual-push rounding and BIN-GROUP condition codes — across all
-    # rows with array ops. Proven byte-identical to the previous implementation on random splits
-    # WITH wallet / USA / country / back-fill active (only the affected minority of <2-gateway rows
-    # keep a per-row path, using the original back-fill logic verbatim). ~7× at 700 cells and
-    # linear, so the win grows with cell count.
+    # normalisation, Non-USA USA-only zeroing, wallet-incapable zeroing, max-share water-fill,
+    # 2dp residual-push rounding and BIN-GROUP condition codes — across all rows with array ops.
+    # It was proven byte-identical to the previous implementation on random splits, including
+    # with the <2-gateway back-fill active; that back-fill has since been deleted outright, so
+    # there is no longer any per-row Python path left in here at all.
     ng = len(gateways)
     incap_col = np.array([_incap(g) for g in gateways], dtype=bool)
     usa_col = np.array([_is_usa_only(g) for g in gateways], dtype=bool)
@@ -2451,37 +2426,27 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
             R[np.ix_(_wal, incap_col)] = 0.0
             _s = R[_wal].sum(1, keepdims=True)
             R[_wal] = np.where(_s > 0, R[_wal] / np.where(_s > 0, _s, 1.0), R[_wal] * 0.0)
-        # <2-gateway back-fill — REMOVED from the delivered path 2026-08-17.
-        # It CREATED share for gateways the optimiser never assigned: an empty row got
-        # 1/n across every valid candidate, and a single-100% row gave each zero-share
-        # candidate a hard-coded 5% floor (max(1 - have, 0.05)) before renormalising —
-        # with recipients drawn from the GLOBAL template column set, not the cell's own
-        # doors. That is share the GA cannot see at ANY grain, and it is the mechanism
-        # that dumped volume onto Authorize / WoodForest. Rows left with <2 live gateways
-        # are now passed through untouched and flagged by `Check`, the same treatment a
-        # genuinely single-gateway cell already got.
-        # Kill-switch: ROUTING_LT2_BACKFILL=1 restores it.
-        if _slvl >= 2 and _fid_cur and os.environ.get("ROUTING_LT2_BACKFILL", "0") == "1":
-            for r in np.where((R > 1e-9).sum(1) < 2)[0]:
-                _cands = _valid_candidates(str(_cur[r]).strip().lower(), _ctry[r],
-                                           _pmp[r] in ("GOOGLEPAY", "APPLEPAY"))
-                if not _cands:
-                    continue
-                sh = {g: float(R[r, j]) for j, g in enumerate(gateways)}
-                _have_tot = float(sum(sh[g] for g in _cands))
-                if _have_tot <= 1e-9:
-                    for g in _cands:
-                        sh[g] = 1.0 / len(_cands)
-                else:
-                    _add = [g for g in _cands if sh.get(g, 0.0) <= 1e-9]
-                    if _add:
-                        _resid = max(1.0 - _have_tot, 0.05)
-                        for g in _add:
-                            sh[g] = _resid / len(_add)
-                _ss = float(sum(sh.values()))
-                if _ss > 0:
-                    for j, g in enumerate(gateways):
-                        R[r, j] = sh[g] / _ss
+        # ── <2-GATEWAY BACK-FILL: DELETED. NOT A SWITCH. ─────────────────────────────────
+        # Removed from the delivered path 2026-08-17, and the ROUTING_LT2_BACKFILL escape hatch
+        # that could turn it back on was deleted 2026-09-01. It is not configuration: it was a
+        # defect, and leaving a variable that reinstates it only invites someone to reinstate it.
+        #
+        # WHAT IT DID. A row left with fewer than 2 live gateways got share INVENTED for
+        # gateways the optimiser never assigned: an empty row was given 1/n across every valid
+        # candidate, and a single-100% row gave each zero-share candidate a hard-coded 5% floor
+        # (max(1 - have, 0.05)) before renormalising — with recipients drawn from the GLOBAL
+        # template column set, not the cell's own doors.
+        #
+        # WHY THAT IS INDEFENSIBLE. It is share the GA cannot see at ANY grain, so it could never
+        # be optimised against, never be predicted by the search, and never be attributed. It is
+        # the mechanism that dumped volume onto Authorize / WoodForest.
+        #
+        # WHAT HAPPENS INSTEAD. A row left with <2 live gateways passes through UNTOUCHED and is
+        # flagged by the `Check` column — the same treatment a genuinely single-gateway cell has
+        # always had. The fix for such a row is data (open a second door in the MID list), not a
+        # projection that pretends a door exists.
+        #
+        # Stage 2 ("backfill") therefore does nothing; see the stage-gate note above.
         if _slvl >= 3:                                   # [stage >=3: max-share water-fill]
             R = _cap_rows(R)
         # 2dp rounding + residual-push. Two fixes 2026-08-17:
@@ -2536,13 +2501,17 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
 def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid2vamp=None,
                         mid_list_path=None, usa_only=frozenset(), country_pres=None,
                         max_share=0.97, _stage=None, projection_mode=True):
-    """Proposed shares AFTER the pipeline's enforcement — cap, wallet-incapable zeroing,
-    USA/Non-USA split, and <2-gateway BACK-FILL — taken straight from build_split_exports'
-    output, at (Currency, BIN, RPGT, pmp, Country, vampMid) grain.
+    """Proposed shares AFTER the pipeline's enforcement — cap, wallet-incapable zeroing and
+    USA/Non-USA split — taken straight from build_split_exports' output, at
+    (Currency, BIN, RPGT, pmp, Country, vampMid) grain.
+
+    Enforcement here only ever REMOVES or REDISTRIBUTES share the optimiser assigned. It never
+    invents share for a gateway the optimiser left at zero: the <2-gateway back-fill that used to
+    do exactly that is deleted (see the note in build_split_exports).
 
     ANALOGY: what the split looks like once it's passed through production's "rulebook" — the
-    same caps, capability filters and safety back-fills the deployed config would apply — so the
-    impact projection scores what will REALLY be routed, not the raw optimiser output.
+    same caps and capability filters the deployed config would apply — so the impact projection
+    scores what will REALLY be routed, not the raw optimiser output.
 
     Feeding these into the projection reproduces the pipeline's back-fill gateways
     (WoodForest/Authorize) that the raw optimiser split never assigned. Returns a tuple of
@@ -2728,10 +2697,13 @@ def enforced_split_frame(split, brand, go_live, wallet_incapable=frozenset(), fi
     """Gateway-grain version of :func:`enforced_prop_items`.
 
     Returns the proposed split AFTER the pipeline's enforcement (cap, wallet-incapable
-    zeroing, USA/Non-USA split, <2-gateway BACK-FILL) as a ``[rpgt, currency, bank, gateway,
-    share]`` DataFrame — the SAME enforcement the VAMP projection uses, but keeping the
-    gatewayFid so the revenue / success-rate views can reflect the ACTUAL routed gateways
-    (e.g. the WoodForest / Authorize back-fill the raw optimiser split never assigned).
+    zeroing, USA/Non-USA split) as a ``[rpgt, currency, bank, gateway, share]`` DataFrame — the
+    SAME enforcement the VAMP projection uses, but keeping the gatewayFid so the revenue /
+    success-rate views reflect the ACTUAL routed gateways.
+
+    Every gateway in the result carries share the OPTIMISER gave it. It used to be able to
+    carry gateways the optimiser never assigned at all — WoodForest / Authorize, via the
+    <2-gateway back-fill — which is deleted.
 
     ``bank`` holds the BIN from the export (collapsed to a parent bank downstream via
     bin_to_bank, exactly like the raw split). pmp / Country variants are pooled by MEAN share

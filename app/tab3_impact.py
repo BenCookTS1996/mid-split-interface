@@ -527,8 +527,8 @@ def render():
             split = _impact_split   # everything below (charts, tables) uses the chosen basis
 
             # eval_df drives EVERY revenue / success-rate / bank / gateway view. Build it from the
-            # ENFORCED + backup-blended split (post cap / wallet / USA / <2-gateway back-fill + the
-            # backup catch-all re-adds) — the SAME routing basis the VAMP projection uses — so those
+            # ENFORCED + backup-blended split (post cap / wallet / USA + the backup catch-all
+            # re-adds) — the SAME routing basis the VAMP projection uses — so those
             # charts reconcile with the risk tables instead of showing the raw optimiser split.
             # A Validate-Split run already carries the routed shares in its parsed rules, so it uses
             # the eval frame built during populate; the enforcement is not re-applied.
@@ -4248,8 +4248,11 @@ def render():
                     _wc0 = ss.get("wallet_ctx") or {}
                     _wcin = frozenset(str(x).strip().lower() for x in (_wc0.get("incapable") or set()))
                     _uonly = frozenset(str(x).strip().lower() for x in (_wc0.get("usa_only") or set()))
-                    # ENFORCED shares (post cap / wallet / USA-Non-USA / <2-gateway back-fill) so the
-                    # projection reproduces the pipeline's back-fill gateways (WoodForest/Authorize).
+                    # ENFORCED shares (post cap / wallet / USA-Non-USA) so the projection routes
+                    # exactly where the deployed config would. It no longer "reproduces the
+                    # pipeline's back-fill gateways (WoodForest/Authorize)" — that back-fill was
+                    # invented share and is deleted; those MIDs now appear only where the optimiser
+                    # actually put them.
                     # build_split_exports is a bit heavy, so cache per (dial, basis, go-live).
                     _proj_prop = prop_items
                     try:
