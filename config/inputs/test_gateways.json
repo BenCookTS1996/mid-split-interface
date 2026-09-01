@@ -1,5 +1,0 @@
-{
-  "description": "Gateways/MIDs to scrub (exclude) from routing - test/holdout MIDs.",
-  "scrub": [
-  ]
-}

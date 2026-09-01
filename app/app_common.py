@@ -349,6 +349,13 @@ def input_json_path(name, scheme=None):
     day the subfolders were created all eight copies were byte-identical to the root files
     (verified with cmp), so this changed WHICH file is read and NOT what is read.
 
+    19fz-b: THE FOUR ROOT COPIES ARE NOW DELETED, and deleting them was the safer move rather
+    than the tidier one. Both scheme folders carry all four files, so the fallback could never
+    fire for those names -- which meant a root file was live-looking but dead: editing
+    config/inputs/routing_restrictions.json would have changed nothing, silently, because the
+    scheme copy always won. The fallback branch is KEPT for a genuinely new filename that has no
+    per-scheme copy yet.
+
     `scheme` is worth passing explicitly at any site that already has the value in hand --
     it removes the session-state read entirely.
     """
