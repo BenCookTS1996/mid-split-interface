@@ -106,7 +106,7 @@ def run_vamp_pipeline(config: dict, project_root: str,
     project_root = os.path.abspath(project_root)
     sys.path.insert(0, os.path.join(project_root, "src"))
     from google.cloud import bigquery
-    from vamp_pipeline import (ActuarialEngine, AllocationEngine, DataExtractor,
+    from build_baseline.vamp_pipeline import (ActuarialEngine, AllocationEngine, DataExtractor,
                                ExportManager)
 
     prev_cwd = os.getcwd()
@@ -122,7 +122,7 @@ def run_vamp_pipeline(config: dict, project_root: str,
             mlf = os.path.join(project_root, mlf)
         config["paths"]["mid_list_file"] = mlf
         logger.info(f"ADAPTER: project_root={project_root}")
-        import vamp_pipeline.data_extractor as _dex
+        import build_baseline.vamp_pipeline.data_extractor as _dex
         logger.info(f"ADAPTER: data_extractor loaded from {os.path.abspath(_dex.__file__)}")
         logger.info(f"ADAPTER: data_extractor build = {getattr(_dex, '__build__', 'UNKNOWN (stale?)')}")
         logger.info(f"ADAPTER: queries_dir={config['paths']['queries_dir']} "

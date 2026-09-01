@@ -85,7 +85,7 @@ def run_exact_mid_level(project_root: str, forecast_dir: str, split, brand_name:
 
     project_root = os.path.abspath(project_root)
     sys.path.insert(0, os.path.join(project_root, "src"))
-    from vamp_pipeline import AllocationEngine, ExportManager  # vendored pipeline
+    from build_baseline.vamp_pipeline import AllocationEngine, ExportManager  # vendored pipeline
     from impact_calcs import build_split_exports
 
     wc = wallet_ctx or {}

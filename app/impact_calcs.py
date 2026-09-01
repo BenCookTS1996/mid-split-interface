@@ -1992,6 +1992,12 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
             # `_vt_skipped` records which were short-circuited, so a reader is never left to
             # assume a number was computed when it was inferred.
             _vt_skipped = []
+            # 19fr: EACH COUNTERFACTUAL TIMED SEPARATELY. [cvp-timing]'s [vterms] mark covers the
+            # four terms, all three counterfactuals and the txn merge in one figure, which cannot
+            # answer "is cf_ps 2 seconds or 60?" — the question that decides whether its merge is
+            # worth restructuring. These three marks are appended to the same _LAST_CVP_TIMING
+            # list, so they appear in the [cvp-timing] table alongside everything else.
+            _cv_mark("[vterms] the 4 terms (held/out/inn/pool)")
             _vt_post = _vt_vc * (1.0 - _vt_mv) + _vt_pl * _vt_ps
 
             # (2) cf_norenorm — undo ONLY the renormalise-to-1. The shipped line divided by
@@ -2006,6 +2012,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
                 _vt_cf_nr = _vt_post
                 _vt_skipped.append("cf_norenorm (every live cell's prop sums to 1, so undoing "
                                    "the renormalise is the identity)")
+            _cv_mark("[vterms] counterfactual cf_norenorm (elementwise; skippable)")
 
             # (3) cf_nopass — undo ONLY the "no recipient -> passthrough" override, so `move`
             #     reverts to gf x pr_app and the pool is rebuilt from that.
@@ -2022,6 +2029,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
                 _vt_cf_np = _vt_post
                 _vt_skipped.append("cf_nopass (the no-recipient passthrough never fired, so "
                                    "undoing it is the identity)")
+            _cv_mark("[vterms] counterfactual cf_nopass (1 groupby-transform; skippable)")
 
             # (1) cf_ps — rebuild vshare from `prop_share` (which carries the 0.97 max-share cap
             #     AND the 0.01 exploration floor) instead of raw `prop_raw` (which carries
@@ -2048,6 +2056,11 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
                     _vt_cf_psh = _vt_vc * (1.0 - _vt_mv) + _vt_pl * _ps2
             except Exception:  # noqa: BLE001
                 _vt_cf_psh = None
+            # THE ONE THAT NEEDS A MERGE, and the only one with no cheap precondition — the 0.97
+            # cap makes prop_share differ from the raw vshare on essentially every run, so it
+            # cannot be short-circuited. If this mark is large, restructuring the merge is the
+            # next move; if it is small, there is nothing here.
+            _cv_mark("[vterms] counterfactual cf_ps (FULL MERGE + 2 groupbys; NOT skippable)")
 
             _vt_df = pd.DataFrame({
                 "midl": _vt_ml, "per": _vt_pr,

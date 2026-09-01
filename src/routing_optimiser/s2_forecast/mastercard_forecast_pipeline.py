@@ -93,7 +93,7 @@ def run_mastercard_pipeline(config: dict, project_root: str,
     project_root = os.path.abspath(project_root)
     sys.path.insert(0, os.path.join(project_root, "src"))
     from google.cloud import bigquery
-    from mastercard_pipeline import (ActuarialEngine, AllocationEngine, DataExtractor,
+    from build_baseline.mastercard_pipeline import (ActuarialEngine, AllocationEngine, DataExtractor,
                                      ExportManager)
 
     prev_cwd = os.getcwd()
@@ -108,7 +108,7 @@ def run_mastercard_pipeline(config: dict, project_root: str,
             mlf = os.path.join(project_root, mlf)
         config["paths"]["mid_list_file"] = mlf
 
-        import mastercard_pipeline.data_extractor as _dex
+        import build_baseline.mastercard_pipeline.data_extractor as _dex
         logger.info(f"MC ADAPTER: project_root={project_root}")
         logger.info(f"MC ADAPTER: data_extractor build = {getattr(_dex, '__build__', 'UNKNOWN (stale?)')}")
         logger.info(f"MC ADAPTER: queries_dir={config['paths']['queries_dir']} "
