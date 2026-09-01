@@ -5624,6 +5624,460 @@ def render():
                             _catchall_row_mask = None
                             log(f"   [full-matrix] catch-all ε-floor mask skipped "
                                 f"({type(_cme).__name__}: {_cme}); seeds may leave catch-all MIDs at 0.")
+                        # AUTO-BLOCK (pre-enforcement): detect bank-blocked (bank,gateway) pairs UP
+                        # FRONT and cap them to the exploration floor INSIDE the enforcement input, so
+                        # the freed volume is redistributed COMPLIANTLY (VAMP + per-MID bands) by the
+                        # same enforcement pass that already runs — instead of the old post-hoc patch
+                        # that capped AFTER enforcement and could perturb VAMP compliance. No extra
+                        # solve, so ≈ no added time. Best-effort; empty set → unchanged behaviour.
+                        _blk_pairs_pre = set()
+                        if bool(ss.get("block_gw_cb", False)):
+                            try:
+                                _bapre = orig_adf.copy()
+                                _b2bp = bin_to_bank or {}   # current-run map (not stale ss — see pre-GA note)
+                                if _b2bp and "bin" in _bapre.columns:
+                                    _bapre["bin"] = _bapre["bin"].map(
+                                        lambda _b: _b2bp.get(_b, _b2bp.get(str(_b), _b)))
+                                _bdfp = detect_blocked_gateways(
+                                    _bapre, float(ss.get("block_min_inp", 100) or 100))
+                                _bflagp = _bdfp[_bdfp["blocked"]] if not _bdfp.empty else _bdfp
+                                _blk_pairs_pre = set(zip(
+                                    _bflagp["bin"].astype(str).str.strip().str.lower(),
+                                    _bflagp["gateway"].astype(str).str.strip().str.lower()))
+                                if _blk_pairs_pre:
+                                    log(f"   auto-block (pre-enforcement): {len(_blk_pairs_pre)} bank×gateway "
+                                        "capped to the exploration floor INSIDE enforcement → the freed "
+                                        "volume is redistributed compliantly (no post-hoc VAMP perturbation).")
+                            except Exception as _bpe:  # noqa: BLE001
+                                log(f"   [Warning] pre-enforcement auto-block detect skipped "
+                                    f"({type(_bpe).__name__}: {_bpe}); post-hoc cap still applies.")
+
+                        # ── DELIVERY TRANSFORM, BUILT BEFORE THE SEED (19go) ──────────
+                        # `_fm_deliv` is the blocked-caps → eligibility → cap transform the
+                        # engine SELECTS with and delivery SHIPS. It used to be built ~870
+                        # lines below, AFTER the three seed stages had already run — which is
+                        # why the stages could only score themselves on the RAW basis, and why
+                        # [seed-basis] kept reporting a gap between the two bases. Building it
+                        # HERE changes nothing about the transform (the code is moved verbatim,
+                        # dedented); it only makes it exist in time for the stages to use it.
+                        # The auto-block detect directly above moved with it for the same
+                        # reason — `_fm_block` needs `_blk_pairs_pre`.
+                        # `_fm_eb`/`_fm_inc`/`_fm_use_exact` are re-read from ctx further down
+                        # where they used to be set; that is a no-op, they are pure ctx reads.
+                        _fm_eb = ctx.get("exact_bands")
+                        _fm_sc = ctx.get("_exact_bands_selfcheck")
+                        _fm_inc = _fm_sc.get("inc") if isinstance(_fm_sc, dict) else None
+                        _fm_use_exact = (_fm_eb is not None and _fm_inc is not None)
+                        if _fm_use_exact:
+                            # Eligibility-aware band scoring: reproduce the DELIVERED eligibility
+                            # transform (bans→0 + per-cell renorm, wallet blend + renorm, USA-only
+                            # blend + renorm) on the shares BEFORE the M5 band projection. This is the
+                            # row-for-row twin of delivery-time _restrict/apply_restrictions (via the
+                            # precomputed operator ctx["elig_op"], whose cell segments match the
+                            # projector's). Without it the GA scored the RAW pre-eligibility split, so
+                            # the live 'MID unmet' UNDER-counted vs tab 3's delivered breakdown (e.g. 3
+                            # vs 5). No-op if eligibility is disabled (ROUTING_GA_ELIG=0 / elig_op None).
+                            from routing_optimiser.s3_problem.eligibility import apply_elig_pop as _apply_elig_pop
+                            from routing_optimiser.s4_search.rowpar import row_parallel as _fm_rowpar
+                            _fm_elig_op = ctx.get("elig_op")
+                            def _fm_elig(_farr, _op=_fm_elig_op, _ap=_apply_elig_pop):
+                                return _ap(_farr, _op) if _op is not None else _farr
+                            # BANK AUTO-BLOCK flooring — reproduce the DELIVERED _apply_blocked_caps in the
+                            # band hook (delivery applies it BEFORE eligibility). Blocked (bank,gateway)
+                            # rows are capped to the exploration floor and the freed share redistributed to
+                            # the cell's non-blocked rows; a cell with no non-blocked recipient is left
+                            # unchanged. Without this the delivered split (tab 3) can show 1 extra breach
+                            # the GA never saw (the Adyen-TotalAV-NA Txn case). No-op if auto-block off.
+                            _fm_blk_row = None
+                            if _blk_pairs_pre:
+                                try:
+                                    _bbm = {str(_k).strip().lower(): str(_v).strip().lower()
+                                            for _k, _v in (bin_to_bank or {}).items()}
+                                    _gwL = G["gateway"].astype(str).str.strip().str.lower()
+                                    _bkL = G["bin"].astype(str).str.strip().str.lower()
+                                    _pkL = _bkL.map(lambda _b: _bbm.get(_b, _b))
+                                    _fm_blk_row = np.array(
+                                        [((_b, _g) in _blk_pairs_pre) or ((_p, _g) in _blk_pairs_pre)
+                                         for _b, _p, _g in zip(_bkL, _pkL, _gwL)], dtype=bool)
+                                    if not _fm_blk_row.any():
+                                        # LEGITIMATE None: no row is blocked, so the
+                                        # transform genuinely IS the identity. Distinct
+                                        # from the failure case below.
+                                        _fm_blk_row = None
+                                except Exception as _blkE:
+                                    # NO FALLBACK as of 2026-08-19aa. This used to set
+                                    # _fm_blk_row = None on ANY error, which makes
+                                    # `_fm_block` the identity — so the GA silently stops
+                                    # modelling blocked caps while `_blk_pairs_pre` says
+                                    # rows ARE blocked. That is exactly the
+                                    # Adyen-TotalAV-NA divergence described directly above
+                                    # (the delivered split showing a breach the GA never
+                                    # saw), and it would put RECONCILIATION ERROR back
+                                    # above 0 with nothing in the log to explain it. The
+                                    # whole grain-alignment effort of 2026-08-19o depends
+                                    # on this transform matching delivery row for row.
+                                    raise RuntimeError(
+                                        "[full-matrix] BANK AUTO-BLOCK FLOORING FAILED to "
+                                        f"build ({type(_blkE).__name__}: {_blkE}) while "
+                                        f"{len(_blk_pairs_pre)} bank×gateway pair(s) ARE "
+                                        "blocked. Refusing to continue with the flooring "
+                                        "silently disabled: `_fm_block` would become the "
+                                        "identity, the GA would stop modelling blocked "
+                                        "caps, and the delivered split would breach bands "
+                                        "the search never scored (RECONCILIATION ERROR > 0 "
+                                        "with no stated cause). Fix bin_to_bank / the "
+                                        "gateway+bank columns on G. "
+                                        "(engine=genetic_fullmatrix)") from _blkE
+                            _fm_bcs = np.asarray(ctx["cell_starts"], np.intp)
+                            _fm_bcc = np.asarray(ctx["cell_counts"], np.intp)
+                            _fm_bfloor = float(floor)
+                            # ── RESTRICTED TO THE CELLS THAT CAN CHANGE (19bk) ────────────
+                            # [gen-cost] 2026-08-23 16:01: `deliver` is 52.2% of a
+                            # generation and [deliv-cost] put blocked-caps at 26.6% of that
+                            # (14.0% of a generation) — for a mask covering 98 of 242,670
+                            # rows. Only a cell holding a blocked row can change: elsewhere
+                            # _capd == _X, so _freed == 0, so _fc == 0, so _add == 0, so
+                            # _outb == _capd + 0.0 == _X EXACTLY (IEEE: x + 0.0 == x for
+                            # every x except -0.0, and [deliv-cost] counts the -0.0s — 0 on
+                            # this data). 68 of 23,418 cells qualified, and the restricted
+                            # result was np.array_equal to the full one on the live
+                            # 35 x 242,670 array. 312 ms -> 19.1 ms measured.
+                            #
+                            # THE PRIMITIVES MUST MATCH, which is the whole subtlety: the
+                            # narrow path uses np.add.reduceat and np.repeat exactly as
+                            # below. My first draft used `.sum(axis=1)` and read 5.6e-17
+                            # different, because reduceat does NOT sum a segment
+                            # left-to-right. Gather the hit cells' rows, run the SAME
+                            # expression, scatter back.
+                            _fm_blk_hit = _fm_blk_rows = _fm_blk_scs = _fm_blk_scc = None
+                            _FM_BLK_RESTRICT = os.environ.get(
+                                "ROUTING_BLOCK_RESTRICT", "1") != "0"
+                            if _fm_blk_row is not None and _FM_BLK_RESTRICT:
+                                try:
+                                    _bh_cell_of = np.repeat(np.arange(_fm_bcs.size),
+                                                            _fm_bcc)
+                                    _fm_blk_hit = np.zeros(_fm_bcs.size, bool)
+                                    _fm_blk_hit[_bh_cell_of[np.asarray(_fm_blk_row)]] = True
+                                    _fm_blk_rows = np.concatenate([
+                                        np.arange(int(_fm_bcs[_c]),
+                                                  int(_fm_bcs[_c]) + int(_fm_bcc[_c]))
+                                        for _c in np.where(_fm_blk_hit)[0]]).astype(np.intp)
+                                    _fm_blk_scc = np.asarray(_fm_bcc[_fm_blk_hit], np.intp)
+                                    _fm_blk_scs = np.concatenate(
+                                        [[0], np.cumsum(_fm_blk_scc)[:-1]]).astype(np.intp)
+                                    log(f"   [block-restrict] blocked-caps will run on "
+                                        f"{int(_fm_blk_hit.sum()):,} of {_fm_bcs.size:,} "
+                                        f"cell(s) ({_fm_blk_hit.mean():.2%}) carrying "
+                                        f"{_fm_blk_rows.size:,} of {int(_fm_bcc.sum()):,} "
+                                        "row(s) — the only cells a blocked row can reach. "
+                                        "Every other cell's output is its input, exactly. "
+                                        "SELF-CHECKED against the full-width transform on "
+                                        "the first call; ROUTING_BLOCK_RESTRICT=0 reverts.")
+                                except Exception as _bhE:  # noqa: BLE001
+                                    _fm_blk_rows = None
+                                    log(f"   [block-restrict] index build FAILED "
+                                        f"({type(_bhE).__name__}: {_bhE}) — falling back to "
+                                        "the full-width transform, which is the shipped "
+                                        "behaviour. No answer changes.")
+                            _fm_blk_ok = {"checked": False, "use": _fm_blk_rows is not None}
+
+                            def _fm_block_full(_X, _blk, _cs, _cc, _fl):
+                                """The full-width transform. THE reference: the restricted
+                                path is checked against this, never the other way round."""
+                                _bm = _blk[None, :]
+                                _capd = np.where(_bm, np.minimum(_X, _fl), _X)     # blocked -> <= floor
+                                _freed = _X - _capd                                # >=0 on blocked rows
+                                _recip = np.where(_bm, 0.0, _capd)                 # non-blocked recipients
+                                _fc = np.repeat(np.add.reduceat(_freed, _cs, axis=1), _cc, axis=1)
+                                _rc = np.repeat(np.add.reduceat(_recip, _cs, axis=1), _cc, axis=1)
+                                _has = _rc > 1e-12
+                                _add = np.where(_has, _recip * _fc / np.where(_has, _rc, 1.0), 0.0)
+                                return np.where(_has, _capd + _add, _X)            # no recipient → unchanged
+
+                            def _fm_block_narrow(_X, _blk, _fl, _rows, _scs, _scc):
+                                """Same expression over the hit cells only; the rest copied
+                                through. Returns a NEW array — callers rely on that."""
+                                _sub = np.ascontiguousarray(_X[:, _rows])
+                                _bm = np.asarray(_blk)[None, _rows]
+                                _capd = np.where(_bm, np.minimum(_sub, _fl), _sub)
+                                _freed = _sub - _capd
+                                _recip = np.where(_bm, 0.0, _capd)
+                                _fc = np.repeat(np.add.reduceat(_freed, _scs, axis=1), _scc, axis=1)
+                                _rc = np.repeat(np.add.reduceat(_recip, _scs, axis=1), _scc, axis=1)
+                                _has = _rc > 1e-12
+                                _add = np.where(_has, _recip * _fc / np.where(_has, _rc, 1.0), 0.0)
+                                _Y = np.array(_X, float, copy=True)
+                                _Y[:, _rows] = np.where(_has, _capd + _add, _sub)
+                                return _Y
+
+                            def _fm_block_into(_X, _blk, _fl, _rows, _scs, _scc):
+                                """`_fm_block_narrow` writing INTO `_X` instead of a copy.
+
+                                The arithmetic is character-for-character the same; the
+                                only difference is where the result lands. This is NOT a
+                                drop-in for `_fm_block_narrow` and must never be called
+                                through rowpar — rowpar runs a transform twice on the same
+                                input to verify threading, and a second in-place run does
+                                not reproduce the first. It has exactly one caller:
+                                `_fm_deliv_full`, on a buffer it filled itself."""
+                                _sub = np.ascontiguousarray(_X[:, _rows])
+                                _bm = np.asarray(_blk)[None, _rows]
+                                _capd = np.where(_bm, np.minimum(_sub, _fl), _sub)
+                                _freed = _sub - _capd
+                                _recip = np.where(_bm, 0.0, _capd)
+                                _fc = np.repeat(np.add.reduceat(_freed, _scs, axis=1), _scc, axis=1)
+                                _rc = np.repeat(np.add.reduceat(_recip, _scs, axis=1), _scc, axis=1)
+                                _has = _rc > 1e-12
+                                _add = np.where(_has, _recip * _fc / np.where(_has, _rc, 1.0), 0.0)
+                                _X[:, _rows] = np.where(_has, _capd + _add, _sub)
+                                return _X
+
+                            def _fm_block(_farr, _blk=_fm_blk_row, _cs=_fm_bcs, _cc=_fm_bcc,
+                                          _fl=_fm_bfloor, _st=_fm_blk_ok):
+                                if _blk is None:
+                                    return _farr
+                                _X = np.asarray(_farr, float)
+                                _one = _X.ndim == 1
+                                if _one:
+                                    _X = _X[None, :]
+                                if not _st["use"]:
+                                    _o = _fm_block_full(_X, _blk, _cs, _cc, _fl)
+                                    return _o[0] if _one else _o
+                                _o = _fm_block_narrow(_X, _blk, _fl, _fm_blk_rows,
+                                                      _fm_blk_scs, _fm_blk_scc)
+                                if not _st["checked"]:
+                                    # ONE full-width computation, once, to prove it. A
+                                    # mismatch reverts to the full path for the rest of the
+                                    # run and SHOUTS — the fallback ships the known-good
+                                    # transform, it does not hide the failure.
+                                    _st["checked"] = True
+                                    _ref = _fm_block_full(_X, _blk, _cs, _cc, _fl)
+                                    if np.array_equal(_ref, _o):
+                                        log("   [block-restrict] ✓ SELF-CHECK PASSED on the "
+                                            f"live split: restricted == full-width, bit for "
+                                            f"bit (np.array_equal on {_X.shape[0]}x"
+                                            f"{_X.shape[1]:,}, not allclose).")
+                                    else:
+                                        # the delta MUST be taken before _o is
+                                        # replaced, or the log prints 0.0 for a real
+                                        # failure — which is the one message that must
+                                        # never be wrong.
+                                        _bad_mx = float(np.abs(_ref - _o).max())
+                                        _st["use"] = False
+                                        _o = _ref
+                                        log("   [block-restrict] ⚠ SELF-CHECK FAILED — "
+                                            f"max|Δ| {_bad_mx:.3e}. "
+                                            "REVERTING to the full-width transform for the "
+                                            "rest of this run, so the shipped answer is the "
+                                            "known-good one. The restriction's premise "
+                                            "(_freed == 0 in every cell with no blocked row) "
+                                            "does not hold on this data — most likely a "
+                                            "-0.0 share or a cell whose recipient sum sits "
+                                            "within 1e-12 of the `_has` threshold.")
+                                return _o[0] if _one else _o
+
+                            # DELIVERY transform: block-floor → eligibility. The optional
+                            # min-2 floor branch was DELETED 2026-08-19x — it was default-OFF
+                            # (ROUTING_MIN2_FLOOR), duplicated by a second pandas
+                            # implementation, and its `_fc is None` test made every GA
+                            # evaluation pay a branch that was never taken.
+                            # ── ROW-PARALLEL DELIVERY (19bn) ──────────────────────────
+                            # [gen-cost] 2026-08-23 19:04: `deliver` is 36.7% of a
+                            # generation — the largest row — and every millisecond of it is
+                            # single-threaded numpy while [kernel-ab] reports 8 of 16 cores
+                            # idle. Both halves are candidate-independent (reduceat and
+                            # repeat run along axis=1; everything else is elementwise), so
+                            # row p of the output depends only on row p of the input and the
+                            # population can be split across threads with the SAME
+                            # operations in the SAME order. rowpar verifies that on its
+                            # second call against the serial result, bit for bit.
+                            #
+                            # REFUSED when the 19bk in-place eligibility twin is enabled:
+                            # that path shares one scratch block across calls and guards
+                            # re-entrancy with a module-level flag, so concurrent callers
+                            # would corrupt it. It is off by default (1.05x at the live
+                            # shape) and this keeps the two from ever meeting.
+                            _fm_rp_ok = True
+                            try:
+                                import routing_optimiser.s3_problem.eligibility as _fm_elmod
+                                _fm_rp_ok = not bool(getattr(_fm_elmod, "_EP_INPLACE", False))
+                            except Exception:  # noqa: BLE001
+                                _fm_rp_ok = True
+                            if not _fm_rp_ok:
+                                log("   [row-par] delivery NOT threaded: the in-place "
+                                    "eligibility twin (ROUTING_ELIG_INPLACE=1) shares "
+                                    "scratch across calls, so it cannot be run "
+                                    "concurrently. Unset it to thread `deliver`, which is "
+                                    "worth far more than the twin's 1.05x.")
+
+                            # ── [deliv-cap] 19fg: CAP LAST, THE WAY DELIVERY DOES ─────
+                            # THE ORDER WAS WRONG, and 19fe fixing the RULE made that the
+                            # last thing left:
+                            #   search  (pre-19fg): cap the genome -> zero ineligible
+                            #                       doors -> renormalise ... and STOP
+                            #   delivery           : zero ineligible doors ->
+                            #                       renormalise -> cap
+                            # Zeroing a door and renormalising can push a SURVIVOR over
+                            # the cap. Delivery caps after that and cleans it up
+                            # (impact_calcs._cap_rows, inside build_split_exports); the
+                            # search capped before it and never looked again, so it could
+                            # score a split as compliant that delivery then had to
+                            # correct. Worked example: a cell at A 96 / B 3 / C 1 with a
+                            # 0.97 cap is compliant; zero B and C for a Non-USA sub-cell,
+                            # renormalise, and A is at 1.00. The GA scored 1.00; the
+                            # deployed template ships 0.97.
+                            #
+                            # THE GENOME REPAIR STAYS. It is not redundant: the
+                            # engineering key needs every candidate at an exact 0.0 on the
+                            # cap (see _repair_maxshare's target back-off), and that is a
+                            # property of the GENOME, not of the delivered projection.
+                            # Capping twice is harmless — the second cap is a no-op unless
+                            # eligibility actually pushed something over.
+                            #
+                            # EXACT CAP, NO BACK-OFF. _repair_maxshare triggers at
+                            # cap x (1 - 1e-9) because of that engineering key. Delivery
+                            # has no engineering key and triggers at the cap itself, so
+                            # this does too — which is also what removes the 9.7e-10
+                            # residual 19fe measured between the two.
+                            #
+                            # SAME KERNEL AS THE REPAIR, headroom-weighted and ONE pass:
+                            # sum(cap - share) over a cell's present rows is
+                            # (present_rows x cap) - 1 + excess, so it covers the excess
+                            # whenever present_rows x cap >= 1 — every cell with 2+ live
+                            # rows at 0.97. A cell that cannot satisfy it is left alone,
+                            # which is what _cap_rows does too (its `m` mask skips any row
+                            # with fewer than 2 present gateways).
+                            #
+                            # Pure, so rowpar's verify-by-running-twice stays valid.
+                            # ROUTING_DELIV_CAP=0 restores the pre-19fg order. That switch
+                            # exists for ONE reason — so this run's delta can be attributed
+                            # separately from 19fe's during the verification cycle — and
+                            # should be deleted once the default is trusted.
+                            _DCAP = {
+                                "on": bool(os.environ.get("ROUTING_DELIV_CAP", "1") != "0"
+                                           and float(ctx.get("max_share", 1.0) or 1.0) < 1.0),
+                                "cap": float(ctx.get("max_share", 1.0) or 1.0),
+                                "said": False, "cells": 0, "moved": 0.0, "worst": 0.0,
+                                "calls": 0, "hit": 0, "reover": 0, "infeas": 0}
+                            if not _DCAP["on"]:
+                                log("   [deliv-cap] OFF — "
+                                    + ("ROUTING_DELIV_CAP=0, so the search caps the genome "
+                                       "BEFORE eligibility and never re-caps, while "
+                                       "delivery caps AFTER. A cell where eligibility "
+                                       "zeroing lifts a survivor past the cap is scored "
+                                       "differently from what ships."
+                                       if os.environ.get("ROUTING_DELIV_CAP", "1") == "0"
+                                       else f"max_share is "
+                                            f"{float(ctx.get('max_share', 1.0) or 1.0):.4g}, "
+                                            "so there is no cap to apply."))
+                            else:
+                                log(f"   [deliv-cap] ON (19fg) — the delivery transform is "
+                                    f"now block -> eligibility -> CAP at "
+                                    f"{_DCAP['cap']:.4g}, matching delivery's own order. "
+                                    "Effect is reported at the end of the search.")
+
+                            def _fm_cap(_farr, _st=_DCAP, _cs=_fm_bcs, _cc=_fm_bcc):
+                                if not _st["on"]:
+                                    return _farr
+                                _X = np.asarray(_farr, float)
+                                _one = _X.ndim == 1
+                                if _one:
+                                    _X = _X[None, :]
+                                _cap = _st["cap"]
+                                _o = _X > _cap
+                                _st["calls"] += 1
+                                if not _o.any():
+                                    return _X[0] if _one else _X
+                                _exc = np.add.reduceat(np.where(_o, _X - _cap, 0.0), _cs,
+                                                       axis=1)
+                                _room = np.where(~_o & (_X > 1e-12) & (_X < _cap),
+                                                 _cap - _X, 0.0)
+                                _pool = np.add.reduceat(_room, _cs, axis=1)
+                                _ok = (_exc > 0.0) & (_pool > 1e-12)
+                                if not _ok.any():
+                                    return _X[0] if _one else _X
+                                _okr = np.repeat(_ok, _cc, axis=1)
+                                _f = np.repeat(np.where(_ok, _exc / np.where(_pool > 1e-12,
+                                                                             _pool, 1.0),
+                                                        0.0), _cc, axis=1)
+                                _Y = np.where(_okr & _o, _cap,
+                                              np.where(_okr, _X + _room * _f, _X))
+                                _st["hit"] += 1
+                                _st["cells"] += int(_ok.sum())
+                                _st["infeas"] += int(np.count_nonzero(~(_pool >= _exc)
+                                                                      & (_exc > 0.0)))
+                                _st["reover"] += int(np.count_nonzero(
+                                    (_Y > _cap) & _okr
+                                    & np.repeat(_pool >= _exc, _cc, axis=1)))
+                                _d = np.abs(_Y - _X)
+                                _st["moved"] += float(_d.sum())
+                                _st["worst"] = max(_st["worst"], float(_d.max()))
+                                return _Y[0] if _one else _Y
+
+                            def _fm_deliv_serial(_farr, _bl=_fm_block, _el=_fm_elig,
+                                                 _cp=_fm_cap):
+                                """THE REFERENCE. rowpar checks the threaded path against
+                                this, never the other way round.
+
+                                19fg: block -> eligibility -> CAP. The cap is LAST because
+                                that is where delivery applies it."""
+                                return _cp(_el(_bl(_farr)))
+
+                            def _fm_elig_rp(_farr, _el=_fm_elig):
+                                """Eligibility ALONE, threaded. A separate rowpar name from
+                                "deliver": that state machine keys on the name, and feeding
+                                two different transforms through one key would verify one
+                                and thread the other."""
+                                _a = np.asarray(_farr)
+                                if _a.ndim != 2:
+                                    return _el(_farr)
+                                return _fm_rowpar(_el, _a, "deliver(elig)",
+                                                  enabled=_fm_rp_ok)
+
+                            def _fm_deliv(_farr, _sr=_fm_deliv_serial):
+                                _a = np.asarray(_farr)
+                                if _a.ndim != 2:
+                                    return _sr(_farr)
+                                return _fm_rowpar(_sr, _a, "deliver", enabled=_fm_rp_ok)
+
+                        # ── [seed-deliv] 19go: THE SEED IS JUDGED ON WHAT SHIPS ───────
+                        # The three stages below used to score themselves on the RAW split while
+                        # the engine selected — and delivery shipped — `_fm_deliv(raw)`. That is
+                        # the gap [seed-basis] has been reporting: a stage could improve the raw
+                        # numbers and leave the delivered ones worse, so the seed handed to the GA
+                        # was optimal for a basis nothing uses. All three now take `deliver_fn`,
+                        # and each applies it at its ONE projection point, so the whole chain
+                        # measures the basis that ships.
+                        #
+                        # WHAT DOES NOT CHANGE: the split itself is still the RAW genome. The GA
+                        # takes raw genomes and applies delivery itself; only the MEASUREMENT
+                        # moves basis. And the LP inside stage 2 still linearises the RAW model —
+                        # delivery has no Jacobian to give it — so stage 2 PROPOSES on the linear
+                        # model and JUDGES on delivery.
+                        #
+                        # BEHAVIOURAL. It changes which seed is produced. ROUTING_SEED_DELIV=0
+                        # passes deliver_fn=None to all three and restores the pre-19go seed byte
+                        # for byte, fast line-search included.
+                        _SEED_DELIV = os.environ.get("ROUTING_SEED_DELIV", "1") != "0"
+                        _seed_dlv = (locals().get("_fm_deliv") if _SEED_DELIV else None)
+                        if _seed_dlv is not None:
+                            log("   [seed-deliv] ON (19go) — all three seed stages score through "
+                                "the DELIVERY transform (blocked-caps → eligibility → cap), the "
+                                "same one the engine selects with and delivery ships. Read "
+                                "[seed-basis] below: RAW and DELIVERED should now agree on which "
+                                "seed is best, and the seed's own delivery projection becomes "
+                                "redundant. ROUTING_SEED_DELIV=0 restores the RAW basis.")
+                        elif not _SEED_DELIV:
+                            log("   [seed-deliv] OFF by ROUTING_SEED_DELIV=0 — the seed stages "
+                                "score the RAW split while the engine selects on the DELIVERED "
+                                "one. Expect [seed-basis] to report a gap between the bases; that "
+                                "is this switch, not a regression.")
+                        else:
+                            log("   [seed-deliv] UNAVAILABLE — the delivery transform was not "
+                                "built (no exact bands / incidence on ctx), so there is nothing "
+                                "for the seed stages to score through and they run on the RAW "
+                                "basis. This is the no-bands case, not a failure.")
+
                         # SEED STAGE 1 of 3 — the BAND-AWARE constrained projection.
                         # HISTORY, because the name below still says otherwise: this began as "#1
                         # DIVERSE SEEDS", a set of COMPETING warm starts the search picked between.
@@ -5666,7 +6120,7 @@ def render():
                                     ctx["exact_bands"], ctx["_exact_bands_selfcheck"]["inc"],
                                     max_share=float(ctx.get("max_share", 1.0) or 1.0),
                                     n_starts=_feas_starts, rng_seed=0, keys_out=_bg_keys,
-                                    par_info=_bg_par)
+                                    par_info=_bg_par, deliver_fn=_seed_dlv)
                                 # [feas-par] 19ck: the starts run CONCURRENTLY now. State the wall
                                 # time rather than assert a speed-up: `band_greedy_shares` alternates
                                 # a numpy pass that releases the GIL with a per-spec Python loop that
@@ -5780,12 +6234,22 @@ def render():
                                 try:
                                     from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr_seed
                                     _inc_seed = ctx["_exact_bands_selfcheck"]["inc"]
+                                    # 19go: read the verdict on the SAME basis the stage optimised.
+                                    # Leaving this on RAW while the stage minimises DELIVERED is
+                                    # how a "✓ COMPLIANT" here used to sit above a [seed-basis]
+                                    # line saying otherwise — the two were measuring different
+                                    # objects. `_sb` is the identity when the switch is off.
+                                    def _sb(_v, _d=_seed_dlv):
+                                        _a = np.asarray(_v, float)[None, :]
+                                        return _a if _d is None else np.asarray(_d(_a), float)
                                     _v0 = float(ctx["exact_bands"].penalty(
-                                        _s2pr_seed(np.asarray(_comp_share_G, float)[None, :], _inc_seed))[0])
+                                        _s2pr_seed(_sb(_comp_share_G), _inc_seed))[0])
                                     _v1 = float(ctx["exact_bands"].penalty(
-                                        _s2pr_seed(np.asarray(_band_greedy_G, float)[None, :], _inc_seed))[0])
+                                        _s2pr_seed(_sb(_band_greedy_G), _inc_seed))[0])
                                     log(f"   seed stage 1/3 BAND-AWARE constrained projection "
-                                        f"(per-cell simplex + max-share QP): band breach "
+                                        f"(per-cell simplex + max-share QP, "
+                                        f"{'DELIVERED' if _seed_dlv is not None else 'RAW'} basis): "
+                                        f"band breach "
                                         f"{_v0:.4g} (revenue-greedy start) → {_v1:.4g}. Stage 2 is "
                                         "the exact projector, stage 3 the targeted move — see "
                                         "[seed-chain] for the whole chain and which stage was used.")
@@ -5793,7 +6257,7 @@ def render():
                                     _pretty = {str(_r.get("vampMid")).strip().lower(): str(_r.get("vampMid"))
                                                for _r in (params.get("mid_constraints", []) or [])}
                                     _rep_s = ctx["exact_bands"].report(
-                                        _s2pr_seed(np.asarray(_band_greedy_G, float)[None, :], _inc_seed))
+                                        _s2pr_seed(_sb(_band_greedy_G), _inc_seed))
                                     _unmet = []
                                     for _r in _rep_s:
                                         _nw = float(_r["now"])
@@ -5874,7 +6338,8 @@ def render():
                                         ctx["exact_bands"], _inc_x, _slb_base,
                                         ctx["cell_starts"], ctx["cell_counts"], ctx["elig"],
                                         max_share=float(ctx.get("max_share", 1.0) or 1.0), log_fn=log,
-                                        floor_mask=_catchall_row_mask, share_floor=_fm_catch_eps)
+                                        floor_mask=_catchall_row_mask, share_floor=_fm_catch_eps,
+                                        deliver_fn=_seed_dlv)
                                     if _xinfo.get("ok"):
                                         _seeds.append(np.asarray(_exact_G, float))
                                         _verd = ("✓ COMPLIANT certificate (a feasible split provably exists)"
@@ -5894,7 +6359,7 @@ def render():
                                         try:
                                             from routing_optimiser.s4_search.band_scoring import (
                                                 shares_to_prop_raw as _s2pr_x)
-                                            _pr_x = _s2pr_x(np.asarray(_exact_G, float)[None, :], _inc_x)
+                                            _pr_x = _s2pr_x(_sb(_exact_G), _inc_x)
                                             _stuck = []
                                             for _rr in ctx["exact_bands"].report(_pr_x):
                                                 _nw = float(_rr["now"])
@@ -5941,7 +6406,8 @@ def render():
                                         _stm_base, ctx["cell_starts"], ctx["cell_counts"], ctx["elig"],
                                         mid_id=ctx["mid_id"], risk=ctx["risk"], cell_vol=ctx["cell_vol"],
                                         mid_names=[str(m) for m in _mids_u],
-                                        max_share=float(ctx.get("max_share", 1.0) or 1.0), log_fn=log)
+                                        max_share=float(ctx.get("max_share", 1.0) or 1.0), log_fn=log,
+                                        deliver_fn=_seed_dlv)
                                     if _minfo.get("ok") and _minfo.get("breach", 1.0) < _minfo.get(
                                             "breach0", 1.0) - 1e-12 and _move_G is not None:
                                         _seeds.append(np.asarray(_move_G, float))
@@ -6277,33 +6743,6 @@ def render():
                             _agg["share"] = np.asarray(_shares, dtype=float)
                             _agg["volume"] = _agg["cell_volume"] * _agg["share"]
                             return _agg
-                        # AUTO-BLOCK (pre-enforcement): detect bank-blocked (bank,gateway) pairs UP
-                        # FRONT and cap them to the exploration floor INSIDE the enforcement input, so
-                        # the freed volume is redistributed COMPLIANTLY (VAMP + per-MID bands) by the
-                        # same enforcement pass that already runs — instead of the old post-hoc patch
-                        # that capped AFTER enforcement and could perturb VAMP compliance. No extra
-                        # solve, so ≈ no added time. Best-effort; empty set → unchanged behaviour.
-                        _blk_pairs_pre = set()
-                        if bool(ss.get("block_gw_cb", False)):
-                            try:
-                                _bapre = orig_adf.copy()
-                                _b2bp = bin_to_bank or {}   # current-run map (not stale ss — see pre-GA note)
-                                if _b2bp and "bin" in _bapre.columns:
-                                    _bapre["bin"] = _bapre["bin"].map(
-                                        lambda _b: _b2bp.get(_b, _b2bp.get(str(_b), _b)))
-                                _bdfp = detect_blocked_gateways(
-                                    _bapre, float(ss.get("block_min_inp", 100) or 100))
-                                _bflagp = _bdfp[_bdfp["blocked"]] if not _bdfp.empty else _bdfp
-                                _blk_pairs_pre = set(zip(
-                                    _bflagp["bin"].astype(str).str.strip().str.lower(),
-                                    _bflagp["gateway"].astype(str).str.strip().str.lower()))
-                                if _blk_pairs_pre:
-                                    log(f"   auto-block (pre-enforcement): {len(_blk_pairs_pre)} bank×gateway "
-                                        "capped to the exploration floor INSIDE enforcement → the freed "
-                                        "volume is redistributed compliantly (no post-hoc VAMP perturbation).")
-                            except Exception as _bpe:  # noqa: BLE001
-                                log(f"   [Warning] pre-enforcement auto-block detect skipped "
-                                    f"({type(_bpe).__name__}: {_bpe}); post-hoc cap still applies.")
 
                         # OPT-IN FULL-MATRIX ENGINE OVERRIDE. genetic_fullmatrix reuses everything
                         # above (ctx build, greedy+LP compliant split _comp_share_G, eligibility) but
@@ -6499,377 +6938,14 @@ def render():
                                         "Refusing to fall back to the band-oblivious greedy+LP split — fix the "
                                         "band-aware seed construction upstream. (engine=genetic_fullmatrix)")
                                 _fm_sname, _fm_seed = _fm_cands[0][0], np.asarray(_fm_cands[0][1], float)
+                                # 19go: the DELIVERY TRANSFORM (`_fm_elig`, `_fm_block`, `_fm_cap`,
+                                # `_fm_deliv` and the auto-block detect they need) used to be built
+                                # right here — ~370 lines of it. It now lives just above SEED STAGE
+                                # 1, because the seed stages have to score through it and this is
+                                # far too late for that. Nothing about the transform changed (the
+                                # code moved verbatim, dedented), so everything from `_fm_breach`
+                                # down reads exactly as it did; the names are simply already bound.
                                 if _fm_use_exact:
-                                    # Eligibility-aware band scoring: reproduce the DELIVERED eligibility
-                                    # transform (bans→0 + per-cell renorm, wallet blend + renorm, USA-only
-                                    # blend + renorm) on the shares BEFORE the M5 band projection. This is the
-                                    # row-for-row twin of delivery-time _restrict/apply_restrictions (via the
-                                    # precomputed operator ctx["elig_op"], whose cell segments match the
-                                    # projector's). Without it the GA scored the RAW pre-eligibility split, so
-                                    # the live 'MID unmet' UNDER-counted vs tab 3's delivered breakdown (e.g. 3
-                                    # vs 5). No-op if eligibility is disabled (ROUTING_GA_ELIG=0 / elig_op None).
-                                    from routing_optimiser.s3_problem.eligibility import apply_elig_pop as _apply_elig_pop
-                                    from routing_optimiser.s4_search.rowpar import row_parallel as _fm_rowpar
-                                    _fm_elig_op = ctx.get("elig_op")
-                                    def _fm_elig(_farr, _op=_fm_elig_op, _ap=_apply_elig_pop):
-                                        return _ap(_farr, _op) if _op is not None else _farr
-                                    # BANK AUTO-BLOCK flooring — reproduce the DELIVERED _apply_blocked_caps in the
-                                    # band hook (delivery applies it BEFORE eligibility). Blocked (bank,gateway)
-                                    # rows are capped to the exploration floor and the freed share redistributed to
-                                    # the cell's non-blocked rows; a cell with no non-blocked recipient is left
-                                    # unchanged. Without this the delivered split (tab 3) can show 1 extra breach
-                                    # the GA never saw (the Adyen-TotalAV-NA Txn case). No-op if auto-block off.
-                                    _fm_blk_row = None
-                                    if _blk_pairs_pre:
-                                        try:
-                                            _bbm = {str(_k).strip().lower(): str(_v).strip().lower()
-                                                    for _k, _v in (bin_to_bank or {}).items()}
-                                            _gwL = G["gateway"].astype(str).str.strip().str.lower()
-                                            _bkL = G["bin"].astype(str).str.strip().str.lower()
-                                            _pkL = _bkL.map(lambda _b: _bbm.get(_b, _b))
-                                            _fm_blk_row = np.array(
-                                                [((_b, _g) in _blk_pairs_pre) or ((_p, _g) in _blk_pairs_pre)
-                                                 for _b, _p, _g in zip(_bkL, _pkL, _gwL)], dtype=bool)
-                                            if not _fm_blk_row.any():
-                                                # LEGITIMATE None: no row is blocked, so the
-                                                # transform genuinely IS the identity. Distinct
-                                                # from the failure case below.
-                                                _fm_blk_row = None
-                                        except Exception as _blkE:
-                                            # NO FALLBACK as of 2026-08-19aa. This used to set
-                                            # _fm_blk_row = None on ANY error, which makes
-                                            # `_fm_block` the identity — so the GA silently stops
-                                            # modelling blocked caps while `_blk_pairs_pre` says
-                                            # rows ARE blocked. That is exactly the
-                                            # Adyen-TotalAV-NA divergence described directly above
-                                            # (the delivered split showing a breach the GA never
-                                            # saw), and it would put RECONCILIATION ERROR back
-                                            # above 0 with nothing in the log to explain it. The
-                                            # whole grain-alignment effort of 2026-08-19o depends
-                                            # on this transform matching delivery row for row.
-                                            raise RuntimeError(
-                                                "[full-matrix] BANK AUTO-BLOCK FLOORING FAILED to "
-                                                f"build ({type(_blkE).__name__}: {_blkE}) while "
-                                                f"{len(_blk_pairs_pre)} bank×gateway pair(s) ARE "
-                                                "blocked. Refusing to continue with the flooring "
-                                                "silently disabled: `_fm_block` would become the "
-                                                "identity, the GA would stop modelling blocked "
-                                                "caps, and the delivered split would breach bands "
-                                                "the search never scored (RECONCILIATION ERROR > 0 "
-                                                "with no stated cause). Fix bin_to_bank / the "
-                                                "gateway+bank columns on G. "
-                                                "(engine=genetic_fullmatrix)") from _blkE
-                                    _fm_bcs = np.asarray(ctx["cell_starts"], np.intp)
-                                    _fm_bcc = np.asarray(ctx["cell_counts"], np.intp)
-                                    _fm_bfloor = float(floor)
-                                    # ── RESTRICTED TO THE CELLS THAT CAN CHANGE (19bk) ────────────
-                                    # [gen-cost] 2026-08-23 16:01: `deliver` is 52.2% of a
-                                    # generation and [deliv-cost] put blocked-caps at 26.6% of that
-                                    # (14.0% of a generation) — for a mask covering 98 of 242,670
-                                    # rows. Only a cell holding a blocked row can change: elsewhere
-                                    # _capd == _X, so _freed == 0, so _fc == 0, so _add == 0, so
-                                    # _outb == _capd + 0.0 == _X EXACTLY (IEEE: x + 0.0 == x for
-                                    # every x except -0.0, and [deliv-cost] counts the -0.0s — 0 on
-                                    # this data). 68 of 23,418 cells qualified, and the restricted
-                                    # result was np.array_equal to the full one on the live
-                                    # 35 x 242,670 array. 312 ms -> 19.1 ms measured.
-                                    #
-                                    # THE PRIMITIVES MUST MATCH, which is the whole subtlety: the
-                                    # narrow path uses np.add.reduceat and np.repeat exactly as
-                                    # below. My first draft used `.sum(axis=1)` and read 5.6e-17
-                                    # different, because reduceat does NOT sum a segment
-                                    # left-to-right. Gather the hit cells' rows, run the SAME
-                                    # expression, scatter back.
-                                    _fm_blk_hit = _fm_blk_rows = _fm_blk_scs = _fm_blk_scc = None
-                                    _FM_BLK_RESTRICT = os.environ.get(
-                                        "ROUTING_BLOCK_RESTRICT", "1") != "0"
-                                    if _fm_blk_row is not None and _FM_BLK_RESTRICT:
-                                        try:
-                                            _bh_cell_of = np.repeat(np.arange(_fm_bcs.size),
-                                                                    _fm_bcc)
-                                            _fm_blk_hit = np.zeros(_fm_bcs.size, bool)
-                                            _fm_blk_hit[_bh_cell_of[np.asarray(_fm_blk_row)]] = True
-                                            _fm_blk_rows = np.concatenate([
-                                                np.arange(int(_fm_bcs[_c]),
-                                                          int(_fm_bcs[_c]) + int(_fm_bcc[_c]))
-                                                for _c in np.where(_fm_blk_hit)[0]]).astype(np.intp)
-                                            _fm_blk_scc = np.asarray(_fm_bcc[_fm_blk_hit], np.intp)
-                                            _fm_blk_scs = np.concatenate(
-                                                [[0], np.cumsum(_fm_blk_scc)[:-1]]).astype(np.intp)
-                                            log(f"   [block-restrict] blocked-caps will run on "
-                                                f"{int(_fm_blk_hit.sum()):,} of {_fm_bcs.size:,} "
-                                                f"cell(s) ({_fm_blk_hit.mean():.2%}) carrying "
-                                                f"{_fm_blk_rows.size:,} of {int(_fm_bcc.sum()):,} "
-                                                "row(s) — the only cells a blocked row can reach. "
-                                                "Every other cell's output is its input, exactly. "
-                                                "SELF-CHECKED against the full-width transform on "
-                                                "the first call; ROUTING_BLOCK_RESTRICT=0 reverts.")
-                                        except Exception as _bhE:  # noqa: BLE001
-                                            _fm_blk_rows = None
-                                            log(f"   [block-restrict] index build FAILED "
-                                                f"({type(_bhE).__name__}: {_bhE}) — falling back to "
-                                                "the full-width transform, which is the shipped "
-                                                "behaviour. No answer changes.")
-                                    _fm_blk_ok = {"checked": False, "use": _fm_blk_rows is not None}
-
-                                    def _fm_block_full(_X, _blk, _cs, _cc, _fl):
-                                        """The full-width transform. THE reference: the restricted
-                                        path is checked against this, never the other way round."""
-                                        _bm = _blk[None, :]
-                                        _capd = np.where(_bm, np.minimum(_X, _fl), _X)     # blocked -> <= floor
-                                        _freed = _X - _capd                                # >=0 on blocked rows
-                                        _recip = np.where(_bm, 0.0, _capd)                 # non-blocked recipients
-                                        _fc = np.repeat(np.add.reduceat(_freed, _cs, axis=1), _cc, axis=1)
-                                        _rc = np.repeat(np.add.reduceat(_recip, _cs, axis=1), _cc, axis=1)
-                                        _has = _rc > 1e-12
-                                        _add = np.where(_has, _recip * _fc / np.where(_has, _rc, 1.0), 0.0)
-                                        return np.where(_has, _capd + _add, _X)            # no recipient → unchanged
-
-                                    def _fm_block_narrow(_X, _blk, _fl, _rows, _scs, _scc):
-                                        """Same expression over the hit cells only; the rest copied
-                                        through. Returns a NEW array — callers rely on that."""
-                                        _sub = np.ascontiguousarray(_X[:, _rows])
-                                        _bm = np.asarray(_blk)[None, _rows]
-                                        _capd = np.where(_bm, np.minimum(_sub, _fl), _sub)
-                                        _freed = _sub - _capd
-                                        _recip = np.where(_bm, 0.0, _capd)
-                                        _fc = np.repeat(np.add.reduceat(_freed, _scs, axis=1), _scc, axis=1)
-                                        _rc = np.repeat(np.add.reduceat(_recip, _scs, axis=1), _scc, axis=1)
-                                        _has = _rc > 1e-12
-                                        _add = np.where(_has, _recip * _fc / np.where(_has, _rc, 1.0), 0.0)
-                                        _Y = np.array(_X, float, copy=True)
-                                        _Y[:, _rows] = np.where(_has, _capd + _add, _sub)
-                                        return _Y
-
-                                    def _fm_block_into(_X, _blk, _fl, _rows, _scs, _scc):
-                                        """`_fm_block_narrow` writing INTO `_X` instead of a copy.
-
-                                        The arithmetic is character-for-character the same; the
-                                        only difference is where the result lands. This is NOT a
-                                        drop-in for `_fm_block_narrow` and must never be called
-                                        through rowpar — rowpar runs a transform twice on the same
-                                        input to verify threading, and a second in-place run does
-                                        not reproduce the first. It has exactly one caller:
-                                        `_fm_deliv_full`, on a buffer it filled itself."""
-                                        _sub = np.ascontiguousarray(_X[:, _rows])
-                                        _bm = np.asarray(_blk)[None, _rows]
-                                        _capd = np.where(_bm, np.minimum(_sub, _fl), _sub)
-                                        _freed = _sub - _capd
-                                        _recip = np.where(_bm, 0.0, _capd)
-                                        _fc = np.repeat(np.add.reduceat(_freed, _scs, axis=1), _scc, axis=1)
-                                        _rc = np.repeat(np.add.reduceat(_recip, _scs, axis=1), _scc, axis=1)
-                                        _has = _rc > 1e-12
-                                        _add = np.where(_has, _recip * _fc / np.where(_has, _rc, 1.0), 0.0)
-                                        _X[:, _rows] = np.where(_has, _capd + _add, _sub)
-                                        return _X
-
-                                    def _fm_block(_farr, _blk=_fm_blk_row, _cs=_fm_bcs, _cc=_fm_bcc,
-                                                  _fl=_fm_bfloor, _st=_fm_blk_ok):
-                                        if _blk is None:
-                                            return _farr
-                                        _X = np.asarray(_farr, float)
-                                        _one = _X.ndim == 1
-                                        if _one:
-                                            _X = _X[None, :]
-                                        if not _st["use"]:
-                                            _o = _fm_block_full(_X, _blk, _cs, _cc, _fl)
-                                            return _o[0] if _one else _o
-                                        _o = _fm_block_narrow(_X, _blk, _fl, _fm_blk_rows,
-                                                              _fm_blk_scs, _fm_blk_scc)
-                                        if not _st["checked"]:
-                                            # ONE full-width computation, once, to prove it. A
-                                            # mismatch reverts to the full path for the rest of the
-                                            # run and SHOUTS — the fallback ships the known-good
-                                            # transform, it does not hide the failure.
-                                            _st["checked"] = True
-                                            _ref = _fm_block_full(_X, _blk, _cs, _cc, _fl)
-                                            if np.array_equal(_ref, _o):
-                                                log("   [block-restrict] ✓ SELF-CHECK PASSED on the "
-                                                    f"live split: restricted == full-width, bit for "
-                                                    f"bit (np.array_equal on {_X.shape[0]}x"
-                                                    f"{_X.shape[1]:,}, not allclose).")
-                                            else:
-                                                # the delta MUST be taken before _o is
-                                                # replaced, or the log prints 0.0 for a real
-                                                # failure — which is the one message that must
-                                                # never be wrong.
-                                                _bad_mx = float(np.abs(_ref - _o).max())
-                                                _st["use"] = False
-                                                _o = _ref
-                                                log("   [block-restrict] ⚠ SELF-CHECK FAILED — "
-                                                    f"max|Δ| {_bad_mx:.3e}. "
-                                                    "REVERTING to the full-width transform for the "
-                                                    "rest of this run, so the shipped answer is the "
-                                                    "known-good one. The restriction's premise "
-                                                    "(_freed == 0 in every cell with no blocked row) "
-                                                    "does not hold on this data — most likely a "
-                                                    "-0.0 share or a cell whose recipient sum sits "
-                                                    "within 1e-12 of the `_has` threshold.")
-                                        return _o[0] if _one else _o
-
-                                    # DELIVERY transform: block-floor → eligibility. The optional
-                                    # min-2 floor branch was DELETED 2026-08-19x — it was default-OFF
-                                    # (ROUTING_MIN2_FLOOR), duplicated by a second pandas
-                                    # implementation, and its `_fc is None` test made every GA
-                                    # evaluation pay a branch that was never taken.
-                                    # ── ROW-PARALLEL DELIVERY (19bn) ──────────────────────────
-                                    # [gen-cost] 2026-08-23 19:04: `deliver` is 36.7% of a
-                                    # generation — the largest row — and every millisecond of it is
-                                    # single-threaded numpy while [kernel-ab] reports 8 of 16 cores
-                                    # idle. Both halves are candidate-independent (reduceat and
-                                    # repeat run along axis=1; everything else is elementwise), so
-                                    # row p of the output depends only on row p of the input and the
-                                    # population can be split across threads with the SAME
-                                    # operations in the SAME order. rowpar verifies that on its
-                                    # second call against the serial result, bit for bit.
-                                    #
-                                    # REFUSED when the 19bk in-place eligibility twin is enabled:
-                                    # that path shares one scratch block across calls and guards
-                                    # re-entrancy with a module-level flag, so concurrent callers
-                                    # would corrupt it. It is off by default (1.05x at the live
-                                    # shape) and this keeps the two from ever meeting.
-                                    _fm_rp_ok = True
-                                    try:
-                                        import routing_optimiser.s3_problem.eligibility as _fm_elmod
-                                        _fm_rp_ok = not bool(getattr(_fm_elmod, "_EP_INPLACE", False))
-                                    except Exception:  # noqa: BLE001
-                                        _fm_rp_ok = True
-                                    if not _fm_rp_ok:
-                                        log("   [row-par] delivery NOT threaded: the in-place "
-                                            "eligibility twin (ROUTING_ELIG_INPLACE=1) shares "
-                                            "scratch across calls, so it cannot be run "
-                                            "concurrently. Unset it to thread `deliver`, which is "
-                                            "worth far more than the twin's 1.05x.")
-
-                                    # ── [deliv-cap] 19fg: CAP LAST, THE WAY DELIVERY DOES ─────
-                                    # THE ORDER WAS WRONG, and 19fe fixing the RULE made that the
-                                    # last thing left:
-                                    #   search  (pre-19fg): cap the genome -> zero ineligible
-                                    #                       doors -> renormalise ... and STOP
-                                    #   delivery           : zero ineligible doors ->
-                                    #                       renormalise -> cap
-                                    # Zeroing a door and renormalising can push a SURVIVOR over
-                                    # the cap. Delivery caps after that and cleans it up
-                                    # (impact_calcs._cap_rows, inside build_split_exports); the
-                                    # search capped before it and never looked again, so it could
-                                    # score a split as compliant that delivery then had to
-                                    # correct. Worked example: a cell at A 96 / B 3 / C 1 with a
-                                    # 0.97 cap is compliant; zero B and C for a Non-USA sub-cell,
-                                    # renormalise, and A is at 1.00. The GA scored 1.00; the
-                                    # deployed template ships 0.97.
-                                    #
-                                    # THE GENOME REPAIR STAYS. It is not redundant: the
-                                    # engineering key needs every candidate at an exact 0.0 on the
-                                    # cap (see _repair_maxshare's target back-off), and that is a
-                                    # property of the GENOME, not of the delivered projection.
-                                    # Capping twice is harmless — the second cap is a no-op unless
-                                    # eligibility actually pushed something over.
-                                    #
-                                    # EXACT CAP, NO BACK-OFF. _repair_maxshare triggers at
-                                    # cap x (1 - 1e-9) because of that engineering key. Delivery
-                                    # has no engineering key and triggers at the cap itself, so
-                                    # this does too — which is also what removes the 9.7e-10
-                                    # residual 19fe measured between the two.
-                                    #
-                                    # SAME KERNEL AS THE REPAIR, headroom-weighted and ONE pass:
-                                    # sum(cap - share) over a cell's present rows is
-                                    # (present_rows x cap) - 1 + excess, so it covers the excess
-                                    # whenever present_rows x cap >= 1 — every cell with 2+ live
-                                    # rows at 0.97. A cell that cannot satisfy it is left alone,
-                                    # which is what _cap_rows does too (its `m` mask skips any row
-                                    # with fewer than 2 present gateways).
-                                    #
-                                    # Pure, so rowpar's verify-by-running-twice stays valid.
-                                    # ROUTING_DELIV_CAP=0 restores the pre-19fg order. That switch
-                                    # exists for ONE reason — so this run's delta can be attributed
-                                    # separately from 19fe's during the verification cycle — and
-                                    # should be deleted once the default is trusted.
-                                    _DCAP = {
-                                        "on": bool(os.environ.get("ROUTING_DELIV_CAP", "1") != "0"
-                                                   and float(ctx.get("max_share", 1.0) or 1.0) < 1.0),
-                                        "cap": float(ctx.get("max_share", 1.0) or 1.0),
-                                        "said": False, "cells": 0, "moved": 0.0, "worst": 0.0,
-                                        "calls": 0, "hit": 0, "reover": 0, "infeas": 0}
-                                    if not _DCAP["on"]:
-                                        log("   [deliv-cap] OFF — "
-                                            + ("ROUTING_DELIV_CAP=0, so the search caps the genome "
-                                               "BEFORE eligibility and never re-caps, while "
-                                               "delivery caps AFTER. A cell where eligibility "
-                                               "zeroing lifts a survivor past the cap is scored "
-                                               "differently from what ships."
-                                               if os.environ.get("ROUTING_DELIV_CAP", "1") == "0"
-                                               else f"max_share is "
-                                                    f"{float(ctx.get('max_share', 1.0) or 1.0):.4g}, "
-                                                    "so there is no cap to apply."))
-                                    else:
-                                        log(f"   [deliv-cap] ON (19fg) — the delivery transform is "
-                                            f"now block -> eligibility -> CAP at "
-                                            f"{_DCAP['cap']:.4g}, matching delivery's own order. "
-                                            "Effect is reported at the end of the search.")
-
-                                    def _fm_cap(_farr, _st=_DCAP, _cs=_fm_bcs, _cc=_fm_bcc):
-                                        if not _st["on"]:
-                                            return _farr
-                                        _X = np.asarray(_farr, float)
-                                        _one = _X.ndim == 1
-                                        if _one:
-                                            _X = _X[None, :]
-                                        _cap = _st["cap"]
-                                        _o = _X > _cap
-                                        _st["calls"] += 1
-                                        if not _o.any():
-                                            return _X[0] if _one else _X
-                                        _exc = np.add.reduceat(np.where(_o, _X - _cap, 0.0), _cs,
-                                                               axis=1)
-                                        _room = np.where(~_o & (_X > 1e-12) & (_X < _cap),
-                                                         _cap - _X, 0.0)
-                                        _pool = np.add.reduceat(_room, _cs, axis=1)
-                                        _ok = (_exc > 0.0) & (_pool > 1e-12)
-                                        if not _ok.any():
-                                            return _X[0] if _one else _X
-                                        _okr = np.repeat(_ok, _cc, axis=1)
-                                        _f = np.repeat(np.where(_ok, _exc / np.where(_pool > 1e-12,
-                                                                                     _pool, 1.0),
-                                                                0.0), _cc, axis=1)
-                                        _Y = np.where(_okr & _o, _cap,
-                                                      np.where(_okr, _X + _room * _f, _X))
-                                        _st["hit"] += 1
-                                        _st["cells"] += int(_ok.sum())
-                                        _st["infeas"] += int(np.count_nonzero(~(_pool >= _exc)
-                                                                              & (_exc > 0.0)))
-                                        _st["reover"] += int(np.count_nonzero(
-                                            (_Y > _cap) & _okr
-                                            & np.repeat(_pool >= _exc, _cc, axis=1)))
-                                        _d = np.abs(_Y - _X)
-                                        _st["moved"] += float(_d.sum())
-                                        _st["worst"] = max(_st["worst"], float(_d.max()))
-                                        return _Y[0] if _one else _Y
-
-                                    def _fm_deliv_serial(_farr, _bl=_fm_block, _el=_fm_elig,
-                                                         _cp=_fm_cap):
-                                        """THE REFERENCE. rowpar checks the threaded path against
-                                        this, never the other way round.
-
-                                        19fg: block -> eligibility -> CAP. The cap is LAST because
-                                        that is where delivery applies it."""
-                                        return _cp(_el(_bl(_farr)))
-
-                                    def _fm_elig_rp(_farr, _el=_fm_elig):
-                                        """Eligibility ALONE, threaded. A separate rowpar name from
-                                        "deliver": that state machine keys on the name, and feeding
-                                        two different transforms through one key would verify one
-                                        and thread the other."""
-                                        _a = np.asarray(_farr)
-                                        if _a.ndim != 2:
-                                            return _el(_farr)
-                                        return _fm_rowpar(_el, _a, "deliver(elig)",
-                                                          enabled=_fm_rp_ok)
-
-                                    def _fm_deliv(_farr, _sr=_fm_deliv_serial):
-                                        _a = np.asarray(_farr)
-                                        if _a.ndim != 2:
-                                            return _sr(_farr)
-                                        return _fm_rowpar(_sr, _a, "deliver", enabled=_fm_rp_ok)
                                     def _fm_breach(_sv):
                                         return float(_fm_eb.penalty(_fm_s2pr(
                                             _fm_deliv(np.asarray(_sv, float)[None, :]), _fm_inc))[0])

@@ -71,7 +71,7 @@ import numpy as np
 from scipy.optimize import linprog as _linprog
 import scipy.sparse as _sparse
 
-__build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+global-linear-lp-seed+minimal-move-projection+colocation-report+held-movable-report+movable-provenance+reachable-minimum-no-floor+vamp-positive-sibling+selfcheck+seedgrad+vpsum+usable-recipient+degenerate-gradient-flag+breach-concentration+scoped-frozen-split+gradient-vpsum-regularisation+insearch-rpgt-breakdown+catchall-eps-floor+targeted-move-headroom+2026-08-19bd-raw-basis-claim-labelled+2026-08-19be-recipient-headroom-per-metric"
+__build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+global-linear-lp-seed+minimal-move-projection+colocation-report+held-movable-report+movable-provenance+reachable-minimum-no-floor+vamp-positive-sibling+selfcheck+seedgrad+vpsum+usable-recipient+degenerate-gradient-flag+breach-concentration+scoped-frozen-split+gradient-vpsum-regularisation+insearch-rpgt-breakdown+catchall-eps-floor+targeted-move-headroom+2026-08-19bd-raw-basis-claim-labelled+2026-08-19be-recipient-headroom-per-metric+2026-09-01-19go-delivery-faithful-seed-accept-tests"
 
 # Gradient-only vpsum/psum floor used by the SEED SOLVERS (not the diagnostics, not the forward
 # values). Share-scale denominators: real high-VAMP cells sit well above this, near-empty cells
@@ -439,7 +439,7 @@ def floor_catchall_shares(shares, floor_mask, share_floor, cell_starts, cell_cou
 def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_counts, elig,
                        *, max_share=1.0, max_outer=40, tol=1e-7, tr_init=0.25, tr_min=1e-4,
                        weighted=False, verbose=False, log_fn=None,
-                       floor_mask=None, share_floor=0.0, stall=None):
+                       floor_mask=None, share_floor=0.0, stall=None, deliver_fn=None):
     """EXACT successive-LP solve of  min total band breach  s.t. per-cell simplex + max-share.
 
     Uses `ExactBandModel` (true projector value + analytic Jacobian). Each outer step linearises the
@@ -457,7 +457,18 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
     rejection stays `tr < tr_min`. `None` reads ROUTING_SEED_LP_STALL. A stall stop is
     ANSWER-AFFECTING: a step rejected at `tr` may be accepted at `tr/2`, which is what the trust
     region is FOR. The step ledger below (`info['steps']`, `info['stall_min_safe']`) is what decides
-    whether a given K is safe, and it is recorded whether or not the stop is armed."""
+    whether a given K is safe, and it is recorded whether or not the stop is armed.
+
+    `deliver_fn` (19go): the DELIVERY transform (blocked-caps → eligibility → cap). When given, the
+    ACCEPT TEST judges each candidate on the DELIVERED breach — the quantity the engine selects
+    with and delivery ships — instead of the RAW one. The LP itself still linearises the RAW model
+    (`spec_jacobian_shares`), and that is deliberate: delivery is NOT linear (blocked-caps
+    redistribution, eligibility renorm and the cap are all piecewise), so it has no Jacobian to
+    hand the LP. The split is therefore PROPOSED on the linear model and JUDGED on delivery, which
+    is the same never-worse contract as before, just measured on the basis that ships. Expect more
+    rejected steps than the RAW version: a step that helps the raw split can be undone by
+    delivery's renormalisation, and that is precisely the divergence this closes. None restores the
+    pre-19go RAW behaviour byte for byte (ROUTING_SEED_DELIV=0)."""
     info = {"ok": False, "build": __build__, "reason": "", "n_free": 0, "outer": 0,
             "breach0": float("nan"), "breach": float("nan"), "feasible": False,
             # 19ck step ledger. `outer` is the last ACCEPTED step and always was; `ran` is how many
@@ -477,7 +488,16 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
                   if (floor_mask is not None and float(share_floor) > 0) else None)
         s = floor_catchall_shares(s, _fmask, share_floor, cs, cc)
         model = ExactBandModel(exact_bands, incidence, vps_eps=_VPS_EPS)  # gradient-only reg
-        b0 = model.breach(s, weighted=weighted)
+
+        def _brc(_x, _m=model, _d=deliver_fn):
+            """Breach on the basis the caller asked for. `deliver_fn=None` → the RAW split, exactly
+            as before 19go; otherwise the DELIVERED split, which is what the engine selects on."""
+            if _d is None:
+                return _m.breach(_x, weighted=weighted)
+            return _m.breach(np.asarray(_d(np.asarray(_x, float)[None, :]), float)[0],
+                             weighted=weighted)
+        info["basis"] = "delivered" if deliver_fn is not None else "raw"
+        b0 = _brc(s)
         info["breach0"] = b0
         if b0 <= tol:
             info.update(ok=True, feasible=True, breach=b0, reason="base already compliant")
@@ -603,7 +623,7 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
             cand = best_s + ds
             cand = _project_capped_simplex_cells(cand, cs, cc, elig, cap, budget=1.0)
             cand = floor_catchall_shares(cand, _fmask, share_floor, cs, cc)  # keep catch-all ≥ floor
-            bc = model.breach(cand, weighted=weighted)
+            bc = _brc(cand)
             if bc < best_b - max(1e-12, 1e-4 * best_b):
                 best_s = cand; best_b = bc
                 info["outer"] = outer + 1
@@ -1861,7 +1881,7 @@ def _tmove_cost(cost, secs, log_fn, *, fastls):
 # [FN-396]
 def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_counts, elig,
                          *, mid_id, risk, cell_vol, mid_names, max_share=1.0,
-                         movable_frac=0.8, log_fn=None):
+                         movable_frac=0.8, log_fn=None, deliver_fn=None):
     """TARGETED move operator → a WARM-START SEED that directly clears breached CEILINGS.
 
     For every breached ceiling MID it sheds that MID's share, cell by cell (highest contribution to
@@ -1885,9 +1905,16 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
     what the pre-19be DOCSTRING claimed the code did.
 
     STILL CEILINGS ONLY. Floors are not anticipated by the greedy proposal (the line-search's
-    penalty does cover them, so a floor-breaking batch is rejected, not shipped). And the accept
-    test is still RAW: 19be removes the mechanism that made RAW and DELIVERED disagree here, it does
-    not make the operator delivery-aware.
+    penalty does cover them, so a floor-breaking batch is rejected, not shipped).
+
+    DELIVERY-AWARE SINCE 19go. Pass `deliver_fn` (the blocked-caps → eligibility → cap transform)
+    and every projection in this function — the ceiling report, the recipient headroom re-projection
+    and the line-search accept test — reads the DELIVERED split. That FORCES the fast line-search
+    OFF: it exists only because `shares_to_prop_raw` is linear, so `s2pr(s + f·δ) == s2pr(s) +
+    f·s2pr(δ)`, and delivery breaks that identity outright (renormalising a cell after zeroing a
+    door is not linear in the cell's shares). Four full projections per MID batch instead of one is
+    the price of judging the stage on the basis that ships. `deliver_fn=None` restores the pre-19go
+    RAW behaviour, fast line-search included, byte for byte (ROUTING_SEED_DELIV=0).
 
     Each MID's batch of moves is then LINE-SEARCHED against the EXACT projector (factors 1→0.2) and
     only KEPT if the exact TOTAL breach strictly drops — so a move that merely relocates VAMP onto
@@ -1925,6 +1952,11 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
         _t_stage = _time.perf_counter()
 
         def _pr(_s, _occ=False):
+            # 19go: on the DELIVERED basis this is the only place the transform is applied, so
+            # `_rep`, `_breach` and the line-search all move basis together and cannot disagree
+            # with each other. It is NOT applied to a move BATCH — see `_FASTLS` below, which is
+            # forced off in that mode precisely because a batch is a delta and delivery is not
+            # linear, so there is no batch to project on its own any more.
             # `_occ` marks the calls that project a MOVE BATCH rather than a whole split. Those are
             # the ones that are nearly all zeros, and the ones a column-restricted product would
             # make cheaper — so their occupancy is recorded rather than assumed.
@@ -1937,7 +1969,8 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                     _cost["occ_max"] = _f
             _t = _time.perf_counter()
             _cost["mv"] += 1
-            _out = _s2pr(_s, incidence)
+            _out = _s2pr(_s if deliver_fn is None
+                         else np.asarray(deliver_fn(np.asarray(_s, float)), float), incidence)
             _cost["mv_s"] += _time.perf_counter() - _t
             return _out
 
@@ -2006,7 +2039,10 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                     out[_i, _j] = max(out[_i, _j], float(_r.get("now", 0.0)))
             return out
 
-        _FASTLS = _os.environ.get("ROUTING_TMOVE_FASTLS", "1") != "0"
+        # 19go: the fast line-search is a LINEARITY shortcut and delivery is not linear, so on the
+        # delivered basis it is not a tuning choice — it is unavailable. Forced, not defaulted, so
+        # ROUTING_TMOVE_FASTLS=1 cannot silently re-enable an identity that does not hold.
+        _FASTLS = (_os.environ.get("ROUTING_TMOVE_FASTLS", "1") != "0") and deliver_fn is None
         _FASTLS_VERIFY = _os.environ.get("ROUTING_TMOVE_FASTLS_VERIFY", "0") == "1"
         _pr_s = None                      # carried s2pr(s) for the linear line search
         b0 = _breach(s); info["breach0"] = b0; b_cur = b0

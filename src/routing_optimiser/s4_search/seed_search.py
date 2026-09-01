@@ -33,7 +33,7 @@ import os as _os
 import time as _time
 import numpy as np
 
-__build__ = "2026-08-11-band-aware-constrained-projection-seed+riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel+vol-weighted-viol+penalty-shape+repair-input+sigma-controls+fitness-trace+active-priority+viol-breakdown+capcell-detail+breach-tol+band-workings+no-maxiter-bandgreedy+stable-softmax+bandgreedy-count-aware-priority+bandgreedy-multistart"
+__build__ = "2026-08-11-band-aware-constrained-projection-seed+riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel+vol-weighted-viol+penalty-shape+repair-input+sigma-controls+fitness-trace+active-priority+viol-breakdown+capcell-detail+breach-tol+band-workings+no-maxiter-bandgreedy+stable-softmax+bandgreedy-count-aware-priority+bandgreedy-multistart+2026-09-01-19go-delivery-faithful-bandgreedy"
 
 
 # [FN-103]
@@ -292,7 +292,7 @@ def _project_capped_simplex_cells(s, cell_starts, cell_counts, elig, cap, total=
 # [FN-122b]
 def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mid_labels,
                        exact_bands, incidence, *, max_share=1.0, damping=0.5,
-                       tol=1e-6, patience=4, return_key=False):
+                       tol=1e-6, patience=4, return_key=False, deliver_fn=None):
     """Band-AWARE compliant split via a small CONSTRAINED PROJECTION per pass: a warm-start seed
     for the CMA-ES that starts feasible (or much closer) w.r.t. the per-MID MONTH bands.
 
@@ -316,7 +316,14 @@ def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mi
     where the cell has ≥2 eligible gateways). Only ever HELPS — the GA ranks seeds feasibility-
     first, so a band-closer start can be adopted, a worse one ignored. Pure / deterministic,
     unit-tested off the live pipeline; the caller wraps it and falls back to the base split on any
-    error."""
+    error.
+
+    `deliver_fn` (19go): the DELIVERY transform (blocked-caps → eligibility → cap). When given,
+    every pass reads the bands off `deliver_fn(s)` instead of `s` — the same numbers the engine
+    selects with and delivery ships — so the multipliers correct the DELIVERED breach and the
+    kept-split key ranks on it too. The split itself is still the RAW genome (the GA takes raw
+    genomes and applies delivery itself); only the MEASUREMENT changes basis. None restores the
+    pre-19go RAW behaviour byte for byte, which is what ROUTING_SEED_DELIV=0 passes."""
     from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw
     s = np.asarray(base_shares, float).copy()
     elig = np.asarray(elig, float)
@@ -340,7 +347,9 @@ def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mi
     _stall = 0
     _HARD_CAP = 10_000          # defensive only — convergence (below) is what actually stops it
     for _ in range(_HARD_CAP):
-        prop_raw = shares_to_prop_raw(s[None, :], incidence)
+        prop_raw = shares_to_prop_raw(
+            s[None, :] if deliver_fn is None else np.asarray(deliver_fn(s[None, :]), float),
+            incidence)
         rep = exact_bands.report(prop_raw)
         mult = np.ones(n_mid, float)
         full = np.zeros(n_mid, bool)                          # per-MID: near its limit → clear FULLY (undamped)
@@ -400,7 +409,7 @@ def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mi
 def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_rows, mid_labels,
                              exact_bands, incidence, *, max_share=1.0, damping=0.5, tol=1e-6,
                              patience=4, n_starts=1, rng_seed=0, jitter=0.5, keys_out=None,
-                             par_info=None):
+                             par_info=None, deliver_fn=None):
     """MULTI-START `band_greedy_shares`: run the constrained projection from the base split PLUS
     (n_starts − 1) log-normally-jittered starts, and keep the one with the LOWEST
     (priority-weighted unmet-band count, total breach). A single projection is a fast (~seconds)
@@ -423,7 +432,8 @@ def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_ro
     serial in index order with the same strict `<`, so a tie still goes to the earlier start.
     `ROUTING_FEAS_PAR=0` restores the serial loop; `par_info` (a dict, optional) receives the timing
     so a caller can log what the concurrency actually bought instead of assuming."""
-    _kw = dict(max_share=max_share, damping=damping, tol=tol, patience=patience)
+    _kw = dict(max_share=max_share, damping=damping, tol=tol, patience=patience,
+               deliver_fn=deliver_fn)
     base = np.asarray(base_shares, float)
     _n = int(n_starts)
 
