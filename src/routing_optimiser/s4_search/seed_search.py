@@ -3,6 +3,19 @@ THE WARM-START SEED BUILDER + the reference fitness every fast kernel is checked
 
 NAME HISTORY, because both previous names caused the same wrong conclusion twice:
   genetic_global.py  ->  midtilt_cmaes.py  ->  seed_search.py   (19fl, 19fp)
+IS ANY OF THIS LEGACY? NO — and the question is worth answering at the top, because the file
+reads as though it were. The Active CMA-ES in `_cmaes` is the LIVE seed producer: it is what
+builds the warm-start the full-matrix GA begins from, and tab 2 calls `run_midtilt_ga` for real
+at three sites (numba warm-up, the loky worker fan-out, and the single-seed path). Nothing here
+belongs in legacy_engines/. "CMA-ES" sounds legacy for three reasons, all now fixed or stated:
+  * the file used to be called midtilt_cmaes.py, named after the algorithm (renamed 19fl/19fp);
+  * `run_midtilt_ga` says "ga" but runs CMA-ES — kept, because tab 2 and the run log both use
+    that name and renaming a live entry point to make a docstring tidier is not worth a bug;
+  * FIFTEEN dead parameters in its signature were the knobs of the per-cell GA it replaced,
+    "accepted for interface compatibility" and never read. Those are gone as of 19ga, along
+    with `_fitness` (100 lines) and `_project_capped_simplex` (23 lines) — both defined and
+    never called. That cruft, not the algorithm, is what made this look like a leftover.
+
 "genetic_global" said nothing about what it does. "midtilt_cmaes" named the ALGORITHM,
 and naming the algorithm made it read as a legacy CMA-ES engine that had been superseded
 — which it is not. So this name says the ROLE: it builds the seeds the full-matrix GA
@@ -90,106 +103,7 @@ def _build_mid_incidence(mid_id, M, N):
     return _sp.csr_matrix((data, (mid_id, cols)), shape=(M, N))
 
 
-# [FN-105]
-def _fitness(pop, ctx, lam):
-    """Vectorised fitness. Revenue is the SAME quantity tab 4 shows as incremental
-    revenue (maximising it ≡ maximising the delta vs a fixed baseline): each row's
-    `rev_coef` = 30D-attempts × raw gateway success rate × avg ticket, so revenue =
-    Σ share·rev_coef. All penalties are in those $-revenue units, so λ∈[0,1] is
-    meaningful: λ=1 values a risk breach at ~1× the revenue it earns; λ=0 ignores
-    risk. Max-share / floor carry a fixed heavy weight so they hold at every λ.
-    RISK terms (VAMP rate, per-MID volume) use the FORECAST volume basis, matching
-    the VAMP projection. Returns (P,) fitness."""
-    cv, risk, rc = ctx["cell_vol"], ctx["risk"], ctx["rev_coef"]
-    mid_rows, M = ctx["mid_rows"], ctx["n_mid"]
-    rev_row = pop * rc[None, :]                           # tab-4-aligned revenue per row
-    revenue = rev_row.sum(axis=1)
-
-    # A breach costs MID_revenue × (BREACH_FIXED · breached + over²): a big FIXED hit the
-    # instant a cap is crossed (so the GA treats a cap almost like a wall), plus a
-    # QUADRATIC term so deeper breaches hurt sharply more. `over` is the RELATIVE breach
-    # (actual / limit − 1). Zero penalty while compliant.
-    risk_pen = np.zeros(pop.shape[0], dtype=float)
-    _bfix = float(ctx.get("breach_fixed", 50.0))
-    _bands = ctx.get("midband")
-    if M and (ctx["vamp_cap"] is not None or ctx["mid_vol_cap"] is not None or _bands):
-        vol = pop * cv[None, :]                           # forecast volume (for risk)
-        midv = _mid_sums(vol, mid_rows, M)
-        midrev = _mid_sums(rev_row, mid_rows, M)          # MID revenue = penalty scale
-        if ctx["vamp_cap"] is not None:                   # per-vampMid aggregate VAMP rate
-            midvr = _mid_sums(vol * risk[None, :], mid_rows, M)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                rate = np.where(midv > 1e-12, midvr / midv, 0.0)
-            over = np.maximum(rate / max(ctx["vamp_cap"], 1e-9) - 1.0, 0.0)
-            risk_pen += (midrev * (_bfix * (over > 1e-12) + over ** 2)).sum(axis=1)
-        if ctx["mid_vol_cap"] is not None:                # per-MID volume / projected caps
-            _cap_v = np.where(ctx["mid_vol_cap"] > 0, ctx["mid_vol_cap"], np.inf)
-            over_v = np.maximum(midv / _cap_v[None, :] - 1.0, 0.0)
-            risk_pen += (midrev * (_bfix * (over_v > 1e-12) + over_v ** 2)).sum(axis=1)
-        if _bands:                                        # month-specific per-MID PROJECTED bands
-            # Each candidate's projected per-MID VAMP/Txn for the rule's month(s) is estimated
-            # by a volume-ratio proxy: projected ≈ baseline_projected × (MID volume / baseline
-            # MID volume). Tilting a MID up shrinks its volume → shrinks its projected metric,
-            # so the GA can evolve toward the bands. (vamp_pct rules are scale-invariant under this
-            # proxy → excluded by the caller and left to the post-GA enforcement.)
-            #
-            # FIXED + QUADRATIC penalty ($-scaled by MID revenue): a fixed `band_fixed` hit the
-            # instant a band is breached (either side), PLUS a `band_weight` quadratic in the
-            # relative breach so deeper misses hurt progressively more. The fixed hit is kept
-            # BELOW the VAMP cap's wall (250) so the hard compliance cap still outranks the bands.
-            # Trade-off: the fixed element can cost some conversion when a band is genuinely
-            # unreachable — mitigated now by the gain lever (reach) and the dial-0 floor clamp.
-            _band_w = float(ctx.get("band_weight", 8.0))
-            _band_fix = float(ctx.get("band_fixed", 20.0))    # fixed hit on ANY band breach
-            _bvol = ctx.get("mid_base_vol")
-            with np.errstate(divide="ignore", invalid="ignore"):
-                _fmid = (np.where(_bvol[None, :] > 1e-12, midv / _bvol[None, :], 1.0)
-                         if _bvol is not None else np.ones_like(midv))
-            for _b in _bands:
-                # band tuple: (mid_index, baseline_proj, ceiling, floor[, var_mult[, prio_mult]]).
-                # var_mult scales ONLY the quadratic (VAMP bands harder than txn); prio_mult scales
-                # the WHOLE penalty (priority: lower-priority constraints get a smaller weight, so
-                # they yield first when the set is infeasible). Both default to 1.0.
-                _mi, _bval, _ceil, _floor = _b[0], _b[1], _b[2], _b[3]
-                _vmul = float(_b[4]) if len(_b) > 4 else 1.0
-                _pmul = float(_b[5]) if len(_b) > 5 else 1.0
-                _proj = _fmid[:, _mi] * float(_bval)
-                if _ceil is not None:
-                    _ov = np.maximum(_proj / max(float(_ceil), 1e-9) - 1.0, 0.0)
-                    risk_pen += midrev[:, _mi] * _pmul * (_band_fix * (_ov > 1e-12) + _band_w * _vmul * _ov ** 2)
-                if _floor is not None and float(_floor) > 0:
-                    _un = np.maximum(1.0 - _proj / max(float(_floor), 1e-9), 0.0)
-                    risk_pen += midrev[:, _mi] * _pmul * (_band_fix * (_un > 1e-12) + _band_w * _vmul * _un ** 2)
-
-    # Structural (max-share / floor) — $-equivalent (rev_coef), fixed heavy weight.
-    shape = (np.maximum(pop - ctx["max_share"], 0.0) * rc[None, :]).sum(axis=1)
-    if ctx["floor"] > 0:
-        shape += (np.maximum(ctx["floor"] - pop, 0.0) * (ctx["elig"] * rc)[None, :]).sum(axis=1)
-
-    fit = revenue - lam * risk_pen - ctx["shape_mult"] * shape
-
-    # Optional RISK-MINIMISATION secondary objective (used only for the SAFE compliant
-    # endpoint of the slider). It subtracts mu × aggregate expected VAMP count, so among
-    # equally-compliant splits the GA prefers the one that also carries LESS total risk —
-    # tilting each MID further toward its low-risk cells even below the cap. The caller
-    # auto-scales mu (risk_min_w) to trade a bounded slice of revenue for lower risk;
-    # default 0 leaves the pure revenue objective unchanged. (compliant-frontier)
-    _rmw = float(ctx.get("risk_min_w", 0.0))
-    if _rmw > 0.0:
-        _vol = pop * cv[None, :]
-        _vfr = ctx.get("vamp_floor_route")
-        if _vfr is not None and M:
-            # CLAMP at the VAMP floor: only reward reducing the VAMP that sits ABOVE each MID's
-            # routing-space floor (derived from its two-sided VAMP band floor). Once a MID is at
-            # its floor the risk-min term stops pulling, so dial-0 risk-min no longer drives VAMP
-            # BELOW the band — keeping the two-sided VAMP ranges satisfiable at dial 0.
-            _midvr = _mid_sums(_vol * risk[None, :], mid_rows, M)         # (P, M) routing VAMP/MID
-            _excess = np.maximum(_midvr - np.asarray(_vfr, float)[None, :], 0.0)
-            fit = fit - _rmw * _excess.sum(axis=1)
-        else:
-            _total_vamp = (_vol * risk[None, :]).sum(axis=1)   # aggregate expected VAMP count
-            fit = fit - _rmw * _total_vamp
-    return fit
+# 19ga: `_fitness` DELETED — 100 lines, defined and never called. The live fitness is `_obj_viol` (which numba_kernels._fused_eval and band_scoring are written to match and verify() cross-checks).
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +190,7 @@ def _mid_over(shares, ctx, include_floor_shortfall=True):
     """Per-candidate per-MID breach magnitude (P, M): the RELATIVE overage (actual/limit − 1,
     or floor short-fall) across the VAMP-rate cap, per-MID volume cap and projected bands —
     whichever is worst for that MID. >0 means that MID currently breaches. READ-ONLY: it
-    mirrors the risk maths in `_fitness` but is used only to STEER the search (adaptive-λ /
+    mirrors the risk maths in `_obj_viol` but is used only to STEER the search (adaptive-λ /
     breach-targeted mutation). It never changes feasibility or the score, so if it is slightly
     off the worst case is imperfect targeting, never a masked breach.
 
@@ -591,7 +505,7 @@ def _obj_viol(shares, ctx):
         smooth term in the relative overage: QUADRATIC (ctx['breach_quad'], default 1.0) or, when
         ctx['breach_shape']=='exponential', qwt·(exp(overage)−1). Exactly 0 when compliant. NOTE: the fixed hit reintroduces a non-smooth step, so the memetic gradient
         polish (which follows the smooth-violation gradient) becomes less effective; set
-        breach_fixed=0 to recover the pure smooth wall. Mirrors `_fitness` / the full-matrix
+        breach_fixed=0 to recover the pure smooth wall. Mirrors `_obj_viol` / the full-matrix
         engine AND the numba kernel (`numba_kernels._fused_eval`) — keep all three in lock-step."""
     _eop = ctx.get("elig_op")
     if _eop is not None:                                     # score the ACTUALLY-ROUTABLE shares —
@@ -1002,29 +916,7 @@ def _cmaes(eval_ov, x0, sigma0, lo, hi, *, popsize, max_iter, seed, stop_check=N
     return best_x, best_key, best_ov, gen_trace, _fpop
 
 
-# [FN-122a]
-def _project_capped_simplex(y, cap, total=1.0, iters=60):
-    """Euclidean projection of `y` onto {0 ≤ x ≤ cap, Σx = total} — the small per-cell QP
-    `min ‖x − y‖² s.t. simplex + max-share`, solved in closed form by bisection on the shift τ
-    (x = clip(y − τ, 0, cap); Σx decreases monotonically in τ, so bisect until Σ = total).
-
-    Falls back to a proportional renormalise when the cap is too tight to reach `total` (e.g. a
-    lone eligible gateway with cap < 1 — which genuinely can't be capped). Pure / deterministic."""
-    y = np.asarray(y, float)
-    n = y.size
-    if n == 0:
-        return y
-    if float(cap) * n <= total + 1e-12:          # cap too tight to reach `total` → proportional
-        s = float(y.sum())
-        return (y / s * total) if s > 1e-12 else np.full(n, total / n)
-    lo, hi = float(y.min() - cap), float(y.max())
-    for _ in range(int(iters)):
-        tau = 0.5 * (lo + hi)
-        if np.clip(y - tau, 0.0, cap).sum() > total:
-            lo = tau
-        else:
-            hi = tau
-    return np.clip(y - 0.5 * (lo + hi), 0.0, cap)
+# 19ga: `_project_capped_simplex` DELETED — 23 lines, defined and never called. The live fitness is `_obj_viol` (which numba_kernels._fused_eval and band_scoring are written to match and verify() cross-checks).
 
 
 # [FN-122c]
@@ -1033,7 +925,7 @@ def _project_capped_simplex_cells(s, cell_starts, cell_counts, elig, cap, total=
 
     Projects each cell's ELIGIBLE entries onto {0 ≤ x ≤ cap, Σ = total}; ineligible rows → 0.
     Uses ONE vectorised bisection on a per-cell shift τ, with segment sums via ``reduceat`` —
-    numerically identical to calling `_project_capped_simplex` per cell (unit-tested). Falls back
+    numerically identical to the closed-form per-cell QP (unit-tested). Falls back
     to a proportional renormalise for cells the cap can't fill (e.g. a lone eligible gateway), and
     to a uniform split for a (degenerate) all-ineligible cell."""
     s = np.asarray(s, float)
@@ -1085,7 +977,7 @@ def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mi
     with; (2) for every band, build a band-correcting target by scaling that MID's rows toward its
     violated ceiling (down) or floor (up), damped for stability; (3) project each cell's target
     back onto its capped simplex `{0 ≤ x ≤ max_share, Σ = 1}` over the ELIGIBLE rows — the small
-    QP `min ‖x − target‖²` solved in closed form (`_project_capped_simplex`). Step (3) is what
+    QP `min ‖x − target‖²` solved in closed form. Step (3) is what
     enforces the per-cell simplex AND the max-share cap exactly, every pass.
 
     STOPPING: there is NO fixed pass count — it keeps nudging until there is no meaningful
@@ -1270,13 +1162,8 @@ def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_ro
 
 
 # [FN-123]
-def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
-                   mutation_sigma=1.0, seed=42, elite_frac=0.2, auto=True,
-                   patience=12, sigma_min=0.05, sigma_max=4.0, success_window=5,
+def run_midtilt_ga(ctx, *, pop_size=40, generations=80, seed=42,
                    theta_max=25.0, gain_max=2.0, warm_start=None,
-                   breach_targeted=True, breach_mut_boost=3.0,
-                   smart_init=True, init_tries=4,
-                   adaptive_lambda=True, breach_lambda_boost=4.0,
                    archive_k=5, archive_min_dist=0.5, stop_check=None,
                    n_restarts=2, polish=True, ref_gamma=None, n_fine=0, progress_cb=None,
                    numba=False, restart_mode="lean", numba_trust=False):
@@ -1284,17 +1171,25 @@ def run_midtilt_ga(ctx, lam, *, pop_size=40, generations=80, mutation_rate=0.3,
     comment above for the full upgrade list). Genome = [θr | θq | g] + per-cell fine tilts
     (3·n_mid + n_fine dims).
     Ranking is ε-relaxed feasibility-first (compliant always beats non-compliant at the end),
-    so `lam` is no longer a penalty weight — accepted for interface compatibility and ignored.
+    so there is no penalty weight to pass.
 
     Returns (best_shares (N,), info) with info['genome'] (3·n_mid + n_fine) for warm-starting and
     info['archive'] of diverse good genomes. Deterministic given `seed`.
 
     Optional ctx keys: 'warm_shares' (a known feasible split to seed inside the feasible
     region, #10), 'ref_gamma' (compliant lean γ, #8), '_mid_S' (cached incidence — built here
-    if absent). Legacy GA-only knobs (elite_frac, mutation_*, sigma_*, breach_*,
-    adaptive_lambda, smart_init, success_window, patience) are accepted but unused — CMA-ES
-    self-adapts. New knobs: n_restarts (IPOP restarts, #7), polish (SLSQP gradient refine, #2),
-    ref_gamma (overrides ctx; falls back to ctx['ref_gamma'] then 0.25)."""
+    if absent). Knobs: n_restarts (IPOP restarts, #7), polish (SLSQP gradient refine, #2),
+    ref_gamma (overrides ctx; falls back to ctx['ref_gamma'] then 0.25).
+
+    19ga: FIFTEEN parameters were deleted from this signature — lam, mutation_rate,
+    mutation_sigma, elite_frac, auto, patience, sigma_min, sigma_max, success_window,
+    breach_targeted, breach_mut_boost, smart_init, init_tries, adaptive_lambda,
+    breach_lambda_boost. Every one was accepted and never read: they were the knobs of a
+    per-cell GA that this function replaced, kept "for interface compatibility" with callers
+    that no longer exist. CMA-ES self-adapts its step size and population, so there was nothing
+    for them to do. Verified by AST (33 params, 15 with zero reads in the body) before removal;
+    three tab-2 call sites were passing lam=50.0, auto=True and patience=_ga_pat into the void
+    and now do not. They are the single biggest reason this file READ as legacy."""
     N = ctx["n_row"]; M = int(ctx["n_mid"])
     # Force float64-contiguous ONCE so the hot per-generation ops get zero-copy views.
     _cont = lambda a, dt=float: np.ascontiguousarray(a, dtype=dt)

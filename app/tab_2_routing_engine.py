@@ -17,7 +17,7 @@ import pandas as pd
 import streamlit as st
 
 from routing_optimiser import (HardConstraints, OptimiserSettings, SoftConstraints,
-                               build_cell_problems, detect_blocked_gateways, engine_choices,
+                               build_cell_problems, detect_blocked_gateways,
                                gateway_success_rates, load_forecast, load_success_data,
                                optimise_split, portfolio_summary, run_sql_file)
 from impact_calcs import _mtime, pool_targeted_compression, process_wallet_incapable
@@ -5366,7 +5366,6 @@ def render():
                         _pop_ovr = int(ss.get("ga_pop_override", 0) or 0)   # 0 = auto-size
                         _ga_pop = _pop_ovr if _pop_ovr > 0 else int(np.clip(round(4 * _n_mid), 30, 80))
                         _ga_gen = int(ss.get("ga_generations", 80) or 80)
-                        _ga_pat = 12
                         # SHORT-CIRCUIT for genetic_fullmatrix: the tilt CMA-ES endpoint search is
                         # DISCARDED by the full-matrix override at delivery, so don't spend ~50 min on
                         # it. Trivialise it (1 seed, 1 gen) — the block still defines every variable the
@@ -5698,7 +5697,7 @@ def render():
                                         _wkw = dict(_extra_kw); _wkw["n_restarts"] = 1
                                         _wc0 = _wt.time()
                                         _wsh, _winfo = _run_midtilt_ga(
-                                            ctx, lam=50.0, pop_size=4, generations=1,
+                                            ctx, pop_size=4, generations=1,
                                             seed=_seed, polish=False, **_wkw)
                                         _wsecs = _wt.time() - _wc0
                                         _wn = (_winfo or {}).get("numba", {}) or {}
@@ -5789,8 +5788,8 @@ def render():
                                                 _seed_ctx = [ctx] * int(_N_SEED)
                                                 _seed_gm = [_GA_GAIN_MAX] * int(_N_SEED)
                                         _tasks = [delayed(_run_midtilt_ga)(
-                                            _seed_ctx[_s], lam=50.0, pop_size=_ga_pop, generations=_ga_gen,
-                                            seed=_seed + _s, auto=True, patience=_ga_pat,
+                                            _seed_ctx[_s], pop_size=_ga_pop, generations=_ga_gen,
+                                            seed=_seed + _s,
                                             warm_start=_warm, gain_max=_seed_gm[_s], stop_check=_ga_stop,
                                             progress_cb=_writers[_s], **_extra_kw)
                                             for _s in range(int(_N_SEED))]
@@ -5860,8 +5859,8 @@ def render():
                                 # runs on loky and raises on failure (no sequential downgrade).
                                 for _s in range(int(_N_SEED)):
                                     _shc, _infoc = _run_midtilt_ga(
-                                        ctx, lam=50.0, pop_size=_ga_pop, generations=_ga_gen,
-                                        seed=_seed + _s, auto=True, patience=_ga_pat,
+                                        ctx, pop_size=_ga_pop, generations=_ga_gen,
+                                        seed=_seed + _s,
                                         warm_start=_warm, gain_max=_GA_GAIN_MAX, stop_check=_ga_stop,
                                         **_extra_kw)
                                     if _info is None or _infoc["best_fit"] > _info["best_fit"]:
@@ -9421,14 +9420,9 @@ def render():
                                         # rounds for a number nothing acts on. Still available
                                         # explicitly via ROUTING_KERNEL_GA_VARIANTS=A,H if the
                                         # chunking decision is ever reopened.
-                                        if False:
-                                            log(f"      [kernel-ab] H not applicable: the live width P={_kP} is within "
-                                                f"the lane cap {_kcap_lanes}"
-                                                + (" and there is more than one thread, so the projector already runs "
-                                                   "plain parallel and there is nothing to chunk."
-                                                   if _kthr > 1 else
-                                                   f", and only {_kthr} numba thread(s) are available, so no parallel "
-                                                   "path exists at all."))
+                                        # 19ga: the `if False:` log call that used to sit here is
+                                        # deleted — unreachable since 19bi. The reasoning above is
+                                        # the part worth keeping.
 
                                         # ── ROUND-ROBIN TIMING ────────────────────────────────
                                         # Every spec once per round, same order, R rounds. A
@@ -10554,8 +10548,9 @@ def render():
                         # ROUTING_RECONCILE_M5=0 (skips the ~148 MB re-projection).
                         if os.environ.get("ROUTING_RECONCILE_M5", "1") != "0":
                             try:
-                                from impact_calcs import (enforced_prop_items as _rec_epi,
-                                                          compute_vamp_prepost_granular as _rec_cvp)
+                                # 19ga: enforced_prop_items / compute_vamp_prepost_granular were
+                                # imported here and never used — [proj-memo] (19fi) took over this
+                                # path and the import was left behind.
                                 _rec_wc = ss.get("wallet_ctx", {}) or {}
                                 _rec_pp = os.path.join(out_dir, "vamp_t_period_prorata_export.csv")
                                 _rec_mm = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")

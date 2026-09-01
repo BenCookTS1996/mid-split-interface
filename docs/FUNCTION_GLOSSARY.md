@@ -115,13 +115,12 @@ _Total: 431 functions across 37 files · analogy coverage: 431/431._
 - **[FN-281]** `mid_revenue_month_table(granular, rpgt_ticket, months)` — Per-vampMid × month VI Txn + $Revenue (pre/post) from the pro-rata granular.  
   *Analogy:* A per-account, month-by-month tally of transactions and dollars, before vs after.
 
-## `app/live_allocation.py`
-- **[FN-282]** `artifacts_present(forecast_dir)` — True iff the cached forecast artifacts exist (i.e. exact mode is available).  
-  *Analogy:* Checks the pantry — are the pre-computed forecast files actually there?
-- **[FN-283]** `_templates_to_split_df(templates, config)` — Melt the wide build_split_exports templates into the long split_df the  
-  *Analogy:* Unfolds the wide deployment templates back into a tidy long split table.
-- **[FN-284]** `run_exact_mid_level(project_root, forecast_dir, split, brand_name, go_live, wallet_ctx, mid_list_path)` — Run AllocationEngine + ExportManager on `split` using the cached forecast in  
-  *Analogy:* Runs the real production allocation engine end to end for one split.
+## `app/live_allocation.py` — DELETED (19ga)
+
+Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
+(`app/tab_1_2_validate_split.py`) had superseded it. Recover from git history if the
+"validate a split from the cached forecast, offline" idea is ever revived.
+
 
 ## `app/streamlit_app.py`
 *How it ties in:* App entry point / orchestrator — sets up, creates the tabs, calls each tab's render().

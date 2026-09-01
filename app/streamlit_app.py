@@ -54,7 +54,6 @@ labels the user sees, not an import order.
     app/impact_calcs.py     the VAMP pre/post projection + split-template builder. This one is
                             really BACKEND that happens to live in app/ — it is @st.cache_data-
                             decorated, which is what keeps it on this side of the fence.
-    app/live_allocation.py  shelved offline allocator, kept revivable (see its docstring)
 
 WHERE THE HEAVY LIFTING LIVES (this file is mostly ORCHESTRATION + UI glue)
 --------------------------------------------------------------------------

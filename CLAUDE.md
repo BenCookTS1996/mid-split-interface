@@ -29,8 +29,8 @@ src/routing_optimiser/               the engines + all the maths (the "brains")
 ```
 
 NAMING RULE (19ft). A file that renders UI is `tab_<tab>[_<sub-tab>]_<what it is>.py`, numbered
-by the labels the user sees. Files with no `render()` (streamlit_app, app_common, impact_calcs,
-live_allocation) stay unnumbered because they belong to no single tab. The app/ folder must stay
+by the labels the user sees. Files with no `render()` (streamlit_app, app_common, impact_calcs)
+stay unnumbered because they belong to no single tab. The app/ folder must stay
 FLAT: Streamlit puts only the entry script's own directory on sys.path, so `import
 tab_2_routing_engine` works and `from tabs.tab_2 import ...` would not.
 
