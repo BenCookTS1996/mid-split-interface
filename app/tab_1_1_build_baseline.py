@@ -755,7 +755,9 @@ def render():
                         _co = str(forecast_settings.get("company", "run")).replace(" ", "")
                         _sc = str(forecast_settings.get("card_scheme", "visa") or "visa").strip().lower()
                         _mo = str(forecast_settings.get("month_var", ""))
-                        _logs_dir = os.path.join(PROJECT_ROOT, "logs", _co, _sc)
+                        # 19ge: logs/ and runs/ consolidated under ONE logs/ tree —
+                        # logs/forecast_logs/ (this) and logs/engine_logs/ (the run bundles).
+                        _logs_dir = os.path.join(PROJECT_ROOT, "logs", "forecast_logs", _co, _sc)
                         os.makedirs(_logs_dir, exist_ok=True)
                         _log_path = os.path.join(
                             _logs_dir,

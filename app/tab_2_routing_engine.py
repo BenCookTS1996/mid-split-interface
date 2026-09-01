@@ -106,17 +106,18 @@ def render():
     # Mid-run STOP control (file-based cooperative stop). Writing the signal makes a running genetic
     # search halt at the next generation and keep the best split so far. Streamlit runs the compute
     # synchronously in the ACTIVE tab, so trigger this from a SECOND browser tab/window (a separate
-    # session) — or run `touch <project>/runs/_stop` — to stop a run already in progress.
+    # session) — or run `touch <project>/logs/engine_logs/_stop` — to stop a run in progress.
+    # 19ge: was runs/_stop; runs/ is now logs/engine_logs/.
     with st.sidebar:
         if st.button("⛔ Stop genetic run", key="ga_stop_btn",
                      help="Halt a running genetic search at the next generation, keeping the best "
                           "split so far. Because the compute runs synchronously in the active tab, "
-                          "trigger this from a SECOND browser tab (or `touch runs/_stop`) to stop a "
-                          "run already in progress."):
+                          "trigger this from a SECOND browser tab (or `touch "
+                          "logs/engine_logs/_stop`) to stop a run already in progress."):
             try:
                 from routing_optimiser.s5_deliver.run_bundle import request_stop as _rq_stop
-                _rd_stop = os.path.join(PROJECT_ROOT, "runs")
-                os.makedirs(_rd_stop, exist_ok=True)     # so the signal path is always runs/_stop
+                _rd_stop = os.path.join(PROJECT_ROOT, "logs", "engine_logs")
+                os.makedirs(_rd_stop, exist_ok=True)     # signal path: logs/engine_logs/_stop
                 _rq_stop(_rd_stop)
                 st.sidebar.warning("Stop sent — the genetic search will halt at the next generation.")
             except Exception as _e:  # noqa: BLE001
@@ -978,8 +979,8 @@ def render():
             # (halts + keeps best-so-far when the sidebar 'Stop' writes the signal).
             try:
                 from routing_optimiser.s5_deliver.run_bundle import clear_stop as _clr_stop, make_stop_check as _mk_stop
-                _runs_dir_stop = os.path.join(PROJECT_ROOT, "runs")
-                os.makedirs(_runs_dir_stop, exist_ok=True)   # signal path is always runs/_stop
+                _runs_dir_stop = os.path.join(PROJECT_ROOT, "logs", "engine_logs")
+                os.makedirs(_runs_dir_stop, exist_ok=True)   # signal: logs/engine_logs/_stop
                 _clr_stop(_runs_dir_stop)
                 _ga_stop = _mk_stop(_runs_dir_stop)
             except Exception:  # noqa: BLE001
@@ -14446,10 +14447,11 @@ def render():
                         # only way to tell was to grep its log.txt for "company=... scheme=...".
                         # keep=30 now prunes WITHIN a (brand, scheme), which is what you want: a
                         # burst of visa runs no longer evicts the mastercard history.
-                        # runs/_stop (the graceful-stop signal) stays at the runs/ root and is
+                        # _stop (the graceful-stop signal) stays at the engine_logs/ root and is
                         # untouched — it is a signal path, not a bundle.
+                        # 19ge: runs/ -> logs/engine_logs/, beside logs/forecast_logs/.
                         _rb_dir = os.path.join(
-                            PROJECT_ROOT, "runs",
+                            PROJECT_ROOT, "logs", "engine_logs",
                             str(sr_company or "run").replace(" ", ""),
                             str(sr_scheme or "visa").strip().lower())
                         _rb_folder = _wrb(_rb_dir, _rb_cfg,
