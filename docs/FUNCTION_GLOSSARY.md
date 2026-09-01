@@ -143,7 +143,7 @@ _Total: 431 functions across 37 files · analogy coverage: 431/431._
 - **[FN-292]** `_render_preflight(project)` — (small helper — see source)  
   *Analogy:* Puts that checklist up on screen.
 
-## `app/tab1_baseline.py`
+## `app/tab_1_1_build_baseline.py`
 *How it ties in:* Tab 1 UI — build/cache the baseline forecast and validate a split.
 
 - **[FN-293]** `render()` — (small helper — see source)  
@@ -157,7 +157,7 @@ _Total: 431 functions across 37 files · analogy coverage: 431/431._
 - **[FN-297]** `render.log(msg)` — (small helper — see source)  
   *Analogy:* Writes a line to this tab's on-screen log.
 
-## `app/tab2_engine.py`
+## `app/tab_2_routing_engine.py`
 *How it ties in:* Tab 2 UI — pick an engine + limits and run the search.
 
 - **[FN-298]** `render()` — (small helper — see source)  
@@ -261,7 +261,7 @@ _Total: 431 functions across 37 files · analogy coverage: 431/431._
 - **[FN-347]** `render._log_pc(_w, _sta)` — (small helper — see source)  
   *Analogy:* Logs the projected-vs-cap detail for each cell.
 
-## `app/tab3_impact.py`
+## `app/tab_3_split_outputs_impact.py`
 *How it ties in:* Tab 3 UI — show the split, its before→after risk/revenue, and dashboards.
 
 - **[FN-348]** `render()` — (small helper — see source)  
@@ -341,7 +341,7 @@ _Total: 431 functions across 37 files · analogy coverage: 431/431._
 - **[FN-385]** `render._fmt(v)` — (small helper — see source)  
   *Analogy:* A number formatter for the tab.
 
-## `app/tab4_configs.py`
+## `app/tab_4_generate_configs.py`
 *How it ties in:* Tab 4 UI — compress to a pool budget and generate/download the JSON configs.
 
 - **[FN-386]** `render(ss, PROJECT_ROOT)` — Render the config-generation tab.  
@@ -351,7 +351,7 @@ _Total: 431 functions across 37 files · analogy coverage: 431/431._
 - **[FN-388]** `render._pool_bins._walk(o)` — (small helper — see source)  
   *Analogy:* Crawls the rule expression to collect its BINs.
 
-## `app/tab_validate.py`
+## `app/tab_1_2_validate_split.py`
 - **[FN-389]** `_covered_rpgts(merged_dir)` — Lower-cased set of RPGTs that HAVE a rule (from the RPGT column of each rule  
   *Analogy:* Lists which payment types actually have a routing rule written for them.
 - **[FN-390]** `_to_prepost(df)` — Rename the pipeline's mid_level.csv columns onto the tab-3 table names.  

@@ -24,6 +24,8 @@ from impact_calcs import _mtime, pool_targeted_compression, process_wallet_incap
 
 from app_common import load_mid_list, _norm_cols  # memoised MID reader + column-normaliser
 from app_common import run_company            # 19ea: ONE reader for the run's brand
+# 19ft: ONE resolver for config/inputs, so a mastercard run reads the mastercard copy.
+from app_common import input_json_path
 from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, StreamlitLogHandler,
 
                         _switched_off_gateways, APP_BUILD, DEFAULT_GATEWAY_FIDS, _GA_N_SEED,
@@ -1745,7 +1747,7 @@ def render():
                     # Remove gateways switched off in gateway_volume_overrides.json
                     # (target == 0 with apply_to "trx" or "both") - not eligible.
                     try:
-                        _ovr_path = os.path.join(PROJECT_ROOT, "config", "inputs", "gateway_volume_overrides.json")
+                        _ovr_path = input_json_path("gateway_volume_overrides.json")
                         if os.path.exists(_ovr_path) and "gateway" in adf.columns:
                             import json as _json
                             from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway
@@ -2038,7 +2040,7 @@ def render():
                     try:
                         from routing_optimiser.s3_problem.eligibility import load_explore_gateways as _load_expl
                         from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg_ex
-                        _rr_p = os.path.join(PROJECT_ROOT, "config", "inputs", "routing_restrictions.json")
+                        _rr_p = input_json_path("routing_restrictions.json")
                         _explore = set(_load_expl(_rr_p))
                         _fid_cur = {}
                         _fid_brand, _fid_active, _fid_proc = {}, {}, {}
@@ -2069,7 +2071,7 @@ def render():
                         if _auto_explore:   # currency-capable gateways, filtered + minus scrubbed / switched-off
                             import json as _json
                             _skip = set()
-                            for _pth, _key in [(os.path.join(PROJECT_ROOT, "config", "inputs", "test_gateways.json"), "scrub")]:
+                            for _pth, _key in [(input_json_path("test_gateways.json"), "scrub")]:
                                 try:
                                     if os.path.exists(_pth):
                                         with open(_pth) as _fpth:
@@ -2078,7 +2080,7 @@ def render():
                                 except Exception:  # noqa: BLE001
                                     pass
                             try:
-                                _ovp = os.path.join(PROJECT_ROOT, "config", "inputs", "gateway_volume_overrides.json")
+                                _ovp = input_json_path("gateway_volume_overrides.json")
                                 if os.path.exists(_ovp):
                                     with open(_ovp) as _fov:
                                         _ov = _json.load(_fov)
@@ -3154,8 +3156,7 @@ def render():
                     if (_pp_full is not None
                             and os.environ.get("ROUTING_INJECT_CAPABLE", "1") != "0"):
                         try:
-                            _rjp = os.path.join(PROJECT_ROOT, "config", "inputs",
-                                                "routing_restrictions.json")
+                            _rjp = input_json_path("routing_restrictions.json")
                             _rj = {}
                             if os.path.exists(_rjp):
                                 with _io.open(_rjp, encoding="utf-8") as _rfh:
@@ -3189,7 +3190,7 @@ def render():
                     # movable layer, and the comment two lines up has said since 19da that `the delivered
                     # projection must be given the same treatment or the two sides will disagree`. It never
                     # was. `compute_vamp_prepost_granular` injects only when it is handed a `capability`,
-                    # tab3_impact passes one (:4221), and all THREE call sites in this file do not - so the
+                    # tab_3_split_outputs_impact passes one (:4221), and all THREE call sites in this file do not - so the
                     # reconciliation, never-worse and attribution numbers were computed on the RAW export
                     # while the GA scored the injected one. Same shape as 19df: wired into tab 3, missed on
                     # the measurement path, and reproducing the headline number exactly.
@@ -3619,8 +3620,7 @@ def render():
                                         _use = _actv if _actv else _cap_w[_key2]
                                         if _use and not any(_use):      # NO fid here can do wallets
                                             _wc_pairs.add(_key2)
-                            _rrp2 = os.path.join(PROJECT_ROOT, "config", "inputs",
-                                                 "routing_restrictions.json")
+                            _rrp2 = input_json_path("routing_restrictions.json")
                             for _f2 in _lu_pk(_rrp2):
                                 _k2 = _vc_of.get(str(_cg_pk(_f2)).strip().lower())
                                 if _k2:
@@ -3993,7 +3993,7 @@ def render():
                     # keep only their non-wallet share.
                     from routing_optimiser.s3_problem.eligibility import (
                         load_restrictions, load_usa_only, apply_restrictions, unenforceable_fields)
-                    _rr_path = os.path.join(PROJECT_ROOT, "config", "inputs", "routing_restrictions.json")
+                    _rr_path = input_json_path("routing_restrictions.json")
                     _elig_rules = load_restrictions(_rr_path)
                     _unenf = unenforceable_fields(_elig_rules, ["rpgt", "currency", "bin"])
                     if _unenf:
@@ -10541,7 +10541,7 @@ def render():
                                 _rec_pre_blended = True
                                 # ── MIRROR TAB 3 EXACTLY (fixed 2026-08-17) ────────────────────────
                                 # This block claims its number IS tab-3's 'Now'. It was NOT: tab 3
-                                # (tab3_impact.py ~4026) folds the BACKUP CATCH-ALL into the enforced
+                                # (tab_3_split_outputs_impact.py ~4026) folds the BACKUP CATCH-ALL into the enforced
                                 # prop items before projecting, and passes the switched-off
                                 # excluded_mids + effective-date gating. This block did neither, so
                                 # every run with a backup folder configured reported a DELIVERY DRIFT
@@ -10764,7 +10764,7 @@ def render():
                                 if _rec_ep and os.path.exists(_rec_pp):
                                     # 19df — max_share. THIS is the call that produces the
                                     # AUTHORITATIVE delivered M5 and therefore the RECONCILIATION
-                                    # ERROR; tab3_impact's three sites were wired first and this
+                                    # ERROR; tab_3_split_outputs_impact's three sites were wired first and this
                                     # one was missed, so the 2026-08-29 07:45 run reproduced 829
                                     # exactly while the log claimed the cap was on. Sourced from
                                     # `_rec_wc`, the SAME dict the enforced_prop_items call at
@@ -13443,7 +13443,7 @@ def render():
                                                     # about whether any caller actually passed a
                                                     # max_share. On 2026-08-29 07:45 it printed
                                                     # "the CAP is now applied on BOTH sides" while
-                                                    # three tab2_engine call sites passed nothing,
+                                                    # three tab_2_routing_engine call sites passed nothing,
                                                     # delivery ran uncapped, and the run reproduced
                                                     # 829 exactly. `_LAST_DELIV_MAXSHARE` is set by
                                                     # the branch that actually runs: None means the

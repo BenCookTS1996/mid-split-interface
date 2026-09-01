@@ -13,7 +13,7 @@ from .genetic_ref import GeneticRefEngine
 #     be dropped without taking the other two with it.
 # base.py and genetic_ref.py deliberately did NOT move: the whole pipeline uses CellProblem /
 # BaseEngine, and the full-matrix GA dispatches its own revenue reference through
-# get_engine("genetic_ref") (tab2_engine.py, `optimise_split(agg_problems, ref_settings)`).
+# get_engine("genetic_ref") (tab_2_routing_engine.py, `optimise_split(agg_problems, ref_settings)`).
 from ..legacy_engines.entropy import EntropyEngine
 from ..legacy_engines.portfolio import PortfolioEngine
 from ..legacy_engines.softmax import SoftmaxEngine

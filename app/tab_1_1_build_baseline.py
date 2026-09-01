@@ -1,7 +1,14 @@
-"""Tab 1 — Baseline & Validate.
+"""Tab 1 · sub-tab 1 — Build Baseline.  (also the host of tab 1's sub-tab bar)
 
 Originally split out of streamlit_app.py into its own file (since evolved) so the main
 script stays small. streamlit_app.py calls `render()` from inside `with tab_fc:`.
+
+TWO JOBS, which is why the filename says 1_1 and this docstring says more than that:
+  1. `render()` creates tab 1's three sub-tabs — Build Baseline / Validate Split / Config
+     Validation — and delegates 1·2 to tab_1_2_validate_split.render() and 1·3 to
+     tab_1_3_config_validation.render() at the bottom of this file.
+  2. Everything ABOVE those two calls is sub-tab 1's own body: run identity, data sources,
+     assumptions, configs & overrides, the green Calculate/Load Forecast button and the run log.
 """
 from __future__ import annotations
 
@@ -20,7 +27,7 @@ import yaml
 from routing_optimiser import build_pipeline_config, run_vamp_pipeline
 from routing_optimiser import build_mc_pipeline_config, run_mastercard_pipeline
 
-from app_common import (ss, PROJECT_ROOT, INPUTS_DIR, GCP_PROJECT,
+from app_common import (ss, PROJECT_ROOT, GCP_PROJECT, input_json_path,
                         RPGT_LIST, COMPANIES, StreamlitLogHandler, _switched_off_gateways)
 
 
@@ -46,7 +53,10 @@ def render():
         # ---- defaults (used when settings are hidden while loading a forecast) --
         # [FN-294]
         def _load_default_json(name):
-            return read_json(os.path.join(INPUTS_DIR, name))
+            # Scheme-aware (19ft): the visa/ or mastercard/ copy, else the shared root file.
+            # NOTE this runs BEFORE the Card Scheme selectbox renders, which is exactly why
+            # that widget carries key="ident_card_scheme" -- see run_scheme()'s docstring.
+            return read_json(input_json_path(name))
 
         company = COMPANIES[0]
         scheme = "visa"
@@ -244,7 +254,13 @@ def render():
                     id_c1, id_c2 = st.columns(2)
                     company = id_c1.selectbox("Company", COMPANIES,
                                               help="Brand this forecast is for.")
+                    # 19ft: `key` is load-bearing, not cosmetic. The config/inputs loader runs
+                    # ~180 lines ABOVE this widget in the same script pass, and a keyed widget's
+                    # value is in session_state BEFORE the script re-runs -- so this is how
+                    # app_common.run_scheme() sees the NEW scheme on the rerun a change triggers,
+                    # instead of the previous one out of forecast_settings.
                     scheme = id_c2.selectbox("Card Scheme", ["visa", "mastercard"],
+                                             key="ident_card_scheme",
                                              help="Card network to model.")
 
                     id_c3, id_c4 = st.columns(2)
@@ -310,7 +326,7 @@ def render():
                                 try:
                                     import json as _jbc
                                     from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cgbc
-                                    _ovp_bc = os.path.join(PROJECT_ROOT, "config", "inputs", "gateway_volume_overrides.json")
+                                    _ovp_bc = input_json_path("gateway_volume_overrides.json", scheme)
                                     _off_bc = set()
                                     if os.path.exists(_ovp_bc):
                                         with open(_ovp_bc) as _fbc:
@@ -461,14 +477,16 @@ def render():
                     thermo_file = g2.file_uploader("Thermometer Config", type=["json"])
                     override_file = g3.file_uploader("Gateway Volume Overrides", type=["json"])
 
+                    # 19ft: `scheme` is in hand here (the selectbox is above this point), so it
+                    # is passed explicitly -- no session-state read, no ordering question.
                     test_gateways = _read_json(test_gw_file,
-                                               os.path.join(INPUTS_DIR, "test_gateways.json"),
+                                               input_json_path("test_gateways.json", scheme),
                                                "Test Gateways") or {}
                     thermometer_config = _read_json(
-                        thermo_file, os.path.join(INPUTS_DIR, "thermometer_config.json"),
+                        thermo_file, input_json_path("thermometer_config.json", scheme),
                         "thermometer config")
                     gateway_volume_overrides = _read_json(
-                        override_file, os.path.join(INPUTS_DIR, "gateway_volume_overrides.json"),
+                        override_file, input_json_path("gateway_volume_overrides.json", scheme),
                         "gateway volume overrides")
                     # Confirm each JSON actually loaded — from an uploaded file OR the default on disk.
                     # 19es: full width of this column again. 19eq split it to seat the button
@@ -769,7 +787,7 @@ def render():
 
         # Baseline forecast — VI Txn & VAMP by month × vampMid (PRE months only), shown once a forecast
         # has been calculated/cached/loaded, in the SAME tab-3 table format + conditional formatting
-        # (reuses tab_validate's renderer). Reads mid_level.csv from the cached forecast output dir.
+        # (reuses tab_1_2_validate_split's renderer). Reads mid_level.csv from the cached forecast output dir.
         # In previous-forecast mode the table renders into the LEFT column created above (log sits in
         # the right column); otherwise it renders full-width via a throwaway container.
         _tbl_ctx = _pre_table_ctx if _pre_table_ctx is not None else st.container()
@@ -778,7 +796,7 @@ def render():
                 _fc_out = ss.get("pipeline_out_dir")
                 _mid_csv = os.path.join(_fc_out, "mid_level.csv") if _fc_out else None
                 if _mid_csv and os.path.isfile(_mid_csv):
-                    from tab_validate import _to_prepost as _tpp, _render_prepost_table as _rpt
+                    from tab_1_2_validate_split import _to_prepost as _tpp, _render_prepost_table as _rpt
                     _pre = _tpp(pd.read_csv(_mid_csv))
                     _pre = _pre[[c for c in _pre.columns if "Post" not in c]]   # PRE months only
                     _rpt(_pre, fit_content=True, bold=False)   # hug content; values not bold (tab-1 baseline)
@@ -787,9 +805,9 @@ def render():
 
 
     with _vs:
-        import tab_validate
-        tab_validate.render(ss, PROJECT_ROOT, GCP_PROJECT)
+        import tab_1_2_validate_split
+        tab_1_2_validate_split.render(ss, PROJECT_ROOT, GCP_PROJECT)
 
     with _cv:
-        import tab_config_validation
-        tab_config_validation.render(ss, PROJECT_ROOT)
+        import tab_1_3_config_validation
+        tab_1_3_config_validation.render(ss, PROJECT_ROOT)

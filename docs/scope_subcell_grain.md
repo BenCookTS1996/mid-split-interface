@@ -49,7 +49,7 @@ identical gateway conversion rates; they differ only by VAMP and eligibility. In
 | Subsystem | Where |
 |---|---|
 | VAMP / band projector | `band_projection.py` `_GRPK = cur\|bin\|rpgt\|pmp\|ctry\|per` |
-| Eligibility masks (wallet / USA-only) | `tab2_engine.py:2447` `_T0_emask_a` |
+| Eligibility masks (wallet / USA-only) | `tab_2_routing_engine.py:2447` `_T0_emask_a` |
 | Deliverable exporter (output rows) | `impact_calcs.build_split_exports:1373,1513` |
 | Sub-cell volume + VAMP data | `vamp_t_period_prorata_export.csv` |
 
@@ -58,7 +58,7 @@ identical gateway conversion rates; they differ only by VAMP and eligibility. In
 ## What must change (the decision path)
 
 **3. GA cell key → sub-cell (+ the volume glue).** `M`
-`tab2_engine.py:2203` / `:2872` build the cell key `currency|bank|rpgt`; extend it to
+`tab_2_routing_engine.py:2203` / `:2872` build the cell key `currency|bank|rpgt`; extend it to
 `currency|bank|rpgt|pmp|ctry` (+ a grain option at `:495`). Two supporting joins at assembly time:
 - **succ (broadcast):** attach each sub-cell's gateway success rate = its parent cell's rate (no
   `success_rates` change; just don't split — map cell rate onto each sub-cell row).
@@ -69,7 +69,7 @@ identical gateway conversion rates; they differ only by VAMP and eligibility. In
 
 **4. prop_key / band projection → include pmp/ctry (unwind the broadcast — the linchpin).** `M`
 `band_projection._prop_key:178` excludes pmp/ctry so one cell share maps onto every sub-cell row; the GA
-prop-dict groupby (`tab2_engine.py:2955–2962`) collapses to `(cur,bin,[rpgt,]mid)`. Add a sub-cell variant
+prop-dict groupby (`tab_2_routing_engine.py:2955–2962`) collapses to `(cur,bin,[rpgt,]mid)`. Add a sub-cell variant
 of `_prop_key` (include pmp/ctry) and key the prop dict at sub-cell grain, so the GA's per-sub-cell shares
 are scored as-is instead of broadcast. This is the single structural assumption to break.
 
@@ -115,7 +115,7 @@ instead of re-expanding. Output schema already has the columns.
 
 ## Overall
 
-A **medium project** across ~three files (`tab2_engine.py`, `band_projection.py`, `impact_calcs.py`), with
+A **medium project** across ~three files (`tab_2_routing_engine.py`, `band_projection.py`, `impact_calcs.py`), with
 **no change to `vamp_forecast_pipeline` or `success_rates`**. The optimiser already scores VAMP and emits configs
 at sub-cell grain; this makes the *decision* grain match — sub-cells differentiated by VAMP/eligibility, not
 conversion. Biggest practical watch-item is now **search size/perf**, not data sparsity.

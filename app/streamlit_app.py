@@ -21,7 +21,7 @@ DATA FLOW (state is carried between stations in st.session_state, aliased `ss`)
               └─ (tab 2 runs the engine: genetic / softmax / thompson / portfolio)
               └─> ss["variations"]   the produced split(s) — now a SINGLE dial-0 entry
                     └─> ss["split"] + ss["settings"]   the delivered "long" split table
-                          └─> (tab 4 → tab4_configs.render) ConnectorPool JSON configs
+                          └─> (tab 4 → tab_4_generate_configs.render) ConnectorPool JSON configs
 
 KEY session_state KEYS
 ----------------------
@@ -31,21 +31,37 @@ KEY session_state KEYS
   ss["split"], ss["settings"]   the delivered split + the settings that produced it
   ss["wallet_ctx"]              eligibility context (bans / wallet / USA) for enforcement + export
 
-FILE MAP — each tab now lives in its OWN file; this script just wires them up
------------------------------------------------------------------------------
-  app/streamlit_app.py   THIS FILE — imports, CSS, session setup, st.tabs(), 4 render() calls
-  app/app_common.py      shared constants, the log handler, and small helpers every tab reuses
-  app/tab1_baseline.py    Tab 1  Baseline & Validate      → tab1_baseline.render()
-  app/tab2_engine.py      Tab 2  Routing engine           → tab2_engine.render()
-  app/tab3_impact.py      Tab 3  Split, outputs & impact  → tab3_impact.render()
-  app/tab4_configs.py     Tab 4  Generate configs         → tab4_configs.render()
+FILE MAP — each tab lives in its OWN file; this script just wires them up
+------------------------------------------------------------------------
+19ft: every tab file is now named `tab_<tab>[_<sub-tab>]_<what it is>`, so the filename alone
+says where in the UI it renders and in what order the user meets it. The numbers are the tab
+labels the user sees, not an import order.
+
+  TAB FILES — one `render()` each
+    app/tab_1_1_build_baseline.py        Tab 1 · sub-tab 1  Build Baseline
+                                         ALSO hosts tab 1's sub-tab bar and delegates 1·2 / 1·3
+    app/tab_1_2_validate_split.py        Tab 1 · sub-tab 2  Validate Split
+    app/tab_1_3_config_validation.py     Tab 1 · sub-tab 3  Config Validation
+    app/tab_2_routing_engine.py          Tab 2             Routing engine
+    app/tab_3_split_outputs_impact.py    Tab 3             Split, outputs & impact
+    app/tab_4_generate_configs.py        Tab 4             Generate configs
+                                         (also rendered INSIDE 1·3 with key_prefix="cv_")
+
+  SUPPORT FILES — no `render()`, deliberately unnumbered because they belong to no one tab
+    app/streamlit_app.py    THIS FILE — imports, CSS, session setup, st.tabs(), the render() calls
+    app/app_common.py       shared constants, the log handler, path resolvers (input_json_path,
+                            run_company, run_scheme) and the helpers every tab reuses
+    app/impact_calcs.py     the VAMP pre/post projection + split-template builder. This one is
+                            really BACKEND that happens to live in app/ — it is @st.cache_data-
+                            decorated, which is what keeps it on this side of the fence.
+    app/live_allocation.py  shelved offline allocator, kept revivable (see its docstring)
 
 WHERE THE HEAVY LIFTING LIVES (this file is mostly ORCHESTRATION + UI glue)
 --------------------------------------------------------------------------
   src/routing_optimiser/…    engines (softmax/thompson/portfolio/genetic), optimiser, band
                              scoring/projection, numba kernels, success rates, eligibility.
   app/impact_calcs.py        VAMP pre/post projection + production split-template builder.
-  app/tab4_configs.py         the Configs-tab body (builds ss["configs"]).
+  app/tab_4_generate_configs.py         the Configs-tab body (builds ss["configs"]).
 
 CURRENT-BEHAVIOUR NOTE (post-simplification)
 --------------------------------------------
@@ -365,9 +381,9 @@ st.markdown("""
 # Shared constants, the log handler, and small helpers now live in app_common.py so each
 # tab can import them from its own file. (Tab bodies are being split out one at a time.)
 from app_common import ss, PROJECT_ROOT, SQL_DIR, GCP_PROJECT, APP_BUILD
-import tab1_baseline
-import tab2_engine
-import tab3_impact
+import tab_1_1_build_baseline
+import tab_2_routing_engine
+import tab_3_split_outputs_impact
 os.chdir(PROJECT_ROOT)  # Ensures the app always operates out of the project root
 
 
@@ -737,13 +753,13 @@ if not _HAS_RUN:
 # TAB 1 — Baseline & Validate  (build/cache the baseline forecast; validate a split)
 # ============================================================================
 with tab_fc:
-    tab1_baseline.render()
+    tab_1_1_build_baseline.render()
 
 # ============================================================================
 # TAB 2 — Routing engine  (choose engine + constraints -> search for & propose the split)
 # ============================================================================
 with tab_eng:
-    tab2_engine.render()
+    tab_2_routing_engine.render()
 
 
 
@@ -752,16 +768,16 @@ with tab_eng:
 # TAB 3 — Split, outputs & impact  (split tables, VAMP pre/post, financial impact, dashboards)
 # ============================================================================
 with tab_imp:
-    tab3_impact.render()
+    tab_3_split_outputs_impact.render()
 
 
 # ============================================================================
 # TAB 4 - Generate ConnectorPool JSON configs from the proposed split
 # ============================================================================
 with tab_cfg:
-    # Config-generator tab body lives in tab4_configs.py (per-tab split).
-    import tab4_configs
-    tab4_configs.render(ss, PROJECT_ROOT)
+    # Config-generator tab body lives in tab_4_generate_configs.py (per-tab split).
+    import tab_4_generate_configs
+    tab_4_generate_configs.render(ss, PROJECT_ROOT)
 
 
 

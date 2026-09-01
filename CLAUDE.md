@@ -16,14 +16,29 @@ The Streamlit UI used to be one ~10,000-line file. It's now split so each tab is
 and the entry point just wires them together:
 
 ```
-app/streamlit_app.py   entry point / orchestrator (imports, setup, st.tabs(), 4 render() calls)
-app/app_common.py      shared constants, the log handler, and small helpers every tab reuses
-app/tab1_baseline.py   Tab 1 — Baseline & Validate
-app/tab2_engine.py     Tab 2 — Routing engine
-app/tab3_impact.py     Tab 3 — Split, outputs & impact
-app/tab4_configs.py    Tab 4 — Generate configs
-src/routing_optimiser/ the engines + all the maths (the "brains")
+app/streamlit_app.py                 entry point / orchestrator (imports, setup, st.tabs())
+app/app_common.py                    shared constants, log handler, path resolvers, helpers
+app/impact_calcs.py                  before -> after impact projection + config templates
+app/tab_1_1_build_baseline.py        Tab 1 · 1 — Build Baseline  (+ hosts tab 1's sub-tab bar)
+app/tab_1_2_validate_split.py        Tab 1 · 2 — Validate Split
+app/tab_1_3_config_validation.py     Tab 1 · 3 — Config Validation
+app/tab_2_routing_engine.py          Tab 2     — Routing engine
+app/tab_3_split_outputs_impact.py    Tab 3     — Split, outputs & impact
+app/tab_4_generate_configs.py        Tab 4     — Generate configs
+src/routing_optimiser/               the engines + all the maths (the "brains")
 ```
+
+NAMING RULE (19ft). A file that renders UI is `tab_<tab>[_<sub-tab>]_<what it is>.py`, numbered
+by the labels the user sees. Files with no `render()` (streamlit_app, app_common, impact_calcs,
+live_allocation) stay unnumbered because they belong to no single tab. The app/ folder must stay
+FLAT: Streamlit puts only the entry script's own directory on sys.path, so `import
+tab_2_routing_engine` works and `from tabs.tab_2 import ...` would not.
+
+`app/` is the frontend; `src/` is the backend (engines + pipelines, no Streamlit import).
+
+CONFIG INPUTS (19ft). `config/inputs/` has a `visa/` and a `mastercard/` subfolder holding that
+scheme's own prefixed copy of each JSON, with the bare root file as a shared fallback. Nothing
+reads a path to these directly — go through `app_common.input_json_path(name[, scheme])`.
 
 Every function in the codebase carries a stable id tag in its docstring/comment, e.g.
 `# [FN-042]`, which `FUNCTION_GLOSSARY.md` uses to describe it.

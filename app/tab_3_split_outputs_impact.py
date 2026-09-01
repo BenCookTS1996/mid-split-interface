@@ -21,6 +21,7 @@ from impact_calcs import (_c_prepost_granular, _c_read_parquet, _mtime, build_ki
                           rpgt_currency_avg_ticket)
 
 from app_common import (ensure_cols, load_mid_list, _norm_cols, _map_to_bank, _renorm_share, run_company,
+                        input_json_path,  # 19ft: ONE resolver for config/inputs
                         _fid2vamp_from)  # memoised MID reader + shared helpers
 from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, DEFAULT_GATEWAY_FIDS,
                         HAS_PLOTLY, _ensure_base_30d_metrics, _impact_eval_frame, _ink_caption,
@@ -599,7 +600,7 @@ def render():
                 try:
                     import json as _je
                     from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cge
-                    _ovp_e = os.path.join(PROJECT_ROOT, "config", "inputs", "gateway_volume_overrides.json")
+                    _ovp_e = input_json_path("gateway_volume_overrides.json")
                     _off_e = set()
                     if os.path.exists(_ovp_e):
                         with open(_ovp_e) as _fe:
@@ -4221,7 +4222,7 @@ def render():
                     # but a DIFFERENT consequence: these MIDs keep their transactions and are barred
                     # only from RECEIVING redistributed VAMP. The baseline already zeroes the VAMP
                     # they hold; this closes the flow half.
-                    # 19da — the SAME capability the search is given (tab2_engine builds it from
+                    # 19da — the SAME capability the search is given (tab_2_routing_engine builds it from
                     # the same restrictions file and brand), so both sides complete the aged frame
                     # identically. `_cap_sig` carries its identity into the st.cache_data key,
                     # because the callable itself is excluded from the hash.
@@ -4232,8 +4233,7 @@ def render():
                     _cap_sig = "off"
                     if os.environ.get("ROUTING_INJECT_CAPABLE", "1") != "0":
                         try:
-                            _rjp = os.path.join(PROJECT_ROOT, "config", "inputs",
-                                                "routing_restrictions.json")
+                            _rjp = input_json_path("routing_restrictions.json")
                             _rj = {}
                             if os.path.exists(_rjp):
                                 with _io.open(_rjp, encoding="utf-8") as _rfh:

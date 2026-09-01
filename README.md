@@ -291,10 +291,12 @@ src/routing_optimiser/
   optimiser.py         run an engine across all cells
   eligibility.py       banned / wallet / USA-only route rules
   kmeans_compress.py   group near-identical cells to cut the rule count
-src/vamp_pipeline/     the real forecast pipeline
-queries/               the pipeline's BigQuery extracts
-app/streamlit_app.py   the app (4 tabs)
+src/build_baseline/    the real forecast pipelines (vamp_pipeline + mastercard_pipeline)
+queries/               the pipeline's BigQuery extracts (visa/ + mastercard/ subfolders)
+app/streamlit_app.py   the app (4 tabs) — tab files are app/tab_<tab>[_<sub>]_<name>.py
 app/impact_calcs.py    before→after impact projection + config templates
-app/tab_configs.py     the "Generate configs" tab
-config/vamp_settings.yaml   VAMP pipeline settings (the app mirrors this)
+app/tab_4_generate_configs.py   the "Generate configs" tab
+config/vamp_settings.yaml        VAMP pipeline settings (the app mirrors this)
+config/mastercard_settings.yaml  the Mastercard equivalent
+config/inputs/{visa,mastercard}/ per-scheme JSON inputs (bare root files are the fallback)
 ```

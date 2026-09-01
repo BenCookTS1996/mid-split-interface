@@ -38,7 +38,7 @@ eligibility are already sub-cell-native; volume is apportioned by the pro-rata V
 The scaffold `_GRPK` is already `cur|bin|rpgt|pmp|ctry|per`, so the sub-cell prop_key aligns row-for-row
 (no broadcast). **Testable now** (reconciliation on a case with ≥2 sub-cells that differ).
 
-**(b)+(c) `tab2_engine.py` assembly** — gated sub-cell branch. **Needs user runs.**
+**(b)+(c) `tab_2_routing_engine.py` assembly** — gated sub-cell branch. **Needs user runs.**
 - Dropdown `:495`: add option `"Bank × Currency × RPGT × pmp × Country"`; set
   `_opt_subcell = (_opt_grain == that)`. (Leave Engine-Score-grain options as-is — scoring stays cell.)
 - Pro-rata path `_ppf = out_dir/vamp_t_period_prorata_export.csv` is known at `:2179`; compute it (or hoist)

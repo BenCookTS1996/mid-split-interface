@@ -192,8 +192,8 @@ def render(ss, PROJECT_ROOT):
     # its own per-config find panel is suppressed here (the profile lookup on the right replaces it).
     with _gen_col:
         st.markdown("##### Generate Configs")   # in-line with 'Look up configs by profile' (same h5)
-        import tab4_configs
-        tab4_configs.render(ss, PROJECT_ROOT, key_prefix="cv_", show_find=False)
+        import tab_4_generate_configs
+        tab_4_generate_configs.render(ss, PROJECT_ROOT, key_prefix="cv_", show_find=False)
 
     # RIGHT column: profile lookup over a loaded folder of configs — side by side with the generator.
     with _lookup_col:

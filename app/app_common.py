@@ -35,6 +35,15 @@ SQL_DIR = os.path.join(_HERE, "..", "queries")
 # the baseline cache.
 CACHE_DIR = os.path.join(_HERE, "..", "data", "routing_engine_cached_input_data")
 INPUTS_DIR = os.path.join(_HERE, "..", "config", "inputs")
+# 19ft: config/inputs now has a visa/ and a mastercard/ subfolder holding that scheme's OWN
+# copy of each JSON, prefixed with the scheme name:
+#
+#     config/inputs/test_gateways.json                    <- legacy, shared fallback
+#     config/inputs/visa/visa_test_gateways.json          <- what a visa run reads
+#     config/inputs/mastercard/mastercard_test_gateways.json
+#
+# Nothing reads INPUTS_DIR directly any more: every site goes through input_json_path()
+# below, so "which file does a mastercard run read" has ONE answer instead of twelve.
 GCP_PROJECT = "sapient-tangent-172609"  # matches the VAMP repo's BigQuery project
 
 # RPGTs (transaction types) used across the pipeline and templates.
@@ -52,7 +61,7 @@ COMPANIES = ["TotalAV", "Total Drive", "Total Adblock", "Total Cleaner", "Total 
 # pd.read_csv(path), just without the repeated disk read + parse. An edited file (new
 # mtime) busts the cache automatically.
 _MID_LIST_CACHE: dict = {}
-# Which encoding the last successful read used, and any note worth logging. `tab2_engine`
+# Which encoding the last successful read used, and any note worth logging. `tab_2_routing_engine`
 # re-emits this through log() — app_common has no logger, and a silent fallback is exactly
 # how a mojibake'd MID list would go unnoticed.
 LAST_MID_LIST_ENCODING: str = ""
@@ -61,7 +70,7 @@ LAST_MID_LIST_NOTE: str = ""
 # Excel on macOS saves "CSV" as Mac Roman, not UTF-8 — a single curly quote, en-dash or
 # non-breaking space in a URL/description column is enough to make pd.read_csv raise
 # UnicodeDecodeError on byte 0xCA (NBSP) or 0x96 (en-dash). That killed the 2026-08-19
-# 11:53 run outright at tab2_engine:2394, and — worse — five OTHER call sites swallow the
+# 11:53 run outright at tab_2_routing_engine:2394, and — worse — five OTHER call sites swallow the
 # same exception and degrade SILENTLY, including [midlist-filter], which logged
 # "candidates are UNFILTERED ... Master-MID capability is not enforced this run". A routing
 # run that quietly stops enforcing MID capability is a far bigger problem than a crash.
@@ -289,6 +298,57 @@ def run_company(ss, default="TotalAV"):
     return _v or default
 
 
+# [FN-run-scheme]
+def run_scheme(ss, default="visa"):
+    """Which card scheme this run is for -- "visa" or "mastercard".
+
+    The sibling of run_company: ONE definition, so no tab has to guess.
+
+    TWO sources, in this order, and the order is the point:
+
+    1. ``ss["ident_card_scheme"]`` -- tab 1's Card Scheme selectbox. Streamlit writes a keyed
+       widget's value into session_state BEFORE the script re-runs, so this is already the
+       NEW scheme on the rerun the user's change triggered. `forecast_settings` at that moment
+       still holds the OLD one (tab 1 only rewrites it near the bottom of the script, line
+       ~550), so reading forecast_settings first would make the JSON defaults lag the
+       selectbox by one rerun.
+    2. ``forecast_settings["card_scheme"]`` -- what tab 1 persisted. This is the ONLY source in
+       tab 2 / tab 3 (they never render the selectbox) and in previous-forecast mode, where
+       ROW 1 is not rendered at all -- Streamlit drops the widget state of a keyed widget that
+       the last run did not create, so source 1 correctly disappears there.
+
+    Lower-cased, because every consumer compares against literal "visa" / "mastercard".
+    """
+    _v = str(ss.get("ident_card_scheme") or "").strip().lower()
+    if _v:
+        return _v
+    _fs = ss.get("forecast_settings") or {}
+    return str(_fs.get("card_scheme") or "").strip().lower() or default
+
+
+# [FN-input-json-path]
+def input_json_path(name, scheme=None):
+    """Absolute path of one config/inputs JSON, preferring the current scheme's own copy.
+
+        input_json_path("routing_restrictions.json")            # visa run
+        -> config/inputs/visa/visa_routing_restrictions.json
+
+        input_json_path("routing_restrictions.json", "mastercard")
+        -> config/inputs/mastercard/mastercard_routing_restrictions.json
+
+    Falls back to the bare ``config/inputs/<name>`` when the scheme's copy is absent, so a
+    scheme folder can hold only the files that actually differ and inherit the rest. On the
+    day the subfolders were created all eight copies were byte-identical to the root files
+    (verified with cmp), so this changed WHICH file is read and NOT what is read.
+
+    `scheme` is worth passing explicitly at any site that already has the value in hand --
+    it removes the session-state read entirely.
+    """
+    _sc = str(scheme or run_scheme(ss) or "visa").strip().lower()
+    _own = os.path.join(INPUTS_DIR, _sc, f"{_sc}_{name}")
+    return _own if os.path.exists(_own) else os.path.join(INPUTS_DIR, name)
+
+
 def _vamp_off_gateways(ov: dict) -> set:
     """Canonicalised, lower-cased gateway ids whose VAMP is overridden to ZERO — target == 0 with
     apply_to in ("vamp", "both").
@@ -511,7 +571,7 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
         return d, 0
     # REDISTRIBUTION GROUP. The default omits `ctry`, so freed share from a bank-blocked row is
     # spread across the USA and Non-USA sub-cells of a (rpgt, currency, BIN, pmp) group TOGETHER.
-    # The in-search twin (tab2_engine._fm_block) redistributes within the search's own sub-cell
+    # The in-search twin (tab_2_routing_engine._fm_block) redistributes within the search's own sub-cell
     # segments, which DO include ctry — so the GA scores a redistribution it does not ship. See the
     # [block-why] probe. `group_keys=None` keeps the historical tuple byte-identical; pass an
     # explicit tuple to align the grain with a caller's own cell definition.
@@ -705,7 +765,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # the proxy is REMOVED (run_fullmatrix_ga is called WITHOUT the
                            # mid_bands hook and WITH band_penalty_fn=ExactBandPenalty.
                            # penalty; band_scoring holds no proxy class at all), and
-                           # _project_capped lives in tab2_engine, not streamlit_app.
+                           # _project_capped lives in tab_2_routing_engine, not streamlit_app.
                            # The numbers settle it rather than the comments: the five-rung
                            # chain reads identically at every rung and RECONCILIATION
                            # ERROR is 0 on all 15 bands — a proxy scoring the search would
@@ -1262,7 +1322,7 @@ except Exception as _gfe:  # noqa: BLE001 — a broken sheet must not stop the a
 _LOST_IN_OVERWRITE_2026_08_26 = {
     "render_config_profile_charts":
         "Renders the profile-match scatter charts for the config-lookup UI "
-        "(tab_config_validation.py:131, imported lazily inside render_profile_lookup).",
+        "(tab_1_3_config_validation.py:131, imported lazily inside render_profile_lookup).",
 }
 
 

@@ -1,5 +1,5 @@
-# Mastercard forecast pipeline settings (consumed by src/mastercard_pipeline).
-# Mirrors config/settings.yaml (the Visa/VAMP schema) but carries Mastercard-specific
+# Mastercard forecast pipeline settings (consumed by src/build_baseline/mastercard_pipeline).
+# Mirrors config/vamp_settings.yaml (the Visa/VAMP schema) but carries Mastercard-specific
 # business logic: kill_4_bins (drop Visa BIN 4xx volume), actuals_end_day (MTD inflation),
 # and the Mastercard risk metric is chargebacks (cb_*) rather than VAMPs.
 # Values seeded from the source notebook (mid split calculator v2.99 MC).

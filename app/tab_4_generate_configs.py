@@ -363,7 +363,7 @@ def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
         if not show_find:
             return   # lookup is the last block; the embedded (Config Validation) generator suppresses it
         with _find_slot:
-            from tab_config_validation import render_profile_lookup as _rpl
+            from tab_1_3_config_validation import render_profile_lookup as _rpl
             _gen0 = ss.get((_kp + "configs")) or {}
             if _gen0:
                 _rpl([(f"{_n0}.json", _p0) for _n0, _p0 in _gen0.items()], key_prefix=(_kp + "lk_"))

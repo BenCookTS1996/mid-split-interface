@@ -3,7 +3,7 @@
 Context
 -------
 The GA's per-MID month bands (e.g. "Adyen_TotalAVPro M5 VAMP ≤ 1,800") are defined on the
-TRUE pro-rata projection. In `app/tab2_engine.py` that projection is `_project_capped`: a
+TRUE pro-rata projection. In `app/tab_2_routing_engine.py` that projection is `_project_capped`: a
 two-cohort model over a large scaffold (`_T0` = the t0 rows, `_Pc` = the aged rows, one per
 observation-month × age `t`). It is bit-exact but costs a few bincounts over ~1–2M rows per
 call — fine for enforcement's few hundred calls, far too slow for the GA's ~1.2M evaluations.
@@ -18,7 +18,7 @@ That is no longer true and the stale sentence caused a real misreading, so it is
 
   * the proxy is REMOVED, not merely off. `run_fullmatrix_ga` is called WITHOUT `mid_bands` (the
     proxy hook — it defaults to None and every use of it sits behind `if mid_bands:`), and WITH
-    `band_penalty_fn = ExactBandPenalty.penalty`. tab2_engine guards it in two places: "NO proxy
+    `band_penalty_fn = ExactBandPenalty.penalty`. tab_2_routing_engine guards it in two places: "NO proxy
     fallback (removed per config): exact band scoring is mandatory. Crash loudly so a broken setup
     is never silently downgraded to the proxy."
   * `band_scoring.py` holds exactly ONE penalty class, `ExactBandPenalty`. There is no proxy class
@@ -30,7 +30,7 @@ That is no longer true and the stale sentence caused a real misreading, so it is
     0 across all 15 bands. A proxy scoring the search could not produce that — the "proxy↔true
     gap" would show up as DELIVERY DRIFT, which is the column reading zero.
 
-A volume-ratio proxy DOES still exist for the TILT engine (tab2_engine's "calibrated volume-ratio
+A volume-ratio proxy DOES still exist for the TILT engine (tab_2_routing_engine's "calibrated volume-ratio
 proxy + re-projection correction" line, which that code explicitly says not to print for the
 full-matrix engine). It is not on this path.
 
@@ -612,12 +612,12 @@ def pop_band_kernel_fastmath(parallel=True):
     return _pop_band_kernel_fm_cache[_k]
 
 
-# STALENESS SENTINEL. [loaded] in tab2_engine used to infer "is this module current?" from whether
+# STALENESS SENTINEL. [loaded] in tab_2_routing_engine used to infer "is this module current?" from whether
 # `_pop_band_kernel_fm` existed — a probe that inverts the moment that feature comes back, which is
 # exactly what happened in 19av. Bump this string on every change to this file instead: its meaning
 # does not depend on any other feature's presence.
 # 19de — BUMPED. This was left at "19bi" through 19cu/19cy/19cz/19da/19db/19dc/19dd, so the
-# [loaded] staleness guard in tab2_engine could not tell a module carrying those changes from one
+# [loaded] staleness guard in tab_2_routing_engine could not tell a module carrying those changes from one
 # that predates all of them: both printed "19bi" and the guard only tests for ABSENT. Two runs on
 # 2026-08-28 (20:44 and 21:03) came back BYTE-FOR-BYTE identical with the changes on disk, which is
 # the exact signature that warning describes — and nothing in the log could confirm or deny it.
@@ -676,8 +676,8 @@ _PROJ_LANE_CAP = max(1, int(os.environ.get("ROUTING_PROJ_LANES", "64") or 64))
 _PROJ_PAR_ON = os.environ.get("ROUTING_PROJ_PARALLEL", "1") != "0"
 _PROJ_PAR_SAID = {}
 
-# WHY A NOTE LIST AND NOT JUST print(). tab2_engine's `log()` is a CLOSURE defined inside the
-# render function (tab2_engine.py:1064) — a library module cannot reach it — and nothing in the app
+# WHY A NOTE LIST AND NOT JUST print(). tab_2_routing_engine's `log()` is a CLOSURE defined inside the
+# render function (tab_2_routing_engine.py:1064) — a library module cannot reach it — and nothing in the app
 # redirects stdout (checked: no redirect_stdout / no sys.stdout reassignment), so a bare print()
 # lands on the terminal and NEVER in runs/<ts>/log.txt. That matters here: the run log is the only
 # instrument for these decisions, and a projection that silently declined to go parallel would read

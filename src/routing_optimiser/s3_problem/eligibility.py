@@ -961,7 +961,7 @@ def _apply_elig_pop_alloc(Xa, op, cs, cc):
 # The real prize is elsewhere: restrict each blend to the cells that can actually change, the
 # same argument that took blocked-caps from 312 to 21.5 ms.
 _EP_INPLACE = _os.environ.get("ROUTING_ELIG_INPLACE", "0") != "0"
-# `msg` is read by tab2_engine and put in the RUN LOG. 19bk only print()ed it, so the single
+# `msg` is read by tab_2_routing_engine and put in the RUN LOG. 19bk only print()ed it, so the single
 # line that says whether the fast path is bit-identical never appeared in the log Ben reads.
 _EP_OK = {"checked": False, "use": _EP_INPLACE, "msg": ""}
 

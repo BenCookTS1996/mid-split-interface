@@ -43,7 +43,7 @@ Nothing existing was touched — Genetic / GA - Numba are untouched.
   the soft cap. **Still needs a run against the LIVE cell problems** to confirm
   the real MID grouping / cap wiring behaves as expected.
 
-### Stage 3 — register as opt-in engine (`app/tab2_engine.py`)  🟡 DRAFTED (apply live)
+### Stage 3 — register as opt-in engine (`app/tab_2_routing_engine.py`)  🟡 DRAFTED (apply live)
 
 The `ctx`-native adapter (`problem_from_ctx` / `reconstruct_full_split`) is built
 and offline-validated (`test_fullmatrix_ctx.py`: eligibility drop + reconstruct +
@@ -136,7 +136,7 @@ parent-bank grain. Cost: more cells (~10k+), slower. Watch for the log line
 "[full-matrix] TRUE BIN GRAIN: parent-bank collapse DISABLED".
 
 ### Stage 3 tab edits — APPLIED (not just drafted)
-`tab2_engine.py` now has: the dropdown option, `_is_genetic`/`_use_numba`
+`tab_2_routing_engine.py` now has: the dropdown option, `_is_genetic`/`_use_numba`
 membership, and the delivery-site override that seeds the full-matrix GA from the
 KNOWN-COMPLIANT `_comp_share_G` (soft_cap == hard_cap, so feasible by
 construction) and swaps its split into `_safe_endpoint_G`/`_comp_endpoint_G`.

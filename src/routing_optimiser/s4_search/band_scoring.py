@@ -19,7 +19,7 @@ numba-accelerated `PopulationBandProjector.project_pop_numba`), keeping the pena
 WEIGHTS: `BandSpec.weight` is the PRIORITY multiplier ALONE — `GAP**(1-priority)` with GAP=8, so
 prio-1 = 1.0, prio-2 = 0.125, prio-3 = 0.015625. Corrected 2026-08-19aa: this file previously said
 `wm[mid] · pmul (priority × volume)` in two places, but the live construction site
-(tab2_engine.py, `_specs.append(_BSpec(..., weight=float(_pmulx)))`) passes the priority
+(tab_2_routing_engine.py, `_specs.append(_BSpec(..., weight=float(_pmulx)))`) passes the priority
 multiplier only. The volume term `wm[mid]` IS computed on the PROXY band path (`_vmul` alongside
 `_pmul`) and is simply not carried onto the exact path. Whether that omission was deliberate is
 not recorded anywhere; this docstring now describes what the code does, and changing the weighting

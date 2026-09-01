@@ -1088,7 +1088,7 @@ def _brand_key(s):
 
     ONE helper, used by `build_capability` and by `enforced_prop_items`'s gatewayFid->vampMid
     filter, because these two must never disagree about what "the same brand" means. The Master
-    MID List spells it "Total AV"; the run's company is "TotalAV" (tab3_impact:4178). A plain
+    MID List spells it "Total AV"; the run's company is "TotalAV" (tab_3_split_outputs_impact:4178). A plain
     strip().lower() matches NOTHING between those two, and BOTH call sites fail SILENTLY when the
     match is empty — build_capability returned 0 capable gateways and injection did nothing on the
     2026-08-28 20:44 run, and an empty fid2vamp would make every proposed share unmatchable and
@@ -1611,7 +1611,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # `_LAST_DELIV_MAXSHARE` RECORDS WHAT ACTUALLY HAPPENED, not what was configured. The 19df
     # log line first keyed off ROUTING_DELIV_MAXSHARE alone and so announced "the CAP is now
     # applied on BOTH sides" on the 2026-08-29 07:45 run, where it was FALSE: three call sites in
-    # tab2_engine still passed no max_share, so `max_share` defaulted to 1.0, the guard below took
+    # tab_2_routing_engine still passed no max_share, so `max_share` defaulted to 1.0, the guard below took
     # the raw branch, and the run reproduced 829 exactly. The env var is INTENT; this global is
     # FACT, and the log must only ever report the second. None = the cap was not applied.
     _cap_ms = float(max_share) if max_share else 1.0
@@ -2617,7 +2617,7 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
     # enforced_prop_items returns. ROUTING_FID2VAMP_BRAND=0 reverts.
     #
     # THE SPELLING TRAP, which has already cost a day on this codebase: the MID list spells the
-    # brand "Total AV" and the run's company is "TotalAV" (tab3_impact:4178). A plain
+    # brand "Total AV" and the run's company is "TotalAV" (tab_3_split_outputs_impact:4178). A plain
     # strip().lower() matches NOTHING and would silently drop every gateway, exactly as the
     # 2026-08-28 20:44 run's `build_capability` did — injection reported success while doing
     # nothing. Compare on whitespace-stripped keys, and RAISE rather than return an empty map.
@@ -2756,7 +2756,7 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
             pass
     # STASH for the caller to LOG. print() lands in the terminal, not in the run log — and the run
     # log is the artefact that actually gets read, so a guard that only prints is not a guard.
-    # tab2_engine re-emits this through log() as [ca-zerocell], including the unscoped-RPGT check.
+    # tab_2_routing_engine re-emits this through log() as [ca-zerocell], including the unscoped-RPGT check.
     try:
         globals()["_LAST_CA_ZEROCELL"] = {
             "n": int(_ph_n),

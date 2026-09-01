@@ -7,7 +7,7 @@ ExportManager) on a split — no BigQuery, no re-forecast — producing the EXAC
 pre/post that the full VAMP pipeline would for that split.
 
 NOTE: not currently dispatched by any tab — the full-pipeline "Validate Split" tab
-(app/tab_validate.py) superseded this. Kept on the shelf as a revivable fast, offline
+(app/tab_1_2_validate_split.py) superseded this. Kept on the shelf as a revivable fast, offline
 "validate a split from the cached forecast" path; delete only if that idea is abandoned.
 """
 from __future__ import annotations

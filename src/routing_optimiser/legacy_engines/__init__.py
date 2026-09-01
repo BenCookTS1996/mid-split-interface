@@ -9,7 +9,7 @@ longer selectable, but they are still imported and still registered in
   * `ThompsonEngine` and `PortfolioEngine` both subclass `SoftmaxEngine`, so softmax cannot
     be retired without taking the other two with it;
   * several `engine_key == "softmax" / "thompson" / "portfolio"` branches survive in
-    tab2_engine.py and tab3_impact.py and would raise if the classes disappeared.
+    tab_2_routing_engine.py and tab_3_split_outputs_impact.py and would raise if the classes disappeared.
 
 `base.py` and `genetic_ref.py` deliberately stayed in `engines/`: the whole pipeline uses
 `CellProblem` / `BaseEngine`, and the full-matrix GA dispatches its own revenue reference

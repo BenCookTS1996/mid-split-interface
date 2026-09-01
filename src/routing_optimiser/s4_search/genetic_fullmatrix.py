@@ -279,7 +279,7 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
                      mid_names=None, seed_full=None, mid_bands=None):
     """Build a FullMatrixProblem from the genetic engine's ``ctx`` dict.
 
-    This is the REAL integration surface for tab2_engine. The cross-cell tilt GA
+    This is the REAL integration surface for tab_2_routing_engine. The cross-cell tilt GA
     already assembles ``ctx`` with everything at BIN grain in long format:
       * contiguous cells       - ctx['cell_starts'] / ctx['cell_counts']
       * per-row success (EB)   - ctx['sr']   (already empirical-Bayes shrunk)
@@ -348,7 +348,7 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
     #    FALLS THROUGH to vwsr, and [never-worse] compares vwsr too. A last-bit shift can select a
     #    different candidate and ship a different split. Same objective, different answer.
     #
-    # 2. [deliv-fuse] SELF-DISABLES. tab2_engine gates it on `len(_fm_colmap) == _fm_nrow` - the
+    # 2. [deliv-fuse] SELF-DISABLES. tab_2_routing_engine gates it on `len(_fm_colmap) == _fm_nrow` - the
     #    scatter writing every column - which this breaks by construction. So an optimisation that
     #    is on today turns off, and the NET speed effect has to be measured, not assumed.
     #
@@ -361,7 +361,7 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
     # on this project that trade has always been refused. The switch exists so the trade can be
     # measured rather than argued about.
     _inert_row = np.zeros(n_row, dtype=bool)
-    _prune_note = ""            # this module has no logger; tab2_engine emits meta['prune_note']
+    _prune_note = ""            # this module has no logger; tab_2_routing_engine emits meta['prune_note']
     if _os_gf.environ.get("ROUTING_PRUNE_INERT", "0") != "0":
         _cell_vol_by_cell = vol_full[starts] if starts.size else np.zeros(0)
         _inert_cell = _cell_vol_by_cell <= 0.0
@@ -2882,7 +2882,7 @@ def _cell_volume_total(p: "FullMatrixProblem"):
 #           softmax + VWSR + violation in one pass, verify-gated bit-close vs the
 #           numpy path with automatic fallback. prange-parallel, persistent cache,
 #           int32 index arrays, elite-fitness caching.
-#   * DONE  Wired as the opt-in "genetic_fullmatrix" engine in tab2_engine.py
+#   * DONE  Wired as the opt-in "genetic_fullmatrix" engine in tab_2_routing_engine.py
 #           (dropdown + run-dispatch gate + delivery-site override), fed EB-shrunk
 #           per-BIN rates from ctx (true BIN grain via the bin_to_bank identity map).
 #   * DUAL CEILINGS exist (mid_hard_cap/mid_soft_cap + adaptive tolerance) but the
