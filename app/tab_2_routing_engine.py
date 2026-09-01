@@ -8308,6 +8308,53 @@ def render():
                                                     "IS conditional inside [vterms] is its three "
                                                     "COUNTERFACTUALS, which are skipped while the "
                                                     "shipped and replayed VAMP agree.")
+                                            # [gk-code] 19gq — did the int64 group key run, and
+                                            # did it reproduce the string key EXACTLY? A speedup
+                                            # that quietly re-partitioned the aged frame would
+                                            # change which VAMP is redistributed where, so the
+                                            # verdict belongs in the log, not in a comment.
+                                            _gkc = getattr(_pj_ic, "_LAST_GK_CODE", None)
+                                            if isinstance(_gkc, dict):
+                                                if not _gkc.get("used"):
+                                                    log("      [gk-code] OFF — the five aged-frame "
+                                                        "groupbys ran on the 7-column STRING key"
+                                                        + (f" ({_gkc.get('why')})"
+                                                           if _gkc.get("why") else "")
+                                                        + ". Correct, just slower.")
+                                                elif _gkc.get("verified") is True:
+                                                    log(f"      [gk-code] ON — "
+                                                        f"{int(_gkc.get('groups', 0)):,} group(s) "
+                                                        f"over {int(_gkc.get('rows', 0)):,} row(s), "
+                                                        "and VERIFIED bit-identical to the string "
+                                                        "key (int64 bit-pattern comparison on "
+                                                        "Σ_pshare, stricter than array_equal). The "
+                                                        f"check itself cost "
+                                                        f"{float(_gkc.get('verify_secs', 0.0)):.1f}s "
+                                                        "— one string groupby, i.e. the thing being "
+                                                        "removed. ROUTING_GKCODE_VERIFY=0 drops it "
+                                                        "once you have seen this line; "
+                                                        "ROUTING_GKCODE_VERIFY=1 brings it back.")
+                                                elif _gkc.get("verified") is False:
+                                                    log("      [gk-code] ⚠⚠ VERIFY FAILED — the "
+                                                        "int64 key did NOT reproduce the string "
+                                                        "key's Σ_pshare bit for bit. Σ_pshare was "
+                                                        "reverted to the string key for that "
+                                                        "groupby, but the FOUR others below it "
+                                                        "still used the int key, so this run's "
+                                                        "delivered VAMP is NOT trustworthy. Set "
+                                                        "ROUTING_GKCODE=0-equivalent by fixing the "
+                                                        "key and re-run.")
+                                                else:
+                                                    log(f"      [gk-code] ON — "
+                                                        f"{int(_gkc.get('groups', 0)):,} group(s) "
+                                                        f"over {int(_gkc.get('rows', 0)):,} row(s), "
+                                                        "NOT verified this call"
+                                                        + (f" ({_gkc.get('why')})"
+                                                           if _gkc.get("why") else
+                                                           " (ROUTING_GKCODE_VERIFY=0)")
+                                                        + ". Identity is structural — same kernel, "
+                                                        "same row order, only the labels differ — "
+                                                        "but this run did not measure it.")
                                         except Exception as _cvE:  # noqa: BLE001
                                             log(f"   [cvp-timing] unavailable "
                                                 f"({type(_cvE).__name__}) — measurement only.")
@@ -8403,6 +8450,7 @@ def render():
                                         return float(_u), _per_band, _st
 
                                     _nw_dg = _nw_ds = None
+                                    _nw_seed_skipped = False   # [nw-skip] 19gp
                                     if _nw_units:
                                         # 19fi: the epi / blend / cvp imports and the
                                         # excl / scoped / floor reads that used to sit here are
@@ -8434,24 +8482,99 @@ def render():
                                         _nw_t1 = _nw_time.perf_counter()
                                         log(f"   [never-worse] GA output projected in "
                                             f"{_nw_t1 - _nw_t0:.1f}s")
-                                        _nw_ds, _nw_bs, _nw_sts = _nw_delivered_units(
-                                            _fm_seed, f"seed '{_fm_sname}'")
-                                        _nw_t2 = _nw_time.perf_counter()
-                                        log(f"   [never-worse] seed '{_fm_sname}' projected in "
-                                            f"{_nw_t2 - _nw_t1:.1f}s   ·   both: "
-                                            f"{_nw_t2 - _nw_t0:.1f}s")
-                                        log("   [never-worse] IF THOSE TWO NUMBERS ARE CLOSE, the "
-                                            "cost is inherent — you cannot compare two candidates "
-                                            "on the delivered basis without projecting both. If the "
-                                            "GA-output one is much CHEAPER, something is cached and "
-                                            "the seed is paying for a cold path. Either way the "
-                                            "authoritative reconcile later projects the shipped "
-                                            "split AGAIN; with enforcement OFF that may be the same "
-                                            "input as the GA-output call here, which would make one "
-                                            "of the two redundant. That is the next thing to check, "
-                                            "and these timings are what make it checkable.")
+                                        # ── [nw-skip] 19gp: A ZERO CANNOT BE BEATEN ──────────
+                                        # The decision below is `_nw_pick_ga = _nw_dg <= _nw_ds`,
+                                        # and `_nw_delivered_units` returns a SUM OF NON-NEGATIVE
+                                        # overages — so `_nw_ds >= 0` always. When the GA output
+                                        # delivers 0, the comparison is decided before the seed is
+                                        # projected at all, and projecting it costs 155.5s on the
+                                        # 2026-09-01 20:21 run (13% of the whole run) to produce a
+                                        # number that cannot change the outcome.
+                                        #
+                                        # ARITHMETIC, NOT A TOLERANCE. This is not "close enough to
+                                        # zero, ship it" — it is the ordering of the reals. The
+                                        # skip is unreachable the moment `_nw_dg > 0`, which is the
+                                        # only case where the seed can win.
+                                        #
+                                        # WHAT IS LOST, and it is real: the REJECTED candidate's
+                                        # drift attribution. [nw-attrib] can only measure a
+                                        # candidate in the pass that projected it, so on a skipped
+                                        # run the seed's drift is not attributed — it is not
+                                        # measured. That is stated below rather than left as a
+                                        # missing block. ROUTING_NW_SKIP_SEED=0 projects both, which
+                                        # is what to set when the seed's drift is the question.
+                                        _nw_skip_ok = os.environ.get("ROUTING_NW_SKIP_SEED",
+                                                                     "1") != "0"
+                                        _nw_seed_skipped = bool(_nw_skip_ok and _nw_dg is not None
+                                                                and _nw_dg <= 0.0)
+                                        _nw_ds = _nw_bs = _nw_sts = None
+                                        if _nw_seed_skipped:
+                                            log(f"   [nw-skip] the GA output delivers 0 breach "
+                                                f"unit(s), so the seed '{_fm_sname}' was NOT "
+                                                "projected — it cannot win a comparison against 0 "
+                                                "(the delivered breach is a sum of non-negative "
+                                                "overages, so the seed's is ≥ 0 whatever it is). "
+                                                "That is the ordering of the reals, not a "
+                                                "tolerance. Saved one full delivery projection "
+                                                "(~155s on the 2026-09-01 20:21 run).")
+                                            log("   [nw-skip] COST: the rejected candidate's drift "
+                                                "is not attributed below, because a candidate can "
+                                                "only be measured in the pass that projected it. "
+                                                "Set ROUTING_NW_SKIP_SEED=0 to project both when "
+                                                "the seed's drift is the question.")
+                                        else:
+                                            _nw_ds, _nw_bs, _nw_sts = _nw_delivered_units(
+                                                _fm_seed, f"seed '{_fm_sname}'")
+                                            _nw_t2 = _nw_time.perf_counter()
+                                            log(f"   [never-worse] seed '{_fm_sname}' projected in "
+                                                f"{_nw_t2 - _nw_t1:.1f}s   ·   both: "
+                                                f"{_nw_t2 - _nw_t0:.1f}s")
+                                            log("   [never-worse] IF THOSE TWO NUMBERS ARE CLOSE, "
+                                                "the cost is inherent — you cannot compare two "
+                                                "candidates on the delivered basis without "
+                                                "projecting both. If the GA-output one is much "
+                                                "CHEAPER, something is cached and the seed is "
+                                                "paying for a cold path. Either way the "
+                                                "authoritative reconcile later projects the "
+                                                "shipped split AGAIN; with enforcement OFF that "
+                                                "may be the same input as the GA-output call "
+                                                "here, which would make one of the two redundant.")
 
-                                    if _nw_dg is None or _nw_ds is None:
+                                    if _nw_seed_skipped:
+                                        # [nw-skip]: decided by arithmetic above. Print the same
+                                        # table the full path prints, with the seed's cells marked
+                                        # "not projected" rather than left blank — a reader must be
+                                        # able to see WHICH number is missing and why, not wonder
+                                        # whether the guard ran.
+                                        _nw_sg = _nw_scored_units(_fm_full)
+                                        _nw_kg = abs(_nw_dg - _nw_sg)
+                                        log("   ── [never-worse] GA output vs the seed it started "
+                                            "from, decided on the DELIVERED breach ALONE (19an) ──")
+                                        log(f"      {'candidate':<22}{'delivered':>11}"
+                                            f"{'scored':>11}{'drift':>10}   GA-fitness")
+                                        log(f"      {('seed ' + str(_fm_sname))[:22]:<22}"
+                                            f"{'not proj.':>11}{'—':>11}{'—':>10}   "
+                                            f"{_nw_seed:.6g}")
+                                        log(f"      {'GA output':<22}{_nw_dg:>11,.0f}"
+                                            f"{_nw_sg:>11,.0f}{_nw_kg:>+10,.0f}   {_nw_ga:.6g}")
+                                        _nw_pick_ga = True
+                                        _nw_rule = ("DELIVERED breach alone — the GA output is at "
+                                                    "0 and 0 is the minimum")
+                                        if _nw_kg > 1.0:
+                                            log(f"      ⚠⚠ THE SHIPPED CANDIDATE CARRIES "
+                                                f"{_nw_kg:,.0f} UNIT(S) OF DRIFT. Its delivered "
+                                                "band values are NOT reproducible by the search: "
+                                                f"the GA scored {_nw_sg:,.0f} and delivery will "
+                                                f"report {_nw_dg:,.0f}. Expect RECONCILIATION "
+                                                "ERROR far above 0 below. This is a REAL DEFECT "
+                                                "in the projections, not a property of the split.")
+                                        else:
+                                            log(f"      ✓ the shipped candidate's drift is "
+                                                f"{_nw_kg:,.1f} unit(s) — scored and delivered "
+                                                "agree on it, so the delivered figures below are "
+                                                "reproducible.")
+                                        log(f"      rule: {_nw_rule} ⇒ ships the GA OUTPUT.")
+                                    elif _nw_dg is None or _nw_ds is None:
                                         # ROUTING_NW_DELIVERED=0. Say plainly that the decision is
                                         # being made on the basis that got it wrong, rather than
                                         # printing a confident line either way.
@@ -8543,6 +8666,11 @@ def render():
                                     # place in the run where both candidates have been projected.
                                     # Attribute the WORSE-drift candidate here or the root cause
                                     # leaves no trace in the log at all.
+                                    if _nw_seed_skipped:
+                                        log("      [nw-attrib] NOT RUN — it attributes BOTH "
+                                            "candidates and only one was projected ([nw-skip]). "
+                                            "The shipped candidate's drift is on the line above; "
+                                            "the rejected one's is unmeasured, not zero.")
                                     if _nw_dg is not None and _nw_ds is not None:
                                         try:
                                             # BOTH candidates, shipped first. The shipped

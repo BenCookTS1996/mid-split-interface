@@ -44,7 +44,7 @@ def _apply_keep(t0, excluded_mids, kill_eff, month_0):
     return t0
 
 __build__ = ("2026-08-17b-count-only-pool-search+subcell-exporter+staged-enforcement"
-             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zerocell+vamp-term-stash")
+             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zerocell+vamp-term-stash+2026-09-01-19gq-gk-int-key+cvp-submarks")
 
 
 # [FN-246b]
@@ -1758,6 +1758,13 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     except Exception:  # noqa: BLE001 — a diagnostic must never break the projection
         globals()["_LAST_TXN_TERMS"] = None
 
+    # 19gq: the mark below used to cover EVERYTHING from "per-cell transforms" to
+    # `VAMP_Post` — ~330 lines and 44.7s (32.7%) on the 2026-09-01 20:21 run, the single
+    # largest line in [cvp-timing] and the one that could say least about itself. Six marks
+    # now split it, so the next run names the expensive half instead of leaving it to be
+    # guessed at. Marks only; nothing computed here moved.
+    _cv_mark("exploration floor + max-share cap + the txn-terms stash")
+
     _sub = ["Currency", "BIN", "RPGT", "_pmp", "_ctry"]
     # #2 GO-LIVE TIMING: the pipeline applies the go-live weight by the APPEARANCE month
     # (target month m), not origination. So take the rule×cohort factor (_gf = fcp1 × has-rule
@@ -1788,8 +1795,74 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # 1 within each redistribution group. Merge misses / source differences can leave Σ_pshare < 1,
     # which leaks fraud out of the monthly total. Renormalise per group; and where a group has NO
     # valid VAMP recipient (Σ_pshare = 0) keep the VAMP in place (no move) rather than vanish it.
+    _cv_mark("aged-frame merges (_gf at origination + _pr_app at appearance)")
     _gk = _sub + ["period", "t"]
-    _psum = pp.groupby(_gk)["_pshare"].transform("sum")
+    # ── [gk-code] 19gq: ONE INTEGER GROUP KEY, FIVE GROUPBYS ──────────────────────────
+    # `_gk` is 7 columns, five of them STRINGS, and the aged frame is millions of rows.
+    # Grouping on it costs a full hash of those strings, and this function does it FIVE
+    # separate times: Σ_pshare here, the `_moved_vpool` pool below, cf_nopass's pool, and
+    # cf_ps's two. Factorise the columns ONCE into a single int64 code and hand pandas that
+    # instead — the same trick 19fy used on the projector's `_static`.
+    #
+    # BIT-IDENTICAL BY CONSTRUCTION, not by measurement. Only the group LABELS change; the
+    # groupby kernel, the row order it accumulates in and the per-row scatter back are all
+    # untouched, so every sum is the same additions in the same order. That matters because
+    # these are float sums and float addition is not associative — a re-labelling that
+    # merged or split even one group would move the last bits.
+    #
+    # IT DECLINES, and falls back to the string key, in two cases:
+    #   * any `_gk` column holds a null. `groupby` DROPS null keys (dropna=True) and an
+    #     integer code cannot express "dropped"; those rows would silently join a group.
+    #   * `_grp_codes` itself declines — a value containing "|", or mixed-radix overflow.
+    # Either way `_gk_by` stays the column list and nothing below can tell the difference.
+    _gk_by, _gk_note = _gk, ""
+    try:
+        if any(bool(pp[_c].isna().any()) for _c in _gk):
+            _gk_note = "a _gk column holds nulls, and groupby DROPS null keys"
+        else:
+            from routing_optimiser.s4_search.band_projection import _grp_codes as _gk_codes
+            _gk_c = _gk_codes(pp, _gk)
+            if _gk_c is None:
+                _gk_note = "_grp_codes declined (a value contains '|', or radix overflow)"
+            else:
+                _gk_by = pd.Series(np.asarray(_gk_c, np.int64), index=pp.index, name="_gkc")
+    except Exception as _gke:  # noqa: BLE001
+        _gk_by, _gk_note = _gk, f"{type(_gke).__name__}: {_gke}"
+    globals()["_LAST_GK_CODE"] = {
+        "used": _gk_by is not _gk, "why": _gk_note,
+        "groups": (int(pd.Series(_gk_by).nunique()) if _gk_by is not _gk else -1),
+        "rows": int(len(pp)), "verified": None, "verify_secs": 0.0}
+
+    _psum = pp.groupby(_gk_by)["_pshare"].transform("sum")
+    # ONE-SHOT PROOF, on the first of the five. Costs one string groupby — the very thing
+    # being removed — so it is worth paying exactly once and then turning off. It compares
+    # the int64 BIT PATTERNS, not `==`: two float arrays that differ in the last ulp compare
+    # equal under `allclose` and would let a re-labelling through.
+    # ROUTING_GKCODE_VERIFY=0 skips it once the next run has printed the verdict.
+    if _gk_by is not _gk and os.environ.get("ROUTING_GKCODE_VERIFY", "1") != "0":
+        try:
+            _gv_t = _cv_time.perf_counter()
+            _gv_ref = pp.groupby(_gk)["_pshare"].transform("sum")
+            _gv_ok = bool(np.array_equal(
+                np.asarray(_psum, float).view(np.int64),
+                np.asarray(_gv_ref, float).view(np.int64)))
+            _LAST_GK_CODE["verified"] = _gv_ok
+            _LAST_GK_CODE["verify_secs"] = float(_cv_time.perf_counter() - _gv_t)
+            if not _gv_ok:
+                # NOT a silent fallback: ship the reference and say so. A wrong group key
+                # changes which VAMP is redistributed where, which is the number this whole
+                # function exists to produce.
+                _psum = _gv_ref
+                _LAST_GK_CODE["used"] = False
+                _LAST_GK_CODE["why"] = ("VERIFY FAILED — the int64 key did not reproduce the "
+                                        "string key's Σ_pshare bit for bit; reverted to the "
+                                        "string key for THIS groupby only")
+                _gk_by = _gk
+        except Exception as _gve:  # noqa: BLE001
+            _LAST_GK_CODE["verified"] = None
+            _LAST_GK_CODE["why"] = f"verify skipped ({type(_gve).__name__}: {_gve})"
+    _cv_mark("Σ_pshare per aged group (groupby-transform" 
+             + (" on the [gk-code] int key)" if _gk_by is not _gk else " on the string key)"))
     # 19di — WHICH GATE MAKES DELIVERY'S MOVABLE FRACTION SMALLER THAN THE SEARCH'S?
     #
     # [vterms-is] on the 2026-08-29 09:06 run showed Δ HELD and Δ MOVED-OUT EQUAL AND OPPOSITE on
@@ -1851,6 +1924,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         globals()["_LAST_MOVE_GATES"] = _vg.groupby(["midl", "per"], as_index=False).sum()
     except Exception:  # noqa: BLE001
         globals()["_LAST_MOVE_GATES"] = None
+    _cv_mark("[move-gate] five one-gate-lifted variants + stash")
 
     # 19dl — WHICH GROUPS DOES THE PASSTHROUGH FIRE ON? The gate attribution proved this line is
     # the cause of Part A (delivery holds 251 VAMP the search moves), but not WHY the two sides'
@@ -1909,12 +1983,13 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
             "detail": _det}
     except Exception:  # noqa: BLE001
         globals()["_LAST_PASSTHRU"] = None
+    _cv_mark("[passthru] fired-set stash (7-column string key + 2 groupbys)")
 
     pp["_move"] = np.where(_psum > 1e-12, pp["_move"], 0.0)               # no recipient → passthrough
     pp["_pshare"] = np.where(_psum > 1e-12, pp["_pshare"] / _psum, 0.0)   # recipients sum to exactly 1
     pp["VAMP_Pre"] = pp["vampCount"]
     pp["_moved_v"] = pp["vampCount"] * pp["_move"]
-    pp["_moved_vpool"] = pp.groupby(_gk)["_moved_v"].transform("sum")
+    pp["_moved_vpool"] = pp.groupby(_gk_by)["_moved_v"].transform("sum")   # [gk-code] 19gq
     pp["VAMP_Post"] = pp["vampCount"] * (1.0 - pp["_move"]) + pp["_moved_vpool"] * pp["_pshare"]
 
     # ── WHY IS Σ_pshare < 1? (19cr, read-only) ─────────────────────────────────────────────
@@ -2079,7 +2154,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
                                       pd.to_numeric(pp["_gf"], errors="coerce").fillna(0.0)
                                       * pd.to_numeric(pp["_pr_app"], errors="coerce").fillna(0.0), 0.0)
                 _vt_pool_raw = (pp.assign(_mvr=_vt_vc * _vt_mv_raw)
-                                .groupby(_gk)["_mvr"].transform("sum"))
+                                .groupby(_gk_by)["_mvr"].transform("sum"))   # [gk-code] 19gq
                 _vt_cf_np = _vt_vc * (1.0 - _vt_mv_raw) + _vt_pool_raw * _vt_ps
             else:
                 _vt_cf_np = _vt_post
@@ -2106,7 +2181,15 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
                 _pp2 = pp[_sub + ["vampMid", "orig_m", "period", "t"]].copy()
                 _pp2 = _pp2.merge(_mv2, on=_sub + ["vampMid", "orig_m"], how="left")
                 _ps2 = pd.to_numeric(_pp2["_vs2"], errors="coerce").fillna(0.0)
-                _sm2 = _ps2.groupby([_pp2[c] for c in _gk]).transform("sum")
+                # [gk-code] 19gq: POSITIONAL, and only when the merge left the frame the same
+                # height as `pp`. `_pp2` comes back from a left merge with a fresh RangeIndex, so
+                # the code Series cannot be aligned by label here — it is handed over as a raw
+                # array, which pandas groups by position. A merge that MULTIPLIED rows (a
+                # non-unique `_mv2` key) breaks that correspondence, and the length test is what
+                # catches it; the string key is exact either way.
+                _sm2 = (_ps2.groupby(np.asarray(_gk_by)).transform("sum")
+                        if (_gk_by is not _gk and len(_pp2) == len(pp))
+                        else _ps2.groupby([_pp2[c] for c in _gk]).transform("sum"))
                 _ps2 = np.where(_sm2 > 1e-12, _ps2 / np.where(_sm2 > 1e-12, _sm2, 1.0), 0.0)
                 if len(_ps2) == len(_vt_vc):
                     _vt_cf_psh = _vt_vc * (1.0 - _vt_mv) + _vt_pl * _ps2
