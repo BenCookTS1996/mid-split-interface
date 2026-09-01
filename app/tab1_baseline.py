@@ -205,8 +205,15 @@ def render():
                             pass
                     # 12px to match the widget-label text size (e.g. the 'Forecast outputs folder'
                     # label), instead of the larger default st.success alert.
+                    # 19fb: `margin-bottom: 14px` is the GAP between this line and the green
+                    # button directly below it. Both live in the same left column now (19fa), and
+                    # a 12px line sitting hard against a button reads as one block. The gap is on
+                    # THIS element rather than a separate spacer because `_pv_msg_slot` is an
+                    # st.empty(), which holds exactly one element — a spacer would need a
+                    # container and would then also have to be cleared on the error branch.
                     (_pv_msg_slot or st).markdown(
-                        f"<div style='font-size:12px; color:#1D9E75; font-weight:600; margin:2px 0;'>"
+                        f"<div style='font-size:12px; color:#1D9E75; font-weight:600; "
+                        f"margin:2px 0 14px 0;'>"
                         f"✓ Valid forecast found — {company} ({month_var}). Other inputs hidden. "
                         f"Click <b>Load forecast</b>, then open tab 2.</div>",
                         unsafe_allow_html=True)
