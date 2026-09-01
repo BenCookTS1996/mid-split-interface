@@ -66,7 +66,7 @@ def build_pipeline_config(ui: dict) -> dict:
             "split_go_live_date": ui.get("split_go_live_date"),
         },
         "paths": {
-            "cache_path": "data/cache/{month_var}/{company}/visa/",
+            "cache_path": "data/build_baseline_cached_input_data/{month_var}/{company}/visa/",
             "chunked_files_dir": "data/rules/{month_var}/{company}/visa/",
             "output_dir": "data/outputs/{month_var}/{company}/visa/",
             "split_rules_file": ui.get("split_rules_file", ""),

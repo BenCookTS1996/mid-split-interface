@@ -3651,7 +3651,7 @@ def render():
                         # Prefer the gatewayFid-grained actuals cache (from fcast_query_gatewayfid.sql)
                         # so actuals can be reconciled to the forecast's vampMid grain; fall back to
                         # the standard thermometer cache if it hasn't been generated yet.
-                        # Caches live under data/cache/<month>/<company>/<scheme>/ (post-restructure).
+                        # Caches live under data/build_baseline_cached_input_data/<month>/<company>/<scheme>/ (19fj rename).
                         # Mastercard files carry a '_mc' suffix and have no gatewayFid-grained variant.
                         _cache_dir = os.path.join(PROJECT_ROOT, "data", "cache", str(_mv2), str(_cmp2), _sch2)
                         _sfx = "_mc" if _sch2 == "mastercard" else ""

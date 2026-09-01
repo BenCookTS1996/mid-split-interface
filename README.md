@@ -230,7 +230,7 @@ A live forecast then works: on tab 1 pick **"Run VAMP pipeline"**, or run it hea
 ```bash
 python main.py
 ```
-Extracts are cached to parquet under `data/cache/`, so later runs only re-query BigQuery when
+Extracts are cached to parquet under `data/build_baseline_cached_input_data/`, so later runs only re-query BigQuery when
 something new is needed (a new month or company).
 
 ### 6. After changing any backend code
