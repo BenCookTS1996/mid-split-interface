@@ -598,9 +598,20 @@ def render():
                 _dpp_l = st.container()
                 with _dpp_l:
                     _ds1, _ds2 = st.columns(2)
+                    # 19fh: default = the 1st of the month, 3 COMPLETED months back (on
+                    # 2026-09-01 that is 2026-06-01). The old default was "yesterday minus 14
+                    # days", a fortnight of attempts, which is too short a window for the
+                    # Bayesian smoothing to have much to shrink towards on a thin RPGT — and it
+                    # moved every single day, so no two runs analysed the same period unless the
+                    # date was set by hand. This one is stable for a whole month.
+                    _as_y, _as_m = today.year, today.month - 3
+                    while _as_m <= 0:
+                        _as_m += 12
+                        _as_y -= 1
                     attempts_start = _ds1.date_input(
-                        "Start date", value=yesterday - datetime.timedelta(days=14),
-                        help="First day of results to analyse.")
+                        "Start date", value=datetime.date(_as_y, _as_m, 1),
+                        help="First day of results to analyse. Defaults to the 1st of the month "
+                             "three completed months ago.")
                     attempts_end = _ds2.date_input("End date", value=yesterday,
                                                    help="Last day of results to analyse.")
                     if attempts_start >= attempts_end:
@@ -14044,7 +14055,18 @@ def render():
                             "ga_perf": ss.get("ga_perf"),
                             "total_secs": round(_pt.time() - _run_t0, 1),
                         }
-                        _rb_folder = _wrb(os.path.join(PROJECT_ROOT, "runs"), _rb_cfg,
+                        # 19fh: runs/<Company>/<scheme>/. Same reasoning as logs/ — a flat runs/
+                        # said nothing about which brand or scheme a bundle came from, and the
+                        # only way to tell was to grep its log.txt for "company=... scheme=...".
+                        # keep=30 now prunes WITHIN a (brand, scheme), which is what you want: a
+                        # burst of visa runs no longer evicts the mastercard history.
+                        # runs/_stop (the graceful-stop signal) stays at the runs/ root and is
+                        # untouched — it is a signal path, not a bundle.
+                        _rb_dir = os.path.join(
+                            PROJECT_ROOT, "runs",
+                            str(sr_company or "run").replace(" ", ""),
+                            str(sr_scheme or "visa").strip().lower())
+                        _rb_folder = _wrb(_rb_dir, _rb_cfg,
                                           log=log_lines, name=str(engine_key), keep=30)
                         log(f"   run bundle saved: {_rb_folder}")
                     except Exception as _rbe:  # noqa: BLE001

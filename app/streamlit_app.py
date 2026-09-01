@@ -474,13 +474,20 @@ def _query_table_refs(queries_dir):
     _bt = _re.compile(r"`([A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-\$\*]+){1,2})`")
     _fj = _re.compile(r"\b(?:FROM|JOIN)\s+`?([A-Za-z0-9_\-]+(?:\.[A-Za-z0-9_\-\$\*]+){1,2})`?",
                       _re.IGNORECASE)
-    for _f in sorted(_glob.glob(_os.path.join(queries_dir, "*.sql"))):
+    # 19fh: RECURSIVE. queries/ now holds queries/visa/ and queries/mastercard/ alongside the
+    # shared files, and a non-recursive glob would silently check only the shared ones — i.e.
+    # report "all tables reachable" while never looking at either pipeline's own SQL.
+    for _f in sorted(set(_glob.glob(_os.path.join(queries_dir, "*.sql")))
+                     | set(_glob.glob(_os.path.join(queries_dir, "*", "*.sql")))):
         try:
             with open(_f, encoding="utf-8", errors="ignore") as _fh:
                 _sql = _fh.read()
         except Exception:  # noqa: BLE001
             continue
-        _name = _os.path.basename(_f)
+        # 19fh: keep the scheme subfolder in the reported name (visa/fcast_query.sql), so a
+        # table listed against both schemes' queries is distinguishable.
+        _rel = _os.path.relpath(_f, queries_dir)
+        _name = _rel if _os.sep in _rel else _os.path.basename(_f)
         for _t in set(_bt.findall(_sql)) | set(_fj.findall(_sql)):
             _t = _t.strip().strip("`")
             if "{" in _t or "}" in _t or _t.count(".") < 1:

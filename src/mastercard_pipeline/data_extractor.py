@@ -133,15 +133,24 @@ class DataExtractor:
         """
         cfg_dir = self.config.get('paths', {}).get('queries_dir')
         pkg_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        # 19fh: queries/ now has per-scheme subfolders. Scheme-specific SQL lives in
+        # queries/mastercard/, and SQL used by BOTH schemes stays in queries/ itself. Each root is
+        # tried at its SCHEME subfolder FIRST and then bare, so a scheme-specific file wins over
+        # a same-named shared one and neither pipeline can pick up the other's query.
+        _roots = ([cfg_dir] if cfg_dir else []) + ['queries',
+                                                   os.path.join(pkg_root, 'queries')]
         candidates = []
-        if cfg_dir:
-            candidates.append(os.path.join(cfg_dir, filename))
-        candidates.append(os.path.join('queries', filename))
-        candidates.append(os.path.join(pkg_root, 'queries', filename))
+        for _r in _roots:
+            candidates.append(os.path.join(_r, 'mastercard', filename))
+            candidates.append(os.path.join(_r, filename))
         path = next((c for c in candidates if os.path.isfile(c)), None)
         if path is None:
             qd = os.path.join(pkg_root, 'queries')
-            listing = sorted(os.listdir(qd))[:20] if os.path.isdir(qd) else "(dir does not exist)"
+            listing = ((sorted(os.listdir(qd)) +
+                        [os.path.join('mastercard', _x)
+                         for _x in sorted(os.listdir(os.path.join(qd, 'mastercard')))]
+                        if os.path.isdir(os.path.join(qd, 'mastercard')) else sorted(os.listdir(qd)))
+                       if os.path.isdir(qd) else "(dir does not exist)")
             detail = [
                 f"SQL file '{filename}' could not be found.",
                 f"  running module : {os.path.abspath(__file__)}",

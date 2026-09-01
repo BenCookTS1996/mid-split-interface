@@ -318,18 +318,27 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
             # Mastercard's pipeline is M1-anchored (month 0 = injected historical baseline), so every
             # "M0" header/input in this tab reads "M1" for mastercard. Visa stays "M0".
             _mlabel = "M1" if _scheme == "mastercard" else "M0"
-            ss.setdefault("validate_rules_dir", os.path.join("data", "exported_rules", _scheme))
+            # 19fh: the default is now data/exported_rules/<Company>/<scheme>, matching the
+            # outputs layout (data/outputs/<MONTH>/<Company>/<scheme>/). Scheme alone put every
+            # brand's rule files in one folder, so exporting a second brand overwrote the first's
+            # templates with no warning — the folder name is the only thing that separated them.
+            def _v_rules_default(_co, _sc):
+                return os.path.join("data", "exported_rules",
+                                    str(_co or "").replace(" ", ""),
+                                    str(_sc or "visa").strip().lower())
+
+            ss.setdefault("validate_rules_dir", _v_rules_default(_company, _scheme))
 
             # Rules folder follows the scheme via an on_change CALLBACK (a programmatic write in the
             # render body would make st.tabs jump back to 'Build Baseline').
             def _v_scheme_changed():
                 _sc = str(ss.get("validate_card_scheme", "visa") or "visa").strip().lower()
-                ss["validate_rules_dir"] = os.path.join("data", "exported_rules", _sc)
+                ss["validate_rules_dir"] = _v_rules_default(_company, _sc)
 
             rules_dir = _ri1.text_input(
                 "Exported rules folder", key="validate_rules_dir",
                 help="Folder containing ALL the rule files for this run (your exported split "
-                     "templates). Defaults to data/exported_rules/<scheme>. Any RPGT with NO rule file "
+                     "templates). Defaults to data/exported_rules/<Company>/<scheme>. Any RPGT with NO rule file "
                      "here is automatically routed on ACTUALS (force-actuals).")
             _ri2.selectbox(
                 "Card Scheme", ["visa", "mastercard"], key="validate_card_scheme",
@@ -341,9 +350,22 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
             # are read back from session_state at the top of render(); no value= kwarg, so there is no
             # "default value + Session State API" warning.
             _ri3, _ri4 = st.columns(2)
+            # 19fh: the rules folder now carries the COMPANY as well as the scheme, so changing
+            # the company has to move the folder with it — otherwise the field keeps pointing at
+            # the previous brand's templates, which is the exact mix-up the per-company folder
+            # was added to prevent. Same callback shape as the scheme selector, for the same
+            # reason (a programmatic write in the render body makes st.tabs jump back to
+            # 'Build Baseline').
+            def _v_company_changed():
+                ss["validate_rules_dir"] = _v_rules_default(
+                    ss.get("validate_company", ""),
+                    ss.get("validate_card_scheme", "visa"))
+
             _ri3.selectbox(
                 "Company", COMPANIES, key="validate_company",
-                help="Company to forecast/validate. Defaults to the Build Baseline company.")
+                on_change=_v_company_changed,
+                help="Company to forecast/validate. Defaults to the Build Baseline company. "
+                     "Changing it repoints the Exported rules folder at that company.")
             _ri4.date_input(
                 "M0 start date", key="validate_month0",
                 help="Month 0 start date (the 1st of the base month). Sets the forecast anchor and the "

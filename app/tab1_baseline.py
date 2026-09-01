@@ -727,12 +727,21 @@ def render():
                     # and can be shared when diagnosing a run (success OR failure both land here).
                     try:
                         import datetime as _dt
-                        _logs_dir = os.path.join(PROJECT_ROOT, "logs")
-                        os.makedirs(_logs_dir, exist_ok=True)
+                        # 19fh: logs/<Company>/<scheme>/, and the SCHEME is in the filename too.
+                        # Flat logs/ mixed every brand and both card schemes into one 286-file
+                        # directory, and nothing in a filename said which scheme a run was — so a
+                        # visa and a mastercard run of the same brand and month were
+                        # indistinguishable except by opening them. The folders make the set
+                        # navigable; the filename keeps a log self-describing once it is copied
+                        # out of its folder, which is how they actually get shared.
                         _co = str(forecast_settings.get("company", "run")).replace(" ", "")
+                        _sc = str(forecast_settings.get("card_scheme", "visa") or "visa").strip().lower()
                         _mo = str(forecast_settings.get("month_var", ""))
+                        _logs_dir = os.path.join(PROJECT_ROOT, "logs", _co, _sc)
+                        os.makedirs(_logs_dir, exist_ok=True)
                         _log_path = os.path.join(
-                            _logs_dir, f"forecast_{_co}_{_mo}_{_dt.datetime.now():%Y%m%d_%H%M%S}.log")
+                            _logs_dir,
+                            f"forecast_{_co}_{_sc}_{_mo}_{_dt.datetime.now():%Y%m%d_%H%M%S}.log")
                         with open(_log_path, "w", encoding="utf-8") as _lf:
                             _lf.write("\n".join(log_lines) + "\n")
                         ss["last_forecast_log_path"] = _log_path
