@@ -77,13 +77,12 @@ def render():
         # run log. Streamlit renders `st.code` at roughly 21 px per line, so ~10 lines plus the
         # block's own padding is ~225 px. THIS IS THE WHOLE KNOB for both: raise it to show more
         # lines before scrolling, lower it to show fewer. Kept as one constant so the two boxes
-        # cannot drift apart, and declared up here because previous-forecast mode's slot below
-        # is the first thing that needs it.
+        # cannot drift apart.
         _CODE_BOX_PX = 225
 
-        # 19ev: the height RESERVED in the right column for the settings.yaml preview and the run
-        # log together. Both live inside one container of this height, so opening either scrolls
-        # INSIDE it and the container never changes size.
+        # 19ev: BUILD MODE ONLY (19fc). The height RESERVED in row 2's right column for the
+        # settings.yaml preview and the run log together. Both live inside one container of this
+        # height, so opening either scrolls INSIDE it and the container never changes size.
         #
         # WHY THAT IS THE FIX. The pre/post table is not in a column — it renders after the whole
         # row-2 block, and a Streamlit row is as tall as its tallest column. So anything that
@@ -98,9 +97,6 @@ def render():
         # of a jump every time something is opened.
         _GROW_BOX_PX = 300
 
-        # The 'Forecast ready…' run log renders into this slot — assigned to the spacer column to the
-        # RIGHT of the 'Split Go Live date' input below (previously-created-forecast mode only).
-        _prev_log_slot = None
         # 19fa: DECLARED HERE, above the previous-forecast block, because that block now reserves
         # the green button's position inside its OWN LEFT column (_pv1). It used to be declared
         # below the block, which would have overwritten the reserved slot with None the instant
@@ -134,17 +130,17 @@ def render():
                 "Split Go Live date", value=ss.get("split_go_live_date", m0_date), key="sgl_hidden",
                 help="Date the proposed split goes live. Drives the mid-month pro-rata "
                      "element in the forecast export and the tab-4 VAMP Post projection.")
-            # Run log renders into the trailing spacer column — to the RIGHT of 'Split Go Live date',
-            # at that reduced (~0.5) width, instead of full-width above it.
-            # Fixed-height scroll box: opening/expanding the run log scrolls WITHIN this box instead of
-            # growing the row, so it never reflows the folder / Split-Go-Live column (or the content
-            # below) to its left. Tune the px if you want a taller/shorter log.
-            # 19ev: capped for the same reason as the row-2 pair — expanding the log in
-            # previous-forecast mode would otherwise grow this row and push everything below it
-            # down. Same reserve, so the two modes behave identically. (19et had briefly removed
-            # the cap; that fixed a nested-scrollbar problem and reintroduced the growth one.
-            # `_GROW_BOX_PX` > `_CODE_BOX_PX` is what lets both be true at once.)
-            _prev_log_slot = _pv_sp.container(height=_GROW_BOX_PX)
+            # 19fc: THE RUN LOG NO LONGER LIVES IN THIS ROW. It used to render into `_pv_sp`,
+            # the trailing spacer column, inside a height-capped box (19ev) so that expanding it
+            # would scroll rather than grow the row. The cap was not enough: the pre-vs-post
+            # baseline table renders BELOW the whole row, and a Streamlit row is as tall as its
+            # tallest column, so any height this column takes — reserved OR grown — lands on the
+            # table. Height-capping only fixes the growth, not the reserve, and there is no cap
+            # value that makes a column's height free to the content underneath it.
+            # The log is now created LAST, below the table, where nothing sits beneath it and it
+            # can expand into empty space. `_pv_sp` is a plain spacer again, which is what keeps
+            # the folder + Split-Go-Live pair at half the row's width.
+            # SEE the "19fc" block further down, next to `_pre_table_ctx`.
             ss["split_go_live_date"] = split_go_live
             if prev_dir:
                 need_all = ["mid_level.csv", "vamp_t_period_export.csv"]
@@ -589,18 +585,30 @@ def render():
         # its st.status header ("Forecast ready for …") with it, since header and body are one
         # widget.
         #
-        # This replaces the earlier "create it last" arrangement, whose purpose was to stop an
-        # expanding log pushing the green button down the page. It cannot do that any more for a
-        # different reason: the button now sits ABOVE it in the same column, and the container is
-        # height-capped, so the log scrolls inside its box instead of growing. 150 px is the whole
-        # knob — raise it for a taller box, lower it for a shorter one.
+        # BUILD MODE ONLY. That arrangement holds because row 2's right column reserves a fixed
+        # `_GROW_BOX_PX` for the preview + log pair, so opening either scrolls inside the reserve
+        # instead of growing the row.
+        # PREVIOUS-FORECAST MODE went back to "create it LAST" in 19fc — see the block below. The
+        # reserve trick cannot work there: that mode's row is the folder input itself, so any
+        # height the log column holds is height the baseline table below the row has to move for.
         #
-        # REMAINS None in previous-forecast mode; the branch below hands it `_prev_log_slot`.
-        # Previous-forecast mode hides ROW 2. That mode has its own log slot beside the
-        # 'Use a previously created forecast' checkbox, so it keeps using that one.
+        # REMAINS None in previous-forecast mode; the branch below builds that mode's slots.
         _pre_table_ctx = None
         if settings_hidden:
-            _fc_log_slot = _prev_log_slot
+            # 19fc: PREVIOUS-FORECAST MODE — ORDER IS THE FIX.
+            # The pre-vs-post baseline table's position is RESERVED FIRST, then the run log is
+            # created BELOW it. Streamlit lays out in script order, so from here on the log can
+            # only ever push things that come after it — and nothing does. Expanding it is free.
+            # (Reserving the table is what makes this work: the table is written ~150 lines
+            # further down, after the forecast has loaded, so without a reserved slot it would
+            # land after the log and be the thing that gets pushed.)
+            # No outer height cap on the log. It does not need one any more — the body already
+            # scrolls inside its own `_CODE_BOX_PX` box — and a cap would only reintroduce
+            # reserved whitespace for no benefit.
+            _pre_table_ctx = st.container()
+            # Half width, so the log stays one column wide as it is in build mode rather than
+            # stretching across the page.
+            _fc_log_slot = st.columns([0.5, 0.5])[0].container()
         if _load_clicked:
             # Render the run log into the BOTTOM slot (normal mode) or the previous-forecast
             # right column; fall back to full-width only if neither exists.
