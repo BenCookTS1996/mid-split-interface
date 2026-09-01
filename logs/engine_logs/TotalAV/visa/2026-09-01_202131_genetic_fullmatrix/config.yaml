@@ -12,12 +12,12 @@ ga_band_mult: 1.0
 ga_generations: 20
 ga_pop_override: 40
 ga_perf:
-  secs: 48.051509857177734
+  secs: 102.95603609085083
   budget: 4
   gen: 1
   pop: 4
   seeds: 1
   restarts: 2
   nvar: 1
-  n: 260612
-total_secs: 787.2
+  n: 154405
+total_secs: 1181.9
