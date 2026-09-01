@@ -101,6 +101,12 @@ def render():
         # The 'Forecast ready…' run log renders into this slot — assigned to the spacer column to the
         # RIGHT of the 'Split Go Live date' input below (previously-created-forecast mode only).
         _prev_log_slot = None
+        # 19fa: DECLARED HERE, above the previous-forecast block, because that block now reserves
+        # the green button's position inside its OWN LEFT column (_pv1). It used to be declared
+        # below the block, which would have overwritten the reserved slot with None the instant
+        # the block finished — the slot has to outlive the `with`-less column it is created in.
+        _calc_btn_slot = None   # green "Calculate Forecast" / "Load forecast" button
+        _pv_msg_slot = None     # previous-forecast folder status line (green ✓ / red error)
         settings_hidden = False
         if use_prev:
             # Forecast-outputs folder on the LEFT; Split Go Live date on the RIGHT (the other
@@ -113,6 +119,17 @@ def render():
             _pv1, _pv2, _pv_sp = st.columns([0.37, 0.13, 0.5])
             prev_dir = _pv1.text_input(
                 "data/outputs/<MONTH>/<COMPANY>/<SCHEME>/ ", "")
+            # 19fa: THE GREEN BUTTON AND THE FOLDER STATUS LINE RENDER HERE, IN THE LEFT COLUMN.
+            # Both used to render full-width BELOW this row. A Streamlit row is as tall as its
+            # tallest column, so everything under the row moves whenever the run-log column
+            # (`_pv_sp`, on the right) changes height — which is exactly what opening the log
+            # does. Reserving their positions inside `_pv1` anchors them to the TOP of the left
+            # column, where the right column's height cannot reach them. This is the same
+            # slot-reservation pattern 19eq uses for row 2 in build mode, and for the same reason:
+            # a widget renders where it is CREATED, and neither of these can be created here (the
+            # button needs `settings_hidden`, the message needs the parsed folder).
+            _pv_msg_slot = _pv1.empty()
+            _calc_btn_slot = _pv1.empty()
             split_go_live = _pv2.date_input(
                 "Split Go Live date", value=ss.get("split_go_live_date", m0_date), key="sgl_hidden",
                 help="Date the proposed split goes live. Drives the mid-month pro-rata "
@@ -188,13 +205,13 @@ def render():
                             pass
                     # 12px to match the widget-label text size (e.g. the 'Forecast outputs folder'
                     # label), instead of the larger default st.success alert.
-                    st.markdown(
+                    (_pv_msg_slot or st).markdown(
                         f"<div style='font-size:12px; color:#1D9E75; font-weight:600; margin:2px 0;'>"
                         f"✓ Valid forecast found — {company} ({month_var}). Other inputs hidden. "
                         f"Click <b>Load forecast</b>, then open tab 2.</div>",
                         unsafe_allow_html=True)
                 else:
-                    st.error("Missing/invalid outputs: "
+                    (_pv_msg_slot or st).error("Missing/invalid outputs: "
                              + (", ".join(miss) if miss else "not a folder")
                              + f".  Looked in: {prev_dir}")
 
@@ -202,9 +219,13 @@ def render():
         # 19eq: positions RESERVED in the row-2 right column and written to further down. A
         # widget renders where it is created, and neither of these can be created there — the
         # button needs `actuals_valid` / `forecast_settings`, the preview needs the assembled
-        # config. Both stay None in previous-forecast mode, where ROW 2 never renders, and every
-        # write site falls back to full-width `st`.
-        _calc_btn_slot = None   # green "Calculate Forecast" button, bottom of the LEFT column
+        # config.
+        # `_yaml_slot` stays None in previous-forecast mode (ROW 2 never renders, and that mode
+        # has no settings.yaml to preview), and its write site falls back to full-width `st`.
+        # `_calc_btn_slot` is DELIBERATELY NOT RESET HERE (19fa): it is declared above the
+        # previous-forecast block, and in that mode it already holds the left-column slot the
+        # block reserved. Resetting it to None here would send the green button back to
+        # full-width below the row, which is the bug 19fa fixed.
         _yaml_slot = None       # "Preview assembled settings.yaml" expander
 
         if not use_prev:
