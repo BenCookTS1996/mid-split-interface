@@ -1470,25 +1470,37 @@ def render():
                                 # explicit sentinel whose meaning does not depend on whether
                                 # some unrelated feature is in fashion.
                                 _lsent = getattr(_lm, "_LOADED_SENTINEL", "ABSENT")
-                                _diag(f"   [loaded]   _VAMP_CONSERVE = {_lvc}   "
-                                      f"(ABSENT ⇒ pre-19aq module: the in-search VAMP conservation "
-                                      f"gate is NOT running)")
-                                _diag(f"   [loaded]   staleness sentinel = {_lsent}   "
-                                      f"(expected 19dd or later; ABSENT ⇒ pre-19av module)")
+                                # 19gs: FOUR SENTINEL LINES BECOME ONE. Each printed its own
+                                # line with its own "ABSENT ⇒ pre-19xx module" gloss, every run,
+                                # and all four have read present on every run for weeks. They
+                                # exist to catch STALE BYTECODE, so the useful output is a single
+                                # verdict — and the full detail the moment one is missing.
+                                _lsw = [("_VAMP_CONSERVE", _lvc,
+                                         "pre-19aq: the in-search VAMP conservation gate is NOT "
+                                         "running"),
+                                        ("staleness sentinel", _lsent,
+                                         "pre-19av (expected 19dd or later)"),
+                                        ("_VSHARE_ALLROWS",
+                                         getattr(_lm, "_VSHARE_ALLROWS", "ABSENT"),
+                                         "pre-19cu: the vshare denominator is not over ALL rows"),
+                                        ("_AGE_RENORM", getattr(_lm, "_AGE_RENORM", "ABSENT"),
+                                         "pre-19cy: the search does NOT re-base per "
+                                         "(cell, period, t)")]
+                                _lmiss = [(_n, _w) for _n, _v, _w in _lsw if _v == "ABSENT"]
+                                if not _lmiss:
+                                    _diag(f"   [loaded]   all 4 staleness sentinels present "
+                                          f"(sentinel {_lsent}) — the module on disk is the module "
+                                          "running.")
+                                else:
+                                    for _n, _v, _w in _lsw:
+                                        _diag(f"   [loaded]   {_n} = {_v}"
+                                              + (f"   ⚠ ABSENT ⇒ {_w}" if _v == "ABSENT" else ""))
                                 # 19de — STATE THE BEHAVIOURAL SWITCHES. Four of them landed in
                                 # 19cu..19dd and none announced itself, so a run could not be read:
                                 # the 2026-08-28 20:44 and 21:03 runs were numerically identical
                                 # and nothing in the log said whether that was the same config
                                 # twice or a stale import. A switch that changes the answer and
                                 # does not appear in the log is not testable.
-                                _diag(f"   [loaded]   _VSHARE_ALLROWS = "
-                                      f"{getattr(_lm, '_VSHARE_ALLROWS', 'ABSENT')}   "
-                                      f"(19cu: vshare denominator over ALL rows, minus MIDs with "
-                                      f"an apply_to:'vamp' override. ABSENT ⇒ pre-19cu module)")
-                                _diag(f"   [loaded]   _AGE_RENORM = "
-                                      f"{getattr(_lm, '_AGE_RENORM', 'ABSENT')}   "
-                                      f"(19cy: age-by-age renormalise in-search. ABSENT ⇒ pre-19cy "
-                                      f"module — the search does NOT re-base per (cell, period, t))")
                                 if _lsent in ("ABSENT", "19av", "19bi"):
                                     _diag("   [loaded] ⚠⚠ THE LOADED band_projection PREDATES "
                                           "19cu. The reconciliation changes (19cu mask, 19cy age "
@@ -2752,7 +2764,10 @@ def render():
                     _N_VARIATIONS = 1   # dial 0 only (compliant); dial 100 ceiling removed
                     weights = [round(float(w), 2) for w in np.linspace(0.0, 0.0, _N_VARIATIONS)]
                     _progress(_f_eng, "Running engine…")   # adaptive ETA (see _f_* above)
-                    _stage(f"④ Run {engine_key} engine across the Risk↔Conversion axis")
+                    # 19gs: there is no axis. The Risk<->Conversion DIAL was removed with
+                    # enforcement — the engine runs ONE search and ships one split. The
+                    # header outlived the thing it described by several months.
+                    _stage("④ Search for the split that ships")
                     # 19gj: the "N dials: 0" line is deleted — the multi-dial slider and the Pareto
                     # frontier were removed long ago, so it printed "1 dials: 0" every run.
 
@@ -2895,22 +2910,23 @@ def render():
                                             _EXKEEP["drop_vamp"] = (_nvm, int(len(_dmiss) - _nvm),
                                                                     int(_khit.notna().sum()))
                                             _dtop = dict(_dhit.dropna().value_counts().head(5))
-                                            log(f"   [drop-measure]   OF THE DROPPED ROWS: "
-                                                f"{_nvm:,} carry a vampMid · "
-                                                f"{len(_dmiss) - _nvm:,} carry NONE. Whole split: "
-                                                f"{int(_khit.notna().sum()):,} of {len(sc):,} rows "
-                                                f"have a vampMid.")
-                                            log(f"   [drop-measure]   ⇒ READING: NONE ≈ the whole "
-                                                f"drop would mean the merge only discarded rows the "
-                                                f"band projector cannot see (BY DESIGN). ANSWERED "
-                                                f"2026-08-20 (11:46 and 12:42, identically): NONE "
-                                                f"was 0 and ALL 97,465 dropped rows carried a "
-                                                f"vampMid, including banded ones — so the merge IS "
-                                                f"discarding banded share and the 'by design' "
-                                                f"reading is FALSE on this data. [profiles] PART A "
-                                                f"then found 8,978 of 8,978 dropped profiles carry "
-                                                f"real 30D attempts. dropped vampMids (top 5): "
-                                                f"{_dtop or '(none)'}")
+                                            # 19gs: SILENT WHEN NOTHING IS DROPPED. Both lines
+                                            # used to print every run — including the 2026-08-20
+                                            # investigation write-up, verbatim, on runs that drop
+                                            # 0 rows and have nothing to investigate. The
+                                            # [require-forecast] fix removed the population they
+                                            # were about.
+                                            if len(_dmiss):
+                                                log(f"   [drop-measure]   OF THE DROPPED ROWS: "
+                                                    f"{_nvm:,} carry a vampMid · "
+                                                    f"{len(_dmiss) - _nvm:,} carry NONE. Whole "
+                                                    f"split: {int(_khit.notna().sum()):,} of "
+                                                    f"{len(sc):,} rows have a vampMid. A dropped "
+                                                    "row carrying a vampMid is banded share the "
+                                                    "merge is discarding — the projector cannot "
+                                                    "see it, so that MID's delivered value will "
+                                                    "sit under what the search scored. dropped "
+                                                    f"vampMids (top 5): {_dtop or '(none)'}")
                                         else:
                                             log("   [drop-measure]   vampMid split skipped — no "
                                                 "gateway column on the split, or fid2vamp is empty.")
@@ -3255,16 +3271,19 @@ def render():
                     # ROUTING_DELIV_INJECT=0 reverts delivery to the raw export.
                     _deliv_cap = (_capability
                                   if os.environ.get("ROUTING_DELIV_INJECT", "1") != "0" else None)
-                    log("   [deliv-inject] delivery-side projections "
-                        + ("will be given the SAME capability the search used, so both sides project the "
-                           "identical frame. Before 19du the reconciliation, never-worse and attribution "
-                           "calls read the RAW export while the GA scored the injected one."
+                    # 19gs: rewritten. The old wording described the 19du BUG rather than what
+                    # the line reports, so it read as a warning every run while saying nothing
+                    # about this run.
+                    log("   [deliv-inject] search and delivery score the SAME rows"
+                        + (f": both get the extra zero-VAMP rows for the "
+                           f"{_deliv_cap.n_mids} MID(s) each gateway is capable of, so a band "
+                           "measured during the search means the same thing when it ships."
                            if _deliv_cap is not None else
-                           "get NO capability, so delivery projects the RAW export while the search "
-                           "projects the injected frame. The two sides are NOT comparing the same rows - "
-                           "read the reconciliation error with that in mind.")
-                        + f" (capability={_deliv_cap.n_mids if _deliv_cap is not None else 0} MID(s)). "
-                          "ROUTING_DELIV_INJECT=0 reverts.")
+                           " — NO. ROUTING_DELIV_INJECT=0 is set, so delivery reads the raw "
+                           "export while the search reads the injected one. They are measuring "
+                           "different rows, and the reconciliation error below is not "
+                           "meaningful until this is unset.")
+                        + " ROUTING_DELIV_INJECT=0 reverts.")
                     # vampMids fully switched off in overrides — excluded from the projection,
                     # matching the tab-4 VAMP impact table. (Defined before the scaffold below,
                     # which references it.)
@@ -3288,13 +3307,19 @@ def render():
                     # ROUTING_VAMP_OFF=0 reverts BOTH sides at once, never one, which is the state this fixes.
                     _vamp_off_mids = (_ic.build_vamp_off_mids(fid2vamp, ss.get("gateway_volume_overrides"))
                                       if os.environ.get("ROUTING_VAMP_OFF", "1") != "0" else frozenset())
-                    log(f"   [vamp-off] {len(_vamp_off_mids):,} vampMid(s) carry apply_to:'vamp' target 0 "
-                        "and are barred from holding OR receiving redistributed VAMP — in the SEARCH and in "
-                        "every delivered figure this run prints: "
-                        + (", ".join(sorted(_vamp_off_mids)) if _vamp_off_mids else "(none configured)")
-                        + ". Before 19dw only tab 3 applied this, so the log read ~11 units per band LOW "
-                          "against tab 3 while reporting a reconciliation error of 0. ROUTING_VAMP_OFF=0 "
-                          "reverts.")
+                    # 19gs: rewritten. Says what it is FOR, and stays one short line in the
+                    # normal case (nothing configured) instead of narrating the 19dw bug.
+                    if _vamp_off_mids:
+                        log(f"   [vamp-off] {len(_vamp_off_mids):,} MID(s) are set to receive NO "
+                            "fraud: a volume override marks them apply_to:'vamp' target 0, so "
+                            "they neither keep their own VAMP nor take a share of anyone else's. "
+                            "Applied in the search AND in every delivered figure below, so the "
+                            "two agree: "
+                            + ", ".join(sorted(_vamp_off_mids))
+                            + ". ROUTING_VAMP_OFF=0 reverts.")
+                    else:
+                        log("   [vamp-off] no MID is set to receive zero fraud (no volume "
+                            "override uses apply_to:'vamp' target 0).")
                     # Precompute the STATIC projection scaffold ONCE (restricted to the cells
                     # containing a capped MID — a capped MID's projected VAMP depends only on
                     # its own cells, so this is EXACT). Each feedback iteration then only
@@ -4758,10 +4783,13 @@ def render():
                         # the exact enforcement, so it matches softmax on compliance. λ (from
                         # the slider) still shapes the GA's own search.
                         import routing_optimiser.s4_search.seed_search as _gg
+                        # 19gs: this said "the CROSS-CELL per-vampMid tilt search (Active
+                        # CMA-ES)". That engine was unreachable and 19gd moved it out to
+                        # legacy_engines/; what remains in seed_search is the band-aware
+                        # constrained projection — seed stage 1 — and nothing else.
                         log(f"   seed_search build: {getattr(_gg, '__build__', '?')} — the "
-                            "CROSS-CELL per-vampMid tilt search (Active CMA-ES) that produces the "
-                            "seed the full-matrix GA warm-starts from; own revenue-greedy "
-                            "reference (genetic_ref, not softmax) + exact hard enforcement.")
+                            "band-aware constrained projection (seed stage 1 of 3), which the "
+                            "full-matrix GA warm-starts from.")
                         # From the 30D attempts, build the SAME quantities tab 4 uses for
                         # incremental revenue: avg ticket + cell attempts + raw gateway SR,
                         # keyed by (currency, parent-bank[, gateway]).
@@ -5345,17 +5373,16 @@ def render():
                                         # 19dv: a CONFIGURATION statement, not a warning — it
                                         # fired on every healthy run, and a ⚠ that always fires
                                         # teaches the reader to skip ⚠.
-                                        log(f"   [breach-scale] breach_fixed is {_bf_now:g}, NOT 0 "
-                                            "— a band merely CROSSING its limit now costs "
-                                            f"{_bf_now:g} × its priority weight before any "
-                                            "overshoot term. So breach totals in this log are NOT "
-                                            "comparable with runs before 2026-08-19aa (which used "
-                                            "0.0): e.g. one prio-1 band just touching its ceiling "
-                                            f"scores {_bf_now:g}, vs a FULL total of 0.0036919 on "
-                                            "the 2026-08-20 23:03 run. Judge this run on SEARCH "
-                                            "SHORTFALL (M5 units) and the per-band met/unmet counts, "
-                                            "not on the breach scalar. The GA ranks and prints this "
-                                            "SAME number, so the never-worse guarantee still holds.")
+                                        # 19gs: the "not comparable with runs before
+                                        # 2026-08-19aa" paragraph is gone. That was a migration
+                                        # note for a fortnight-old change; every run in the
+                                        # archive now uses the same scale.
+                                        log(f"   [breach-scale] a band merely CROSSING its limit "
+                                            f"costs {_bf_now:g} × its priority weight before any "
+                                            "overshoot term, so the search prefers clearing a "
+                                            "band outright to shaving several. Judge the run on "
+                                            "SEARCH SHORTFALL (M5 units) and the met/unmet "
+                                            "counts, not on the breach scalar.")
                                     else:
                                         log("   [breach-scale] breach_fixed is 0 — crossing a limit "
                                             "is free and only the squared overshoot is charged, so "
@@ -6426,7 +6453,49 @@ def render():
                                 # question is open; worth nothing once it is closed — the same
                                 # shape as [kernel-ab] and [stage-ab], and switched the same way.
                                 _sd_on = os.environ.get("ROUTING_SEED_DIAG", "1") != "0"
-                                if not _sd_on:
+                                # ── 19gs: NINE REPORTS THAT ANSWER ONE QUESTION ──────────────
+                                # Every one of these blocks answers "why can't this BREACHED band
+                                # be cleared?". With nothing breached they each print a header, a
+                                # "(no breached ceiling bands at this split.)" and a three-line
+                                # note about how to read the numbers they did not produce — about
+                                # 20 lines of the run log saying nothing, and ~10s of projector
+                                # time spent deciding there was nothing to say. Ask the question
+                                # ONCE, up front, and skip all nine when the answer is "nothing is
+                                # breached". They come back in full the moment a band breaches,
+                                # which is the only time they have ever been read.
+                                _sd_breach = None
+                                if _sd_on:
+                                    try:
+                                        _sdv = np.asarray(
+                                            locals().get("_exact_G")
+                                            if locals().get("_exact_G") is not None
+                                            else locals().get("_risk_greedy_G", _comp_share_G),
+                                            float)
+                                        _sd_rep = ctx["exact_bands"].report(_fm_s2pr(
+                                            (_fm_deliv(_sdv[None, :])
+                                             if locals().get("_fm_deliv") is not None
+                                             else _sdv[None, :]),
+                                            ctx["_exact_bands_selfcheck"]["inc"]))
+                                        _sd_breach = [
+                                            str(_r.get("midl")) for _r in _sd_rep
+                                            if (_r.get("ceil") is not None
+                                                and float(_r["now"]) > float(_r["ceil"]) + 1e-6)
+                                            or (_r.get("floor") is not None
+                                                and float(_r["now"]) < float(_r["floor"]) - 1e-6)]
+                                    except Exception:  # noqa: BLE001
+                                        _sd_breach = None   # unknown ⇒ run them, don't guess
+                                if _sd_on and _sd_breach == []:
+                                    _sd_on = False
+                                    log("   [seed-diag] all bands are met at the seed, so the nine "
+                                        "'why is this band stuck?' blocks did not run — "
+                                        "held-vs-movable, reachable-minimum, VAMP-positive "
+                                        "sibling, seed-gradient, vpsum, usable-recipient, breach "
+                                        "concentration, scoped-vs-frozen and co-location. Each "
+                                        "one explains a BREACHED band; there is no breached band. "
+                                        "They return automatically the moment one breaches "
+                                        "(~10s). ROUTING_SEED_DIAG=0 also suppresses them when "
+                                        "there IS one.")
+                                elif not _sd_on:
                                     # A SKIPPED diagnostic and a FAILED one must not read alike
                                     # (19ce D4; 19cj's skipped ban stage). These blocks are the
                                     # evidence for whether a band is genuinely unreachable, so
@@ -6560,22 +6629,20 @@ def render():
                                                        ("exact-proj", locals().get("_exact_G")),
                                                        ("revenue-greedy", locals().get("_comp_share_G"))]
                                         _seed_pairs = [(_nm, _s) for _nm, _s in _seed_pairs if _s is not None]
-                                        if _seed_pairs:
-                                            log("   ── SEED unmet-band summary — RAW BASIS (how many of "
-                                                "the per-MID bands each warm-start satisfies) ──")
-                                            log("      ⚠ BASIS: these numbers score the seed's RAW shares. "
-                                                "`unmet_summary(seed, exact_bands, inc)` is called with no "
-                                                "delivery transform, so blocked-caps and eligibility are NOT "
-                                                "applied — unlike the seed SELECTION below, which scores "
-                                                "through `_fm_deliv`. A band can therefore look met here and "
-                                                "breach once delivered (measured 2026-08-20: woodforest raw "
-                                                "23,967 → +blocked-caps 24,082, i.e. +115 on a ceiling of "
-                                                "24,000, and no seed was listed as unmet on it). The "
-                                                "[seed-basis] block below prints BOTH bases.")
-                                            for _nm, _s in _seed_pairs:
-                                                _su = _unmet(np.asarray(_s, float), ctx["exact_bands"], _sinc)
-                                                if _su:
-                                                    log(f"      {_nm:<22}: {_su}")
+                                        # 19gs: the RAW-basis table and its four-line BASIS
+                                        # warning are DELETED. [seed-basis] directly below prints
+                                        # every one of these seeds on BOTH bases, so this was the
+                                        # same information twice — once on the basis nothing
+                                        # ships. `revenue-greedy` is the only candidate
+                                        # [seed-basis] does not carry (it is not a seed), so it is
+                                        # kept as one line for the contrast it provides.
+                                        _rg_s = locals().get("_comp_share_G")
+                                        if _rg_s is not None:
+                                            _su = _unmet(np.asarray(_rg_s, float),
+                                                         ctx["exact_bands"], _sinc)
+                                            log("   seed baseline for contrast — the "
+                                                "revenue-greedy split the chain starts from "
+                                                f"(RAW): {_su or 'meets every band'}")
                                     except Exception as _use:  # noqa: BLE001 — a diagnostic must never break the run
                                         log(f"   seed unmet-band summary skipped ({type(_use).__name__}: {_use}).")
                             ctx["warm_shares"] = _seeds
@@ -7116,23 +7183,41 @@ def render():
                                                         "difference with no band behind it. Not "
                                                         "flagged.")
                                                     continue
-                                                log(f"   [seed-basis]   ⚠ '{_n2}' is BETTER on RAW "
-                                                    f"and WORSE on DELIVERED ({_r2:.5f} → "
-                                                    f"{_d2:.5f}, Δ +{_d2 - _r2:.5f}). Its own "
-                                                    "accept test is RAW-only, so it can report "
-                                                    "'strictly better' for a change the engine "
-                                                    "scores as a regression. Selection rejects it "
-                                                    "(see [seed-chain]) so nothing bad ships, but "
-                                                    "the stage is wasted. THE ONE KNOWN CAUSE WAS "
-                                                    "FIXED IN 19be: recipient headroom was one "
-                                                    "slot per MID, debited in VAMP units whatever "
-                                                    "metric the ceiling belonged to, so a txn-only "
-                                                    "MID like WoodForest read ~100x the room it "
-                                                    "had. It is now kept per (MID, METRIC). If "
-                                                    "this line STILL fires, the cause is "
-                                                    "ELSEWHERE — most likely delivery's own "
-                                                    "blocked-caps + eligibility transform, which "
-                                                    "no RAW-basis operator can see.")
+                                                # 19gs: this warning is now conditional on the
+                                                # SWITCH, not on the numbers. Before 19go the
+                                                # stages' accept tests were RAW-only, so a
+                                                # candidate better on RAW and worse on DELIVERED
+                                                # meant a stage had optimised the wrong thing —
+                                                # a real defect, and the text said so. Since
+                                                # 19go they accept on DELIVERED, so RAW simply
+                                                # is not what anything targeted any more and a
+                                                # gap between the two is expected and harmless.
+                                                # Leaving the old ⚠ in place would have this
+                                                # firing on every healthy run, which is how a ⚠
+                                                # stops being read.
+                                                if _seed_dlv is None:
+                                                    log(f"   [seed-basis]   ⚠ '{_n2}' is BETTER "
+                                                        f"on RAW and WORSE on DELIVERED "
+                                                        f"({_r2:.5f} → {_d2:.5f}, Δ "
+                                                        f"+{_d2 - _r2:.5f}), and the seed stages "
+                                                        "are on the RAW basis this run "
+                                                        "(ROUTING_SEED_DELIV=0). So this stage "
+                                                        "optimised a target the engine does not "
+                                                        "select on and can report 'strictly "
+                                                        "better' for what the engine scores as a "
+                                                        "regression. Selection rejects it (see "
+                                                        "[seed-chain]) so nothing bad ships, but "
+                                                        "the stage is wasted. Unset "
+                                                        "ROUTING_SEED_DELIV.")
+                                                else:
+                                                    log(f"   [seed-basis]   '{_n2}' scores "
+                                                        f"{_r2:.5f} on RAW and {_d2:.5f} on "
+                                                        "DELIVERED. Expected, not a warning: "
+                                                        "since 19go the stage ACCEPTS on "
+                                                        "DELIVERED, so RAW is a basis nothing "
+                                                        "targeted and nothing selects on. The "
+                                                        "delivered figure is the one that means "
+                                                        "something.")
                                             if _sb_noise:
                                                 log(f"   [seed-basis]   {_sb_noise} seed(s) score a "
                                                     "hair worse on DELIVERED than on RAW, all "
@@ -13728,7 +13813,7 @@ def render():
                                 "volume": summ["volume"],
                             })
                         log(f"   GA total wall time: {_fmt_secs(_ga_wall_tot)} "
-                            f"(1 GA run [risk-min] × {_n_mid} vampMid tilts; enforcement removed).")
+                            "(one full-matrix GA; no dials, no tilts, no enforcement pass).")
                     else:
                         # NON-GENETIC engines (softmax / thompson / portfolio): a SINGLE dial-0
                         # variation = the engine reference split with ONLY the eligibility projection

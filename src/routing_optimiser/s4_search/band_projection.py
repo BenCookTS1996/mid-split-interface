@@ -2129,16 +2129,12 @@ class PopulationBandProjector:
             _bnote(f"[vconst-frozen] 19fs added the THIRD class: "
                   f"{_h['frozen']:,} aged row(s) whose ORIGIN CELL IS FROZEN (no GA share "
                   f"column maps to it, so psum is 0 there for every candidate). "
-                  + ("Their contribution is the SAME constant the other two classes have "
-                     "(pc_vc[j]), so this needs no kernel change - it widens the mask vconst "
-                     "already consumes. NOT bit-identical: pre-summing reorders the additions, "
-                     "worst band measured at 5.09e-11 units = 2.04e-14 as an overshoot fraction, "
-                     "against the penalty's 1e-9 dust guard - 49,085x inside it, so the ranking "
-                     "and the shipped split are unchanged. RECONCILIATION ERROR is the "
-                     "end-to-end check: delivery is an untouched path, so if this moved anything "
-                     "that matters it stops reading 0. Verified end-to-end on the 2026-09-01 "
-                     "20:01 run (reconciliation error 0), so 19gm deleted the kill switch — this "
-                     "is now simply how vconst works."
+                  + (# 19gs: the verification narrative is gone. It was a live question for
+                     # four runs and has been settled since 19gm deleted the kill switch;
+                     # RECONCILIATION ERROR remains the end-to-end check either way, and it is
+                     # printed on its own line at the end of every run.
+                     "Their contribution is the same per-band constant the other two classes "
+                     "have, so it is summed once instead of per candidate."
                      if _h["frozen_known"] else
                      "NOT APPLIED: the GA incidence had not reached the projector when these "
                      "arrays were built, so frozen cells could not be identified. "

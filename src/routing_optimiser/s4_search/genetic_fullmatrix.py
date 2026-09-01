@@ -2587,36 +2587,40 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     if _MSR_ON and _msr["seen"]:
         _mv = (_msr["moved"] / max(_msr["cands"], 1))
         log("")
-        log(f"[ms-repair] {_msr['cands']:,} of {_msr['seen']:,} candidate(s) "
-            f"({100.0 * _msr['cands'] / max(_msr['seen'], 1):.1f}%) held a gateway above the "
-            f"max-share cap and were brought back under it, across {_msr['cells']:,} cell "
-            f"repair(s). Mean share moved per repaired candidate {_mv:.4g}; largest single-row "
-            f"move {_msr['worst']:.4g}. The cap itself is UNCHANGED and still hard — nothing "
-            "above it ships, before or after this change.")
-        # ── 19fe: THE RULE, AND THE PASS COUNT THAT JUSTIFIES IT ──────────────────────────
-        log("[ms-repair]    [msr-headroom] the excess goes to each sibling in proportion to "
-            "(target - share), the room it has left before IT would hit the cap. This is the "
-            "SAME rule DELIVERY uses (impact_calcs._cap_rows, the water-fill inside "
-            "build_split_exports, which builds the template that ships), so the search and the "
-            "deployed split cap a cell the same way. There is no alternative rule and no switch "
-            "for one (19ff): the pre-19fe rule split the excess in proportion to the share each "
-            "sibling ALREADY held, which was the search's private variant of production's rule.")
-        log(f"[ms-repair]    [msr-headroom] ONE PASS, no loop. Cells whose live rows have less "
-            f"total room than the excess (cap unsatisfiable there, no number of passes helps): "
-            f"{_msr.get('infeas', 0):,} — at a 0.97 cap that needs a cell with fewer than 2 live "
-            "rows, and the whole-cell revert handles it.")
-        log(f"[ms-repair]    [msr-headroom] entries still over target after the pass that "
-            f"repaired them, counted ONLY in cells where one pass should have sufficed: "
-            f"{_msr.get('reover', 0):,}. "
-            + ("That zero is the closed form holding on live data: Sum(target - share) over a "
-               "cell's present rows equals (present_rows x target) - 1 + excess, so it is >= "
-               "excess whenever present_rows x target >= 1 — true for every cell with 2+ live "
-               "rows at a 0.97 cap."
-               if not _msr.get("reover", 0) else
-               "⚠ NON-ZERO. The single-pass closed form does NOT hold on this data and the "
-               "repair is leaving rows above target. The whole-cell revert below has caught "
-               "them, so nothing illegal ships, but this needs investigating before the next "
-               "run."))
+        # 19gs: WHERE IT RUNS, first sentence. This block prints at the END of the search
+        # and was read as a post-search patch on the shipped split. It is not: the repair runs
+        # INSIDE the generation loop, on every child, BEFORE `_eval_with_bands` scores it — so
+        # no candidate is ever scored, ranked or shipped above the cap. These are totals.
+        log(f"[ms-repair] the max-share cap is enforced DURING the search, on every candidate, "
+            f"between the softmax decode and the fitness evaluation — never afterwards. Totals "
+            f"for the whole run: {_msr['cands']:,} of {_msr['seen']:,} candidate(s) "
+            f"({100.0 * _msr['cands'] / max(_msr['seen'], 1):.1f}%) decoded with a gateway above "
+            f"the cap and were brought under it before being scored, across {_msr['cells']:,} "
+            f"cell repair(s). Mean share moved per repaired candidate {_mv:.4g}; largest "
+            f"single-row move {_msr['worst']:.4g}.")
+        log("[ms-repair]    WHY NEARLY EVERY CANDIDATE NEEDS IT: a softmax cannot express an "
+            "upper bound. It produces a positive share for every live door and normalises to 1, "
+            "so nothing in the decode stops one door landing above the cap — the repair is what "
+            "makes the genome legal, not a correction of a mistake. That is also why it is the "
+            "largest single line in [gen-gap]'s `build` segment: it is paid per candidate.")
+        # ── 19fe: THE RULE ────────────────────────────────────────────────────────────────
+        log("[ms-repair]    the excess goes to each sibling in proportion to (target - share), "
+            "the room it has left before IT would hit the cap — the SAME water-fill DELIVERY "
+            "uses (impact_calcs._cap_rows inside build_split_exports), so the search and the "
+            "deployed split cap a cell identically.")
+        # 19gs: the single-pass closed form has held on live data on every run since 19fe, so
+        # the three-line proof is now printed ONLY when it fails. A number that has read 0 for
+        # months is noise; the same number non-zero is the whole point of the check.
+        if _msr.get("infeas", 0) or _msr.get("reover", 0):
+            log(f"[ms-repair]    ⚠ [msr-headroom] the ONE-PASS closed form did NOT hold: "
+                f"{_msr.get('infeas', 0):,} cell(s) had less total room than the excess and "
+                f"{_msr.get('reover', 0):,} entrie(s) were still over target after the pass "
+                "that repaired them. Sum(target - share) over a cell's present rows equals "
+                "(present_rows x target) - 1 + excess, so it covers the excess whenever "
+                "present_rows x target >= 1 — true for every cell with 2+ live rows at a 0.97 "
+                "cap. A non-zero here means a cell with fewer than 2 live rows, or a defect. "
+                "The whole-cell revert catches them so nothing illegal ships, but investigate "
+                "before the next run.")
         if _msr["stuck_c"]:
             log(f"[ms-repair]    {_msr['stuck_c']:,} candidate(s) could NOT be fully repaired "
                 f"({_msr['stuck_k']:,} cell(s)): the over-cap row was the only row in its cell "
