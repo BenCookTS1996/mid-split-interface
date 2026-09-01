@@ -7225,10 +7225,118 @@ def render():
                                             "concurrently. Unset it to thread `deliver`, which is "
                                             "worth far more than the twin's 1.05x.")
 
-                                    def _fm_deliv_serial(_farr, _bl=_fm_block, _el=_fm_elig):
+                                    # ── [deliv-cap] 19fg: CAP LAST, THE WAY DELIVERY DOES ─────
+                                    # THE ORDER WAS WRONG, and 19fe fixing the RULE made that the
+                                    # last thing left:
+                                    #   search  (pre-19fg): cap the genome -> zero ineligible
+                                    #                       doors -> renormalise ... and STOP
+                                    #   delivery           : zero ineligible doors ->
+                                    #                       renormalise -> cap
+                                    # Zeroing a door and renormalising can push a SURVIVOR over
+                                    # the cap. Delivery caps after that and cleans it up
+                                    # (impact_calcs._cap_rows, inside build_split_exports); the
+                                    # search capped before it and never looked again, so it could
+                                    # score a split as compliant that delivery then had to
+                                    # correct. Worked example: a cell at A 96 / B 3 / C 1 with a
+                                    # 0.97 cap is compliant; zero B and C for a Non-USA sub-cell,
+                                    # renormalise, and A is at 1.00. The GA scored 1.00; the
+                                    # deployed template ships 0.97.
+                                    #
+                                    # THE GENOME REPAIR STAYS. It is not redundant: the
+                                    # engineering key needs every candidate at an exact 0.0 on the
+                                    # cap (see _repair_maxshare's target back-off), and that is a
+                                    # property of the GENOME, not of the delivered projection.
+                                    # Capping twice is harmless — the second cap is a no-op unless
+                                    # eligibility actually pushed something over.
+                                    #
+                                    # EXACT CAP, NO BACK-OFF. _repair_maxshare triggers at
+                                    # cap x (1 - 1e-9) because of that engineering key. Delivery
+                                    # has no engineering key and triggers at the cap itself, so
+                                    # this does too — which is also what removes the 9.7e-10
+                                    # residual 19fe measured between the two.
+                                    #
+                                    # SAME KERNEL AS THE REPAIR, headroom-weighted and ONE pass:
+                                    # sum(cap - share) over a cell's present rows is
+                                    # (present_rows x cap) - 1 + excess, so it covers the excess
+                                    # whenever present_rows x cap >= 1 — every cell with 2+ live
+                                    # rows at 0.97. A cell that cannot satisfy it is left alone,
+                                    # which is what _cap_rows does too (its `m` mask skips any row
+                                    # with fewer than 2 present gateways).
+                                    #
+                                    # Pure, so rowpar's verify-by-running-twice stays valid.
+                                    # ROUTING_DELIV_CAP=0 restores the pre-19fg order. That switch
+                                    # exists for ONE reason — so this run's delta can be attributed
+                                    # separately from 19fe's during the verification cycle — and
+                                    # should be deleted once the default is trusted.
+                                    _DCAP = {
+                                        "on": bool(os.environ.get("ROUTING_DELIV_CAP", "1") != "0"
+                                                   and float(ctx.get("max_share", 1.0) or 1.0) < 1.0),
+                                        "cap": float(ctx.get("max_share", 1.0) or 1.0),
+                                        "said": False, "cells": 0, "moved": 0.0, "worst": 0.0,
+                                        "calls": 0, "hit": 0, "reover": 0, "infeas": 0}
+                                    if not _DCAP["on"]:
+                                        log("   [deliv-cap] OFF — "
+                                            + ("ROUTING_DELIV_CAP=0, so the search caps the genome "
+                                               "BEFORE eligibility and never re-caps, while "
+                                               "delivery caps AFTER. A cell where eligibility "
+                                               "zeroing lifts a survivor past the cap is scored "
+                                               "differently from what ships."
+                                               if os.environ.get("ROUTING_DELIV_CAP", "1") == "0"
+                                               else f"max_share is "
+                                                    f"{float(ctx.get('max_share', 1.0) or 1.0):.4g}, "
+                                                    "so there is no cap to apply."))
+                                    else:
+                                        log(f"   [deliv-cap] ON (19fg) — the delivery transform is "
+                                            f"now block -> eligibility -> CAP at "
+                                            f"{_DCAP['cap']:.4g}, matching delivery's own order. "
+                                            "Effect is reported at the end of the search.")
+
+                                    def _fm_cap(_farr, _st=_DCAP, _cs=_fm_bcs, _cc=_fm_bcc):
+                                        if not _st["on"]:
+                                            return _farr
+                                        _X = np.asarray(_farr, float)
+                                        _one = _X.ndim == 1
+                                        if _one:
+                                            _X = _X[None, :]
+                                        _cap = _st["cap"]
+                                        _o = _X > _cap
+                                        _st["calls"] += 1
+                                        if not _o.any():
+                                            return _X[0] if _one else _X
+                                        _exc = np.add.reduceat(np.where(_o, _X - _cap, 0.0), _cs,
+                                                               axis=1)
+                                        _room = np.where(~_o & (_X > 1e-12) & (_X < _cap),
+                                                         _cap - _X, 0.0)
+                                        _pool = np.add.reduceat(_room, _cs, axis=1)
+                                        _ok = (_exc > 0.0) & (_pool > 1e-12)
+                                        if not _ok.any():
+                                            return _X[0] if _one else _X
+                                        _okr = np.repeat(_ok, _cc, axis=1)
+                                        _f = np.repeat(np.where(_ok, _exc / np.where(_pool > 1e-12,
+                                                                                     _pool, 1.0),
+                                                                0.0), _cc, axis=1)
+                                        _Y = np.where(_okr & _o, _cap,
+                                                      np.where(_okr, _X + _room * _f, _X))
+                                        _st["hit"] += 1
+                                        _st["cells"] += int(_ok.sum())
+                                        _st["infeas"] += int(np.count_nonzero(~(_pool >= _exc)
+                                                                              & (_exc > 0.0)))
+                                        _st["reover"] += int(np.count_nonzero(
+                                            (_Y > _cap) & _okr
+                                            & np.repeat(_pool >= _exc, _cc, axis=1)))
+                                        _d = np.abs(_Y - _X)
+                                        _st["moved"] += float(_d.sum())
+                                        _st["worst"] = max(_st["worst"], float(_d.max()))
+                                        return _Y[0] if _one else _Y
+
+                                    def _fm_deliv_serial(_farr, _bl=_fm_block, _el=_fm_elig,
+                                                         _cp=_fm_cap):
                                         """THE REFERENCE. rowpar checks the threaded path against
-                                        this, never the other way round."""
-                                        return _el(_bl(_farr))
+                                        this, never the other way round.
+
+                                        19fg: block -> eligibility -> CAP. The cap is LAST because
+                                        that is where delivery applies it."""
+                                        return _cp(_el(_bl(_farr)))
 
                                     def _fm_elig_rp(_farr, _el=_fm_elig):
                                         """Eligibility ALONE, threaded. A separate rowpar name from
@@ -7536,7 +7644,11 @@ def render():
                                                 _fm_block_into(_f, _fm_blk_row, _fm_bfloor,
                                                                _fm_blk_rows, _fm_blk_scs,
                                                                _fm_blk_scc)
-                                                _got = _fm_elig_rp(_f)
+                                                # 19fg: the SAME final cap the unfused path
+                                                # applies. Without it this self-check compares a
+                                                # capped reference against an uncapped fused
+                                                # result and disables the fuse on every run.
+                                                _got = _fm_cap(_fm_elig_rp(_f))
                                                 if np.array_equal(np.asarray(_ref).view(np.int64),
                                                                   np.asarray(_got).view(np.int64)):
                                                     _FUSE_DELIV["msg"] = (
@@ -7562,7 +7674,7 @@ def render():
                                                 return _d[0] if _one else _d
                                             _fm_block_into(_f, _fm_blk_row, _fm_bfloor,
                                                            _fm_blk_rows, _fm_blk_scs, _fm_blk_scc)
-                                            _d = _fm_elig_rp(_f)
+                                            _d = _fm_cap(_fm_elig_rp(_f))   # 19fg
                                             return _d[0] if _one else _d
                                         _d = _dv(_f)                    # full-grain delivered (a NEW array)
                                         return _d[0] if _one else _d
@@ -8290,6 +8402,46 @@ def render():
                                     log(f"   [proj-par] note drain skipped "
                                         f"({type(_ppe).__name__}: {_ppe}).")
                                 _fm_full = _fm_recon(_fm_best, _fm_meta)
+                                # ── [deliv-cap] 19fg: what the post-eligibility cap actually did
+                                # Read this BEFORE any band number. If `cells` is 0 the reorder
+                                # changed nothing on this run and 19fg is invisible; if it is
+                                # large, eligibility zeroing was routinely lifting survivors past
+                                # the cap and the pre-19fg search was scoring splits delivery had
+                                # to correct.
+                                try:
+                                    if _DCAP["on"]:
+                                        if not _DCAP["cells"]:
+                                            log(f"   [deliv-cap] the cap fired on 0 of "
+                                                f"{_DCAP['calls']:,} delivery call(s): eligibility "
+                                                "zeroing never lifted a survivor past "
+                                                f"{_DCAP['cap']:.4g} on this run, so capping last "
+                                                "instead of first changed NOTHING here. The "
+                                                "divergence 19fg closes is real but latent.")
+                                        else:
+                                            log(f"   [deliv-cap] the cap fired on "
+                                                f"{_DCAP['hit']:,} of {_DCAP['calls']:,} delivery "
+                                                f"call(s), repairing {_DCAP['cells']:,} "
+                                                f"(candidate, cell) pair(s) that eligibility "
+                                                f"zeroing had lifted past {_DCAP['cap']:.4g}. "
+                                                f"Total share moved {_DCAP['moved']:.4g}; largest "
+                                                f"single-row move {_DCAP['worst']:.4g}. EVERY one "
+                                                "of those is a split the pre-19fg search scored as "
+                                                "compliant and delivery then had to correct — that "
+                                                "gap is what this closes.")
+                                        log(f"   [deliv-cap] cells where the cap is unsatisfiable "
+                                            f"(live rows hold less room than the excess): "
+                                            f"{_DCAP['infeas']:,} — left at baseline, exactly as "
+                                            "_cap_rows leaves a row with fewer than 2 present "
+                                            "gateways. Entries still over the cap after the single "
+                                            f"pass, where one pass should have sufficed: "
+                                            f"{_DCAP['reover']:,}"
+                                            + ("." if not _DCAP["reover"] else
+                                               " ⚠ NON-ZERO — the single-pass closed form does not "
+                                               "hold on this data; investigate before trusting "
+                                               "this run's band numbers."))
+                                except Exception as _dce:  # noqa: BLE001
+                                    log(f"   [deliv-cap] summary skipped "
+                                        f"({type(_dce).__name__}: {_dce}) — measurement only.")
                                 # ── NEVER-WORSE, ENFORCED (2026-08-19ae) ──────────────────────
                                 # Until this build the guarantee was ASSERTED in a log line and
                                 # enforced nowhere. The 2026-08-21 21:24 run is what it cost: the
