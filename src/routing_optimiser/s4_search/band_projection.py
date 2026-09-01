@@ -947,6 +947,85 @@ def _prop_key(df: pd.DataFrame, by_rpgt: bool, by_subcell: bool = False) -> np.n
     return (_cur + "|" + _bin + "|" + _mid).to_numpy()
 
 
+# [FN-011d]
+# Per-column cleaning that `_prop_key` applies, in key order. (column, lower) -- all are stripped.
+_PK_SPEC_SUBCELL = [("cur", True), ("bin", False), ("rpgt", True), ("pmp", True),
+                    ("ctry", True), ("mid", False)]
+_PK_SPEC_RPGT = [("cur", True), ("bin", False), ("rpgt", True), ("mid", False)]
+_PK_SPEC_PLAIN = [("cur", True), ("bin", False), ("mid", False)]
+
+
+def _prop_key_index(df, by_rpgt, by_subcell):
+    """The pair the projector needs: (prop_keys sorted, propidx per row).
+
+    Stands in for:
+        keys = _prop_key(df, by_rpgt, by_subcell)
+        uniq, propidx = np.unique(keys, return_inverse=True)
+        prop_keys = [str(k) for k in uniq]
+
+    Returns IDENTICAL output -- the same key strings, in the same sorted order, and an
+    element-wise identical propidx -- or None if it declines, in which case the caller runs the
+    exact code above.
+
+    WHY (19fz). `_prop_key` built one 6-part label PER ROW (1.9M of them) and np.unique then sorted
+    1.9M strings. But there are only ~90.5k DISTINCT keys on the live fixture -- roughly 19 rows per
+    key. So both the building and the sorting were doing ~19x more work than the answer needs.
+
+    THE CONTRACT IS UNTOUCHED, which is the point. I had assumed speeding this up meant changing
+    the key FORMAT, and it does not. `prop_keys`'s order is what tab 2's [inc-build] resolves its
+    f-string keys against via `_kpos`, and the format is what those f-strings must match byte for
+    byte. This builds the SAME strings and sorts them into the SAME order -- just 90.5k of them
+    instead of 1.9M -- so no tab-2 change is needed and the incidence self-check has nothing new
+    to catch. Measured 6.91s -> 1.17s (5.9x) on the live fixture, prop_keys list equal and
+    propidx element-wise equal.
+
+    HOW. Factorise each column, clean only its UNIQUES, re-factorise those so any two raw values
+    that clean alike merge exactly as `_prop_key` would, then mix the per-column codes into one
+    int64 per row. Factorise THAT to get the K distinct keys, un-mix the radix to recover each
+    distinct key's parts, join K strings, argsort them (np.unique's own ordering, on K not n), and
+    push the row codes through the sort permutation.
+
+    Declines, exactly as 19fy's helpers do, if a cleaned value contains "|" (the join is ambiguous
+    there) or if the mixed radix would overflow.
+    """
+    spec = (_PK_SPEC_SUBCELL if by_subcell else
+            _PK_SPEC_RPGT if by_rpgt else _PK_SPEC_PLAIN)
+    n = len(df)
+    if not n:
+        return [], np.zeros(0, np.int64)
+    rowcodes, ustr = [], []
+    for _c, _lower in spec:
+        _rc, _ru = pd.factorize(df[_c], use_na_sentinel=False)
+        _u = pd.Series(_ru).astype(str).str.strip()
+        if _lower:
+            _u = _u.str.lower()
+        _u = _u.to_numpy()
+        if any("|" in str(_x) for _x in _u):
+            return None
+        _mc, _mu = pd.factorize(_u, use_na_sentinel=False)
+        rowcodes.append(np.asarray(_mc, np.int64)[_rc])
+        ustr.append(np.asarray(_mu, dtype=object))
+    comp = np.zeros(n, np.int64)
+    for _col, _u in zip(rowcodes, ustr):
+        _k = len(_u)
+        if _k and comp.max() > (2 ** 62) // _k:
+            return None
+        comp = comp * _k + _col
+    codes, uc = pd.factorize(comp, use_na_sentinel=False)
+    K = len(uc)
+    rem = np.asarray(uc, np.int64).copy()
+    parts = [None] * len(ustr)
+    for _i in range(len(ustr) - 1, -1, -1):          # un-mix, least-significant first
+        _k = len(ustr[_i])
+        parts[_i] = ustr[_i][rem % _k]
+        rem //= _k
+    keys = np.array(["|".join(map(str, _t)) for _t in zip(*parts)], dtype=object)
+    order = np.argsort(keys, kind="stable")           # matches np.unique's sorted uniques
+    rank = np.empty(K, np.int64)
+    rank[order] = np.arange(K)
+    return [str(_x) for _x in keys[order]], rank[codes]
+
+
 # [FN-011b]
 def _prop_key_str(k, by_rpgt: bool, by_subcell: bool = False) -> str:
     """Tuple→key string, matching `_prop_key`'s formats. SINGLE source so `_prop_raw` and
@@ -1546,6 +1625,22 @@ class PopulationBandProjector:
     def __init__(self, T0: pd.DataFrame, Pc: pd.DataFrame, pool: np.ndarray, bands,
                  by_rpgt: bool = False, max_share: float = 1.0, by_subcell: bool = False,
                  vamp_off_mids=frozenset()):
+        # ── 19fz [pbp-inside] ─────────────────────────────────────────────────────────────
+        # WHY THIS EXISTS. [pbp-build] priced this constructor at 114.5s and said nothing about
+        # WHERE. I then attributed ~80s of it to the prop-key build from reading the code, and
+        # measurement says that step is only ~7s -- so most of the 114.5s was still unaccounted
+        # and I was guessing. 19fx/19fy/19fz should take roughly 24s out of [band-setup]; if the
+        # next run does not show that, this block says which step failed to move instead of
+        # leaving it to another round of inference. Marks are cumulative-exclusive and SUM to the
+        # constructor, so there is no residual to argue about.
+        _pbp_t = [_time_mod.perf_counter()]
+        _pbp_rows = []
+
+        def _pbp_mark(_lbl):
+            _n = _time_mod.perf_counter()
+            _pbp_rows.append((_lbl, _n - _pbp_t[0]))
+            _pbp_t[0] = _n
+
         self.by_rpgt = by_rpgt
         # SUB-CELL decision grain: prop keys include pmp/ctry (cur|bin|rpgt|pmp|ctry|mid) so a
         # per-sub-cell share maps to exactly one scaffold row instead of broadcasting across sub-cells.
@@ -1561,7 +1656,9 @@ class PopulationBandProjector:
         Pc = Pc.reset_index(drop=True)
         pool = np.asarray(pool, float)
 
+        _pbp_mark("setup (reset_index, column pulls)")
         gcode_full, ngc_full, base_full, ctot_full, mv_full = _static(T0)
+        _pbp_mark("_static(T0) full frame  [19fy: int64 codes]")
         pc_to_t0 = _origin_map(T0, Pc)
         t0_mid = T0["midl"].to_numpy(); t0_per = T0["per"].to_numpy().astype(int)
         pc_mid = Pc["midl"].to_numpy(); pc_per = Pc["per"].to_numpy().astype(int)
@@ -1570,6 +1667,7 @@ class PopulationBandProjector:
         # banded aged rows + their origin cells; banded capped t0 rows + their cells (VECTORISED).
         # `bandset` should be the ACTUALLY-CONSTRAINED (midl,per) pairs only — restricting it here
         # is what lets the reduced scaffold shrink (fewer banded rows → fewer relevant cells).
+        _pbp_mark("_origin_map  [19fy: int64 join]")
         _bidx = (pd.MultiIndex.from_tuples(sorted(bandset)) if bandset
                  else pd.MultiIndex.from_arrays([[], []]))
         pc_band = pd.MultiIndex.from_arrays([pc_mid, pc_per]).isin(_bidx)
@@ -1579,6 +1677,7 @@ class PopulationBandProjector:
                                         gcode_full[_org[_org >= 0]]]).astype(np.int64)) \
             if (t0_capband.any() or pc_band.any()) else np.zeros(0, np.int64)
 
+        _pbp_mark("banded-row masks (MultiIndex.isin)")
         keep_t0 = np.isin(gcode_full, rel)                 # ALL mids of relevant cells
         t0_idx = np.where(keep_t0)[0]
         full2red = -np.ones(len(T0), np.int64); full2red[t0_idx] = np.arange(len(t0_idx))
@@ -1586,6 +1685,7 @@ class PopulationBandProjector:
 
         # local per-row statics (recomputed on the reduced frame; base/ctot are cell sums, and
         # every row of each relevant cell is present, so they match the full-frame values)
+        _pbp_mark("reduce to relevant cells (isin + iloc + reset_index)")
         self._gcode, self._ngc, self._base, self._ctot, self._mv = _static(R)
         self._excl = R["excl"].to_numpy(bool)
         self._emask = R["emask"].to_numpy(bool)
@@ -1631,20 +1731,26 @@ class PopulationBandProjector:
         self._fcp = R["fcp"].to_numpy(float) if "fcp" in R.columns else np.ones(len(R))
         nR = len(R)
 
+        _pbp_mark("_static(R) reduced frame  [19fy: int64 codes]")
         # prop-key alignment (np.unique = sorted-unique + inverse index in C)
-        keys = _prop_key(R, by_rpgt, by_subcell)
-        if nR:
+        # 19fz: identical prop_keys + propidx, ~5.9x faster -- see _prop_key_index. None ⇒ it
+        # declined, so run the exact pair it stands in for.
+        _pki = _prop_key_index(R, by_rpgt, by_subcell) if nR else ([], np.zeros(0, np.int64))
+        if _pki is None:
+            keys = _prop_key(R, by_rpgt, by_subcell)
             uniq, self._propidx = np.unique(keys, return_inverse=True)
             self.prop_keys = [str(k) for k in uniq]
         else:
-            self._propidx = np.zeros(0, np.int64); self.prop_keys = []
+            self.prop_keys, self._propidx = _pki
         self._K = len(self.prop_keys)
 
+        _pbp_mark("prop-key index  [19fz: K strings not nR]")
         # sparse cell-incidence (ngc × nR); cellsum(x) = (S @ x.T).T  (sparse@dense, C-fast)
         import scipy.sparse as _sp
         self._S = _sp.csr_matrix((np.ones(nR), (self._gcode, np.arange(nR))),
                                  shape=(max(self._ngc, 1), max(nR, 1)))
 
+        _pbp_mark("scipy csr cell-incidence")
         # reduced Pc = banded aged rows only; remap origin to reduced t0 index
         pc_keep = np.where(pc_band)[0]
         self._pc_vc = Pc["vc"].to_numpy(float)[pc_keep]
@@ -1711,6 +1817,7 @@ class PopulationBandProjector:
             self._pc_gk_keys = np.zeros(0, dtype=object)
 
         # band order + per-band groupings (vectorised map to band index)
+        _pbp_mark("reduced Pc (aged rows, origin remap)")
         self.band_order = sorted(bandset)
         self._B = len(self.band_order)
         _bpos = {b: k for k, b in enumerate(self.band_order)}
@@ -1723,6 +1830,34 @@ class PopulationBandProjector:
         self._t_bandcol = (pd.Series(list(zip(Rmid[self._t_rows].tolist(),
                                               Rper[self._t_rows].tolist()))).map(_bpos).to_numpy(np.int64)
                            if len(self._t_rows) else np.zeros(0, np.int64))
+
+        _pbp_mark("bands, band_order, per-row band position")
+        _pbp_tot = sum(_d for _, _d in _pbp_rows)
+        self._pbp_inside = list(_pbp_rows)
+        # EXPECTED, so a shortfall is self-diagnosing rather than a puzzle. These are the three
+        # steps 19fx/19fy/19fz rewrote, with what they measured on the live-export fixture. A step
+        # sitting near its BEFORE number means the fast path DECLINED (a value containing "|", or a
+        # radix overflow) or the module on disk is stale -- both of which this states outright.
+        _exp = {"_static(T0) full frame  [19fy: int64 codes]": (9.6, 1.1),
+                "_static(R) reduced frame  [19fy: int64 codes]": (9.6, 1.1),
+                "_origin_map  [19fy: int64 join]": (3.7, 1.2),
+                "prop-key index  [19fz: K strings not nR]": (8.1, 1.3)}
+        _lines = []
+        for _lbl, _d in sorted(_pbp_rows, key=lambda r: -r[1]):
+            _tag = ""
+            if _lbl in _exp:
+                _before, _after = _exp[_lbl]
+                if _d > _before * 0.6:
+                    _tag = (f"  ⚠ EXPECTED ~{_after:.1f}s (was ~{_before:.1f}s) — this step did NOT "
+                            "speed up: the fast path declined, or this module is stale")
+                else:
+                    _tag = f"  ✓ vs ~{_before:.1f}s before 19fy/19fz"
+            _lines.append(f"{_d:8.1f}s  ({100.0 * _d / max(_pbp_tot, 1e-9):5.1f}%)  {_lbl}{_tag}")
+        _pnote("[pbp-inside] PopulationBandProjector.__init__ = "
+               f"{_pbp_tot:.1f}s, largest first (these SUM to the constructor, no residual):\n      "
+               + "\n      ".join(_lines)
+               + "\n      Ordered largest-first, not in execution order — the point is which step "
+                 "to attack next. A ⚠ above is the answer to 'why did [band-setup] not fall'.")
 
     # [FN-020]
     def project_pop_from_props(self, props):
