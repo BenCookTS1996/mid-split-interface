@@ -469,7 +469,7 @@ paypal-aud-tws,Paypal,Paypal,Paypal,Paypal,Total Webshield,AUD,,,,,FALSE,FALSE,F
 paypal-eur-tws,Paypal,Paypal,Paypal,Paypal,Total Webshield,EUR,,,,,FALSE,FALSE,FALSE,1
 paypal-usd-tws,Paypal,Paypal,Paypal,Paypal,Total Webshield,USD,,,,,FALSE,FALSE,FALSE,1
 paypal-cad-tws,Paypal,Paypal,Paypal,Paypal,Total Webshield,CAD,,,,,FALSE,FALSE,FALSE,1
-braintree-usd-totalavinstant,Braintree USA - Total AV Instant,Braintree USA - Total AV Instant,Braintree USA - Total AV Instant,Braintree,totalavinstant,USD,TOTALAV.COM - 411641 - 526448392880,TOTALAV.COM,411641,5.26E+11,FALSE,FALSE,TRUE,1
+braintree-usd-totalavinstant,Braintree - Total AV,Braintree - Total AV,Braintree - Total AV,Braintree,totalavinstant,USD,TOTALAV.COM - 411641 - 526448392880,TOTALAV.COM,411641,5.26E+11,FALSE,FALSE,TRUE,1
 adyen-usd-pango,Adyen - Ultra Antivirus - USD,Adyen - Ultra Antivirus,Adyen USA - Ultra Antivirus USD,Adyen,Ultra Antivirus,USD,,PANGO,,,FALSE,FALSE,TRUE,1
 adyen-usd-tav-pango,Adyen - Ultra Antivirus - USD,Adyen - Ultra Antivirus,Adyen - Ultra Antivirus - USD,Adyen,Ultra Antivirus,USD,Get From PANGO,,,,FALSE,FALSE,TRUE,1
 adyen-usd-tpw-x-pango,Adyen - Ultra Antivirus - USD,Adyen - Ultra Antivirus,Adyen - Ultra Antivirus - USD,Adyen,Ultra Antivirus,USD,,,,,FALSE,FALSE,TRUE,1

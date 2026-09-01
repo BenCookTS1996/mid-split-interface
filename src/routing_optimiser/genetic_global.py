@@ -1206,7 +1206,11 @@ def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_ro
         _pert = base * np.exp(rng.normal(0.0, float(jitter), size=base.shape))
         _inputs.append(_project_capped_simplex_cells(_pert, _pstarts, _counts, _elig, _cap, 1.0))
 
-    _par = _os.environ.get("ROUTING_FEAS_PAR", "1") != "0"
+    # FIXED OFF (2026-08-31). Was ROUTING_FEAS_PAR, set to 0 in routing.env on every run.
+    # Also unreachable in practice now: the only caller fixes n_starts=1, which returns from the
+    # `_n <= 1` branch above before ever getting here. Serial is the control path and the one the
+    # concurrent version was proven bit-identical against, so it is the one that ships.
+    _par = False
     _t0 = _time.perf_counter()
     if _par:
         from concurrent.futures import ThreadPoolExecutor

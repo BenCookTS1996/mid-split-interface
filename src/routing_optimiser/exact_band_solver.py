@@ -1118,14 +1118,27 @@ def incidence_selfcheck_report(split, exact_bands, incidence, *, mid_id=None, mi
                f"      {cov:,}/{N:,} share columns map to a prop-key ({(cov / max(N, 1)) * 100:.1f}%) · "
                f"{K:,} prop-keys · Σprop_raw {mass_prop:,.1f} vs Σshare {mass_share:,.1f} "
                f"(dropped {mass_share - mass_prop:,.1f} of share mass)",
-               "      (DO NOT read the dropped mass as 'columns with no vampMid, dropped by "
-               "design'. That was this note until 2026-08-19m and the 2026-08-20 11:46 run measured "
-               "it FALSE: [drop-measure] reported 245,409 of 245,409 split rows carrying a vampMid, "
-               "and ALL 97,465 rows the delivered `_explode` discards carrying one too — including "
-               "banded MIDs (Adyen_TotalAV, Checkout, WorldPay, Braintree USA). On that run "
-               "N − cov = 245,409 − 147,944 equalled those discarded rows EXACTLY. So this is a "
-               "COVERAGE loss of unproven cause, not a by-design filter: read [drop-measure] and "
-               "the per-banded-MID lines below for how much banded share is inside it.)"]
+               "      READ Σshare AS A CELL COUNT, NOT AS SHARE MASS. Each cell's shares sum "
+               "to 1.0, so Σshare IS the number of cells and the 'dropped' figure is a number of "
+               "CELLS, not a fraction of the split's value. On 2026-08-31 16:00: 23,870 cells "
+               "total, 14,852 mapped, 9,018 dropped — and [drop-measure] independently reported "
+               "9,018 distinct dropped keys. The two match exactly because they are the same "
+               "object counted twice.",
+               "      THOSE 9,018 CELLS CANNOT AFFECT THE BANDS, so excluding them is correct. "
+               "They are dropped by the inner merge against orig_forecast, i.e. they carry NO "
+               "FORECAST VOLUME. A cell with no forecast transactions in M0-M5 produces no M5 "
+               "transactions and therefore no M5 VAMP. [rung] closes it from the other side: once "
+               "the shipped split is rolled onto these prop-keys it maps 14,852.0 of 14,852.0 "
+               "(100.0%) — nothing that can reach a band is lost.",
+               "      WHAT [profiles] ACTUALLY PROVED, since it is easy to misread as a "
+               "contradiction: those profiles have real 30D HISTORIC ATTEMPTS (24,033 on that "
+               "run), which is why stage ③ admits them — routing cells are built from the attempts "
+               "frame. Historic attempts are not forecast volume. Both facts are true at once.",
+               "      HISTORY: until 2026-08-31 this note called the gap 'a COVERAGE loss of "
+               "unproven cause', on the strength of [drop-measure] showing every dropped row "
+               "carrying a vampMid. That observation is correct and does NOT imply a defect — a "
+               "volume-less cell still has a vampMid on every row. The wording sent at least one "
+               "investigation down a dead end; the arithmetic above is what settles it."]
         # PER-BANDED-MID coverage (needs the per-column MID map). Uses ExactBandModel's specs +
         # labels — the SAME naming seed_gradient_report aligns to mid_names — so it lines up with the
         # per-column mid_id. metric is cross-referenced from exact_bands.specs (band_scoring BandSpec).

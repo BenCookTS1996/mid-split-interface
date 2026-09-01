@@ -561,7 +561,11 @@ _PROJ_CB_ON = os.environ.get("ROUTING_PROJ_CELLBLOCK", "1") != "0"
 # 19bz: FLOAT32, OPT-IN. See the module patch note. This is the ONE setting in the projector that
 # changes the answer, so it defaults OFF, it announces itself in the run log, and it measures its
 # own drift on the live scaffold every run instead of quoting a remembered figure.
-_PROJ_F32 = os.environ.get("ROUTING_PROJ_FLOAT32", "0") != "0"
+# FIXED OFF (2026-08-31). Was ROUTING_PROJ_FLOAT32, pinned to 0 in routing.env on every run.
+# It is the ONE projector setting that CHANGES THE ANSWER, so it is now nailed to the exact
+# float64 path rather than left switchable. The self-check, the drift measurement and the
+# announcement below are all retained: they now confirm exactness instead of policing an opt-in.
+_PROJ_F32 = False
 _F32_OK = {"use": _PROJ_F32, "said": False, "dv": None, "dt": None}
 # `use` is flipped off for the process by the live self-check. `sweeps` is the water-fill sweep
 # high-water mark: the ONE case where per-cell convergence could differ from the shipped kernel's
@@ -735,7 +739,7 @@ def proj_config():
                        "These switches are read ONCE. Setting one after the app has started does "
                        "nothing \u2014 quit the app fully and relaunch it.")
 
-    if not _PROJ_F32 and os.environ.get("ROUTING_PROJ_FLOAT32") is None:
+    if False:   # float32 is fixed off (2026-08-31); this "switch is unset" note no longer applies
         out.append("float32 is off because ROUTING_PROJ_FLOAT32 is UNSET in this process. "
                    "`routing.env` is read by run.command AT LAUNCH only, so if that file sets it "
                    "to 1 then this app was not started by run.command (or was started before the "
