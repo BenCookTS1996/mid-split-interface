@@ -347,9 +347,13 @@ def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mi
     _stall = 0
     _HARD_CAP = 10_000          # defensive only — convergence (below) is what actually stops it
     for _ in range(_HARD_CAP):
+        # 1-D on purpose. `shares_to_prop_raw` promotes a single vector itself, and the delivery
+        # transform's 1-D path is its SERIAL reference — the one the threaded path is verified
+        # against. Handing it a (1, N) array instead would spin the row-parallel pool up once per
+        # pass for a single row: pure overhead, and it would pad the [row-par] verification ledger
+        # with hundreds of one-row calls that say nothing about threading.
         prop_raw = shares_to_prop_raw(
-            s[None, :] if deliver_fn is None else np.asarray(deliver_fn(s[None, :]), float),
-            incidence)
+            s if deliver_fn is None else np.asarray(deliver_fn(s), float), incidence)
         rep = exact_bands.report(prop_raw)
         mult = np.ones(n_mid, float)
         full = np.zeros(n_mid, bool)                          # per-MID: near its limit → clear FULLY (undamped)

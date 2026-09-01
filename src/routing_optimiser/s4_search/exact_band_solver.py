@@ -494,8 +494,9 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
             as before 19go; otherwise the DELIVERED split, which is what the engine selects on."""
             if _d is None:
                 return _m.breach(_x, weighted=weighted)
-            return _m.breach(np.asarray(_d(np.asarray(_x, float)[None, :]), float)[0],
-                             weighted=weighted)
+            # 1-D: the transform's serial reference path, not the threaded one — a single
+            # candidate has nothing to thread, and `model.breach` takes a vector anyway.
+            return _m.breach(np.asarray(_d(np.asarray(_x, float)), float), weighted=weighted)
         info["basis"] = "delivered" if deliver_fn is not None else "raw"
         b0 = _brc(s)
         info["breach0"] = b0
