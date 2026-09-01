@@ -6079,14 +6079,161 @@ def render():
                                 _st["worst"] = max(_st["worst"], float(_d.max()))
                                 return _Y[0] if _one else _Y
 
+                            # ── [search-floor] 19gw: THE EXPLORATION FLOOR THE ENGINE APPLIES AT RUNTIME ──
+                            # WHAT IT IS. Every ELIGIBLE gateway in a routed cell keeps at least the
+                            # exploration floor of the share, then the cell is renormalised. It is the
+                            # reason a 0%-rule incumbent still carries volume in tab 5.
+                            #
+                            # WHERE IT LIVES, and this is what decided the design. It is NOT in the
+                            # shipped template: `build_split_exports` normalises, zeroes, back-fills,
+                            # water-fills the max-share cap and rounds — and applies no floor at all.
+                            # The floor is applied by the LIVE ALLOCATION ENGINE at runtime, and
+                            # `impact_calcs.compute_vamp_prepost_granular` replicates it so the VAMP
+                            # forecast reflects what will actually happen.
+                            #
+                            # SO THE DECODE IS THE WRONG PLACE. The max-share cap belongs in the decode
+                            # because the cap IS in the template — the genome must not be able to
+                            # express a split that cannot ship. The floor is the opposite: the template
+                            # legitimately carries a 0 and the engine lifts it later. Flooring the
+                            # genome would ship a template with 1% everywhere, which is not what
+                            # production does. It belongs HERE, in the model of what happens to the
+                            # split AFTER it ships, beside blocked-caps and eligibility.
+                            #
+                            # THAT ALSO RETIRES THE CONFLICT WITH THE EXACT ZEROS. ROUTING_SEED_ZEROS
+                            # stays exactly as it is: the GA may still drive a row to a true zero, and
+                            # the search now simply SEES that the engine floors it back — the truth it
+                            # has been blind to. Nothing about the vshare cliff changes.
+                            #
+                            # ORDER: block -> eligibility -> cap -> FLOOR -> renormalise, which is
+                            # delivery's own order (the template caps, then the engine floors and
+                            # re-bases). The consequence is stated rather than hidden: renormalising
+                            # after flooring CAN push a surviving row back over the cap, and delivery
+                            # does not re-fix that. The search now models the same imperfection instead
+                            # of a tidier version of it.
+                            #
+                            # THE ONE APPROXIMATION. Delivery's eligibility test for the floor is
+                            # "present in the cell (base_share > 0 or prop_raw > 0), not switched off,
+                            # not wallet/USA-masked". The first clause has no search-side analogue, so
+                            # this floors every row the ELIGIBILITY OPERATOR leaves alive — the same
+                            # wallet/USA 0-1 mask, exact on 100% of rows per [elig-grain]. Where the two
+                            # sets differ, RECONCILIATION ERROR is what will say so.
+                            #
+                            # ROUTING_SEARCH_FLOOR=0 reverts this AND the matching reconcile projection
+                            # in one switch — they have to move together or they measure different
+                            # objects.
+                            _SFLOOR_ON = (os.environ.get("ROUTING_SEARCH_FLOOR", "1") != "0"
+                                          and float(floor or 0.0) > 0.0)
+                            _SFLOOR = float(floor or 0.0) if _SFLOOR_ON else 0.0
+
+                            # PRESENCE, and this is the clause that does the work. Delivery's
+                            # test is `base_share > 0 OR prop_raw > 0` — BASELINE presence, not
+                            # proposed. That is precisely why a 0%-rule incumbent still carries
+                            # volume in tab 5: the engine floors it back on the strength of its
+                            # BASELINE row, whatever the GA proposed. A floor keyed on the
+                            # proposed share alone would lift only rows that are small but alive
+                            # and would never resurrect a zeroed gateway — the conservative half
+                            # of the rule, and not the half that matters.
+                            #
+                            # So presence = (baseline share > 0) OR (proposed share > 0), AND the
+                            # row survived eligibility (a row eligibility zeroed must stay at
+                            # zero — the floor must never un-mask an ineligible gateway, which is
+                            # delivery's `~_emask_f` clause). `_fm_elig` runs before this, so a
+                            # masked row arrives at exactly 0 and is excluded by `_elg` below.
+                            # TWO masks, both derived from the shipped objects rather than
+                            # re-implemented: BASELINE presence, and which rows eligibility
+                            # actually keeps. The second is taken by running `_fm_elig` itself on
+                            # an all-ones vector — a row it zeroes there is a row it zeroes for
+                            # every candidate, and using the live operator is what stops this
+                            # drifting from delivery's `~_emask_f` the way a private copy would.
+                            _SF_BASE = None
+                            try:
+                                _sf_b = (np.asarray(_ref_share_G, float) > 0.0)
+                                _sf_e = (np.asarray(
+                                    _fm_elig(np.ones((1, _sf_b.size), float)),
+                                    float)[0] > 0.0)
+                                _SF_BASE = _sf_b & _sf_e
+                                log(f"   [search-floor] presence mask: "
+                                    f"{int(_SF_BASE.sum()):,} of {_SF_BASE.size:,} row(s) carry a "
+                                    f"BASELINE share AND survive eligibility, so those are the "
+                                    f"rows the engine will floor even where the GA proposes 0 — "
+                                    f"{int((_sf_b & ~_sf_e).sum()):,} row(s) have a baseline but "
+                                    "are wallet/USA-masked and are correctly left at zero (the "
+                                    "floor must never un-mask an ineligible gateway).")
+                            except Exception as _sfe:  # noqa: BLE001
+                                _SF_BASE = None
+                                log(f"   [search-floor] presence mask unavailable "
+                                    f"({type(_sfe).__name__}: {_sfe}).")
+                            if _SFLOOR_ON and _SF_BASE is None:
+                                log("   [search-floor] ⚠ the BASELINE presence mask could not be "
+                                    "built, so the floor can only lift rows that are already "
+                                    "non-zero and will NOT resurrect a gateway the GA drove to 0 "
+                                    "— which is the half of delivery's rule that matters. Treat "
+                                    "this run as the conservative half of the change.")
+
+                            def _fm_floor(_farr, _fl=_SFLOOR, _cs=_fm_bcs, _cc=_fm_bcc,
+                                          _bs=_SF_BASE):
+                                """Lift every PRESENT-and-eligible row to at least `_fl`, then
+                                renormalise the cell.
+
+                                `min(_fl, 1/n_present)` per cell, exactly as delivery caps it, so
+                                a wide cell can never be made infeasible by the floor itself."""
+                                if _fl <= 0.0:
+                                    return _farr
+                                _X = np.asarray(_farr, float)
+                                _one = _X.ndim == 1
+                                if _one:
+                                    _X = _X[None, :]
+                                _nz = _X > 1e-12
+                                # PRESENT = the candidate routed to it, OR it has a baseline row
+                                # AND survives eligibility. The second half is what resurrects a
+                                # gateway the GA drove to 0 — delivery's `base_share > 0` clause,
+                                # and the reason a 0%-rule incumbent still carries volume in tab
+                                # 5. Without it this would only lift rows that are small but
+                                # alive, which is the half of the rule that does not matter.
+                                _live = (_nz | _bs[None, :]) if _bs is not None else _nz
+                                _n = np.add.reduceat(_live.astype(float), _cs, axis=1)
+                                _flc = np.repeat(np.where(_n > 0.0,
+                                                          np.minimum(_fl, 1.0 / np.maximum(_n, 1.0)), 0.0),
+                                                 _cc, axis=1)
+                                _Y = np.where(_live, np.maximum(_X, _flc), _X)   # 19gw
+                                _s = np.repeat(np.add.reduceat(_Y, _cs, axis=1), _cc, axis=1)
+                                _Y = np.where(_s > 1e-12, _Y / np.where(_s > 1e-12, _s, 1.0), _Y)
+                                return _Y[0] if _one else _Y
+
+                            if _SFLOOR_ON:
+                                log(f"   [search-floor] ON (19gw) — the search now models the EXPLORATION "
+                                    f"FLOOR the live allocation engine applies at runtime: every eligible "
+                                    f"gateway in a routed cell keeps at least {_SFLOOR:.2%} of the share, "
+                                    "then the cell is renormalised. It is NOT in the shipped template "
+                                    "(build_split_exports applies no floor) — it is what happens to that "
+                                    "template once it runs, which is why it belongs in the delivery "
+                                    "transform and not in the decode. EXPECT A DIFFERENT SPLIT AND A "
+                                    "LOWER vwsr: the floor deliberately holds share on alternatives the "
+                                    "GA would abandon, and the GA can now see that abandoning them does "
+                                    "not actually remove their VAMP. Watch for bands that were met and no "
+                                    "longer are — a MID the GA drove to 0 now keeps a floor's worth. "
+                                    "ROUTING_SEARCH_FLOOR=0 reverts this AND the matching reconcile "
+                                    "projection, which move together.")
+                            else:
+                                log("   [search-floor] OFF — the search scores splits WITHOUT the "
+                                    "exploration floor the live allocation engine applies at runtime, so "
+                                    "it is optimising a split that gets modified before it executes"
+                                    + (" (ROUTING_SEARCH_FLOOR=0)." if float(floor or 0.0) > 0.0
+                                       else "; the exploration floor is 0 on this run, so there is "
+                                            "nothing to model."))
+
                             def _fm_deliv_serial(_farr, _bl=_fm_block, _el=_fm_elig,
-                                                 _cp=_fm_cap):
+                                                 _cp=_fm_cap, _fo=_fm_floor):
                                 """THE REFERENCE. rowpar checks the threaded path against
                                 this, never the other way round.
 
                                 19fg: block -> eligibility -> CAP. The cap is LAST because
-                                that is where delivery applies it."""
-                                return _cp(_el(_bl(_farr)))
+                                that is where delivery applies it.
+
+                                19gw: -> FLOOR -> renormalise after it, because that is where the LIVE
+                                ENGINE applies the exploration floor — after the template has been
+                                capped and shipped. A no-op when the floor is 0 or the switch is off."""
+                                return _fo(_cp(_el(_bl(_farr))))
 
                             def _fm_elig_rp(_farr, _el=_fm_elig):
                                 """Eligibility ALONE, threaded. A separate rowpar name from
@@ -8286,9 +8433,27 @@ def render():
                                     _pj_excl = frozenset(
                                         locals().get("_excluded_mids") or frozenset())
                                     _pj_scoped = tuple(locals().get("_sel_rpgts") or ())
-                                    _pj_floor = (0.0 if os.environ.get(
-                                        "ROUTING_PROJ_FLOOR", "0") == "0"
-                                        else float(ss.get("exploration_floor", 0.0) or 0.0))
+                                    # 19gw: THE THIRD LEG OF [search-floor]. The delivery
+                                    # projection used for never-worse and the authoritative
+                                    # reconcile has always been able to apply the exploration
+                                    # floor and has always been handed 0.0, so BOTH sides of the
+                                    # reconciliation skipped it — which is exactly why the floor
+                                    # never showed up as a reconciliation error despite [vterms]
+                                    # pricing it at Σ|Δ| 8,414.7 on the 2026-09-01 23:12 run.
+                                    #
+                                    # It now follows the same switch as the search side. They MUST
+                                    # move together: `_fm_deliv` models the floor and this does
+                                    # not, and the two are measuring different objects — the error
+                                    # would read the whole floor and the run would look broken.
+                                    # ROUTING_PROJ_FLOOR still forces it on independently, for the
+                                    # one case worth having it: proving the floor's size against a
+                                    # search that does not model it.
+                                    _pj_sfloor = (os.environ.get("ROUTING_SEARCH_FLOOR", "1")
+                                                  != "0")
+                                    _pj_floor = (float(ss.get("exploration_floor", 0.0) or 0.0)
+                                                 if (_pj_sfloor or os.environ.get(
+                                                     "ROUTING_PROJ_FLOOR", "0") != "0")
+                                                 else 0.0)
                                     _PJ_MEMO = {}          # split-hash -> (ep, m5 frame, {_LAST_*: value})
 
                                     _pj_eb = locals().get("_fm_eb")     # same scope caveat

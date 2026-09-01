@@ -85,7 +85,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gu-decode-cap+19ee-maxshare-repair"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -1638,25 +1638,52 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             _a, _ct, _kc = _fit_codebook(_shape, _cvol, compress_pools, int(seed))
             _cb["assign"], _cb["cent"], _cb["cconst"], _cb["src"] = _a, _ct, _kc, "kmeans"
 
+    # ── [eval-cost] 19gw: WHERE THE `eval` ROW ACTUALLY GOES ────────────────────────────
+    # [gen-gap] puts `eval` at 336.1s of a 401.9s search on the 2026-09-01 23:12 run — 92% of
+    # every generation — and then stops. Working backwards from [proj-config] and [lift-ab], the
+    # band projector is only ~68s of that; the other ~268s has never had a breakdown at all. The
+    # log still refers to a [gen-cost] block that models these five stages, but that block is
+    # long gone, so nothing in a run says which stage owns the time.
+    #
+    # Same treatment as [cvp-timing] and [cap-timing], both of which named their answer on the
+    # first run that carried them. Four wall-clock accumulators, summed over every call, printed
+    # beside [gen-gap] so the two can be read against each other: these SUM to `eval`, so there
+    # is no residual to argue about.
+    #
+    # Timers only. Nothing computed here moved, and `perf_counter` around four calls that each
+    # take tens of milliseconds is not measurable against the work itself.
+    _ev = {"pop": 0.0, "decode": 0.0, "deliver": 0.0, "band": 0.0, "comp": 0.0, "n": 0}
+
     def _eval_with_bands(logits):
         # Returns (vwsr, other_viol, band_breach) as THREE separate arrays so the ranking can treat
         # the EXACT M5 band breach as the strict primary key (see _rank). `other_viol` is the
         # engineering violation (global VAMP cap + max-share) from eval_pop; `band_breach` is the
         # exact per-MID M5 penalty. They are NO LONGER summed — the ranking orders on band first.
+        _ev["n"] += 1
+        _t = time.perf_counter()
         v, x = eval_pop(logits)
+        _ev["pop"] += time.perf_counter() - _t
         _band = np.zeros(np.asarray(x).shape[0], dtype=float)
         _need_band = band_penalty_fn is not None
         _need_comp = _compress_on and _cb["cent"] is not None
         if not (_need_band or _need_comp):
             return v, x, _band
+        _t = time.perf_counter()
         _sh = _segment_softmax(logits, p.cell_start, p.cell_len, p.max_share)
+        _ev["decode"] += time.perf_counter() - _t
+        _t = time.perf_counter()
         _fd = _deliver_full(_sh)                                  # shared delivery — computed ONCE
+        _ev["deliver"] += time.perf_counter() - _t
         if _need_band:
+            _t = time.perf_counter()
             _band = np.asarray(band_penalty_fn(_fd if _have_full else _sh), dtype=float)
+            _ev["band"] += time.perf_counter() - _t
         if _need_comp:
+            _t = time.perf_counter()
             _sd = _deliver_kept(_sh, _fd)
             v = v - _clam * np.asarray(
                 _dist_fn(_sd, _cb["assign"], _cb["cent"], _cb["cconst"]), dtype=float)
+            _ev["comp"] += time.perf_counter() - _t
         return v, x, _band
 
     def _rescore_compress(logits, keep_other, keep_band):
@@ -2594,6 +2621,37 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             log(f"         {_il}  {_iv:,.1f}s  "
                 f"({100.0 * _iv / max(_gg['init'], 1e-9):>5.1f}%) · "
                 f"{1000.0 * _iv / max(_gg['i_n'], 1):,.0f} ms per restart")
+        # ── [eval-cost] 19gw: the `eval` row, split ─────────────────────────────────────
+        # `eval` is 92% of a generation and was the only row in this block with nothing behind
+        # it. These five accumulators are taken inside `_eval_with_bands` around its own calls,
+        # so they sum to it — the `unaccounted` row is computed as the difference and is the
+        # function's own entry/exit, not a bucket anything can hide in.
+        _ev_tot = sum(float(_ev[_x]) for _x in ("pop", "decode", "deliver", "band", "comp"))
+        if _ev["n"]:
+            log(f"      == [eval-cost] inside the `eval` row ({_ev_tot:,.1f}s over "
+                f"{_ev['n']:,} call(s)), largest first ==")
+            _ev_rows = [
+                ("eval_pop (fused numba: softmax + vwsr + engineering viol)", _ev["pop"]),
+                ("_deliver_full (blocked-caps -> eligibility -> cap, per candidate)",
+                 _ev["deliver"]),
+                ("band projection + penalty (the EXACT M5 projector)", _ev["band"]),
+                ("_segment_softmax decode (numpy, feeds deliver + band)", _ev["decode"]),
+                ("compressibility regulariser (0 unless it is on)", _ev["comp"]),
+            ]
+            for _el, _evv in sorted(_ev_rows, key=lambda kv: -kv[1]):
+                if _evv > 0.0 or "compress" in _el:
+                    log(f"         {_evv:8.1f}s  "
+                        f"({100.0 * _evv / max(_ev_tot, 1e-9):>5.1f}%)  {_el}"
+                        f"  ·  {1000.0 * _evv / max(_ev['n'], 1):,.1f} ms/call")
+            _ev_gap = float(_gg["eval"]) - _ev_tot
+            log(f"         {_ev_gap:8.1f}s  "
+                f"({100.0 * _ev_gap / max(float(_gg['eval']), 1e-9):>5.1f}%)  unaccounted — "
+                "function entry/exit and the early return when no band scoring is wired")
+            log("      [eval-cost] READ THIS AGAINST [proj-config] AND [lift-ab]: the band row "
+                "here is the projector, and multiplying [lift-ab]'s ms/call by the P=35 call "
+                "count should land on it. `eval_pop` and `_deliver_full` are the two that have "
+                "never been separated from it before, and between them they are most of the "
+                "search.")
         # SELF-CHECK. "The segments SUM to it" is the block's whole claim over [gen-cost]; it is
         # true by the interval algebra only while every EXIT from the loop records what it spent.
         # There are two (fall-through and the patience break), so the claim is checked rather than
