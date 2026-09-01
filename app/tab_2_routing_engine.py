@@ -420,8 +420,10 @@ def render():
                 # endpoints + enforcement); its distinct full-matrix split is swapped in
                 # just before delivery. It runs the Numba path so the shared block never
                 # hits the removed NumPy fallback.
-                _is_genetic = engine_key in ("genetic", "genetic_numba", "genetic_fullmatrix")
-                _use_numba = engine_key in ("genetic_numba", "genetic_fullmatrix")
+                # 19gf: "genetic" / "genetic_numba" are not in `choices` and cannot be selected,
+                # so both of these were always True. Stated against the one engine that exists.
+                _is_genetic = engine_key == "genetic_fullmatrix"
+                _use_numba = engine_key == "genetic_fullmatrix"
                 # (Bypass-enforcement checkbox removed — the enforcement layer no longer gates the
                 # delivered split; the GA search output is delivered directly. See the delivery site.)
 
@@ -2910,6 +2912,9 @@ def render():
                     # routing_optimiser.precluster — it was gated on `ss['ga_precluster']`, which
                     # could not be True once the dropdown held only 'genetic_fullmatrix'.
                     #
+                    # 19gf: the `run_midtilt_ga` import that stood here is deleted with
+                    # _ga_solve_with_correction — nothing calls it any more. The note below is
+                    # kept because the comment it replaced caused a wrong answer once:
                     # 19gd — THIS COMMENT USED TO BE WRONG, and it cost a wrong answer. It read:
                     # "`_run_midtilt_ga` IS the plain search, and it is called for real: the numba
                     # warm-up, the loky seed workers, and the single-seed in-process path all use it
@@ -2923,10 +2928,9 @@ def render():
                     #     "genetic_numba", a key no longer in `choices`.
                     # The tilt seed the full-matrix GA actually warm-starts from is the BAND-AWARE
                     # seed from `band_greedy_shares_multi`, not this. The module now lives in
-                    # legacy_engines/ (19gd); this import is kept only so the unreachable branch
-                    # still resolves if it is ever revived.
-                    from routing_optimiser.legacy_engines.midtilt_cmaes import (
-                        run_midtilt_ga as _run_midtilt_ga)
+                    # legacy_engines/ (19gd) and its caller is deleted (19gf), so there is no
+                    # import here at all now. To revive: import it back and restore the
+                    # `elif _safe_G is None:` branch — legacy_engines/midtilt_cmaes.py says how.
                     # The parenthetical used to read "(expect 2026-07-16-vamp-frontier-lp — if not,
                     # clear __pycache__)". The shipped module is 2026-07-29-…, i.e. NEWER than the
                     # literal, so that line told the operator to clear __pycache__ on every single
@@ -4699,7 +4703,9 @@ def render():
                         return sum(1 for _mk in _tt2
                                    if _tt2[_mk] > 0 and _vv[_mk] / _tt2[_mk] > float(vamp_cap) + 1e-9)
 
-                    if engine_key in ("genetic", "genetic_numba", "genetic_fullmatrix"):
+                    # 19gf: was `in ("genetic", "genetic_numba", "genetic_fullmatrix")`; the first
+                    # two cannot be selected, so this block IS the live engine path.
+                    if engine_key == "genetic_fullmatrix":
                         # genetic_fullmatrix enters this SAME branch so it reuses the ctx build,
                         # greedy+LP compliant split and endpoints; its distinct full-matrix split
                         # is swapped in at the delivery-site override (see `_deliver_G` below).
@@ -5149,10 +5155,6 @@ def render():
                         if _ga_bands and _mid_month_rules:
                             try:
                                 import scipy.sparse as _spx
-                                # 19gd: moved to legacy_engines/ — unreachable, see the note at
-                                # the _run_midtilt_ga import above.
-                                from routing_optimiser.legacy_engines.midtilt_cmaes import (
-                                    run_midtilt_ga as _plain_ga)
                                 from routing_optimiser.s4_search.band_scoring import ExactBandPenalty as _EBP, BandSpec as _BSpec
                                 # ── [band-setup] 19fn: the block that used to be silent ───────
                                 # Everything from here to the [inc-build] line below ran with no
@@ -5321,7 +5323,12 @@ def render():
                                     log(f"   [breach-scale] banner skipped ({type(_bse).__name__}: "
                                         f"{_bse}) — the penalty itself is unaffected.")
                                 ctx["_exact_bands_selfcheck"] = {"inc": _inc, "done": False}
-                                _run_midtilt_ga = _plain_ga            # pre-clustering OFF for exact bands
+                                # 19gf: `_run_midtilt_ga = _plain_ga` stood here to swap OUT the
+                                # pre-clustered variant. Both names are gone (19fk deleted the
+                                # pre-clustering; 19gf deleted the tilt search), and leaving the
+                                # line would have raised NameError INSIDE this try/except — which
+                                # catches it, logs a skip, and silently turns EXACT BAND SCORING
+                                # OFF. A caught exception is the worst kind of leftover.
                                 log(f"   GA fitness: EXACT per-generation band scoring ON — {len(_specs)} band(s), "
                                     f"pre-clustering OFF, incidence {_inc.shape[0]}×{_inc.shape[1]} ({_inc.nnz} nnz). "
                                     "Delivered split gets an incidence self-check (must read ~0 to trust).")
@@ -5459,550 +5466,6 @@ def render():
                                     _tot += 1.0 - _v / _lo
                             return float(_tot)
 
-                        # [FN-340]
-                        def _ga_solve_with_correction(_risk_min_w, _seed=42, _rounds=1, _band_w=8.0,
-                                                      _warm=None, _band_fix=20.0, _ref_gamma=None,
-                                                      _n_fine=0, _n_restarts=None):
-                            """Run the tilt GA, then RE-PROJECT & CORRECT (like the greedy): re-anchor
-                            the band proxy at the GA's own split via the TRUE projection and re-run,
-                            accepting a round ONLY if the true-projection band breach actually drops.
-                            Bounded (≤ _rounds) and no-regression. `_band_w` scales the per-MID band
-                            penalty (tougher at the dial-0 risk-min endpoint). `_warm` seeds a prior
-                            run's genome into the population (free reach). `_ref_gamma` leans the θ=0
-                            reference toward compliance PER ENDPOINT (≈0 at revenue-max so the revenue
-                            ceiling isn't taxed; larger at risk-min). Returns (shares, info)."""
-                            _rg_default = ctx.get("ref_gamma", 0.25)
-                            ctx["risk_min_w"] = float(_risk_min_w)
-                            ctx["band_weight"] = float(_band_w)
-                            ctx["band_fixed"] = float(_band_fix)
-                            if _ref_gamma is not None:
-                                ctx["ref_gamma"] = float(_ref_gamma)   # #8 per-endpoint compliant lean
-                            # Per-endpoint search knobs: richer per-cell genome (_n_fine) and extra
-                            # restarts/budget — used at the risk-min end where the extra reach pays.
-                            _extra_kw = {"n_fine": int(_n_fine)}
-                            if _n_restarts is not None:
-                                _extra_kw["n_restarts"] = int(_n_restarts)
-                            if engine_key == "genetic_numba":
-                                # opt-in Numba fused eval; the GA self-verifies vs NumPy and FAILS
-                                # LOUDLY (raises with full diagnostics) on any mismatch/exception —
-                                # it no longer falls back to NumPy. Forwarded to every run_midtilt_ga
-                                # call below via **_extra_kw.
-                                _extra_kw["numba"] = True
-                            # Restart strategy (both engines): lean constant-λ + coordinated-coverage
-                            # is the DEFAULT; IPOP (λ-doubling) only when explicitly chosen. Forwarded
-                            # to every run_midtilt_ga call below.
-                            _extra_kw["restart_mode"] = (
-                                "ipop" if str(ss.get("ga_restart_mode", "")).startswith("IPOP")
-                                else "lean")
-                            try:
-                                ctx["midband"] = (_build_ga_bands(_ref_share_G) or None)
-                            except Exception as _e:  # noqa: BLE001
-                                log(f"   [Warning] GA band build failed ({_e}); proxy bands off this run.")
-                                ctx["midband"] = None
-                            # MULTI-SEED: run a few random seeds and keep the fittest (elitism per
-                            # seed + the warm-start make each cheap). Guards against an unlucky path.
-                            # The seeds are INDEPENDENT and each fully DETERMINISTIC (seed=_seed+_s),
-                            # so run them in parallel PROCESSES via joblib's loky backend (robust on
-                            # macOS + Windows spawn, same as the compression stage). Results are
-                            # consumed in seed order and the fittest kept with the SAME strictly-
-                            # greater / first-wins tie-break as the sequential loop, so the outcome is
-                            # byte-identical. ANY failure (or a single seed) → the sequential loop,
-                            # also byte-identical. ctx is read-only inside the GA, so pickling a copy
-                            # to each worker is safe.
-                            _seed_results = None
-                            # The multi-seed GA ALWAYS runs on loky worker processes (true multi-core).
-                            # There is no backend selector and no threading/sequential fallback: if the
-                            # loky pool can't run, the run fails loudly (see the `except` below).
-                            if int(_N_SEED) > 1:
-                                import time as _st_t
-                                from joblib import Parallel, delayed
-                                import inspect as _insp_jl
-                                try:                        # older joblib lacks inner_max_num_threads
-                                    _JL_INNER_OK = ("inner_max_num_threads" in
-                                                    _insp_jl.signature(Parallel).parameters)
-                                except Exception:  # noqa: BLE001
-                                    _JL_INNER_OK = False
-                                # Backend: loky (processes) gives TRUE multi-core parallelism because
-                                # the CMA-ES holds the GIL a lot between numpy calls. Each seed is
-                                # INDEPENDENT and fully DETERMINISTIC (seed=_seed+_s), and results are
-                                # consumed in seed order. loky needs picklable args (ctx + the
-                                # now-picklable stop_check); large ctx arrays are auto-memmapped by
-                                # joblib, and inner_max_num_threads=1 stops the workers × BLAS-threads
-                                # oversubscription. loky is the ONLY supported backend — if it can't
-                                # run, the run fails loudly (no threading / sequential fallback).
-                                _try_backends = ["loky"]
-                                _njobs = min(int(_N_SEED), os.cpu_count() or 1)
-                                # Can we stream results as each seed returns? (joblib >=1.3 has
-                                # return_as). If so we log a per-seed convergence summary the moment
-                                # each finishes; the generator is ORDERED so the fittest tie-break
-                                # stays byte-identical to the blocking call. Older joblib → blocking.
-
-                                # [FN-341]
-                                def _log_seed(_idx, _infoc, _t0, _best_holder):
-                                    """Verbose one-line summary for a finished seed (best-effort)."""
-                                    try:
-                                        _fit = float(_infoc.get("best_fit", float("nan")))
-                                        _i0 = float(_infoc.get("init_fit", _fit))
-                                        _feas = bool(_infoc.get("feasible", False))
-                                        _viol = float(_infoc.get("violation", 0.0))
-                                        _gns = int(_infoc.get("gens", 0))
-                                        _gmax = int(_infoc.get("gens_max", 0))
-                                        _sig = float(_infoc.get("sigma_final", 0.0))
-                                        _es = bool(_infoc.get("early_stopped", False))
-                                        _tag = ""
-                                        if _best_holder[0] is None or _fit > _best_holder[0]:
-                                            _best_holder[0] = _fit; _tag = "  ← best so far"
-                                        log(f"      • seed {_idx}/{int(_N_SEED)} finished "
-                                            f"(t+{_st_t.time() - _t0:.0f}s): fitness {_i0:,.4g}→{_fit:,.4g}, "
-                                            f"feasible={_feas}, violation={_viol:.4g}, "
-                                            f"{_gns}/{_gmax} gens{' (early-stop)' if _es else ''}, "
-                                            f"σ_final={_sig:.3g}{_tag}")
-                                    except Exception:  # noqa: BLE001
-                                        pass
-
-                                # LIVE PROGRESS: give each seed a picklable writer that records its
-                                # running candidate-eval count to its own file; run the (blocking)
-                                # Parallel in a BACKGROUND THREAD so THIS thread stays free to poll
-                                # those files and log an aggregate "candidate splits evaluated so far"
-                                # while the search runs. All best-effort — any failure cascades to the
-                                # next backend / sequential path, byte-identical to before.
-                                import concurrent.futures as _cf, shutil as _shutil
-                                try:
-                                    from routing_optimiser.s5_deliver.run_bundle import _ProgressWriter as _PW
-                                except Exception:  # noqa: BLE001
-                                    _PW = None
-                                # CRITICAL: keep the per-seed progress files on a LOCAL disk, NOT inside
-                                # the project (which lives under a cloud-synced/FUSE mount). The loky
-                                # WORKER processes write these files and the MAIN process (poller) reads
-                                # them; on FUSE, cross-process writes don't propagate promptly, so the
-                                # poller reads empty files, reports 0 candidates, and prints NO live
-                                # progress — the run looks dead for 25 min even though the seeds are
-                                # running. The OS temp dir is a real local fs with immediate visibility.
-                                import tempfile as _tf_prog
-                                _prog_dir = os.path.join(_tf_prog.gettempdir(), "routing_optimiser_gaprog")
-                                try:
-                                    _shutil.rmtree(_prog_dir, ignore_errors=True)
-                                    os.makedirs(_prog_dir, exist_ok=True)
-                                except Exception:  # noqa: BLE001
-                                    _prog_dir = None
-                                _writers = ([_PW(os.path.join(_prog_dir, f"seed_{_s}.txt"))
-                                             for _s in range(int(_N_SEED))]
-                                            if (_PW is not None and _prog_dir) else [None] * int(_N_SEED))
-                                _restarts_est = int(_extra_kw.get("n_restarts", 2) or 2)
-                                _total_cand = max(1, int(_N_SEED) * _restarts_est * int(_ga_gen) * int(_ga_pop))
-
-                                # [FN-342]
-                                def _poll_progress(_t0, _emit, _nseed):
-                                    """Sum the per-seed progress files and surface the live count in BOTH
-                                    the visible headline (so it's seen without expanding the technical log)
-                                    and the technical log (rate-limited). The progress bar freezes during
-                                    the GA — this headline is what tells you it's still working."""
-                                    if not _prog_dir:
-                                        return
-                                    _done = 0
-                                    _active = 0
-                                    _best = None; _best_fit = None; _best_nv = None
-                                    try:
-                                        for _fn in os.listdir(_prog_dir):
-                                            if _fn.endswith(".txt"):
-                                                try:
-                                                    with open(os.path.join(_prog_dir, _fn)) as _pf:
-                                                        _parts = _pf.read().split("|")   # "total|best|fit|nviol"
-                                                    _v = int(((_parts[0]).strip() or "0"))
-                                                    _done += _v
-                                                    if _v > 0:
-                                                        _active += 1
-                                                    if len(_parts) > 1 and _parts[1].strip():
-                                                        _bs = float(_parts[1])
-                                                        if _best is None or _bs > _best:
-                                                            _best = _bs
-                                                            _best_fit = (float(_parts[2]) if (len(_parts) > 2
-                                                                         and _parts[2].strip()) else None)
-                                                            _best_nv = (int(_parts[3]) if (len(_parts) > 3
-                                                                        and _parts[3].strip()) else None)
-                                                except Exception:  # noqa: BLE001
-                                                    pass
-                                    except Exception:  # noqa: BLE001
-                                        return
-                                    _now = _st_t.time()
-                                    _rate = _done / max(_now - _t0, 1e-6)
-                                    # VISIBLE headline (updated every poll) — no need to expand the log.
-                                    try:
-                                        _eta_slot.markdown(
-                                            "<div style='padding:0.1rem 0 0.35rem 0; line-height:1.25;'>"
-                                            "<span style='font-size:1.4rem; font-weight:800; color:var(--tav-ink);'>"
-                                            f"Searching… ≈ {_done:,}</span>"
-                                            "<span style='font-size:0.9rem; color:var(--tav-muted);'> candidate "
-                                            f"splits evaluated</span><br>"
-                                            "<span style='font-size:0.8rem; color:var(--tav-muted);'>"
-                                            f"{_active}/{int(_nseed)} seeds reporting · {_rate:,.0f}/s · "
-                                            f"t+{_now - _t0:.0f}s</span></div>", unsafe_allow_html=True)
-                                    except Exception:  # noqa: BLE001
-                                        pass
-                                    # Technical-log line (rate-limited): raw count is exact; no denominator —
-                                    # the true total exceeds seeds×restarts×gens×λ because CMA-ES doubles λ on
-                                    # each IPOP restart, so a fixed "of Y" would read past 100%.
-                                    if _done > _emit["n"] and (_now - _emit["t"]) >= 8.0:
-                                        _emit["n"], _emit["t"] = _done, _now
-                                        _bstr = (f" · best score {_best:,.0f}" if _best is not None else "")
-                                        _fstr = (f" · fitness {_best_fit:,.0f}" if _best_fit is not None else "")
-                                        _nstr = (f" · MIDs unmet {_best_nv}" if _best_nv is not None else "")
-                                        log(f"   GA progress: ≈ {_done:,} candidate splits evaluated so far "
-                                            f"({_active}/{int(_nseed)} seeds active, {_rate:,.0f}/s) · "
-                                            f"t+{_now - _t0:.0f}s{_bstr}{_fstr}{_nstr}")
-
-                                # ---- GA-Numba: PRE-COMPILE the kernel ONCE in the main process ----
-                                # Otherwise all 16 loky workers cold-compile the fused kernel
-                                # simultaneously (empty cache, no sharing) and fight for the cores —
-                                # the ~9-minute stall before the first seed reports. Compiling once
-                                # here first writes the persistent .numba_cache, so the workers then
-                                # LOAD it in a fraction of a second. One tiny run (pop 4, 1 gen) is
-                                # enough to trigger + verify the exact signature they'll use. Any
-                                # failure here is now FATAL: it fails loudly with full diagnostics
-                                # (no silent NumPy fallback) rather than letting workers limp on.
-                                if engine_key == "genetic_numba":
-                                    try:
-                                        import time as _wt
-                                        log("   GA-Numba: compiling the kernel once in the main "
-                                            "process (first run after a code/version change only; "
-                                            "cached to .numba_cache and reused by every later run "
-                                            "and every split/settings combination)…")
-                                        # Cache diagnostic: where Numba caches + how many kernel files
-                                        # exist BEFORE we compile. Numba writes .nbi/.nbc into a SUBFOLDER
-                                        # (…/_numba_cache/<pkg>_<pathhash>/), so count RECURSIVELY — a flat
-                                        # listdir always reads 0 and falsely looks like the cache failed.
-                                        try:
-                                            import glob as _nbglob
-                                            _nbcd = os.environ.get("NUMBA_CACHE_DIR", "(default __pycache__)")
-                                            if os.path.isdir(_nbcd):
-                                                _nbn = len(_nbglob.glob(os.path.join(_nbcd, "**", "*.nbi"),
-                                                                        recursive=True)) + \
-                                                       len(_nbglob.glob(os.path.join(_nbcd, "**", "*.nbc"),
-                                                                        recursive=True))
-                                            else:
-                                                _nbn = -1
-                                            log(f"      numba cache: dir={_nbcd} · exists="
-                                                f"{os.path.isdir(_nbcd)} · {_nbn} kernel file(s) present "
-                                                "before compile (>0 ⇒ a prior compile persisted; 0 on the "
-                                                "FIRST run after a kernel/code change is normal)")
-                                        except Exception:  # noqa: BLE001
-                                            pass
-                                        # Warmup does the FULL verify (no trust flag yet); the copy
-                                        # is taken BEFORE we set numba_trust, so this call verifies.
-                                        _wkw = dict(_extra_kw); _wkw["n_restarts"] = 1
-                                        _wc0 = _wt.time()
-                                        _wsh, _winfo = _run_midtilt_ga(
-                                            ctx, pop_size=4, generations=1,
-                                            seed=_seed, polish=False, **_wkw)
-                                        _wsecs = _wt.time() - _wc0
-                                        _wn = (_winfo or {}).get("numba", {}) or {}
-                                        if _wn.get("used"):
-                                            # Verified once here → tell every worker to TRUST the cached
-                                            # kernel and SKIP its own NumPy-vs-Numba re-check (was 16×
-                                            # redundant, incl. 16 pointless NumPy evals).
-                                            _extra_kw["numba_trust"] = True
-                                            _verdict = ("loaded from cache" if _wsecs < 8
-                                                        else "COMPILED (first run after a kernel/code change "
-                                                             "— expected once; later runs with the SAME code "
-                                                             "load this from .numba_cache in <1s)")
-                                            log(f"   GA-Numba: kernel {_verdict} in "
-                                                f"{_wsecs:.1f}s (max rel-obj diff "
-                                                f"{_wn.get('max_rel_obj', float('nan')):.1e}, "
-                                                f"max abs-viol {_wn.get('max_abs_viol', float('nan')):.1e}) "
-                                                "— workers will load it from cache and skip re-verifying.")
-                                        else:
-                                            # FAIL-LOUD: the fast path was requested but the pre-compile
-                                            # did not enable it. We do NOT silently drop to NumPy — surface
-                                            # the full numba diagnostics and abort the run.
-                                            log("   GA-Numba: pre-compile did NOT enable the fast path — "
-                                                f"FAILING LOUDLY (no silent NumPy fallback). detail: {_wn}")
-                                            raise RuntimeError(
-                                                "GA-Numba pre-compile did not enable the fused kernel "
-                                                f"({_wsecs:.1f}s). numba info = {_wn}. Refusing to fall "
-                                                "back to NumPy silently — fix the kernel or run a "
-                                                "non-numba engine.")
-                                    except Exception as _we:  # noqa: BLE001
-                                        # FAIL-LOUD: log the full traceback + build markers and re-raise so
-                                        # the run stops with an easy-to-debug error (no silent NumPy fallback).
-                                        import traceback as _wtb
-                                        _wbuild = getattr(_gg, "__build__", "?")
-                                        log("   GA-Numba pre-compile FAILED — failing loudly (no silent "
-                                            f"NumPy fallback).\n      error: {type(_we).__name__}: {_we}\n"
-                                            f"      seed_search build: {_wbuild}\n"
-                                            f"      traceback:\n{_wtb.format_exc()}")
-                                        raise
-
-                                for _bk in _try_backends:
-                                    try:
-                                        _pk = dict(n_jobs=_njobs, backend=_bk)
-                                        if _bk in ("loky", "multiprocessing") and _JL_INNER_OK:
-                                            _pk["inner_max_num_threads"] = 1   # avoid BLAS oversubscription
-                                        _t_par0 = _st_t.time()
-                                        _tlog(f"   multi-seed GA (risk-min endpoint): launching "
-                                            f"{int(_N_SEED)} seed(s) across {_njobs} {_bk} worker(s) "
-                                            f"— gens≤{int(_ga_gen)}, pop={int(_ga_pop)} each; "
-                                            f"≥{_total_cand:,} candidate splits (more with restart λ-growth), "
-                                            "count logged live every few seconds…")
-                                        # DIVERSE-SEED SEARCH (opt-in, free): give each worker a DISTINCT
-                                        # start (blend of the revenue-greedy ↔ risk-greedy references +
-                                        # light jitter) and a DISTINCT explore/exploit strategy (varying
-                                        # gain_max). warm_shares stays length-1 per worker so the restart
-                                        # count is UNCHANGED (n_r = max(n_restarts, #seeds)); same seeds,
-                                        # generations, pop → same one-wave wall time. Off → byte-identical.
-                                        _diverse = int(_N_SEED) > 1   # diverse-seed search ALWAYS on (checkbox removed)
-                                        _seed_ctx = [ctx] * int(_N_SEED)
-                                        _seed_gm = [_GA_GAIN_MAX] * int(_N_SEED)
-                                        if _diverse:
-                                            try:
-                                                import numpy as _np_ds
-                                                _ws0 = ctx.get("warm_shares")
-                                                _anch = ([_np_ds.asarray(a, float) for a in _ws0]
-                                                         if isinstance(_ws0, (list, tuple)) and len(_ws0) >= 2
-                                                         else None)
-                                                _cs_ds = _np_ds.asarray(ctx.get("cell_starts", []), int)
-                                                _cc_ds = _np_ds.asarray(ctx.get("cell_counts", []), int)
-                                                _seed_ctx, _seed_gm = [], []
-                                                for _s in range(int(_N_SEED)):
-                                                    _w = _s / max(int(_N_SEED) - 1, 1)   # 0=risk … 1=revenue
-                                                    _seed_gm.append(float(_GA_GAIN_MAX * (0.7 + 0.6 * _w)))
-                                                    if _anch is not None and _cs_ds.size and _anch[0].shape == _anch[1].shape:
-                                                        _rng_ds = _np_ds.random.default_rng(int(_seed) + 7000 + _s)
-                                                        _bl = _w * _anch[0] + (1.0 - _w) * _anch[1]
-                                                        _bl = _np_ds.clip(_bl + _rng_ds.normal(0.0, 0.04, _bl.shape), 0.0, None)
-                                                        _seg = _np_ds.add.reduceat(_bl, _cs_ds)
-                                                        _bl = _bl / _np_ds.repeat(_np_ds.where(_seg > 1e-12, _seg, 1.0), _cc_ds)
-                                                        _seed_ctx.append({**ctx, "warm_shares": [_bl]})
-                                                    else:
-                                                        _seed_ctx.append(ctx)
-                                                log(f"   diverse-seed search ON: {int(_N_SEED)} workers spread across the "
-                                                    f"revenue↔risk axis, explore/exploit gain_max "
-                                                    f"{min(_seed_gm):.2f}–{max(_seed_gm):.2f} (same budget/time).")
-                                            except Exception as _dse:  # noqa: BLE001
-                                                log(f"   [Warning] diverse-seed setup skipped "
-                                                    f"({type(_dse).__name__}: {_dse}); standard seeding used.")
-                                                _seed_ctx = [ctx] * int(_N_SEED)
-                                                _seed_gm = [_GA_GAIN_MAX] * int(_N_SEED)
-                                        _tasks = [delayed(_run_midtilt_ga)(
-                                            _seed_ctx[_s], pop_size=_ga_pop, generations=_ga_gen,
-                                            seed=_seed + _s,
-                                            warm_start=_warm, gain_max=_seed_gm[_s], stop_check=_ga_stop,
-                                            progress_cb=_writers[_s], **_extra_kw)
-                                            for _s in range(int(_N_SEED))]
-                                        _box = {}
-                                        # [FN-343]
-                                        def _run_par(_pk=_pk, _tasks=_tasks, _box=_box):
-                                            _box["r"] = list(Parallel(**_pk)(_tasks))
-                                        _emit = {"n": 0, "t": 0.0}
-                                        with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
-                                            _fut = _ex.submit(_run_par)
-                                            while not _fut.done():
-                                                _st_t.sleep(3.0)
-                                                _poll_progress(_t_par0, _emit, _N_SEED)
-                                            _fut.result()          # re-raise any worker error → fallback
-                                        _seed_results = _box.get("r")
-                                        # Sum the per-seed progress files one last time → the EXACT
-                                        # candidate count actually evaluated, stored so the tab-2 readout
-                                        # can show the true number (not just the pre-run floor estimate).
-                                        try:
-                                            _fin_cands = 0
-                                            if _prog_dir:
-                                                for _fn in os.listdir(_prog_dir):
-                                                    if _fn.endswith(".txt"):
-                                                        try:
-                                                            with open(os.path.join(_prog_dir, _fn)) as _pf:
-                                                                # "total|best|fit" — take field 0 (the count).
-                                                                _fin_cands += int(((_pf.read().split("|")[0]).strip() or "0"))
-                                                        except Exception:  # noqa: BLE001
-                                                            pass
-                                            if _fin_cands > 0:
-                                                ss["last_ga_cands"] = int(_fin_cands)
-                                                ss["last_ga_secs"] = float(_st_t.time() - _t_par0)
-                                                # Realization ratio = actual ÷ nominal floor. Captures how
-                                                # much λ-growth (↑) and early-stops (↓) net out at THESE
-                                                # settings, so the tab-2 readout can predict the next run's
-                                                # count tightly (scale the floor by this) instead of showing
-                                                # the wide theoretical floor–ceiling band.
-                                                _nom = (int(_N_SEED)
-                                                        * max(1, int(ss.get("ga_restarts", 4) or 4))
-                                                        * int(_ga_gen) * int(_ga_pop))
-                                                if _nom > 0:
-                                                    ss["last_ga_ratio"] = float(_fin_cands) / float(_nom)
-                                        except Exception:  # noqa: BLE001
-                                            pass
-                                        _bh = [None]
-                                        for _si, (_shc, _infoc) in enumerate(_seed_results or [], 1):
-                                            _log_seed(_si, _infoc, _t_par0, _bh)
-                                        log(f"   multi-seed GA: {int(_N_SEED)} seeds in PARALLEL ({_bk}, "
-                                            f"{_njobs} workers) in {_st_t.time() - _t_par0:.1f}s.")
-                                        break
-                                    except Exception as _pe:  # noqa: BLE001
-                                        # loky is the ONLY supported backend — no threading/sequential
-                                        # fallback. Fail loudly so a wedged/broken worker pool is never
-                                        # silently downgraded to a slower path.
-                                        log(f"   ✗ parallel multi-seed GA via {_bk} FAILED "
-                                            f"({type(_pe).__name__}: {_pe}). No fallback — clear "
-                                            "__pycache__ and fully restart Streamlit, then retry.")
-                                        raise
-                            _sh, _info = None, None
-                            if _seed_results is not None:
-                                for _shc, _infoc in _seed_results:            # seed order preserved
-                                    if _info is None or _infoc["best_fit"] > _info["best_fit"]:
-                                        _sh, _info = _shc, _infoc
-                            else:
-                                # Single-seed run (N_SEED == 1): no worker pool needed — run the one
-                                # seed in-process. This is NOT a parallel fallback; multi-seed ALWAYS
-                                # runs on loky and raises on failure (no sequential downgrade).
-                                for _s in range(int(_N_SEED)):
-                                    _shc, _infoc = _run_midtilt_ga(
-                                        ctx, pop_size=_ga_pop, generations=_ga_gen,
-                                        seed=_seed + _s,
-                                        warm_start=_warm, gain_max=_GA_GAIN_MAX, stop_check=_ga_stop,
-                                        **_extra_kw)
-                                    if _info is None or _infoc["best_fit"] > _info["best_fit"]:
-                                        _sh, _info = _shc, _infoc
-                            # ---- GA - Numba: extensive cross-validation diagnostics --------------
-                            # Printed whenever the Numba engine was requested, so a reviewer can
-                            # confirm the compiled kernel produced the SAME (objective, violation) as
-                            # the NumPy engine before trusting the fast path — or see exactly why it
-                            # fell back. All seeds verify identically, so we log the winner's block.
-                            try:
-                                _nbi = (_info or {}).get("numba") if isinstance(_info, dict) else None
-                                if _nbi and _nbi.get("requested"):
-                                    log("   ── GA-Numba verification ──────────────────────────────")
-                                    log(f"      kernel build   : {_nbi.get('build', '?')}")
-                                    if _nbi.get("used") and _nbi.get("trusted"):
-                                        log("      DECISION       : ✓ USING Numba fused float64 kernel "
-                                            "(verified once at pre-compile; workers trusted the cached "
-                                            "kernel — see the compile line above for the diff figures)")
-                                    elif _nbi.get("used"):
-                                        log("      DECISION       : ✓ USING Numba fused float64 kernel "
-                                            "(verified identical to NumPy)")
-                                    else:
-                                        log(f"      DECISION       : ↩ FELL BACK to NumPy engine "
-                                            f"— {_nbi.get('reason', 'unknown')}")
-                                    _ns = _nbi.get("n_sample")
-                                    if _ns:
-                                        _tlog(f"      verified on    : {int(_ns)} sample genomes "
-                                            "(θ=0 base + warm-start + random draws)")
-                                    # Per-worker cache diagnostic: how each seed's FIRST eval timed.
-                                    # <1s = worker LOADED the cached kernel; tens of seconds = it
-                                    # RE-COMPILED (cache miss in the worker) → the real cause of a
-                                    # crawling multi-seed search. Aggregated across all seed results.
-                                    try:
-                                        _fe = [float((_ic.get("numba") or {}).get("first_eval_s"))
-                                               for (_sc, _ic) in (_seed_results or [])
-                                               if isinstance(_ic, dict)
-                                               and (_ic.get("numba") or {}).get("first_eval_s") is not None]
-                                        _ntot = len(_seed_results or [])
-                                        _nused = sum(1 for (_sc, _ic) in (_seed_results or [])
-                                                     if isinstance(_ic, dict)
-                                                     and (_ic.get("numba") or {}).get("used"))
-                                        if _ntot:
-                                            log(f"      workers        : {_nused}/{_ntot} used Numba")
-                                        if _fe:
-                                            _slow = sum(1 for _x in _fe if _x > 8.0)
-                                            log(f"      worker 1st-eval: min={min(_fe):.1f}s "
-                                                f"max={max(_fe):.1f}s · {_slow}/{len(_fe)} RE-COMPILED "
-                                                "(>8s ⇒ cache miss in worker → slow search)")
-                                    except Exception:  # noqa: BLE001
-                                        pass
-                                    _mro = _nbi.get("max_rel_obj"); _mao = _nbi.get("max_abs_obj")
-                                    _mav = _nbi.get("max_abs_viol"); _mrv = _nbi.get("max_rel_viol")
-                                    if _mro is not None and _mro == _mro:   # not NaN
-                                        log(f"      objective diff : max |rel|={_mro:.2e}  max |abs|={_mao:.2e}"
-                                            "   (tolerance rel ≤ 1e-7)")
-                                        log(f"      violation diff : max |abs|={_mav:.2e}  max |rel|={_mrv:.2e}"
-                                            "   (tolerance abs ≤ 1e-7)")
-                                    _tnp = _nbi.get("t_np"); _tnb = _nbi.get("t_nb")
-                                    _cmp = _nbi.get("compile_s"); _spd = _nbi.get("speedup")
-                                    if _tnp is not None and _tnp == _tnp:
-                                        log(f"      sample timing  : numpy={_tnp*1e3:.2f} ms  "
-                                            f"numba={_tnb*1e3:.2f} ms  (JIT compile {_cmp*1e3:.0f} ms, "
-                                            f"one-off)  →  {_spd:.2f}× on the verify batch")
-                                    log("      note           : per-run speed-up is larger than the tiny "
-                                        "verify batch shows; compile is paid ONCE per worker process.")
-                                    log("   ───────────────────────────────────────────────────────")
-                            except Exception as _nle:  # noqa: BLE001 - logging must never break a run
-                                log(f"   [Warning] GA-Numba diagnostics log skipped ({_nle}).")
-                            # Preserve the MAIN search's full generation history so the convergence
-                            # chart shows all N generations — the re-projection loop below may swap
-                            # _info for a SHORT correction run (its history is only a handful of gens,
-                            # which was why the chart showed e.g. 109 instead of the 300 that ran).
-                            _main_hist = (list(_info.get("history"))
-                                          if (isinstance(_info, dict) and _info.get("history")) else None)
-                            if ctx["midband"]:
-                                # Post-GA re-projection CORRECTION removed — band scoring is now EXACT
-                                # in-search, so the search already satisfies the true pro-rata bands (no
-                                # proxy→true gap to reconcile). This is a READ-ONLY compliance readout of
-                                # the delivered split (and it runs the incidence self-check inside
-                                # _ga_true_breach); it does NOT modify the split.
-                                try:
-                                    _br = _ga_true_breach(_sh)
-                                    log(f"   delivered split — true-band breach {_br:.4g} "
-                                        "(0 = all month bands satisfied by the real pro-rata projection; "
-                                        "exact in-search scoring, no post-hoc correction).")
-                                    # PER-MID CONSTRAINT BREAKDOWN — target vs Now for every configured
-                                    # constraint, from the SAME exact-band projection that produced the
-                                    # breach above (so these numbers reconcile with the GA's score). Best
-                                    # effort; never breaks the run.
-                                    try:
-                                        _epx = ctx.get("exact_bands") if isinstance(ctx, dict) else None
-                                        _scx2 = ctx.get("_exact_bands_selfcheck") if isinstance(ctx, dict) else None
-                                        _mcn2 = params.get("mid_constraints", []) if isinstance(params, dict) else []
-                                        if _epx is not None and _scx2 is not None and _mcn2:
-                                            from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr_rep
-                                            _pr_rep = _s2pr_rep(np.asarray(_sh, float)[None, :], _scx2["inc"])
-                                            _now_by = {}
-                                            for _bd in _epx.report(_pr_rep):
-                                                if len(_bd["months"]) == 1:
-                                                    _now_by[(_bd["midl"], _bd["months"][0], _bd["metric"])] = _bd["now"]
-                                            _mlab2 = {"txn": "VI Txn", "vamp": "VAMP", "vamp_pct": "VAMP %"}
-                                            log("   ── per-MID constraint breakdown (delivered split · exact M-band projection) ──")
-                                            log("      vampMid | scope | metric | type | prio | target | now | miss | minimal relaxation")
-                                            for _rr2 in _mcn2:
-                                                _mid2 = str(_rr2.get("vampMid"))
-                                                _mo2 = _rr2.get("month")
-                                                _mtr2 = str(_rr2.get("metric", "txn"))
-                                                _dir2 = str(_rr2.get("direction", "range"))
-                                                _tg2 = float(_rr2.get("target") or 0.0)
-                                                _tl2 = float(_rr2.get("tol") or 0.0)
-                                                _prio2 = int(_rr2.get("priority", 1) or 1)
-                                                _sc2 = "ALL" if _mo2 is None else f"M{int(_mo2)}"
-                                                _now2 = _now_by.get((_mid2.strip().lower(),
-                                                                     (None if _mo2 is None else int(_mo2)), _mtr2))
-                                                if _now2 is None:
-                                                    log(f"      {_mid2} | {_sc2} | {_mlab2.get(_mtr2, _mtr2)} | {_dir2} | "
-                                                        f"{_prio2} | {_tg2:,.0f} | (no band) | — | —")
-                                                    continue
-                                                _lo2, _hi2 = _tg2 * (1.0 - _tl2), _tg2 * (1.0 + _tl2)
-                                                _hi_on2 = _dir2 in ("range", "ceiling")
-                                                _lo_on2 = _dir2 in ("range", "floor")
-                                                if (not _hi_on2 or _now2 <= _hi2 + 1e-6) and (not _lo_on2 or _now2 >= _lo2 - 1e-6):
-                                                    _miss2, _rel2 = "✓ met", "—"
-                                                else:
-                                                    _miss2 = "under" if (_lo_on2 and _now2 < _lo2) else "over"
-                                                    _need2 = (abs(_now2 / _tg2 - 1.0) * 100.0) if _tg2 > 0 else 0.0
-                                                    _rel2 = f"Tol >= {_need2:.0f}%  or  Target -> {_now2:,.0f}"
-                                                log(f"      {_mid2} | {_sc2} | {_mlab2.get(_mtr2, _mtr2)} | {_dir2} | "
-                                                    f"{_prio2} | {_tg2:,.0f} | {_now2:,.0f} | {_miss2} | {_rel2}")
-                                    except Exception as _bde:  # noqa: BLE001
-                                        log(f"   [per-MID breakdown skipped: {type(_bde).__name__}: {_bde}]")
-                                except Exception as _e:  # noqa: BLE001
-                                    log(f"   [Warning] delivered-split band readout skipped ({_e}).")
-                            ctx["risk_min_w"] = 0.0
-                            ctx["band_weight"] = 8.0   # reset to defaults for anything downstream
-                            ctx["band_fixed"] = 20.0
-                            ctx["ref_gamma"] = _rg_default
-                            # Restore the main search's full-length history for the convergence chart.
-                            if _main_hist is not None and isinstance(_info, dict):
-                                _info = {**_info, "history": _main_hist}
-                            try:
-                                log(f"   convergence history: {len(_info.get('history') or [])} "
-                                    f"generation(s) recorded (main search; the re-projection run's own "
-                                    f"short history is NOT used for the chart).")
-                            except Exception:  # noqa: BLE001
-                                pass
-                            return _sh, _info
 
                         import time as _gatime
                         _ga_wall0 = _gatime.time()
@@ -6071,7 +5534,6 @@ def render():
                         # (the greedy+LP compliant split and the risk-greedy split), which feasibility-first
                         # ranking keeps from generation 0. This is equivalent to ref_gamma = 0, so
                         # _leaned_ref is a no-op; set a positive value to re-enable the lean.
-                        _ref_gamma_auto = 0.0
                         # The reference lean (γ) is a TILT-engine device only; it never touches the
                         # full-matrix engine (that short-circuited tilt search is discarded, and full-matrix
                         # seeds straight from the band-aware warm-start below). So only log it for the tilt
@@ -6085,9 +5547,7 @@ def render():
                         # risk-min term AND a TOUGHER per-MID band penalty (4× the dial-99 weight) so
                         # dial 0 sits inside every band harder. Intermediate dials inherit this via the
                         # frontier blend between the dial-0 and dial-99 endpoints.
-                        _warm_dial0 = None
                         _exact_G = None    # optional exact projector-defined seed (successive-LP); see below
-                        _band_mult = 1.0   # band penalty strength fixed at 1.0 (input removed)
                         # CATCH-ALL ε-FLOOR MASK — NOW OFF BY DEFAULT (obsolete after the cell-level
                         # catch-all fix). It was built to dodge the OLD per-gateway re-add: back then a
                         # gateway zeroed by the split was re-added at ~10.6%, so pinning catch-all
@@ -6681,89 +6141,26 @@ def render():
                         # #6 DISK CACHE: the risk-min search is deterministic, so a re-run with identical
                         # inputs returns the SAME split instantly. The key hashes the engine build + every
                         # ctx array + all endpoint params, so a hit can NEVER be stale.
-                        import hashlib as _hl_rm
 
-                        # [FN-345]
-                        def _riskmin_key():
-                            _h = _hl_rm.md5(); _h.update(str(getattr(_gg, "__build__", "?")).encode())
-                            for _k in ("ref_share", "risk", "rev_coef", "cell_vol", "mid_id",
-                                       "cell_starts", "cell_counts", "elig", "mid_vol_cap",
-                                       "mid_base_vol", "vamp_floor_route"):
-                                _v = ctx.get(_k)
-                                if _v is not None:
-                                    _h.update(_k.encode())
-                                    _h.update(np.ascontiguousarray(np.asarray(_v)).tobytes())
-                            _h.update(np.ascontiguousarray(np.asarray(_comp_share_G, float)).tobytes())
-                            _h.update(np.ascontiguousarray(np.asarray(_risk_greedy_G, float)).tobytes())
-                            if _exact_G is not None:               # hash the exact seed too (else a stale hit)
-                                _h.update(b"exact_band_seed")
-                                _h.update(np.ascontiguousarray(np.asarray(_exact_G, float)).tobytes())
-                            _h.update(repr((float(vamp_cap) if vamp_cap is not None else None,
-                                            float(ctx.get("max_share", 1.0) or 1.0),
-                                            float(ctx.get("floor", 0.0) or 0.0), repr(_mid_month_rules),
-                                            round(float(_rm_w), 6), round(float(_band_mult), 4),
-                                            round(float(_ref_gamma_auto), 6),
-                                            int(_n_fine_rm), int(_ga_pop), int(_ga_gen), int(_N_SEED),
-                                            float(_GA_GAIN_MAX),
-                                            int(max(1, int(ss.get("ga_restarts", 4) or 4))),
-                                            # σ step-size knobs + early-stop toggle MUST be in the key, else a
-                                            # tuning change silently reloads a stale cached run (added 2026-08-04).
-                                            round(float(ctx.get("sigma0_mult", 1.0) or 1.0), 6),
-                                            round(float(ctx.get("sigma_floor", 0.0) or 0.0), 6),
-                                            round(float(ctx.get("damps_mult", 1.0) or 1.0), 6),
-                                            bool(ctx.get("no_early_stop", False)), 42)).encode())
-                            return _h.hexdigest()
 
-                        _rm_path = None; _safe_G = _inf2 = None
-                        try:
-                            # 19fk: renamed from ".cache" — see app_common.CACHE_DIR.
-                            _rm_path = os.path.join(PROJECT_ROOT, "data",
-                                                    "routing_engine_cached_input_data",
-                                                    f"riskmin_{_riskmin_key()}.pkl")
-                            if os.path.exists(_rm_path):
-                                import pickle as _pk_rm
-                                with open(_rm_path, "rb") as _f_rm:
-                                    _obj = _pk_rm.load(_f_rm)
-                                _safe_G, _inf2 = _obj["safe_G"], _obj["inf2"]
-                                _tlog("   risk-min (dial 0): loaded from disk cache "
-                                    "(deterministic — identical to re-searching).")
-                        except Exception:  # noqa: BLE001
-                            _safe_G = _inf2 = None; _rm_path = None
-                        if _safe_G is None and engine_key == "genetic_fullmatrix":
-                            # FULL-MATRIX: the tilt CMA-ES risk-min endpoint is DISCARDED by the full-matrix
-                            # override below, so do NOT run the search at all (this replaces the old trivial,
-                            # wasted 1-gen short-circuit). Use the already-built band-aware warm-start seed as
-                            # a valid stand-in for _safe_G so the shared downstream code stays defined — the
-                            # override overwrites _safe_endpoint_G/_comp_endpoint_G with the real full-matrix
-                            # result. (_comp_share_G is only a crash-proof fallback for this DISCARDED
-                            # placeholder; it is never the delivered full-matrix seed.)
-                            _safe_G = np.asarray(locals().get("_risk_greedy_G", _comp_share_G), float)
-                            _inf2 = None
-                            log("   [full-matrix] no preliminary endpoint search is run; the band-aware seed "
-                                "is used as the placeholder endpoint (the full-matrix GA is the delivered search).")
-                        elif _safe_G is None:
-                            # dial-0: bands scaled by UI strength; reference lean OFF (γ=0, #8) — the
-                            # compliant start comes from the warm-start seeds; richer per-cell genome (#4)
-                            # + extra restarts (#3) at this harder end.
-                            _safe_G, _inf2 = _ga_solve_with_correction(
-                                _rm_w, _band_w=3375.0 * _band_mult, _band_fix=8100.0 * _band_mult,
-                                _warm=_warm_dial0, _ref_gamma=_ref_gamma_auto, _n_fine=_n_fine_rm,
-                                _n_restarts=max(1, int(ss.get("ga_restarts", 4) or 4)))
-                            if _rm_path:
-                                try:
-                                    import pickle as _pk_rm, glob as _glob_rm
-                                    os.makedirs(os.path.dirname(_rm_path), exist_ok=True)
-                                    with open(_rm_path, "wb") as _f_rm:
-                                        _pk_rm.dump({"safe_G": _safe_G, "inf2": _inf2}, _f_rm)
-                                    _old_rm = sorted(_glob_rm.glob(os.path.join(
-                                        os.path.dirname(_rm_path), "riskmin_*.pkl")), key=os.path.getmtime)
-                                    for _o_rm in _old_rm[:-40]:
-                                        try:
-                                            os.remove(_o_rm)
-                                        except Exception:  # noqa: BLE001
-                                            pass
-                                except Exception:  # noqa: BLE001
-                                    pass
+                        # 19gf: the tilt CMA-ES risk-min endpoint is GONE (deleted with
+                        # _ga_solve_with_correction). What stood here was:
+                        #   * a 30-line hash key + a disk-cache LOAD of riskmin_<key>.pkl,
+                        #   * an `if _safe_G is None and engine_key == "genetic_fullmatrix"` branch that set a
+                        #     placeholder and logged "no preliminary endpoint search is run",
+                        #   * an `elif` that ran the CMA-ES and WROTE that cache.
+                        # With the elif deleted nothing can ever write the cache again, so the load could only
+                        # ever surface a STALE August search — and `_inf2` from it feeds tab 3's Engine Workings
+                        # charts. The 2026-09-01 run proves the cache was already missing: it logged "no
+                        # preliminary endpoint search is run", which only prints when the load found nothing.
+                        # So removing the load changes nothing observable and closes the door on a stale hit.
+                        # `_safe_G` is the band-aware seed, exactly as the surviving branch already set it; it is
+                        # then overwritten by the real full-matrix result (_safe_endpoint_G = _comp_endpoint_G =
+                        # _fm_full), so this is a placeholder that keeps the shared downstream code defined.
+                        _safe_G = np.asarray(locals().get("_risk_greedy_G", _comp_share_G), float)
+                        _inf2 = None
+                        log("   [full-matrix] no preliminary endpoint search is run; the band-aware seed "
+                            "is used as the placeholder endpoint (the full-matrix GA is the delivered search).")
                         if _anchored:                                        # restore the original reference
                             ctx["ref_share"] = _ref_share_backup             # so downstream/frontier is unaffected
                         ss["ga_hist_rev"] = None                              # revenue-max CMA-ES removed
@@ -8183,7 +7580,17 @@ def render():
                                             "per-candidate — see [lift-ab] for THIS run's measured "
                                             "number.")
                                         try:
-                                            _lab = getattr(_bpm, "lift_ab_report", None)
+                                            # 19gf: `_bpm` is imported ~266 lines BELOW this point
+                                            # (the [proj-par] drain). Using it here raised NameError
+                                            # into the except beneath, so [lift-ab] printed a skip
+                                            # every run and never measured the lift — the exact
+                                            # silent-no-op 19fw's four failure branches exist to
+                                            # expose, defeated by a scope error in the wiring.
+                                            # Caught by pyflakes ("undefined name '_bpm'"), not by
+                                            # my unit test, which called lift_ab_report directly.
+                                            from routing_optimiser.s4_search import (
+                                                band_projection as _bpm_lab)
+                                            _lab = getattr(_bpm_lab, "lift_ab_report", None)
                                             if _lab is None:
                                                 log("      [lift-ab] unavailable — this "
                                                     "band_projection predates 19fw, so the lift is "
