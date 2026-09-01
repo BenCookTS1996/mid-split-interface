@@ -492,6 +492,25 @@ def render():
                     # 19es: full width of this column again. 19eq split it to seat the button
                     # beside the first caption; the button now lives in the LEFT column instead.
                     _cfg_txt_col = st.container()
+                    # 19gg: the "Gateway Volume Overrides" line shares a ROW with the settings.yaml
+                    # preview, so the preview's header sits horizontally in-line with it.
+                    #
+                    # WHY THE WHOLE _grow_box MOVES UP HERE rather than just the preview. The
+                    # preview and the run log share ONE fixed-height reserve (_GROW_BOX_PX), which
+                    # is what makes opening either one FREE — it scrolls inside the reserve instead
+                    # of growing row 2 and shoving the pre/post table down (19ev/19fc). Giving the
+                    # preview its own box beside the caption and leaving the log its own would
+                    # DOUBLE the reserve to ~560 px, past the height of the left "4 · Assumptions"
+                    # column, and the row would then grow permanently — paying every run for a
+                    # tidier line. Moving the pair up costs nothing: the reserve is unchanged, it
+                    # just sits beside the caption instead of below it, so the column gets one
+                    # line SHORTER.
+                    #
+                    # THE ONE COST is width: the preview and the log now occupy this fraction of
+                    # the right column instead of all of it. Raise it to widen them at the caption's
+                    # expense; the caption wraps to two lines below roughly 0.45.
+                    _CFG_ROW_SPLIT = [0.52, 0.48]
+                    _gvo_col, _grow_col = st.columns(_CFG_ROW_SPLIT)
                     for _cfg_lbl, _cfg_val, _cfg_up in (
                             ("Test Gateways", test_gateways, test_gw_file),
                             ("Thermometer Config", thermometer_config, thermo_file),
@@ -499,7 +518,10 @@ def render():
                         if _cfg_val:
                             _cfg_src = "uploaded" if _cfg_up is not None else "default file"
                             _cfg_n = len(_cfg_val)
-                            _cfg_txt_col.markdown(
+                            # the last one renders in the ROW's left column; the first two stay
+                            # full width, above the row.
+                            (_gvo_col if _cfg_lbl == "Gateway Volume Overrides"
+                             else _cfg_txt_col).markdown(
                                 "<span style='color:#1D9E75; font-size:0.8rem; font-weight:700;'>"
                                 f"✓ {_cfg_lbl} loaded</span>"
                                 "<span style='color:var(--tav-muted); font-size:0.78rem;'> "
@@ -513,7 +535,9 @@ def render():
                     # scrolls within it and the row-2 height never changes — the pre/post table
                     # below stays exactly where it is. `_CODE_BOX_PX` still caps each code block
                     # inside; this caps the region they share.
-                    _grow_box = st.container(height=_GROW_BOX_PX)
+                    # 19gg: created in `_grow_col` — the RIGHT half of the Gateway-Volume-Overrides
+                    # row — instead of full width below it. Same container, same reserve, one row up.
+                    _grow_box = _grow_col.container(height=_GROW_BOX_PX)
                     _yaml_slot = _grow_box.container()
                     _fc_log_slot = _grow_box.container()
 
@@ -601,7 +625,9 @@ def render():
         # 19eq: the container is created UP IN THE ROW-2 RIGHT COLUMN, next to the config
         # captions — that is what makes it one column wide rather than full page, and it takes
         # its st.status header ("Forecast ready for …") with it, since header and body are one
-        # widget.
+        # widget. 19gg moved it one row further up, into the RIGHT HALF of the Gateway-Volume-
+        # Overrides caption row, so the settings.yaml preview above it lines up with that caption.
+        # It is therefore now _CFG_ROW_SPLIT[1] of the right column wide, not all of it.
         #
         # BUILD MODE ONLY. That arrangement holds because row 2's right column reserves a fixed
         # `_GROW_BOX_PX` for the preview + log pair, so opening either scrolls inside the reserve
