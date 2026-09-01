@@ -1869,7 +1869,11 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # carries for that cell at all (ABSENT — the frame is short and both sides are wrong). This
     # splits the missing share mass across those two classes and names who carries each.
     _cv_mark("recipient share + move fractions (_move / _pshare / VAMP_Post)")
-    if os.environ.get("ROUTING_PSHARE_WHY", "1") != "0":
+    # 19fq: ROUTING_PSHARE_WHY DELETED. This stash is not optional instrumentation — tab 2 reads
+    # it at two sites to explain a recipient-share drift, and a switch that can turn off the only
+    # explanation of a number you are driving to zero is a switch that will be found off on the
+    # run where it mattered. Unconditional now.
+    if True:
         _pw_t_0 = _time.perf_counter()
         try:
             # INTENDED recipients, at origination: the rows whose vshare made up the 1.0. This is
@@ -1964,8 +1968,10 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # all of it in the ROUTED leg, 79% of it in the PROJECTOR-swap step) lives on VAMP. Stash the
     # four terms plus three single-variable counterfactuals so the reconcile can attribute it.
     # Nothing here is consumed downstream; see patch note for why these three counterfactuals.
-    _cv_mark("[pshare-why] diagnostic stash (ROUTING_PSHARE_WHY=0 skips)")
-    if os.environ.get("ROUTING_VTERMS", "1") != "0":
+    _cv_mark("[pshare-why] recipient-share stash")
+    # 19fq: ROUTING_VTERMS DELETED, same reason. _LAST_VAMP_TERMS / _LAST_VAMP_PSUM feed the
+    # Search-vs-Delivery Reconciliation Breakdown, the [nw-attrib] table and the move-gate ladder.
+    if True:
         try:
             _vt_vc = pd.to_numeric(pp["vampCount"], errors="coerce").fillna(0.0)
             _vt_mv = pd.to_numeric(pp["_move"], errors="coerce").fillna(0.0)
@@ -1975,19 +1981,47 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
             _vt_pr = pd.to_numeric(pp["period"], errors="coerce").fillna(-1).astype(int)
             _vt_sum = pd.to_numeric(_psum, errors="coerce").fillna(0.0)
 
+            # ── 19fq: THE FOUR TERMS ALWAYS; A COUNTERFACTUAL ONLY WHEN IT CAN DIFFER ──────
+            # held / out / inn / pool are elementwise products of columns that already exist —
+            # they cost nothing and they are what the Breakdown table prints every run.
+            # The three COUNTERFACTUALS are the expensive half (a groupby-transform and a full
+            # merge over the whole aged frame) and each answers "is THIS mechanism the cause of
+            # the drift?". Each one has an exact precondition for being able to differ from
+            # `post` at all. When the precondition is false the counterfactual EQUALS post by
+            # construction — so short-circuiting it is not an approximation, it is the answer.
+            # `_vt_skipped` records which were short-circuited, so a reader is never left to
+            # assume a number was computed when it was inferred.
+            _vt_skipped = []
+            _vt_post = _vt_vc * (1.0 - _vt_mv) + _vt_pl * _vt_ps
+
             # (2) cf_norenorm — undo ONLY the renormalise-to-1. The shipped line divided by
             #     _psum, so multiplying it back recovers the pre-renorm share exactly.
-            _vt_ps_raw = _vt_ps * _vt_sum
-            _vt_cf_nr = _vt_vc * (1.0 - _vt_mv) + _vt_pl * _vt_ps_raw
+            #     CAN ONLY DIFFER if some cell's _psum is not exactly 1: if every live cell
+            #     already sums to 1, multiplying by it is the identity.
+            _vt_nr_live = _vt_sum[_vt_sum > 1e-12]
+            if len(_vt_nr_live) and bool((_vt_nr_live.sub(1.0).abs() > 1e-9).any()):
+                _vt_ps_raw = _vt_ps * _vt_sum
+                _vt_cf_nr = _vt_vc * (1.0 - _vt_mv) + _vt_pl * _vt_ps_raw
+            else:
+                _vt_cf_nr = _vt_post
+                _vt_skipped.append("cf_norenorm (every live cell's prop sums to 1, so undoing "
+                                   "the renormalise is the identity)")
 
             # (3) cf_nopass — undo ONLY the "no recipient -> passthrough" override, so `move`
             #     reverts to gf x pr_app and the pool is rebuilt from that.
-            _vt_mv_raw = np.where(pd.to_numeric(pp["orig_m"], errors="coerce").fillna(-1) >= 0,
-                                  pd.to_numeric(pp["_gf"], errors="coerce").fillna(0.0)
-                                  * pd.to_numeric(pp["_pr_app"], errors="coerce").fillna(0.0), 0.0)
-            _vt_pool_raw = (pp.assign(_mvr=_vt_vc * _vt_mv_raw)
-                            .groupby(_gk)["_mvr"].transform("sum"))
-            _vt_cf_np = _vt_vc * (1.0 - _vt_mv_raw) + _vt_pool_raw * _vt_ps
+            #     CAN ONLY DIFFER if that override actually fired, i.e. some cell had _psum == 0.
+            #     This is the expensive one: a groupby-transform over the whole aged frame.
+            if bool((_vt_sum <= 1e-12).any()):
+                _vt_mv_raw = np.where(pd.to_numeric(pp["orig_m"], errors="coerce").fillna(-1) >= 0,
+                                      pd.to_numeric(pp["_gf"], errors="coerce").fillna(0.0)
+                                      * pd.to_numeric(pp["_pr_app"], errors="coerce").fillna(0.0), 0.0)
+                _vt_pool_raw = (pp.assign(_mvr=_vt_vc * _vt_mv_raw)
+                                .groupby(_gk)["_mvr"].transform("sum"))
+                _vt_cf_np = _vt_vc * (1.0 - _vt_mv_raw) + _vt_pool_raw * _vt_ps
+            else:
+                _vt_cf_np = _vt_post
+                _vt_skipped.append("cf_nopass (the no-recipient passthrough never fired, so "
+                                   "undoing it is the identity)")
 
             # (1) cf_ps — rebuild vshare from `prop_share` (which carries the 0.97 max-share cap
             #     AND the 0.01 exploration floor) instead of raw `prop_raw` (which carries
@@ -2029,6 +2063,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
                           else _vt_vc * (1.0 - _vt_mv) + _vt_pl * _vt_ps),
             })
             _vt_df["cfpsok"] = 1.0 if _vt_cf_psh is not None else 0.0
+            globals()["_LAST_VAMP_CF_SKIPPED"] = list(_vt_skipped)
             globals()["_LAST_VAMP_TERMS"] = _vt_df.groupby(["midl", "per"], as_index=False).sum()
             # Is the renormalisation even doing anything? If _psum is 1.0 everywhere then
             # counterfactual (2) is a no-op and dead before it is read.
@@ -2047,6 +2082,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         except Exception:  # noqa: BLE001 — a diagnostic must never break the projection
             globals()["_LAST_VAMP_TERMS"] = None
             globals()["_LAST_VAMP_PSUM"] = None
+            globals()["_LAST_VAMP_CF_SKIPPED"] = None
     else:
         globals()["_LAST_VAMP_TERMS"] = None
         globals()["_LAST_VAMP_PSUM"] = None
@@ -2055,7 +2091,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     pp = pp.merge(_tp, on=_sub + ["vampMid", "period"], how="left")
     pp["VI_Txn_Pre"] = np.where(pp["t"] == 0, pp["VI_Txn_Count"], 0.0)
     pp["VI_Txn_Post"] = np.where(pp["t"] == 0, pp["post_txn"].fillna(0.0), 0.0)
-    _cv_mark("[vterms] diagnostic stash (ROUTING_VTERMS=0 skips) + the txn merge")
+    _cv_mark("[vterms] VAMP-terms stash (4 terms + up to 3 counterfactuals) + the txn merge")
     _dump_projection_diag(t0, pp_path, prop_items, _enforced, _by_rpgt)   # heavy diagnostics
     # SELF-CHECK: VAMP (and VI-Txn) must conserve per period — Σ Post == Σ Pre. Warn (non-fatally) if
     # either drifts, so any future regression of the redistribution / passthrough logic is caught.

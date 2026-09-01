@@ -8728,13 +8728,14 @@ def render():
                                                 for _cl, _cvv in sorted(_cvt, key=lambda kv: -kv[1]):
                                                     log(f"      {_cvv:8.1f}s  "
                                                         f"({100.0 * _cvv / max(_cvs, 1e-9):>5.1f}%)  {_cl}")
-                                                log("      Two of these steps are DIAGNOSTIC "
-                                                    "stashes that nothing in a normal run reads — "
-                                                    "[pshare-why] and [vterms]. If either is large, "
-                                                    "ROUTING_PSHARE_WHY=0 / ROUTING_VTERMS=0 is a "
-                                                    "free saving that changes no shipped number, "
-                                                    "and it costs only the ability to attribute a "
-                                                    "future drift.")
+                                                log("      The [pshare-why] and [vterms] steps are "
+                                                    "the Search-vs-Delivery Reconciliation "
+                                                    "Breakdown's inputs. They are NOT optional and "
+                                                    "have no switch (19fq) — they are the only "
+                                                    "explanation of the reconciliation error. What "
+                                                    "IS conditional inside [vterms] is its three "
+                                                    "COUNTERFACTUALS, which are skipped while the "
+                                                    "shipped and replayed VAMP agree.")
                                         except Exception as _cvE:  # noqa: BLE001
                                             log(f"   [cvp-timing] unavailable "
                                                 f"({type(_cvE).__name__}) — measurement only.")
@@ -11391,7 +11392,7 @@ def render():
                                                 _vcp = np.asarray(getattr(_pj, "_vcpos", []), float)
                                                 _porg = np.asarray(getattr(_pj, "_pc_org", []), np.int64)
                                                 if _dvt is None or not _vcp.size or not _porg.size:
-                                                    log("      [vterms-is] skipped — in-search VAMP "
+                                                    log("      [recon-breakdown] skipped — in-search VAMP "
                                                         "arrays or the delivered stash unavailable.")
                                                 else:
                                                     # (1) vshare from the CAPPED routed share, over
@@ -11459,10 +11460,33 @@ def render():
                                                     _dvm = {(str(_v19_r).strip().lower(), int(_p)): _row
                                                             for (_v19_r, _p), _row in
                                                             _dvt.set_index(["midl", "per"]).iterrows()}
-                                                    log("      [vterms-is] VAMP formula per MID, SAME "
-                                                        "proposed shares into both M5 models — the "
-                                                        "decomposition [terms] gives TXN, on the 100% "
-                                                        "of the reconciliation error that is VAMP:")
+                                                    # ── 19fq: ONE COMPACT TABLE, ALWAYS; THE FORENSICS
+                                                    # ONLY WHEN THERE IS A DRIFT TO EXPLAIN.
+                                                    # This block used to print ~80 lines every run —
+                                                    # five per band plus four sub-analyses — to say
+                                                    # "nothing to attribute". The detail is not
+                                                    # deleted: `_vlog` BUFFERS it, and the buffer is
+                                                    # flushed in full the moment any band's drift is
+                                                    # non-zero. A clean run reads as one table and
+                                                    # one verdict; a dirty run reads exactly as
+                                                    # before, with nothing lost.
+                                                    _vb = {"on": False, "buf": []}
+
+                                                    def _vlog(_m, _b=_vb):
+                                                        _b["buf"].append(_m)
+
+                                                    def _vdirty(_b=_vb):
+                                                        _b["on"] = True
+
+                                                    log("   ── Search vs Delivery Reconciliation "
+                                                        "Breakdown ── does the SEARCH's month-5 VAMP "
+                                                        "equal what DELIVERY ships, and if not, "
+                                                        "which part disagrees? ──")
+                                                    log("      Each band's month-5 VAMP is HELD "
+                                                        "(never moved) + MOVED-IN (its cut of the "
+                                                        "pool). MOVED-OUT is what it gave away. Both "
+                                                        "sides are shown; DRIFT is delivered minus "
+                                                        "search, and it must be 0.")
                                                     _v19_hv = False
                                                     # 19dh: accumulate both components so the
                                                     # summary below MEASURES whether the recipient
@@ -11490,7 +11514,7 @@ def render():
                                                             if _v19_ck8 is not None and abs(
                                                                     _rc8 - float(_v19_ck8)) > max(
                                                                     2.0, 0.002 * abs(float(_v19_ck8))):
-                                                                log(f"      [vterms-is] ⚠ {_ml8} m{_mo8}: "
+                                                                _vlog(f"      [detail] ⚠ {_ml8} m{_mo8}: "
                                                                     f"replay {_rc8:,.0f} != reported "
                                                                     f"{float(_v19_ck8):,.0f} — the VAMP "
                                                                     "reconstruction does NOT match the "
@@ -11499,23 +11523,35 @@ def render():
                                                                     "evidence.")
                                                                 continue
                                                             if not _v19_hv:
-                                                                log("      [vterms-is]   MID / month  "
-                                                                    "         HELD        MOVED-OUT"
-                                                                    "      MOVED-IN         POOL")
+                                                                log(f"      {'band':<26}{'month':>6}"
+                                                                    f"{'HELD':>10}{'MOVED-OUT':>11}"
+                                                                    f"{'MOVED-IN':>10}"
+                                                                    f"{'search':>10}{'delivered':>11}"
+                                                                    f"{'DRIFT':>8}")
                                                                 _v19_hv = True
                                                             _dh = float(_di8.get("held", 0.0))
                                                             _do = float(_di8.get("out", 0.0))
                                                             _dn8 = float(_di8.get("inn", 0.0))
                                                             _dp = float(_di8.get("pool", 0.0))
-                                                            log(f"      [vterms-is]   {_ml8[:22]:<22} "
-                                                                f"m{_mo8}")
-                                                            log(f"      [vterms-is]     in-search "
-                                                                f"{_ai8[0]:>12,.0f} {_ai8[1]:>13,.0f} "
-                                                                f"{_ai8[2]:>13,.0f} {_ai8[3]:>13,.0f}")
-                                                            log(f"      [vterms-is]     delivered "
-                                                                f"{_dh:>12,.0f} {_do:>13,.0f} "
-                                                                f"{_dn8:>13,.0f} {_dp:>13,.0f}")
-                                                            log(f"      [vterms-is]     Δ         "
+                                                            # 19fq: ONE line per band on the headline
+                                                            # table — delivery's own four terms, then
+                                                            # both totals and the drift. The
+                                                            # in-search / delivered / Δ triple that
+                                                            # used to print here is buffered below.
+                                                            log(f"      {_ml8[:26]:<26}{('m' + str(_mo8)):>6}"
+                                                                f"{_dh:>10,.0f}{_do:>11,.0f}{_dn8:>10,.0f}"
+                                                                f"{(_ai8[0] + _ai8[2]):>10,.0f}"
+                                                                f"{(_dh + _dn8):>11,.0f}"
+                                                                f"{((_dh + _dn8) - (_ai8[0] + _ai8[2])):>+8,.0f}")
+                                                            _vlog(f"      [detail]   {_ml8[:22]:<22} "
+                                                                  f"m{_mo8}")
+                                                            _vlog(f"      [detail]     in-search "
+                                                                  f"{_ai8[0]:>12,.0f} {_ai8[1]:>13,.0f} "
+                                                                  f"{_ai8[2]:>13,.0f} {_ai8[3]:>13,.0f}")
+                                                            _vlog(f"      [detail]     delivered "
+                                                                  f"{_dh:>12,.0f} {_do:>13,.0f} "
+                                                                  f"{_dn8:>13,.0f} {_dp:>13,.0f}")
+                                                            _vlog(f"      [detail]     Δ         "
                                                                 f"{_dh - _ai8[0]:>+12,.0f} "
                                                                 f"{_do - _ai8[1]:>+13,.0f} "
                                                                 f"{_dn8 - _ai8[2]:>+13,.0f} "
@@ -11541,10 +11577,12 @@ def render():
                                                             _mvf = _dh - _ai8[0]      # movable-fraction part
                                                             _rcp = _dn8 - _ai8[2]     # recipient-share part
                                                             _swap = abs((_do - _ai8[1]) + _mvf)
-                                                            log(f"      [vterms-is]     ⇒ drift {_mvf + _rcp:+,.0f} "
-                                                                f"= MOVABLE-FRACTION {_mvf:+,.0f} "
-                                                                f"+ RECIPIENT-SHARE {_rcp:+,.0f}")
-                                                            log("      [vterms-is]       " + (
+                                                            if abs(_mvf + _rcp) > 0.5:
+                                                                _vdirty()
+                                                            _vlog(f"      [detail]     ⇒ drift {_mvf + _rcp:+,.0f} "
+                                                                  f"= MOVABLE-FRACTION {_mvf:+,.0f} "
+                                                                  f"+ RECIPIENT-SHARE {_rcp:+,.0f}")
+                                                            _vlog("      [detail]       " + (
                                                                 "HELD and MOVED-OUT are EQUAL AND OPPOSITE "
                                                                 f"(±{abs(_mvf):,.0f}), which can only mean "
                                                                 "the two sides use a DIFFERENT movable "
@@ -11585,17 +11623,17 @@ def render():
                                                     if _v19_hv:
                                                         _mg = getattr(_ic_t, "_LAST_MOVE_GATES", None)
                                                         if _mg is None or not len(_mg):
-                                                            log("      [vterms-is] gate attribution "
+                                                            _vlog("      [detail] gate attribution "
                                                                 "unavailable (impact_calcs pre-19di).")
                                                         else:
                                                             _mgi = _mg.set_index(["midl", "per"])
                                                             _is_out = sum(_v19_a[1] for _v19_a in _aggv.values())
-                                                            log("      [vterms-is] WHICH GATE makes "
+                                                            _vlog("      [detail] WHICH GATE makes "
                                                                 "delivery's movable fraction smaller? Each "
                                                                 "row lifts ONE gate and changes nothing "
                                                                 "else; the one landing on the SEARCH's "
                                                                 "MOVED-OUT is the cause:")
-                                                            log(f"      [vterms-is]   SEARCH MOVED-OUT "
+                                                            _vlog(f"      [detail]   SEARCH MOVED-OUT "
                                                                 f"{_is_out:12,.0f}   (the target)")
                                                             _v19_rows = []
                                                             for _cn, _v19_lbl in (
@@ -11614,7 +11652,7 @@ def render():
                                                                     except Exception:  # noqa: BLE001
                                                                         pass
                                                                 _v19_rows.append((_cn, _v19_lbl, _v19_tv))
-                                                                log(f"      [vterms-is]   {_v19_lbl:<42} "
+                                                                _vlog(f"      [detail]   {_v19_lbl:<42} "
                                                                     f"{_v19_tv:12,.0f}   "
                                                                     f"(vs search {_v19_tv - _is_out:+,.0f})")
                                                             _ship = dict((r[0], r[2]) for r in _v19_rows)["shipped"]
@@ -11628,12 +11666,12 @@ def render():
                                                             # describes an unresolved problem on a run that has resolved it. Say nothing to
                                                             # attribute, and say it FIRST.
                                                             if abs(_ship - _is_out) <= max(2.0, 1e-6 * max(abs(_is_out), 1.0)):
-                                                                log("      [vterms-is]   ⇒ NOTHING TO ATTRIBUTE: delivery's shipped "
+                                                                _vlog("      [detail]   ⇒ NOTHING TO ATTRIBUTE: delivery's shipped "
                                                                     f"MOVED-OUT ({_ship:,.0f}) already equals the search's "
                                                                     f"({_is_out:,.0f}). The gates below are listed for completeness; "
                                                                     "none of them is closing a gap, because there is none.")
                                                             else:
-                                                                log("      [vterms-is]   ⇒ " + (
+                                                                _vlog("      [detail]   ⇒ " + (
                                                                         f"{_v19_cands[0][1]} CLOSES IT — that gate is the "
                                                                     "cause of the movable-fraction difference, "
                                                                     "and giving the SEARCH the same gate is the "
@@ -11662,7 +11700,7 @@ def render():
                                                         _v19_pt = getattr(_ic_t, "_LAST_PASSTHRU", None)
                                                         _gkeys = getattr(_pj, "_pc_gk_keys", None)
                                                         if _v19_pt is None or _gkeys is None or not len(_gkeys):
-                                                            log("      [vterms-is] passthrough "
+                                                            _vlog("      [detail] passthrough "
                                                                 "comparison unavailable — "
                                                                 + ("band_projection has no "
                                                                    "_pc_gk_keys, which means a "
@@ -11747,16 +11785,16 @@ def render():
                                                             _v19_dall = {_ptn(_v19_x) for _v19_x in (_v19_pt.get("all") or ())}
                                                             _v19_sall = set(_sk[_s_mov].astype(str).tolist())
                                                             if not _v19_dall:
-                                                                log("      [vterms-is] KEY COMPARABILITY unavailable — delivery "
+                                                                _vlog("      [detail] KEY COMPARABILITY unavailable — delivery "
                                                                     "stashed no movable universe, which means a PRE-19dn "
                                                                     "impact_calcs is loaded: restart run.command.")
                                                             else:
                                                                 _v19_ub = len(_v19_dall & _v19_sall)
-                                                                log("      [vterms-is] KEY COMPARABILITY — movable universes: "
+                                                                _vlog("      [detail] KEY COMPARABILITY — movable universes: "
                                                                     f"BOTH {_v19_ub:,} · delivery-only "
                                                                     f"{len(_v19_dall - _v19_sall):,} · search-only "
                                                                     f"{len(_v19_sall - _v19_dall):,}")
-                                                                log("      [vterms-is]   ⇒ " + (
+                                                                _vlog("      [detail]   ⇒ " + (
                                                                     "the two sides enumerate DIFFERENT groups entirely, so the "
                                                                     "fired-set counts below compare nothing. The key has to be "
                                                                     "fixed before any of this is evidence."
@@ -11787,18 +11825,18 @@ def render():
                                                                     if not _v19_do and not _v19_so:
                                                                         continue
                                                                     _v19_any = True
-                                                                    log(f"      [vterms-is]   field {_v19_nm:<4} DIFFERS — "
+                                                                    _vlog(f"      [detail]   field {_v19_nm:<4} DIFFERS — "
                                                                         f"delivery-only {len(_v19_do):,} value(s) "
                                                                         f"{[str(_v19_v)[:18] for _v19_v in _v19_do[:4]]} · "
                                                                         f"search-only {len(_v19_so):,} value(s) "
                                                                         f"{[str(_v19_v)[:18] for _v19_v in _v19_so[:4]]}")
                                                                 if not _v19_any:
-                                                                    log("      [vterms-is]   every field's VALUE SET agrees on both "
+                                                                    _vlog("      [detail]   every field's VALUE SET agrees on both "
                                                                         "sides, so the mismatch is not a spelling of one component "
                                                                         "— it is which COMBINATIONS each side carries.")
-                                                                log("      [vterms-is]   RAW — delivery "
+                                                                _vlog("      [detail]   RAW — delivery "
                                                                     f"{[str(_v19_v) for _v19_v in (_v19_pt.get('sample') or [])[:2]]}")
-                                                                log("      [vterms-is]   RAW — search   "
+                                                                _vlog("      [detail]   RAW — search   "
                                                                     f"{[str(_v19_v) for _v19_v in list(_gkeys)[:2]]}")
                                                                 # 19do — THE ONLY POPULATION THE COMPARISON IS VALID ON. The
                                                                 # search scaffolds the BANDED months only (band_projection:1285,
@@ -11816,24 +11854,24 @@ def render():
                                                                 _v19_dh = {_v19_k9 for _v19_k9 in _d_fired if _v19_k9 in _v19_com}
                                                                 _v19_sh = {_v19_k9 for _v19_k9 in _s_fired if _v19_k9 in _v19_com}
                                                                 _v19_dsm = _v19_dh - _v19_sh
-                                                                log("      [vterms-is] RESTRICTED to the banded month(s) "
+                                                                _vlog("      [detail] RESTRICTED to the banded month(s) "
                                                                     f"{sorted(_v19_per)} AND to groups BOTH sides carry "
                                                                     f"({len(_v19_com):,} group(s)) — the only population where "
                                                                     "'one side holds it, the other moves it' means what it says:")
-                                                                log(f"      [vterms-is]   BOTH hold                  {len(_v19_dh & _v19_sh):9,}")
-                                                                log(f"      [vterms-is]   DELIVERY holds, search MOVES {len(_v19_dsm):9,}")
-                                                                log(f"      [vterms-is]   SEARCH holds, delivery MOVES {len(_v19_sh - _v19_dh):9,}")
+                                                                _vlog(f"      [detail]   BOTH hold                  {len(_v19_dh & _v19_sh):9,}")
+                                                                _vlog(f"      [detail]   DELIVERY holds, search MOVES {len(_v19_dsm):9,}")
+                                                                _vlog(f"      [detail]   SEARCH holds, delivery MOVES {len(_v19_sh - _v19_dh):9,}")
                                                                 # How much of each side's fired set survives the restriction? If a
                                                                 # side's holds live almost entirely OUTSIDE the common population,
                                                                 # then its count in the unrestricted block above is a description
                                                                 # of the universe difference and not a disagreement at all.
-                                                                log(f"      [vterms-is]   of the search's {len(_s_fired):,} held group(s), "
+                                                                _vlog(f"      [detail]   of the search's {len(_s_fired):,} held group(s), "
                                                                     f"{len(_v19_sh):,} are in the common population and "
                                                                     f"{len(_s_fired) - len(_v19_sh):,} are groups delivery has no "
                                                                     "movable row for; of delivery's "
                                                                     f"{len(_d_fired):,}, {len(_v19_dh):,} and "
                                                                     f"{len(_d_fired) - len(_v19_dh):,} respectively")
-                                                                log("      [vterms-is]   ⇒ " + (
+                                                                _vlog("      [detail]   ⇒ " + (
                                                                     "on the common population the two passthroughs AGREE on every "
                                                                     "group, so Part A is NOT which groups are held — it is the "
                                                                     "SHARE each side attaches inside groups they both move. Look "
@@ -11848,15 +11886,15 @@ def render():
                                                             # numbers describe the POPULATION difference and are not a
                                                             # disagreement between the two passthroughs. The restricted
                                                             # block above is the one to read.
-                                                            log("      [vterms-is] PASSTHROUGH "
+                                                            _vlog("      [detail] PASSTHROUGH "
                                                                 "AGREEMENT over movable groups "
                                                                 f"(delivery {_v19_pt.get('n_movable', 0):,} "
                                                                 f"· search {int(_s_mov.sum()):,}):")
-                                                            log(f"      [vterms-is]   BOTH hold        "
+                                                            _vlog(f"      [detail]   BOTH hold        "
                                                                 f"{len(_both):9,}")
-                                                            log(f"      [vterms-is]   DELIVERY holds, "
+                                                            _vlog(f"      [detail]   DELIVERY holds, "
                                                                 f"search MOVES   {len(_d_only):9,}")
-                                                            log(f"      [vterms-is]   SEARCH holds, "
+                                                            _vlog(f"      [detail]   SEARCH holds, "
                                                                 f"delivery MOVES {len(_s_only):9,}")
                                                             _det = {_ptn(_k2): _v2 for _k2, _v2
                                                                     in (_v19_pt.get("detail") or {}).items()}
@@ -11872,7 +11910,7 @@ def render():
                                                             # the part of its universe the other does not carry — which the
                                                             # restricted block above quantifies.
                                                             if _d_fired and _s_fired and not _both:
-                                                                log("      [vterms-is]   note: the two fired "
+                                                                _vlog("      [detail]   note: the two fired "
                                                                     "sets share no key, but the universes DO "
                                                                     f"overlap ({len(_v19_com) if _v19_dsm is not None else 0:,} group(s)) — "
                                                                     "so this is the population difference, not a "
@@ -11885,7 +11923,7 @@ def render():
                                                                 # count the RESTRICTED disagreement — the unrestricted _d_only is
                                                                 # mostly groups the search never carries and is not what the
                                                                 # sample failed to name.
-                                                                log(f"      [vterms-is]   ⇒ "
+                                                                _vlog(f"      [detail]   ⇒ "
                                                                     + (f"{len(_v19_dsm):,} group(s) differ on the common "
                                                                        "population but none is in the sampled detail (the "
                                                                        "sample takes the largest by movable VAMP, and those "
@@ -11899,7 +11937,7 @@ def render():
                                                                        "no group on the common population is held by one side "
                                                                        "and moved by the other, so there is nothing to name."))
                                                             else:
-                                                                log("      [vterms-is]   ⇒ EXAMPLES "
+                                                                _vlog("      [detail]   ⇒ EXAMPLES "
                                                                     "— delivery holds these, the "
                                                                     "search moves them. Columns are "
                                                                     "what DELIVERY sees: the rows in "
@@ -11907,29 +11945,71 @@ def render():
                                                                     "share it attached to each.")
                                                                 for _v19_k in _v19_ex:
                                                                     _v19_r = _det.get(_v19_k) or []
-                                                                    log(f"      [vterms-is]     {_v19_k}"
+                                                                    _vlog(f"      [detail]     {_v19_k}"
                                                                         f"   ({len(_v19_r)} row(s) shown)")
                                                                     for _mid_x, _ps_x, _mv_x in _v19_r[:8]:
-                                                                        log(f"      [vterms-is]       "
+                                                                        _vlog(f"      [detail]       "
                                                                             f"{_mid_x[:30]:<30} "
                                                                             f"pshare={_ps_x:.6f}  "
                                                                             f"movable={_mv_x:.3f}")
-                                                                log("      [vterms-is]     READ: every "
+                                                                _vlog("      [detail]     READ: every "
                                                                     "pshare 0 with movable > 0 means "
                                                                     "delivery found no recipient while "
                                                                     "the search found one — compare "
                                                                     "the MIDs listed against the ones "
                                                                     "the search's scaffold carries for "
                                                                     "the same key.")
-                                                        log(f"      [vterms-is] ACROSS ALL {len(_aggv):,} "
+                                                        # ── 19fq THE VERDICT, then flush or suppress ──
+                                                        log(f"      {'':<26}{'':>6}{'':>10}{'':>11}{'':>10}"
+                                                            f"{'Σ|drift|':>10}{_mv_abs + _rc_abs:>11,.0f}"
+                                                            f"{'':>8}")
+                                                        if (_mv_abs + _rc_abs) <= 0.5:
+                                                            log("      ✓ SEARCH AND DELIVERY AGREE ON "
+                                                                f"EVERY ONE OF {len(_aggv):,} BANDED "
+                                                                "(MID, month) PAIR(S). There is nothing "
+                                                                "to attribute, so the per-band forensic "
+                                                                f"detail ({len(_vb['buf']):,} line(s)) is "
+                                                                "held back. It prints IN FULL the moment "
+                                                                "any band's drift is non-zero — nothing "
+                                                                "is switched off, only quiet.")
+                                                        else:
+                                                            _vdirty()
+                                                            log(f"      ⚠ DRIFT PRESENT: Σ|drift| "
+                                                                f"{_mv_abs + _rc_abs:,.0f} unit(s) across "
+                                                                f"{len(_aggv):,} band(s). The full "
+                                                                "per-band breakdown follows. Read the two "
+                                                                "components separately — they are "
+                                                                "DIFFERENT FAULTS:")
+                                                            log(f"        MOVABLE-FRACTION  net {_mv_tot:+,.0f} "
+                                                                f"· Σ|·| {_mv_abs:,.0f}  — the two sides "
+                                                                "disagree about HOW MUCH is movable. A "
+                                                                "per-row input, not routing.")
+                                                            log(f"        RECIPIENT-SHARE   net {_rc_tot:+,.0f} "
+                                                                f"· Σ|·| {_rc_abs:,.0f}  — they agree on "
+                                                                "how much moves and disagree about WHERE "
+                                                                "it lands.")
+                                                        # 19fq: say which counterfactuals were
+                                                        # short-circuited, so nothing below reads as
+                                                        # a measured zero when it is an inferred one.
+                                                        try:
+                                                            _cfs = getattr(_ic_t, "_LAST_VAMP_CF_SKIPPED", None)
+                                                            for _cfl in (_cfs or ()):
+                                                                log(f"      not computed, and equal to "
+                                                                    f"the shipped value by construction: {_cfl}")
+                                                        except Exception:  # noqa: BLE001
+                                                            pass
+                                                        if _vb["on"]:
+                                                            for _vm in _vb["buf"]:
+                                                                log(_vm)
+                                                        _vlog(f"      [detail] ACROSS ALL {len(_aggv):,} "
                                                             "BANDED (MID, month) — the two components are "
                                                             "DIFFERENT FAULTS and must be fixed separately:")
-                                                        log(f"      [vterms-is]   MOVABLE-FRACTION  net "
+                                                        _vlog(f"      [detail]   MOVABLE-FRACTION  net "
                                                             f"{_mv_tot:+,.0f} · Σ|·| {_mv_abs:,.0f}  — a net "
                                                             "term SHIFTS the total, so it is the "
                                                             "[conservation] VAMP gap. Compare the two "
                                                             "numbers: they should be the same object.")
-                                                        log(f"      [vterms-is]   RECIPIENT-SHARE   net "
+                                                        _vlog(f"      [detail]   RECIPIENT-SHARE   net "
                                                             f"{_rc_tot:+,.0f} · Σ|·| {_rc_abs:,.0f}  — "
                                                             # 19dv: the reallocation reading assumes a LARGE Σ|·|. On a reconciled run
                                                         # Σ|·| is 0 and this printed 'net ~0 with a large Σ|·| means pure
@@ -11947,8 +12027,14 @@ def render():
                                                                "— read it alongside the movable-fraction "
                                                                "row rather than as a pure reallocation."))
                                             except Exception as _evt:  # noqa: BLE001
-                                                log(f"      [vterms-is] skipped ({type(_evt).__name__}: "
-                                                    f"{_evt})")
+                                                # 19fq: this one stays on `log`, never `_vlog`. A
+                                                # buffered failure message on a clean run is a
+                                                # silent failure, and `_vb` may not exist yet if the
+                                                # raise happened before it was defined.
+                                                log(f"      [recon-breakdown] BREAKDOWN FAILED "
+                                                    f"({type(_evt).__name__}: {_evt}) — the "
+                                                    "reconciliation number above stands, but nothing "
+                                                    "explains it this run.")
                                             # ── DENOMINATOR / NUMERATOR PROBE ─────────────────
                                             try:
                                                 _ddD = getattr(_ic_t, "_LAST_TXN_DENOM", None)
@@ -13287,7 +13373,7 @@ def render():
                                                 _vp = getattr(_ic_vt, "_LAST_VAMP_PSUM", None)
                                                 if _vt is None or _vp is None:
                                                     log("   [vterms] stash absent — either "
-                                                        "ROUTING_VTERMS=0 or the delivered "
+                                                        "the delivered "
                                                         "projection did not run in this pass. "
                                                         "No VAMP attribution this run.")
                                                 else:
@@ -13517,7 +13603,7 @@ def render():
                                                             f"share, of which this accounts for "
                                                             f"{_pw.get('found', 0.0):,.1f} "
                                                             f"[{1000.0 * float(_pw.get('secs', 0.0)):,.0f} ms; "
-                                                            f"ROUTING_PSHARE_WHY=0 skips it]")
+                                                            f"the stash was unavailable]")
                                                         log(f"      [vterms]   STRUCTURAL "
                                                             f"{_pw.get('structural_share', 0.0):>10,.1f} "
                                                             f"of {_pw.get('found', 0.0):,.1f} "
