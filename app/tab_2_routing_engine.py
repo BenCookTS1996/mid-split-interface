@@ -2097,8 +2097,17 @@ def render():
                         # downstream steps are grain-agnostic — they just get more cells
                         # (slower). This is what makes "GA - Full matrix" actually BIN-grain.
                         bin_to_bank = {b: b for b in agg_adf["bin"].unique()}
-                        log("   [full-matrix] TRUE BIN GRAIN: parent-bank collapse DISABLED — "
-                            "optimising per BIN (more cells, slower).")
+                        # 19hc: the "[full-matrix] TRUE BIN GRAIN" log line was DELETED. It was a
+                        # CONSTANT, not a report. `choices` has held exactly one entry since 19gb
+                        # — ("genetic_fullmatrix", "Genetic Algorithm") — so `engine_key` can only
+                        # take that value, this branch is always the one taken, and the line said
+                        # the same thing on every run. Same class as the staleness sentinel deleted
+                        # in 19gy: a line that cannot vary cannot inform.
+                        #
+                        # The `elif`/`else` below are UNREACHABLE for the same reason. They are
+                        # left in place deliberately — they are the parent-bank collapse, and
+                        # deleting them would throw away the only description of what the other
+                        # grain did. Removing them is a live-code change, not a log change.
                     elif "original_bank_name" in agg_adf.columns:
                         valid_banks = agg_adf[agg_adf["original_bank_name"].str.strip() != ""]
                         bin_to_bank = valid_banks.groupby("bin")["original_bank_name"].agg(lambda x: x.mode()[0] if not x.mode().empty else "UNKNOWN").to_dict()
