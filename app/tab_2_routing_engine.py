@@ -3991,7 +3991,7 @@ def render():
                         log(f"   per-MID cap projection scaffold: {len(_T0):,} t0 rows, "
                             f"{len(_Pc):,} capped-MID rows ({len(_keep):,} profiles).")
                         # ── [cap-timing] 19gt: SPLIT THE 54.5s ────────────────────────────
-                        # The gap between this line and 'per-MID target±tolerance caps' was
+                        # The gap between this line and the END of the cap build was
                         # 54.5s on the 2026-09-01 22:09 run — the largest single step in the
                         # scaffold build and the only one with no breakdown at all. Same
                         # treatment as [cvp-timing]: mark it, then attack what the marks name.
@@ -4055,6 +4055,8 @@ def render():
                             # counts and a term ("candidate-door-only") defined nowhere near it.
                             _rc_cn = int(_rc.get("profiles", 0))
                             _rc_cb = int(_rc.get("profiles_band", 0))
+                            log("")
+                            log("")
                             log(f"      profiles: {_rc_cn:,} profile(s) the search can route into — "
                                 f"{_rc_cb:,} already had a banded MID with baseline history there, "
                                 f"{_rc_cn - _rc_cb:,} exist only because a candidate door was "
@@ -4349,8 +4351,6 @@ def render():
                         except Exception as _cte:  # noqa: BLE001
                             log(f"   [cap-timing] unavailable ({type(_cte).__name__}) — "
                                 "measurement only.")
-                        log(f"   per-MID target±tolerance caps: {len(a_max_by_mid)} active; "
-                            f"{len(mid_vol_constrained)} MID(s) scaled/retired.")
                     ss["mid_vol_constrained"] = sorted(str(m) for m in mid_vol_constrained)
 
                     ref_share = ref_agg["share"].to_numpy()
@@ -5118,8 +5118,11 @@ def render():
                         # at the top of the log already prints seed_search's newest tag and its
                         # earlier-tag count, so dumping 19 tags here said nothing that table did
                         # not. What is left is what the stage does.
-                        log("   seed stage 1 of 3: band-aware constrained projection — the "
-                            "warm-start the GA begins from.")
+                        # 19hu: a "seed stage 1 of 3" heading stood here and was DELETED. This
+                        # point in the run only IMPORTS seed_search and builds the per-profile
+                        # maps below; band_greedy_shares_multi is not called for another ~250s,
+                        # and the real section heading is emitted there, inside 4.2. Two
+                        # identical headings a quarter of a run apart read as two stages.
                         # From the 30D attempts, build the SAME quantities tab 4 uses for
                         # incremental revenue: avg ticket + profile attempts + raw gateway SR,
                         # keyed by (currency, parent-bank[, gateway]).
@@ -7673,162 +7676,189 @@ def render():
                                     # applies the SAME blocked-caps + eligibility transform delivery
                                     # uses, and it does not exist yet where the summary is emitted,
                                     # which is why this is a second block rather than a fix in place.
-                                    if os.environ.get("ROUTING_SEED_BASIS", "1") != "0":
-                                        try:
-                                            from routing_optimiser.s4_search.exact_band_solver import (
-                                                unmet_summary as _sb_unmet)
-                                            log("   [seed-basis] each candidate seed on BOTH bases — "
-                                                "RAW (what the summary above scores) vs DELIVERED "
-                                                "(blocked-caps + eligibility, what the engine selects "
-                                                "on and what actually ships):")
-                                            _sb_pairs = []   # 19bd: (name, RAW, DELIVERED)
-                                            for _sbn, _sbc in _fm_cands:
-                                                _sbv = np.asarray(_sbc, float)
-                                                _sbR = float(_fm_eb.penalty(
-                                                    _fm_s2pr(_sbv[None, :], _fm_inc))[0])
-                                                _sbD = _fm_breach(_sbv)
-                                                _uR = _sb_unmet(_sbv, ctx["exact_bands"], _fm_inc)
-                                                _uD = _sb_unmet(_fm_deliv(_sbv[None, :])[0],
-                                                                ctx["exact_bands"], _fm_inc)
-                                                log(f"   [seed-basis]   {_sbn:<14} breach RAW "
-                                                    f"{_sbR:.5g} → DELIVERED {_sbD:.5g} "
-                                                    f"(Δ {_sbD - _sbR:+.5g})")
-                                                log(f"   [seed-basis]       RAW      : {_uR or 'all bands met'}")
-                                                log(f"   [seed-basis]       DELIVERED: {_uD or 'all bands met'}")
-                                                # THRESHOLDED (2026-08-19w). Until now this fired on
-                                                # any text difference, which on the 22:22 and 23:03
-                                                # runs meant a 1-2 unit difference on a 1,300 ceiling
-                                                # — technically a disagreement, useless as a signal.
-                                                # Flag when a band CHANGES SIDE (met ↔ unmet) or a
-                                                # value moves by >0.25% of its own limit. 0.25% is
-                                                # NOT arbitrary: the observed NOISE is <=0.16% (2
-                                                # units on braintree's 1,300; 8 on authorize's
-                                                # 15,000) while the one move that mattered — the
-                                                # woodforest blocked-caps jump 23,967 -> 24,082 —
-                                                # is 0.48% of its 24,000 ceiling. A 0.5% threshold
-                                                # (my first choice) suppressed exactly that signal.
-                                                _sbT = 0.0025
-                                                _nR = len(re.findall(r"\d[\d,]*\s*[<>]", str(_uR)))
-                                                _nD = len(re.findall(r"\d[\d,]*\s*[<>]", str(_uD)))
-                                                _matR = re.findall(r"([\d,]+)\s*[<>]\s*([\d,]+)",
-                                                                   str(_uR))
-                                                _matD = re.findall(r"([\d,]+)\s*[<>]\s*([\d,]+)",
-                                                                   str(_uD))
-                                                _big = False
-                                                for (_v1, _l1), (_v2, _l2) in zip(_matR, _matD):
-                                                    try:
-                                                        _f1 = float(_v1.replace(",", ""))
-                                                        _f2 = float(_v2.replace(",", ""))
-                                                        _lm = max(float(_l1.replace(",", "")), 1.0)
-                                                        if abs(_f2 - _f1) > _sbT * _lm:
-                                                            _big = True
-                                                    except Exception:  # noqa: BLE001
+                                    # 19hu: ROUTING_SEED_BASIS deleted on Ben's instruction - the RAW-vs-DELIVERED
+                                    # comparison is always on now, which was already its default. The `try` below
+                                    # is the only thing that stood inside the switch, so the body is dedented and
+                                    # nothing else about it changed.
+                                    try:
+                                        from routing_optimiser.s4_search.exact_band_solver import (
+                                            unmet_summary as _sb_unmet)
+                                        # 19hu: ONE TABLE. This was 3 lines per seed plus a
+                                        # verdict paragraph, so three seeds cost 14 lines - and
+                                        # the four numbers that actually compare (the two
+                                        # breaches, the two met-counts) were never on the same
+                                        # line, which is the whole question the block exists to
+                                        # answer. The unmet-band detail now prints only for the
+                                        # seeds where the two bases DISAGREE, because that is
+                                        # the only case where reading it changes anything.
+                                        log("   [seed-basis] every candidate seed on BOTH bases. "
+                                            "RAW is what the summary above scores. DELIVERED is "
+                                            "blocked-caps + eligibility - what the engine SELECTS "
+                                            "ON and what ships. Every seed below is accepted on "
+                                            "DELIVERED.")
+                                        log("")
+                                        log(f"      {'seed':<15}{'breach RAW':>12}"
+                                            f"{'breach DLV':>12}{'delta':>11}"
+                                            f"{'met RAW':>10}{'met DLV':>10}   the two bases")
+                                        log(f"      {'-' * 70}")
+                                        _sb_pairs = []   # 19bd: (name, RAW, DELIVERED)
+                                        _sb_det = []     # 19hu: detail only where they differ
+                                        _sb_nb = len(getattr(ctx["exact_bands"], "specs",
+                                                             ()) or ())
+                                        for _sbn, _sbc in _fm_cands:
+                                            _sbv = np.asarray(_sbc, float)
+                                            _sbR = float(_fm_eb.penalty(
+                                                _fm_s2pr(_sbv[None, :], _fm_inc))[0])
+                                            _sbD = _fm_breach(_sbv)
+                                            _uR = _sb_unmet(_sbv, ctx["exact_bands"], _fm_inc)
+                                            _uD = _sb_unmet(_fm_deliv(_sbv[None, :])[0],
+                                                            ctx["exact_bands"], _fm_inc)
+                                            # THRESHOLDED (2026-08-19w). Until now this fired on
+                                            # any text difference, which on the 22:22 and 23:03
+                                            # runs meant a 1-2 unit difference on a 1,300 ceiling
+                                            # — technically a disagreement, useless as a signal.
+                                            # Flag when a band CHANGES SIDE (met ↔ unmet) or a
+                                            # value moves by >0.25% of its own limit. 0.25% is
+                                            # NOT arbitrary: the observed NOISE is <=0.16% (2
+                                            # units on braintree's 1,300; 8 on authorize's
+                                            # 15,000) while the one move that mattered — the
+                                            # woodforest blocked-caps jump 23,967 -> 24,082 —
+                                            # is 0.48% of its 24,000 ceiling. A 0.5% threshold
+                                            # (my first choice) suppressed exactly that signal.
+                                            _sbT = 0.0025
+                                            _nR = len(re.findall(r"\d[\d,]*\s*[<>]", str(_uR)))
+                                            _nD = len(re.findall(r"\d[\d,]*\s*[<>]", str(_uD)))
+                                            _matR = re.findall(r"([\d,]+)\s*[<>]\s*([\d,]+)",
+                                                               str(_uR))
+                                            _matD = re.findall(r"([\d,]+)\s*[<>]\s*([\d,]+)",
+                                                               str(_uD))
+                                            _big = False
+                                            for (_v1, _l1), (_v2, _l2) in zip(_matR, _matD):
+                                                try:
+                                                    _f1 = float(_v1.replace(",", ""))
+                                                    _f2 = float(_v2.replace(",", ""))
+                                                    _lm = max(float(_l1.replace(",", "")), 1.0)
+                                                    if abs(_f2 - _f1) > _sbT * _lm:
                                                         _big = True
-                                                # 19bf: the ⚠ below needs EVIDENCE, not a
-                                                # float delta. On 2026-08-23 11:56 all three
-                                                # seeds had Δ ≈ 2e-07 on a breach of ~0.34 —
-                                                # pure floating-point noise from running the
-                                                # same projection through two code paths — and
-                                                # my 19bd threshold of `_d2 > _r2 + 1e-9` fired
-                                                # on every one of them, printing an alarming
-                                                # paragraph three times and releasing the whole
-                                                # muted family. So a stage is only named if its
-                                                # BANDS moved: the two bases disagree on which
-                                                # are met, or a band value moves by more than
-                                                # _sbT of its own limit. Same evidence the two
-                                                # per-seed lines below use, so the block cannot
-                                                # contradict itself.
-                                                _sb_pairs.append((str(_sbn), float(_sbR),
-                                                                  float(_sbD),
-                                                                  bool(_nR != _nD or _big)))
-                                                if _nR != _nD:
-                                                    log(f"   [seed-basis]       ⚠ THE TWO BASES DISAGREE "
-                                                        f"ON WHICH BANDS ARE MET ({_nR} vs {_nD} unmet) "
-                                                        f"— the RAW summary is not a safe guide to what "
-                                                        f"ships.")
-                                                elif _big:
-                                                    log(f"   [seed-basis]       ⚠ a band value moves by "
-                                                        f">{_sbT:.1%} of its own limit between bases.")
-                                                elif str(_uR) != str(_uD):
-                                                    log("   [seed-basis]       (bases agree on which "
-                                                        "bands are met; values differ by <0.5% of "
-                                                        "limit — immaterial)")
-                                            # 19bd: name the failure explicitly — a stage whose
-                                            # OWN accept test (RAW) said "strictly better" while
-                                            # the basis the engine selects on (DELIVERED) got
-                                            # worse. Not a tie-break subtlety: an operator
-                                            # optimising a quantity nobody ships.
-                                            _sb_noise = 0
-                                            for _n2, _r2, _d2, _m2 in _sb_pairs:
-                                                # RELATIVE floor as well as the band evidence:
-                                                # the breach scalar is ~0.34 here and 1e-9 is
-                                                # eight orders below the noise in it.
-                                                if _d2 <= _r2 * (1.0 + 1e-4) + 1e-9:
-                                                    if _d2 > _r2:
-                                                        _sb_noise += 1
-                                                    continue
-                                                if not _m2:
-                                                    log(f"   [seed-basis]   '{_n2}' scores worse "
-                                                        f"on DELIVERED by {_d2 - _r2:.3g} "
-                                                        f"({(_d2 - _r2) / max(abs(_r2), 1e-30):.2%} "
-                                                        "of its own breach) but NO band moved "
-                                                        "materially and the two bases agree on "
-                                                        "which are met — a penalty-scalar "
-                                                        "difference with no band behind it. Not "
-                                                        "flagged.")
-                                                    continue
-                                                # 19gs: this warning is now conditional on the
-                                                # SWITCH, not on the numbers. Before 19go the
-                                                # stages' accept tests were RAW-only, so a
-                                                # candidate better on RAW and worse on DELIVERED
-                                                # meant a stage had optimised the wrong thing —
-                                                # a real defect, and the text said so. Since
-                                                # 19go they accept on DELIVERED, so RAW simply
-                                                # is not what anything targeted any more and a
-                                                # gap between the two is expected and harmless.
-                                                # Leaving the old ⚠ in place would have this
-                                                # firing on every healthy run, which is how a ⚠
-                                                # stops being read.
-                                                if _seed_dlv is None:
-                                                    log(f"   [seed-basis]   ⚠ '{_n2}' is BETTER "
-                                                        f"on RAW and WORSE on DELIVERED "
-                                                        f"({_r2:.5f} → {_d2:.5f}, Δ "
-                                                        f"+{_d2 - _r2:.5f}), and the seed stages "
-                                                        "are on the RAW basis this run "
-                                                        "(ROUTING_SEED_DELIV=0). So this stage "
-                                                        "optimised a target the engine does not "
-                                                        "select on and can report 'strictly "
-                                                        "better' for what the engine scores as a "
-                                                        "regression. Selection rejects it (see "
-                                                        "[seed-chain]) so nothing bad ships, but "
-                                                        "the stage is wasted. Unset "
-                                                        "ROUTING_SEED_DELIV.")
-                                                else:
-                                                    # 19hs: the "Expected, not a warning"
-                                                    # paragraph is gone. Since 19go the stage
-                                                    # ACCEPTS on DELIVERED, so RAW reading lower is
-                                                    # the design and not news - it was restated for
-                                                    # every seed, every run. The two numbers are
-                                                    # the content; the basis is named inline.
-                                                    log(f"   [seed-basis]   '{_n2}' scores "
-                                                        f"{_r2:.5f} on RAW and {_d2:.5f} on "
-                                                        "DELIVERED (accepted on DELIVERED).")
-                                            if _sb_noise:
-                                                log(f"   [seed-basis]   {_sb_noise} seed(s) score a "
-                                                    "hair worse on DELIVERED than on RAW, all "
-                                                    "within 0.01% of their own breach and with "
-                                                    "no band moving — that is float noise from "
-                                                    "two code paths computing the same "
-                                                    "projection, not a divergence. NOT flagged.")
-                                            log("   [seed-basis]   ⇒ if DELIVERED is consistently worse "
-                                                "than RAW, every seed is being built and judged against "
-                                                "a target that is easier than reality, and the transform "
-                                                "(not the seed construction) is where the breach enters. "
-                                                "Kill-switch ROUTING_SEED_BASIS=0.")
-                                        except Exception as _sbE:  # noqa: BLE001
-                                            log(f"   [seed-basis] skipped "
-                                                f"({type(_sbE).__name__}: {_sbE}) — the RAW-vs-DELIVERED "
-                                                "question stays open for this run.")
+                                                except Exception:  # noqa: BLE001
+                                                    _big = True
+                                            # 19bf: the ⚠ below needs EVIDENCE, not a
+                                            # float delta. On 2026-08-23 11:56 all three
+                                            # seeds had Δ ≈ 2e-07 on a breach of ~0.34 —
+                                            # pure floating-point noise from running the
+                                            # same projection through two code paths — and
+                                            # my 19bd threshold of `_d2 > _r2 + 1e-9` fired
+                                            # on every one of them, printing an alarming
+                                            # paragraph three times and releasing the whole
+                                            # muted family. So a stage is only named if its
+                                            # BANDS moved: the two bases disagree on which
+                                            # are met, or a band value moves by more than
+                                            # _sbT of its own limit. Same evidence the two
+                                            # per-seed lines below use, so the block cannot
+                                            # contradict itself.
+                                            _sb_pairs.append((str(_sbn), float(_sbR),
+                                                              float(_sbD),
+                                                              bool(_nR != _nD or _big)))
+                                            # 19hu: the verdict is now a CELL, and the same
+                                            # three-way evidence decides it - disagree on which
+                                            # bands are met, a band value moving more than _sbT
+                                            # of its own limit, or neither.
+                                            _sb_vd = (f"⚠ DISAGREE ({_nR} vs {_nD} unmet)"
+                                                      if _nR != _nD else
+                                                      f"⚠ a band moves >{_sbT:.1%} of its limit"
+                                                      if _big else
+                                                      "agree"
+                                                      if str(_uR) == str(_uD) else
+                                                      "agree on which; values immaterial")
+                                            log(f"      {str(_sbn):<15}{_sbR:>12.5g}"
+                                                f"{_sbD:>12.5g}{_sbD - _sbR:>+11.5g}"
+                                                f"{f'{_sb_nb - _nR}/{_sb_nb}':>10}"
+                                                f"{f'{_sb_nb - _nD}/{_sb_nb}':>10}   {_sb_vd}")
+                                            if _nR != _nD or _big:
+                                                _sb_det.append((str(_sbn), str(_uR), str(_uD)))
+                                        # 19bd: name the failure explicitly — a stage whose
+                                        # OWN accept test (RAW) said "strictly better" while
+                                        # the basis the engine selects on (DELIVERED) got
+                                        # worse. Not a tie-break subtlety: an operator
+                                        # optimising a quantity nobody ships.
+                                        log(f"      {'-' * 70}")
+                                        # 19hu: the unmet bands, for the seeds where the two
+                                        # bases disagree. For a seed they agree on, the table's
+                                        # met-count is the whole answer, and the sentence below
+                                        # is said ONCE instead of inside every ⚠ cell.
+                                        if _sb_det:
+                                            log("")
+                                            log("      ⚠ for the seed(s) marked DISAGREE the RAW "
+                                                "summary is NOT a safe guide to what ships. The "
+                                                "bands they differ on:")
+                                        for _dn, _dR, _dD in _sb_det:
+                                            log("")
+                                            log(f"      {_dn} - where the two bases differ:")
+                                            log(f"        RAW      : {_dR or 'all bands met'}")
+                                            log(f"        DELIVERED: {_dD or 'all bands met'}")
+                                        log("")
+                                        _sb_noise = 0
+                                        for _n2, _r2, _d2, _m2 in _sb_pairs:
+                                            # RELATIVE floor as well as the band evidence:
+                                            # the breach scalar is ~0.34 here and 1e-9 is
+                                            # eight orders below the noise in it.
+                                            if _d2 <= _r2 * (1.0 + 1e-4) + 1e-9:
+                                                if _d2 > _r2:
+                                                    _sb_noise += 1
+                                                continue
+                                            if not _m2:
+                                                log(f"   [seed-basis]   '{_n2}' scores worse "
+                                                    f"on DELIVERED by {_d2 - _r2:.3g} "
+                                                    f"({(_d2 - _r2) / max(abs(_r2), 1e-30):.2%} "
+                                                    "of its own breach) but NO band moved "
+                                                    "materially and the two bases agree on "
+                                                    "which are met — a penalty-scalar "
+                                                    "difference with no band behind it. Not "
+                                                    "flagged.")
+                                                continue
+                                            # 19gs: this warning is now conditional on the
+                                            # SWITCH, not on the numbers. Before 19go the
+                                            # stages' accept tests were RAW-only, so a
+                                            # candidate better on RAW and worse on DELIVERED
+                                            # meant a stage had optimised the wrong thing —
+                                            # a real defect, and the text said so. Since
+                                            # 19go they accept on DELIVERED, so RAW simply
+                                            # is not what anything targeted any more and a
+                                            # gap between the two is expected and harmless.
+                                            # Leaving the old ⚠ in place would have this
+                                            # firing on every healthy run, which is how a ⚠
+                                            # stops being read.
+                                            if _seed_dlv is None:
+                                                log(f"   [seed-basis]   ⚠ '{_n2}' is BETTER "
+                                                    f"on RAW and WORSE on DELIVERED "
+                                                    f"({_r2:.5f} → {_d2:.5f}, Δ "
+                                                    f"+{_d2 - _r2:.5f}), and the seed stages "
+                                                    "are on the RAW basis this run "
+                                                    "(ROUTING_SEED_DELIV=0). So this stage "
+                                                    "optimised a target the engine does not "
+                                                    "select on and can report 'strictly "
+                                                    "better' for what the engine scores as a "
+                                                    "regression. Selection rejects it (see "
+                                                    "[seed-chain]) so nothing bad ships, but "
+                                                    "the stage is wasted. Unset "
+                                                    "ROUTING_SEED_DELIV.")
+                                            else:
+                                                # 19hu: nothing to say here any more. 19hs cut
+                                                # this to the two scores; the table above now
+                                                # carries both of them for every seed, and its
+                                                # header says the acceptance is on DELIVERED.
+                                                pass
+                                        if _sb_noise:
+                                            log(f"   [seed-basis]   {_sb_noise} seed(s) score a "
+                                                "hair worse on DELIVERED than on RAW, all "
+                                                "within 0.01% of their own breach and with "
+                                                "no band moving — that is float noise from "
+                                                "two code paths computing the same "
+                                                "projection, not a divergence. NOT flagged.")
+                                    except Exception as _sbE:  # noqa: BLE001
+                                        log(f"   [seed-basis] skipped "
+                                            f"({type(_sbE).__name__}: {_sbE}) — the RAW-vs-DELIVERED "
+                                            "question stays open for this run.")
                                 _fm_p, _fm_meta = _fm_prob(
                                     ctx, soft_cap_mult=1.0,
                                     seed_full=_fm_seed)   # no mid_bands: 30-day linear proxy removed
@@ -8020,9 +8050,12 @@ def render():
                                         log(f"   [proj-config] per-run reset skipped "
                                             f"({type(_nre).__name__}: {_nre}) \u2014 the drift and "
                                             "path figures below may be an EARLIER run's.")
-                                    log("   [full-matrix] EXACT M5 band projector wired into the fitness "
-                                        "(exact per-generation pro-rata M5 projection — no 30-day linear "
-                                        "proxy). Bands: " + " · ".join(_fm_applied))
+                                    # 19hu: this line and its 15-band dump are deleted. Exact
+                                    # bands are MANDATORY - the not-exact case crashes above - so
+                                    # "wired into the fitness" cannot be false, and the band list
+                                    # is configuration that the MID-constraints table already
+                                    # prints and the delivered-bands table restates with live
+                                    # values. `_fm_applied` is still the guard at its own site.
                                 # (no proxy fallback — exact bands are mandatory; the not-exact case
                                 #  already crashed loudly above when bands are configured.)
                                 # Honour the tab-2 "Generations" setting (was hardcoded 200 and
@@ -8044,11 +8077,21 @@ def render():
                                 _fm_restarts = max(1, int(ss.get("ga_restarts", 1) or 1))
                                 _fm_rmode = str(ss.get("ga_restart_mode", "lean") or "lean")
                                 _substep("④·3  RUN THE GENETIC SEARCH")
-                                log(f"   [full-matrix] search budget: {_fm_nseeds} seed(s) × "
-                                    f"{_fm_restarts} restart(s) × {_fm_gens} generations · pop "
-                                    f"{_fm_pop} · restart-mode {_fm_rmode}; "
-                                    + ("early-stop DISABLED (run-all-generations ON)"
-                                       if _fm_no_stop else f"patience {_fm_pat}") + ".")
+                                # 19hu: as a table, and it is the ONE statement of the budget.
+                                # `④ EFFICIENCY` restated the same five numbers ~2,900 lines later
+                                # in its own `settings :` line; that one is deleted, because the
+                                # budget belongs where the search STARTS, not in the post-mortem.
+                                log("")
+                                log("   [full-matrix] search budget")
+                                log(f"      {'seeds':<22}{_fm_nseeds:>10,}")
+                                log(f"      {'restarts per seed':<22}{_fm_restarts:>10,}")
+                                log(f"      {'generations':<22}{_fm_gens:>10,}")
+                                log(f"      {'population':<22}{_fm_pop:>10,}")
+                                log(f"      {'restart mode':<22}{_fm_rmode:>10}")
+                                log(f"      {'early stop':<22}"
+                                    + (f"{'DISABLED':>10}" if _fm_no_stop
+                                       else f"{'patience ' + format(_fm_pat, ',') :>10}"))
+                                log("")
                                 # ── BREACH-TARGETED MUTATION: profiles weighted by the VAMP/TXN
                                 #    they can actually SHED ─────────────────────────────────────
                                 # 2026-08-19ad. The 19ab version asked "does this profile contain a
@@ -10959,9 +11002,27 @@ def render():
                                 # readout above was skipped for this engine, as it's short-circuited).
                                 _fm_secs = float(_fm_info.get("seconds", 0.0) or 0.0)
                                 _fm_cnt = int(_fm_info.get("splits_evaluated", 0) or 0)
+                                # 19hu: DID THE ENGINE GET THE BUDGET tab_2 PRINTED? The engine's
+                                # own budget line is deleted, so this is what keeps the [full-matrix]
+                                # search budget table honest. Silent when they agree. Not
+                                # hypothetical: ga_pop_override once read a key that did not exist
+                                # and the population sat at 64 while the UI said otherwise.
+                                _bud_got = [("seeds", _fm_nseeds, _fm_info.get("n_seeds")),
+                                            ("restarts", _fm_restarts, _fm_info.get("restarts")),
+                                            ("population", _fm_pop, _fm_info.get("pop_size"))]
+                                _bud_bad = [(_k, _want, _got) for _k, _want, _got in _bud_got
+                                            if _got is not None and int(_got) != int(_want)]
+                                if _bud_bad:
+                                    log("   [full-matrix] ⚠ THE ENGINE DID NOT GET THE BUDGET THIS "
+                                        "LOG PRINTED: "
+                                        + "; ".join(f"{_k} passed {_want:,} but the engine ran "
+                                                    f"{int(_got):,}" for _k, _want, _got in _bud_bad)
+                                        + ". Every throughput and efficiency number below is for "
+                                          "the budget the engine RAN, not the one above.")
                                 log("   ④ EFFICIENCY (full-matrix GA — the delivered search):")
-                                log(f"      settings   : {_fm_nseeds} seed(s) × {_fm_restarts} restart(s) × "
-                                    f"{_fm_gens} gens × pop {_fm_pop} · restart-mode={_fm_rmode}")
+                                # 19hu: the `settings :` line is gone - [full-matrix] search
+                                # budget states these five numbers as a table where the search
+                                # starts, which is where they are actionable.
                                 log(f"      result     : success rate {_fm_info.get('success_rate', float('nan')):.5f} · "
                                     f"viol {_fm_info.get('violation', float('nan')):,.4f} · "
                                     f"feasible={_fm_info.get('feasible')}")

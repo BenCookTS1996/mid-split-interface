@@ -753,9 +753,18 @@ def _pnote(msg):
 
 # [FN-010b2]
 def _bnote(msg):
-    """Record a one-off BUILD verdict for the run log, and echo it to stdout. See _BUILD_NOTES."""
-    if len(_BUILD_NOTES) < 32:
-        _BUILD_NOTES.append(str(msg))
+    """Record a one-off BUILD verdict for the run log, and echo it to stdout. See _BUILD_NOTES.
+
+    19hu: a note ALREADY RECORDED is not recorded again. The projector is built more than once
+    per run - the live scaffold, then the flat kernel the self-check compares against - and each
+    build re-states its verdicts, which is how `frozen-scaffold LIFT ON` printed twice with
+    identical numbers. A one-off BUILD verdict repeated byte for byte carries nothing; a verdict
+    whose NUMBERS differ between builds is a different string and still prints (the two
+    `profile-blocked layout built` lines differ on live/frozen rows, and both are wanted).
+    """
+    _m = str(msg)
+    if len(_BUILD_NOTES) < 32 and _m not in _BUILD_NOTES:
+        _BUILD_NOTES.append(_m)
     print(f"[band_projection] {msg}")
 
 
@@ -1843,12 +1852,15 @@ class PopulationBandProjector:
                         + (" ZERO disagreement, so the two eligibility sets are the same set on "
                            "this data and the grain difference is harmless here."
                            if _mm == 0 else
-                           " THOSE ROWS ARE THE OPEN QUESTION: the search's mask is the more "
-                           "precise one (a vampMid whose fids differ in wallet/USA capability by "
-                           "currency), but DELIVERY is the authoritative number, so a floor built "
-                           "on the search's mask will floor rows delivery's floor excludes and "
-                           "reconciliation error will carry the difference. Decide which mask the "
-                           "floor uses BEFORE step 2 wires it into the kernel."))
+                           " READ THIS AS HISTORY, NOT AS A DECISION (19hu). Since 19ht DELIVERY "
+                           "IS ON THE SAME (vampMid, currency) grain as the search by default, "
+                           "and build_split_exports has been finer still - fid-grain - since "
+                           "2026-08-17, so the search-vs-delivery disagreement on this axis is 0 "
+                           "by construction and [emask-grain] above says so. The count here is "
+                           "what the OLD coarse vampMid-only test would have disagreed by, which "
+                           "is worth keeping as the size of the over-blocking that was removed. "
+                           "ROUTING_EMASK_PAIRS=0 puts delivery back on the coarse test, and only "
+                           "then does this number become a live gap again."))
             elif self._efloor > 0.0:
                 _bnote(f"[ef-mask] exploration floor {self._efloor:.2%} carried into the "
                        f"projector (STEP 1: stored, not applied). Floor-eligible rows: "

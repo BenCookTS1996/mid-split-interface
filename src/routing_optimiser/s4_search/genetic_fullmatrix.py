@@ -1545,11 +1545,15 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     total_vol = _profile_volume_total(p)
 
     log = log_fn or (lambda *_a, **_k: None)
-    log(f"[fullmatrix-ga] build={__build__} R={R} profiles={p.n_profiles} mids={p.n_mids}")
-
     # Stage-4 fused evaluator (numpy default; opt-in verify-gated numba kernel).
+    # 19hu: the backend is FOLDED INTO the build line instead of a line of its own. It cannot
+    # move to the top of the run log, where Ben asked for it: it is what make_fused_eval
+    # RETURNED, so a line printed before this call would be the request, not the result - the
+    # intent-vs-fact error 19hr had just finished fixing. So it stays where the fact is, and
+    # costs one line instead of two.
     eval_pop, _eval_info = make_fused_eval(p, use_numba=numba)
-    log(f"[fullmatrix-ga] evaluator backend={_eval_info.get('backend')}"
+    log(f"[fullmatrix-ga] build={__build__} R={R} profiles={p.n_profiles} mids={p.n_mids} "
+        f"evaluator={_eval_info.get('backend')}"
         + (f" ({_eval_info.get('reason')})" if _eval_info.get('reason') else ""))
     # Make the parallelism visible: numba defaults NUMBA_NUM_THREADS to ALL cores for the
     # parallel=True kernels (each candidate writes only its own slot, so more threads scale
@@ -1559,9 +1563,18 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     if _eval_info.get("backend") == "numba":
         try:                                            # pragma: no cover - env dependent
             import numba as _nb
-            log(f"[fullmatrix-ga] numba threads={_nb.get_num_threads()} "
-                f"(of {_nb.config.NUMBA_DEFAULT_NUM_THREADS} detected cores); "
-                "set NUMBA_NUM_THREADS to override.")
+            # 19hu: logged ONLY in the case the comment above describes as worth investigating.
+            # "threads=16 of 16" every run is the healthy state and said nothing; threads=1 means
+            # the parallel kernels are running on one core and the throughput figures downstream
+            # are not the fast path. Same treatment as the switched-off-gateway warning in 19hd:
+            # a line that always fires teaches the reader to skip it.
+            _nthr = int(_nb.get_num_threads())
+            if _nthr <= 1:
+                log(f"[fullmatrix-ga] ⚠ numba threads={_nthr} of "
+                    f"{_nb.config.NUMBA_DEFAULT_NUM_THREADS} detected core(s) - the parallel "
+                    "kernels are running SINGLE-THREADED, so every throughput number below is "
+                    "off the fast path. Investigate before chasing other speedups; "
+                    "NUMBA_NUM_THREADS overrides it.")
         except Exception:                               # noqa: BLE001
             pass
 
@@ -2105,8 +2118,9 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
            if _MUT_FAST else
            "LEGACY (ROUTING_MUT_FAST=0) — one shared generator, one Gaussian per row per child, "
            "~99% of them discarded. This reproduces every run before 19bp bit for bit."))
-    log(f"[fullmatrix-ga] budget: {n_seeds} seed(s) × {restarts} restart(s) × "
-        f"{generations} gens (pop {pop_size}, mode={restart_mode})")
+    # 19hu: the budget line stood here and was deleted - tab_2 states it as a table before the
+    # call and now VERIFIES it against this function's own returned n_seeds / restarts /
+    # pop_size afterwards, which is the check the line was standing in for.
     # SEED = an independent search (own RNG, own random exploration). RESTART =
     # re-seed the population when a search stalls, keeping the best-so-far as the
     # incumbent. Every seed/restart is CENTRED on best_logits, so the never-worse
