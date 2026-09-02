@@ -2120,9 +2120,12 @@ def render():
                     # configured as Bank×Currency×RPGT×pmp×Country, logged the 3-part description.
                     # A log that misstates its own grain is how a cell count gets attributed to
                     # the wrong configuration.
-                    _grain_lbl = ("Bank×Currency×RPGT×pmp×Country (per-(pmp,Country) SUB-CELLS)"
-                                  if _opt_subcell else "Bank×Currency×RPGT (per-RPGT cells)")
-                    log(f"   Optimisation grain: {_grain_lbl}; Engine Score grain: per-RPGT.")
+                    # 19hb: the log line here was DELETED as a duplicate — the RUN CONFIG table
+                    # already prints "optimisation grain" and "engine score grain" straight from
+                    # the two selectboxes. The 19ad guard this line carried (a log that misstates
+                    # its own grain) is NOT lost: `_opt_subcell` is a pure function of `_opt_grain`
+                    # with no other input, so the table's value and this line's value cannot
+                    # diverge. It was one derived restatement of a config value printed above.
 
                     # Total forecast volume to route per cell.
                     # The forecast is used ONLY for how much volume to route, not
@@ -2176,8 +2179,6 @@ def render():
                     if _rf_miss.any():
                         _rf_cells = int(att.loc[_rf_miss, _gk].drop_duplicates().shape[0])
                         _rf_rows = int(_rf_miss.sum())
-                        _rf_att = float(pd.to_numeric(att.loc[_rf_miss, "attempts"],
-                                                      errors="coerce").fillna(0.0).sum())
                         if not bool((~_rf_miss).any()):
                             # EVERY cell missing is a broken join key, not an uncovered book.
                             # 19em kept the substitution here; that violated the rule this
@@ -2195,15 +2196,16 @@ def render():
                                 f"whole book to keep a run alive would ship a split built "
                                 f"entirely on history.")
                         att = att[~_rf_miss].copy()
+                        # 19hb: trimmed to the FACT and the SHIPPING CONSEQUENCE. The 19em
+                        # history (what the substitution was, how it was measured, why there is no
+                        # switch back) is settled and lives in the block comment above, which is
+                        # where a reader who needs it will be. What a RUN needs to show is how much
+                        # of the book was dropped and what happens to it.
                         log(f"   [require-forecast] {_rf_cells:,} cell(s) / {_rf_rows:,} "
-                            f"gateway-row(s) REMOVED: the forecast has no row for them, so until "
-                            f"19em they were routed on {_rf_att:,.0f} 30-day ATTEMPT(s) "
-                            f"substituted for forecast volume. Historic attempts are not forecast "
-                            f"transactions. They also mapped to no prop-key and reached no band "
-                            f"ceiling, so the search was deciding them and nothing was checking "
-                            f"them. {len(att):,} gateway-row(s) remain. NOTE those BINs now carry "
-                            f"NO rule in the exported split — their traffic falls to the gateway "
-                            f"config's default. This is intended and there is no switch back.")
+                            f"gateway-row(s) dropped — the forecast has no row for them, so there "
+                            f"is no volume to route; {len(att):,} gateway-row(s) remain. Those BINs "
+                            f"carry NO rule in the exported split and fall to the gateway config's "
+                            f"default.")
                     att["volume"] = att["fc_volume"] * att["baseline_share"]
 
                     agg_forecast = att[_gk + ["gateway", "volume", "baseline_share"]].copy()
@@ -2360,7 +2362,7 @@ def render():
                                     _drop_brand += 1; continue
                                 _cand.add(_g)
                             _explore |= _cand
-                            log(f"   auto-explore capable set: {len(_cand)} gateway(s) after Master-MID guards "
+                            log(f"   {len(_cand)} available gateway(s) "
                                 f"(from {_n0}; dropped {_drop_inact} inactive, {_drop_pp} PayPal, "
                                 f"{_drop_brand} other-brand vs '{sr_company}').")
                         if _explore:
@@ -2649,7 +2651,7 @@ def render():
                     # ── MASTER-MID CANDIDATE FILTER (2026-08-17) ───────────────────────────────
                     # Capability comes from data/mappings/Master_MID_List.csv at gatewayFid grain.
                     # These guards previously applied ONLY to the auto-explore capable set (see the
-                    # "auto-explore capable set" log above), so a gateway that arrived via ATTEMPTS
+                    # "N available gateway(s)" log above), so a gateway that arrived via ATTEMPTS
                     # / forecast HISTORY bypassed them entirely and could be routed volume it cannot
                     # take. Gated here, at the single choke every candidate passes through:
                     #   • currency=EXCLUDED  — no usable currency in the MID list  → drop  [HARD]
