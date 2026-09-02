@@ -6589,8 +6589,18 @@ def render():
                                     "executes. That is a REAL gap and still worth closing; the 19gw attempt "
                                     "to close it put reconciliation error at 1,457 and is off until it is "
                                     "modelled where delivery actually applies it"
-                                    + (". ROUTING_SEARCH_FLOOR=1 re-enables that version for experiments; "
-                                       "it is NOT correct yet." if float(floor or 0.0) > 0.0
+                                    + (". 19hv SHIPPED STEP 2 of the replacement: "
+                                       "ROUTING_PROJ_SFLOOR=1 models the floor INSIDE the "
+                                       "profile-blocked band kernel, where delivery applies it - "
+                                       "on the TXN share only, uncapped and renormalised, in its "
+                                       "own buffer, leaving the VAMP path on the capped unfloored "
+                                       "share exactly as delivery's _vprop is. Default OFF, and "
+                                       "while it is armed the profile-blocked self-check is "
+                                       "SKIPPED because the flat reference does not floor yet "
+                                       "(step 3), so read such a run as an experiment. The old "
+                                       "ROUTING_SEARCH_FLOOR=1 is the 19gw version and is still "
+                                       "NOT correct - prefer ROUTING_PROJ_SFLOOR."
+                                       if float(floor or 0.0) > 0.0
                                        else "; the exploration floor is 0 on this run, so there is "
                                             "nothing to model."))
 

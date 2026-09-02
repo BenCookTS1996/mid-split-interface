@@ -536,3 +536,68 @@ exactly today, and the whole disagreement was ever between the coarse test and t
 success rate and reconciliation error should be unchanged from 15:22 — and if they *do* move,
 that is the finding, not the feature. The change is visible in **tab 3's PRE/POST table**, which
 is the free isolation test §15 was pointing at: it is now on the fine grain by default.
+
+---
+
+## 17. Step 2 is shipped (19hv) — `ROUTING_PROJ_SFLOOR`, default OFF
+
+### What the kernel now does
+
+`_cb_kernel_impl` takes `ef_c`, `efloor`, `usefloor` and a `pshf` lane buffer. With `usefloor == 0`
+it takes exactly the branches it took before, and the run is bit-identical — that is step 2's
+acceptance test and it is asserted, not argued (`tests/test_19hv_sfloor_kernel.py`).
+
+### The asymmetry, finally read off delivery's own source
+
+`impact_calcs`'s `_vprop` block settles what 19gw guessed at:
+
+| | delivery | the kernel before 19hv | the kernel with SFLOOR on |
+|---|---|---|---|
+| **TXN** share | `prop_share` — floored, renormalised, **uncapped** | `_pshare` — capped, unfloored | `pshf` — floored, renormalised, uncapped ✅ |
+| **VAMP** share | `_vprop` — capped, **unfloored** | `_pshare` — capped, unfloored ✅ | unchanged ✅ |
+
+Delivery's comment says it outright: `_vprop` is *"DELIBERATELY NOT `prop_share`: that column also
+carries the 0.01 exploration floor … which the search's water-fill does not apply."*
+
+**This is why the separate buffer is not optional.** In this kernel `vshare` is *derived* from
+`_pshare` on the fly, so flooring in place would floor VAMP too — a quantity delivery leaves
+unfloored — and the reconciliation error would move in a direction nothing in delivery explains.
+The fixture asserts VAMP is byte-identical armed and unarmed.
+
+**Two changes under one switch, on purpose.** `pshf` is built from the *uncapped* proposals
+(`_pr/ps`), not from the capped `_pshare`, because delivery's TXN share is uncapped. Flooring the
+capped share would produce a third object matching neither side. Half of this is not a smaller
+step; it is a wrong one.
+
+### Two guards, both learned from 2026-08-24
+
+While `SFLOOR` is armed:
+
+- **The profile-blocked self-check is SKIPPED**, and says so loudly. Its reference is the flat
+  kernel, which does not floor yet (step 3), so the diff would fail *by construction*, the
+  `except` would disable profile-blocking for the whole process, **and float32 would die with it
+  because it lives inside that same path.** That cascade already happened once and cost a 5h22m
+  run. An armed run is therefore an experiment, not a delivered number.
+- **The float32 live-width drift is NOT re-measured**, and says so. `_f32_drift`'s float64
+  reference is also the flat kernel, so the "drift" would be float32 **plus the entire floor** —
+  and `[f32-floor]` would raise the reconciliation bar by it, hiding a real disagreement behind a
+  number that is not float32's.
+
+### Fact, not intent
+
+`_SFLOOR_ON` is the request. `_SFLOOR_FACT["applied"]` is whether the kernel ran with
+`usefloor > 0`, which also needs a non-zero `exploration_floor` to have reached the projector.
+`proj_config()` prints the second, and prints a distinct `REQUESTED AND IS NOT IN EFFECT` line
+when they differ — so no run can claim the floor is modelled while scoring an unfloored split.
+
+### Not done in 19hv (§12 steps 3–7)
+
+3. Mirror into `_pop_band_kernel_impl` and `_shares`, so the self-check and the drift measurement
+   can run again. **This is the next step and it is what makes an armed run trustworthy.**
+4. Fixture against a hand-computed `_efloor` — *done early*, it is the file above.
+5. One full run with `ROUTING_PROJ_SFLOOR=1` **and** `ROUTING_PROJ_FLOOR=1` together.
+6. Read acceptance tests 2–7 off that log.
+7. Then delete `_fm_floor`, `ROUTING_SEARCH_FLOOR` and the 19gw post-mortem block.
+
+**Do not arm this for a delivered run until step 3 lands.** With the self-check off, the only
+thing standing behind the profile-blocked kernel is the fixture.

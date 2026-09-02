@@ -465,7 +465,8 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
                     profiles, cstart, ccnt,
                     cap_rowc, cap_band, cap_c, cap_ctot, cap_base,
                     pc_orgc, pc_vc, pc_pool, pc_band, pc_heldfac, pc_gc, pc_gkc, vconst,
-                    cap, nlane, vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks):
+                    cap, nlane, vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks,
+                    ef_c, efloor, usefloor, pshf):
     P = prop_raw.shape[0]
     nCl = profiles.shape[0]; nC = cap_rowc.shape[0]; nA = pc_orgc.shape[0]
     vamp[:, :] = 0.0; txn[:, :] = 0.0
@@ -476,6 +477,13 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
         q = p * lane_stride
         _psum = psum[q]; _vpsum = vpsum[q]; _moved = moved[q]
         _pr = pr[q]; _pshare = pshare[q]
+        # 19hv: an INT ternary in the index, never an array ternary. numba must unify the type
+        # of everything it compiles, and `pshf[q] if ... else pshare[q]` asks it to unify two
+        # array expressions; this asks it to unify two ints. When OFF `pshf` is the (1,1) dummy
+        # and `qf` is 0, so this is a valid 1-element row that nothing ever indexes - every read
+        # and write of `_pshf` below is inside an `if usefloor > 0`.
+        qf = q if usefloor > 0 else 0
+        _pshf = pshf[qf]
         _gks = gks[q]
         for _b in range(vconst.shape[0]):        # 19cz — see the flat kernel
             vamp[p, _b] += vconst[_b]
@@ -524,6 +532,35 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
                             for i in range(s, e):
                                 if _pshare[i] > 1e-12 and _pshare[i] < cap - 1e-12:
                                     _pshare[i] += (cap - _pshare[i]) / rs * exc
+                # ---- 19hv: the TXN share, delivery's rule, into its OWN buffer ----
+                # Eligible = present in the profile (base>0 or a proposal) AND not masked
+                # (`ef_c` is `pw > 0`, i.e. keep & ~emask & ~excl). Delivery's `_elig_f` omits
+                # `excl` - it has no analogue there - so this is deliberately the NARROWER set:
+                # an excluded row has pw 0 and no proposal, and flooring it would hand share to a
+                # gateway the search has removed. flc = min(floor, 1/nef) is delivery's cap on the
+                # floor, so a profile with more eligible rows than 1/floor cannot be over-budgeted.
+                if usefloor > 0:
+                    nef = 0.0
+                    for i in range(s, e):
+                        if ef_c[i] > 0.0 and (base_c[i] > 0.0 or _pr[i] > 0.0):
+                            nef += 1.0
+                    flc = 0.0
+                    if nef > 0.0:
+                        flc = efloor
+                        if 1.0 / nef < flc:
+                            flc = 1.0 / nef
+                    fs = 0.0
+                    for i in range(s, e):
+                        # UNCAPPED, like delivery's prop_share. _pshare is the capped one and the
+                        # VAMP path keeps reading it.
+                        fv = _pr[i] / ps
+                        if ef_c[i] > 0.0 and (base_c[i] > 0.0 or _pr[i] > 0.0) and fv < flc:
+                            fv = flc
+                        _pshf[i] = fv
+                        fs += fv
+                    if fs > 0.0:
+                        for i in range(s, e):
+                            _pshf[i] = _pshf[i] / fs
                 # ---- vpsum ----
                 vp = 0.0
                 for i in range(s, e):
@@ -536,12 +573,24 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
                 _vpsum[c] = 0.0
                 for i in range(s, e):
                     _pshare[i] = base_c[i]
+                # 19hv: delivery's prop_share falls back to base_share when prop_sum == 0, and
+                # its floor block is gated on prop_sum > 0, so an unrouted profile is unfloored
+                # on BOTH sides. Same value, same branch.
+                if usefloor > 0:
+                    for i in range(s, e):
+                        _pshf[i] = base_c[i]
         # ---- nC: mvrow derived instead of read (mv_c[r] gated on the profile being routed) ----
         for j in range(nC):
             r = cap_rowc[j]; c = cap_c[j]
             mvr = mv_c[r] if _psum[c] > 0.0 else 0.0
+            # 19hv: the ONLY reader of the floored share, and the branch is on a SCALAR so the
+            # OFF path reads `_pshare[r]` exactly as it did before this commit.
+            if usefloor > 0:
+                shr = _pshf[r]
+            else:
+                shr = _pshare[r]
             txn[p, cap_band[j]] += cap_ctot[j] * (cap_base[j] * (1.0 - mvr)
-                                                 + _moved[c] * _pshare[r])
+                                                 + _moved[c] * shr)
         # ---- 19cy: age-by-age renormalise — identical rule to the flat kernel ----
         # vshare is DERIVED here rather than materialised, so the sum pass has to re-derive it
         # under the same two guards the reader below uses; anything else would sum a different
@@ -727,6 +776,37 @@ _PROJ_PAR_NOTES = []
 # and are cleared at the top of PopulationBandProjector.__init__ instead: exactly one build's worth,
 # and proj_new_run() leaves them alone.
 _BUILD_NOTES = []
+
+# ── 19hv: STEP 2 OF THE EXPLORATION FLOOR (docs/scope_exploration_floor_in_search.md §12). ──────
+# DEFAULT OFF. With it off `usefloor` is 0, the kernel takes exactly the branches it took before
+# this commit, and the run is bit-identical - that is step 2's whole acceptance test.
+#
+# WHAT THE FLOOR IS. The live allocation engine gives every ELIGIBLE gateway in a routed profile
+# at least `exploration_floor` of the share, then renormalises. The search has never modelled it,
+# so it optimises a split that gets modified before it executes. [search-floor] has said so on
+# every run since 19gx.
+#
+# WHY IT NEEDS ITS OWN BUFFER, and why 19gw failed without one. In DELIVERY the two metrics do
+# NOT read the same share (impact_calcs, the `_vprop` block):
+#
+#     TXN   post_txn  <- prop_share, which IS floored and renormalised, and is NOT capped
+#     VAMP  _vshare   <- _vprop, which IS capped and is DELIBERATELY NOT prop_share, because
+#                        "that column also carries the 0.01 exploration floor ... which the
+#                        search's water-fill does not apply"
+#
+# In this kernel `vshare` is DERIVED from `_pshare` on the fly. Flooring `_pshare` in place would
+# therefore floor VAMP as well - a quantity delivery leaves unfloored - and the reconciliation
+# error would move in a direction nothing in delivery explains. So the floored share lives in a
+# SEPARATE `pshf` buffer that only the nC/TXN loop reads. `_pshare`, `_vpsum` and the whole VAMP
+# path are untouched, armed or not.
+#
+# TWO CHANGES, ON PURPOSE. `pshf` is built from the UNCAPPED proposals (_pr/ps), not from the
+# capped `_pshare`, because delivery's TXN share is uncapped. Flooring the capped share would
+# produce a third object matching neither side. So arming this moves the search's TXN share on
+# BOTH axes at once - floored AND uncapped - which is what it takes to match delivery. It is one
+# switch because half of it is not a smaller step, it is a wrong one.
+_SFLOOR_ON = os.environ.get("ROUTING_PROJ_SFLOOR", "0") != "0"
+_SFLOOR_FACT = {"armed": bool(_SFLOOR_ON), "applied": False, "floor": 0.0, "rows": 0}
 # FROZEN-SCAFFOLD LIFT switch. ON by default as of 2026-08-19ae; ROUTING_PROJ_LIFT=0 restores the
 # full-range kernel, which is the same body with arange() index arrays — a true revert, not a
 # similar path.
@@ -860,6 +940,25 @@ def proj_config():
                            "projection, so this line means none has happened yet")
                    + "; water-fill high-water mark " + str(int(_CB_OK.get("sweeps", 0)))
                    + " sweep(s) of 50.")
+    # 19hv: STEP 2 OF THE FLOOR, as FACT. `_SFLOOR_ON` is the request; `_SFLOOR_FACT["applied"]`
+    # is whether the kernel actually ran with usefloor > 0, which also needs a non-zero
+    # exploration_floor to have reached the projector. The two differ on any run that arms the
+    # switch without a floor configured, and that run must not read as "the floor is modelled".
+    if _SFLOOR_FACT["applied"]:
+        out.append("*** EXPLORATION FLOOR IS IN THE SEARCH (ROUTING_PROJ_SFLOOR=1, floor "
+                   + format(_SFLOOR_FACT["floor"], ".2%") + " over "
+                   + format(_SFLOOR_FACT["rows"], ",") + " floor-eligible row(s)). The TXN share "
+                   "the profile-blocked kernel scores is now delivery's: UNCAPPED, floored, "
+                   "renormalised, in its own `pshf` buffer. The VAMP path is UNCHANGED - it still "
+                   "reads the capped, unfloored `_pshare`, because delivery's _vprop does too. "
+                   "THIS MOVES THE DELIVERED NUMBER and the profile-blocked self-check is skipped "
+                   "while it is armed (the flat reference does not floor yet). Experiment, not a "
+                   "delivered number. ROUTING_PROJ_SFLOOR=0 reverts.")
+    elif _SFLOOR_ON:
+        out.append("*** ROUTING_PROJ_SFLOOR=1 WAS REQUESTED AND IS NOT IN EFFECT - no non-zero "
+                   "exploration floor reached the projector, so there is nothing to apply and the "
+                   "search is still scoring an unfloored split. Check the exploration floor in "
+                   "RUN CONFIG and that tab_2 passes it through.")
     if _f32_eff:
         # 19cf: the max AND the total. "max|Δtxn| 11.96" alone cannot answer "is that across all
         # the MIDs?" — the question that decides whether the setting is acceptable.
@@ -2714,6 +2813,14 @@ class PopulationBandProjector:
                 "base_c": np.ascontiguousarray(np.asarray(a[3], np.float64)[perm]),
                 "mv_c": np.ascontiguousarray(np.asarray(a[4], np.float64)[perm]),
                 "vcpos_c": np.ascontiguousarray(np.asarray(a[5], np.float64)[perm]),
+                # 19hv: the floor's eligibility, in the profile-blocked row order. `_ef_ok` is
+                # (pw > 0) - keep & ~emask & ~excl - built in __init__ by step 1 and logged as
+                # [ef-mask]. Same permutation as every other per-row array here, so a row's
+                # eligibility cannot drift away from its weight.
+                "ef_c": np.ascontiguousarray(
+                    np.asarray(getattr(self, "_ef_ok", None)
+                               if getattr(self, "_ef_ok", None) is not None
+                               else np.ones(nR), np.float64)[perm]),
                 "cap_rowc": _ix32(pos[np.asarray(a[12], np.int64)]),
                 "pc_orgc": _ix32(np.where(np.asarray(a[7], np.int64) >= 0,
                                           pos[np.clip(np.asarray(a[7], np.int64), 0,
@@ -2757,6 +2864,7 @@ class PopulationBandProjector:
             # 19dt: pw is a float now, so it must be narrowed with the other floats - left
             # at float64 it would silently make the "float32" kernel mixed-dtype.
             "pw_c": _n(cb["pw_c"]),
+            "ef_c": _n(cb["ef_c"]),                       # 19hv
             "cap": np.float32(self._cap),
             "buf": None, "lanes": 0, "primed": None,
         }
@@ -2810,6 +2918,28 @@ class PopulationBandProjector:
             pr[q][nLR:] = 0.0
             pshare[q][nLR:] = bc[nLR:]            # what the unlifted kernel's else-branch wrote
         cb["primed"] = key
+
+    # [FN-023d1b]
+    def _sfloor_buf(self, lanes, nR, dtype, cb, armed):
+        """The `pshf` lane buffer for the 19hv exploration floor, or a typing-only dummy.
+
+        Cached on (lanes, nR, dtype, layout, armed). Frozen rows are primed to `base_c` exactly as
+        `_cb_prime` primes `pshare`, because the kernel never writes the frozen tail and the nC
+        loop reads it: leave it at zero and the frozen rows' TXN silently vanishes.
+        """
+        key = (int(lanes), int(nR), np.dtype(dtype).str, cb["key"], bool(armed))
+        if getattr(self, "_sfl_key", None) == key:
+            return self._sfl_buf
+        if not armed:
+            buf = np.zeros((1, 1), dtype)          # never indexed; numba only needs the type
+        else:
+            buf = np.zeros((int(lanes), int(nR)), dtype)
+            _bc = np.asarray(cb["base_c"], dtype)
+            for _q in range(int(lanes)):
+                buf[_q][cb["nLR"]:] = _bc[cb["nLR"]:]
+        self._sfl_key = key
+        self._sfl_buf = buf
+        return buf
 
     # [FN-023d2]
     def _f32_drift(self, prop_raw, a, nprofile, P, v32, t32):
@@ -2865,6 +2995,12 @@ class PopulationBandProjector:
         sw = getattr(self, "_cb_sw", None)
         if sw is None or sw.size < max(_lanes, 1):
             sw = self._cb_sw = np.zeros(max(_lanes, 1), np.int64)
+        # 19hv: ARMED only when the switch is on AND a floor was actually supplied. Both, because
+        # ROUTING_PROJ_SFLOOR with exploration_floor 0 would arm a no-op and the log would claim
+        # the floor is modelled - the intent-vs-fact error this file already warns about twice.
+        _sfl_armed = bool(_SFLOOR_ON and float(getattr(self, "_efloor", 0.0) or 0.0) > 0.0)
+        _sfl_use = 1 if _sfl_armed else 0
+        _sfl_flo = float(getattr(self, "_efloor", 0.0) or 0.0)
         _args = (cb["propidx_c"], cb["pw_c"], cb["base_c"], cb["mv_c"], cb["vcpos_c"],
                  cb["profiles"], cb["cstart"], cb["ccnt"],
                  cb["cap_rowc"], a[13], a[14], a[15], a[16],
@@ -2890,6 +3026,16 @@ class PopulationBandProjector:
             _pr_run = np.ascontiguousarray(np.asarray(prop_raw).astype(np.float32))
 
         _pr_in = _pr_run if _F32_OK["use"] else prop_raw
+        # 19hv: ef_c / efloor / pshf must carry the SAME dtype as the other float arguments, or
+        # the "float32" kernel becomes a mixed-dtype specialisation - the exact trap 19dt left a
+        # comment about when `pw` became a float.
+        _sfl_dt = pshare.dtype
+        _ef_in = (_f32["ef_c"] if _F32_OK["use"] else cb["ef_c"])
+        _sfl_efl = _sfl_dt.type(_sfl_flo)
+        _sfl_pshf = self._sfloor_buf(_lanes, len(self._gcode), _sfl_dt, cb, _sfl_armed)
+        _SFLOOR_FACT.update(armed=bool(_SFLOOR_ON), applied=bool(_sfl_armed),
+                            floor=float(_sfl_flo),
+                            rows=int(np.count_nonzero(np.asarray(cb["ef_c"]) > 0.0)))
 
         def _run():
             if chunk:
@@ -2898,11 +3044,13 @@ class PopulationBandProjector:
                     _n = _s1 - _s0
                     _k = _cb_kernel if _n == 1 else _cb_kernel_par
                     _k(np.ascontiguousarray(_pr_in[_s0:_s1]), *_args, cap, _n,
-                       vamp[_s0:_s1], txn[_s0:_s1], psum, vpsum, moved, pr, pshare, sw, gks)
+                       vamp[_s0:_s1], txn[_s0:_s1], psum, vpsum, moved, pr, pshare, sw, gks,
+                       _ef_in, _sfl_efl, _sfl_use, _sfl_pshf)
                 return vamp, txn
             _k = _cb_kernel_par if par else _cb_kernel
             return _k(_pr_in, *_args, cap, (P if par else 1),
-                      vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks)
+                      vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks,
+                      _ef_in, _sfl_efl, _sfl_use, _sfl_pshf)
 
         try:
             _v, _t = _run()
@@ -2911,6 +3059,19 @@ class PopulationBandProjector:
             _pnote(f"profile-blocked projection FAILED to run ({type(_cbe).__name__}: {_cbe}) — "
                    "disabled for this process, the flat kernel takes over. Correct, just slower.")
             return None
+        if _sfl_armed and not _CB_OK["checked"]:
+            # 19hv: the flat reference does NOT model the exploration floor yet (§12 step 3), so
+            # this comparison would fail BY CONSTRUCTION and the except below would disable
+            # profile-blocking for the process - taking float32 down with it, which is exactly
+            # what happened on 2026-08-24. Skip it and say so; do not let it fail.
+            _CB_OK["checked"] = True
+            _pnote("profile-blocked SELF-CHECK NOT RUN because ROUTING_PROJ_SFLOOR=1 is armed. "
+                   "The flat kernel is the reference and it does not model the exploration floor "
+                   "yet (step 3 of docs/scope_exploration_floor_in_search.md §12), so a diff "
+                   "against it would fail by construction and disabling this path would take "
+                   "float32 with it. THE PROFILE-BLOCKED KERNEL IS THEREFORE UNVERIFIED ON THIS "
+                   "RUN. Read the result as an experiment, not as a delivered number, until step "
+                   "3 mirrors the floor into the flat kernel and this check can run again.")
         if not _CB_OK["checked"]:
             # SELF-CHECK on the LIVE scaffold, against the untouched flat SERIAL kernel, before any
             # result is used. Same discipline as the candidate-parallel check: a re-implementation
@@ -3018,6 +3179,17 @@ class PopulationBandProjector:
         # A FAILURE HERE DISABLES NOTHING. This is a measurement, not a correctness check: the
         # profile-blocked path was already verified above. 19cd is the lesson in the other direction —
         # there, a broken measurement took the engine down with it.
+        if _sfl_armed and _F32_OK["use"] and _F32_OK.get("live") is None:
+            # 19hv: _f32_drift's float64 reference is the FLAT kernel, which does not floor. Armed,
+            # the "drift" it returns is float32 PLUS the entire exploration floor, and
+            # [f32-floor] would raise the reconciliation bar by it - hiding a real disagreement
+            # behind a number that is not float32's. Refuse to measure rather than mis-attribute.
+            _F32_OK["live"] = False
+            _pnote("float32 drift NOT RE-MEASURED at the live width because ROUTING_PROJ_SFLOOR=1 "
+                   "is armed: the reference is the flat kernel, which does not model the floor, so "
+                   "the figure would be float32 drift PLUS the floor and [f32-floor] would raise "
+                   "the reconciliation bar by it. The first-width figure stands; it was taken "
+                   "before the floor was armed.")
         if (_F32_OK["use"] and _F32_OK.get("live") is None
                 and int(P) > int((_F32_OK.get("first") or {}).get("at_P", 0))):
             _F32_OK["live"] = False                      # claim it before trying, so one attempt only
