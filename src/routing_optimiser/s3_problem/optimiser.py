@@ -15,7 +15,7 @@ import pandas as pd
 from routing_optimiser.s3_problem.constraints import OptimiserSettings
 from routing_optimiser.engines import CellProblem, get_engine
 
-__build__ = "2026-07-29-vamp-lp-singlegw-fixed-cell-revival+2026-09-02-19gz-max-revenue-split-reference+2026-09-02-19he-floor-carried-into-projector+2026-09-02-19hh-emask-pair-grain"
+__build__ = "2026-07-29-vamp-lp-singlegw-fixed-cell-revival+2026-09-02-19gz-max-revenue-split-reference+2026-09-02-19he-floor-carried-into-projector+2026-09-02-19hh-emask-pair-grain+2026-09-02-19hi-log-simplification"
 
 
 # [FN-191]

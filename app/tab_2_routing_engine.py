@@ -526,7 +526,7 @@ def render():
                                  "temperature does not apply.")
                 elif _is_genetic:
                     # (Optimisation objective dropdown removed — the GA ALWAYS maximises the
-                    # VOLUME-WEIGHTED SUCCESS RATE, i.e. maximise Σ share·volume·SR.)
+                    # SUCCESS RATE over the routed volume, i.e. maximise Σ share·volume·SR.)
                     # Compliance target is FIXED to the GA / CMA-ES risk-minimised endpoint — the dropdown
                     # was removed because its only other option (Max approvals / greedy+LP) didn't use the
                     # GA. It maximises approvals subject to compliance (no extra risk-minimisation).
@@ -3403,14 +3403,10 @@ def render():
                     def _prio_mult(_p):
                         # p1 → 1, p2 → 1/GAP, p3 → 1/GAP², … (higher number = lower priority).
                         return float(_PRIORITY_GAP ** (1 - max(int(_p), 1)))
-                    try:
-                        _prios_used = sorted({int(_v) for _v in _prio_lookup.values()})
-                        log("   Per MID x Month Priority Weightings : "
-                            + " , ".join("P{} ={:.4g}".format(_p, _prio_mult(_p)) for _p in _prios_used)
-                            + "  (higher weight ⇒ the GA works harder to satisfy that tier"
-                            + ", GAP={:.0f})".format(_PRIORITY_GAP))
-                    except Exception:  # noqa: BLE001 - logging must never break a run
-                        pass
+                    # 19hi: the "Per MID x Month Priority Weightings" line was DELETED. It
+                    # printed the same weights the [breach-scale] table now shows, 2,200 lines
+                    # earlier and detached from the penalty they multiply — which is the only
+                    # context in which a weight of 0.125 means anything.
                     for _rec in _all_rules:
                         if _rec.get("rpgt") is None:                 # aggregate + month-only
                             _mid_month_rules.append((
@@ -4793,13 +4789,14 @@ def render():
                             _pbp_nP = int(len(_Pca))
                         except Exception:  # noqa: BLE001
                             _pbp_nR = _pbp_nP = -1
+                        # 19hi: shortened. The "part of the ~130s that used to sit unlabelled"
+                        # note was a migration remark from 19fn; the time is labelled now, which
+                        # is the whole point, so it does not need re-announcing every run.
                         log(f"   [pbp-build] band projector built in {_pbp_t2 - _pbp_t0:.1f}s "
-                            f"= {_pbp_t1 - _pbp_t0:.1f}s _band_frames (assemble the t0 / aged / "
-                            f"pool arrays: {_pbp_nR:,} t0 row(s), {_pbp_nP:,} aged row(s)) "
-                            f"+ {_pbp_t2 - _pbp_t1:.1f}s PopulationBandProjector (factorise the "
-                            "keys, precompute the static collapse). ONE-OFF per run, charged to "
-                            "no search stage — it is part of the ~130s that used to sit unlabelled "
-                            "before [inc-build].")
+                            f"= {_pbp_t1 - _pbp_t0:.1f}s assembling the scaffold arrays "
+                            f"({_pbp_nR:,} t0 row(s), {_pbp_nP:,} aged row(s)) "
+                            f"+ {_pbp_t2 - _pbp_t1:.1f}s building the projector over them. "
+                            "One-off per run.")
                         return _band_diag_state["pbp"]
 
                     # [FN-329]
@@ -5052,9 +5049,12 @@ def render():
                         # CMA-ES)". That engine was unreachable and 19gd moved it out to
                         # legacy_engines/; what remains in seed_search is the band-aware
                         # constrained projection — seed stage 1 — and nothing else.
-                        log(f"   seed_search build: {getattr(_gg, '__build__', '?')} — the "
-                            "band-aware constrained projection (seed stage 1 of 3), which the "
-                            "full-matrix GA warm-starts from.")
+                        # 19hi: the full "+"-joined build history is gone — BACKEND BUILD MARKERS
+                        # at the top of the log already prints seed_search's newest tag and its
+                        # earlier-tag count, so dumping 19 tags here said nothing that table did
+                        # not. What is left is what the stage does.
+                        log("   seed stage 1 of 3: band-aware constrained projection — the "
+                            "warm-start the GA begins from.")
                         # From the 30D attempts, build the SAME quantities tab 4 uses for
                         # incremental revenue: avg ticket + cell attempts + raw gateway SR,
                         # keyed by (currency, parent-bank[, gateway]).
@@ -5139,16 +5139,19 @@ def render():
                             log("   [Warning] GA revenue basis empty; using forecast × smoothed-SR fallback.")
                         # OBJECTIVE (tab-2 dropdown): maximise REVENUE (default) or the VOLUME-WEIGHTED
                         # SUCCESS RATE. For success, drop the avg-ticket factor so the coefficient is
-                        # volume × SR — maximising Σ share·vol·SR ≡ maximising the volume-weighted success
+                        # volume × SR — maximising Σ share·vol·SR ≡ maximising the success
                         # rate. Everything downstream (GA fitness, penalty scaling, greedy-vs-GA adoption)
                         # then optimises the chosen objective while the SAME risk constraints still hold.
-                        # Objective FIXED to volume-weighted success rate (dropdown removed): drop the
+                        # Objective FIXED to the success rate (dropdown removed): drop the
                         # avg-ticket factor so the coefficient is volume × SR, maximising Σ share·vol·SR.
                         _succ_coef = _rev_vol * _rev_sr
                         if float(_succ_coef.sum()) <= 0:
                             _succ_coef = _cvol * _srr
                         _rev_coef = _succ_coef
-                        log("   GA objective: maximise VOLUME-WEIGHTED SUCCESS RATE (avg-ticket factor dropped; fixed).")
+                        # 19hi: line deleted. The objective is FIXED — there is no dropdown — so
+                        # it said the same thing every run, and "volume-weighted" is not a
+                        # distinction the reader has to carry: the metric is just the SUCCESS RATE
+                        # over the volume being routed. Every result line already reports it.
                         # per-MID stats (reference MID volume feeds the band proxy; ticket/SR for
                         # revenue). The standalone per-MID VOLUME cap was DROPPED — per-MID rules are
                         # enforced via the month bands (projection space), so no routing-volume ceiling.
@@ -5324,15 +5327,15 @@ def render():
                                         "not ship. This is what broke reconciliation at 17:21 on "
                                         "2026-08-23 (RECONCILIATION ERROR 7,865, 100% SPLIT). "
                                         f"Loaded build: {getattr(_elig_mod_bl, '__build__', '?')}")
-                                log(f"   [elig-grain] EXACT 0/1 capability on {_wx_e:,}/{_nr_e:,} row(s) for "
-                                    f"wallet and {_ux_e:,}/{_nr_e:,} for USA-only "
-                                    f"({100.0 * _wx_e / _nr_e:.0f}% / {100.0 * _ux_e / _nr_e:.0f}%). "
-                                    "A pure (pmp, Country) sub-cell gets 0 or 1, NOT the global "
-                                    "wallet/Non-USA fraction — the fraction models a MIXED cell and is "
-                                    "wrong once the cell is pure. 0% here means cell grain, where the "
-                                    "fraction is correct and nothing changed. Delivery "
-                                    "(apply_restrictions) now applies the SAME rule and renormalises "
-                                    "within the sub-cell, so scored and shipped agree by construction.")
+                                # 19hi: shortened. The old version explained the MIXED-cell
+                                # fraction it replaced, which nothing in the run uses any more.
+                                log(f"   [elig-grain] capability is a clean yes/no on "
+                                    f"{100.0 * _wx_e / _nr_e:.0f}% of rows for wallet and "
+                                    f"{100.0 * _ux_e / _nr_e:.0f}% for USA-only "
+                                    f"({_wx_e:,} and {_ux_e:,} of {_nr_e:,}). Each profile is a "
+                                    "single payment-method and a single country, so a gateway "
+                                    "either can serve it or cannot. The search and delivery apply "
+                                    "the same rule, so what is scored is what ships.")
                             except Exception as _ee:  # noqa: BLE001
                                 _elig_op = None
                                 log(f"   [Warning] GA eligibility operator build failed ({type(_ee).__name__}: {_ee}) "
@@ -5394,10 +5397,30 @@ def render():
                                     # only where a non-blocked recipient exists), so the OUTPUT is ~unchanged
                                     # — a dead gateway lands at <=floor either way. (_ga_elig left all-eligible.)
                                     if _n_excl:
-                                        log(f"   auto-block (pre-GA): {len(_blk_ga)} bank×gateway pair(s) → "
-                                            f"{_n_excl} blocked row(s) KEPT eligible for the search, capped "
-                                            "post-GA instead (hard-exclusion removed so exact MID bands can't "
-                                            "be starved into infeasibility).")
+                                        # ── 19hi: "capped post-GA instead" WAS OUT OF DATE. ──────
+                                        # It described the pre-19fg arrangement, where a blocked
+                                        # row was capped by the post-GA `_apply_blocked_caps`
+                                        # pass. It is not where the cap happens any more: since
+                                        # `_fm_block` became the FIRST stage of `_fm_deliv`
+                                        # (`_fo(_cp(_el(_bl(x))))`), the cap is applied INSIDE the
+                                        # delivery transform the search itself scores through — so
+                                        # the GA sees the capped consequence of every candidate
+                                        # while it is searching, not afterwards.
+                                        #
+                                        # The post-GA pass still runs and is now a residual: on
+                                        # the 2026-09-02 12:09 run it reported "NOTHING TO CAP,
+                                        # and that is CORRECT — 42 split row(s) DID match a
+                                        # flagged pair, but every one already sits at or below the
+                                        # exploration floor ... The pre-enforcement pass capped
+                                        # them inside enforcement". That is this line's own claim
+                                        # being contradicted 900 lines later in the same log.
+                                        log(f"   auto-block (pre-GA): {len(_blk_ga)} bank×gateway "
+                                            f"pair(s) → {_n_excl} blocked row(s) KEPT eligible for "
+                                            "the search and capped to the exploration floor inside "
+                                            "the delivery transform the search scores through, so "
+                                            "the GA sees the cap while it searches. Hard exclusion "
+                                            "was removed so exact MID bands cannot be starved into "
+                                            "infeasibility.")
                             except Exception as _bge:  # noqa: BLE001 — never break the run over this
                                 log(f"   [Warning] pre-GA auto-block skipped ({type(_bge).__name__}: {_bge}); "
                                     "enforcement-time cap still applies.")
@@ -5564,30 +5587,26 @@ def render():
                                 _inc = _spx.csr_matrix((np.ones(len(_rows)), (_rows, _cols)),
                                                        shape=(max(len(_pbp_x.prop_keys), 1), len(G)))
                                 _ib_t3 = _ib_time.perf_counter()
+                                # 19hi: shortened. The three sub-timings were there to find the
+                                # cost; the cost is 0.4s, so there is nothing to find.
                                 log(f"   [inc-build] incidence matrix built in "
-                                    f"{_ib_t3 - _ib_t0:.1f}s — prop-key index {_ib_t1 - _ib_t0:.1f}s · "
-                                    f"per-row key loop {_ib_t2 - _ib_t1:.1f}s over {len(G):,} split "
-                                    f"row(s) · csr assembly {_ib_t3 - _ib_t2:.1f}s. "
-                                    f"{len(_rows):,} non-zero(s) into a "
+                                    f"{_ib_t3 - _ib_t0:.1f}s — {len(_rows):,} non-zero(s) in a "
                                     f"{max(len(_pbp_x.prop_keys), 1):,}x{len(G):,} matrix.")
                                 _bs_mark("[inc-build] incidence matrix")
                                 _bs_tot = sum(_v for _, _v in _bs["rows"])
+                                log("")
+                                log("")
                                 log(f"   ── [band-setup] the {_bs_tot:.1f}s between "
-                                    f"'auto-block (pre-GA)' and here, step by step ──")
+                                    f"'auto-block (pre-GA)' and here ──")
+                                log(f"      {'step':<58}{'seconds':>10}{'share':>9}")
+                                log(f"      {'-' * 58}{'-' * 10}{'-' * 9}")
                                 for _bl, _bv in sorted(_bs["rows"], key=lambda kv: -kv[1]):
-                                    log(f"      {_bv:8.1f}s  ({100.0 * _bv / max(_bs_tot, 1e-9):>5.1f}%)  {_bl}")
-                                log("      Ordered LARGEST FIRST, not in execution order — the "
-                                    "point of the block is which step to attack. It is a ONE-OFF "
-                                    "per run and is charged to no search stage, so it does not "
-                                    "appear in [gen-gap] and cannot be found by making the search "
-                                    "faster.")
-                                log("   [inc-build] THE PER-ROW LOOP IS THE COST and it is pure "
-                                    "Python: one f-string prop-key per (row, BIN) plus a dict "
-                                    "lookup. It is also where the [incidence self-check]'s column "
-                                    "coverage is decided — a row whose key misses `_kpos` is "
-                                    "silently skipped, which is the same 40% the self-check reports "
-                                    "as dropped share mass. Time and coverage are one loop, so a "
-                                    "vectorised rebuild would have to be judged on BOTH.")
+                                    log(f"      {str(_bl)[:58]:<58}{_bv:>9.1f}s"
+                                        f"{100.0 * _bv / max(_bs_tot, 1e-9):>8.1f}%")
+                                log(f"      {'-' * 58}{'-' * 10}{'-' * 9}")
+                                log(f"      {'TOTAL':<58}{_bs_tot:>9.1f}s{100.0:>8.1f}%")
+                                log("")
+                                log("")
                                 # specs from the rules (weight = pmul; wm≡1 since viol_vol_weight is off)
                                 _specs = []
                                 for (_mk, _mo, _mtr, _tg, _tl, _dir) in _mid_month_rules:
@@ -5628,12 +5647,33 @@ def render():
                                 # release note nobody will be holding at the time.
                                 try:
                                     _bf_now = float(ctx.get("breach_fixed", 0.0) or 0.0)
-                                    _n_p1 = sum(1 for _sp in _specs if abs(_sp.weight - 1.0) < 1e-9)
-                                    log(f"   [breach-scale] band penalty = breach_fixed "
-                                        f"{_bf_now:g}·(over?) + {float(ctx.get('breach_quad', 1.0) or 1.0):g}"
-                                        f"·overshoot², × the band's PRIORITY weight "
-                                        f"(prio1 1.0 · prio2 0.125 · prio3 0.015625; volume is NOT "
-                                        f"in the weight). {len(_specs)} band(s), {_n_p1} at prio-1.")
+                                    # 19hi: a table, and the priority weights are DERIVED from
+                                    # `_prio_mult` rather than typed in. The old line hardcoded
+                                    # "prio1 1.0 · prio2 0.125 · prio3 0.015625", which is only
+                                    # right while _PRIORITY_GAP is 8 — change the gap and the log
+                                    # would have quietly lied. This table also REPLACES the
+                                    # separate "Per MID x Month Priority Weightings" line, which
+                                    # said the same thing 2,200 lines earlier.
+                                    _bq_now = float(ctx.get("breach_quad", 1.0) or 1.0)
+                                    log(f"   [breach-scale] band penalty = "
+                                        f"{_bf_now:g}·(is it over?) + {_bq_now:g}·overshoot², "
+                                        "then multiplied by the band's priority weight.")
+                                    log(f"      {'term':<34}{'value':>12}{'bands':>8}")
+                                    log(f"      {'-' * 34}{'-' * 12}{'-' * 8}")
+                                    log(f"      {'breach_fixed (crossing the limit)':<34}"
+                                        f"{_bf_now:>12g}{'':>8}")
+                                    log(f"      {'breach_quad (overshoot squared)':<34}"
+                                        f"{_bq_now:>12g}{'':>8}")
+                                    for _pn in sorted({int(_v) for _v in _prio_lookup.values()}):
+                                        _pw = _prio_mult(_pn)
+                                        _cnt = sum(1 for _sp in _specs
+                                                   if abs(_sp.weight - _pw) < 1e-12)
+                                        log(f"      {'priority P' + str(_pn) + ' weight':<34}"
+                                            f"{_pw:>12.6g}{_cnt:>8,}")
+                                    log(f"      {'-' * 34}{'-' * 12}{'-' * 8}")
+                                    log(f"      {'TOTAL bands':<34}{'':>12}{len(_specs):>8,}")
+                                    log("      Volume is NOT in the weight — a big band and a "
+                                        "small one at the same priority cost the same.")
                                     if _bf_now > 0:
                                         # 19dv: a CONFIGURATION statement, not a warning — it
                                         # fired on every healthy run, and a ⚠ that always fires

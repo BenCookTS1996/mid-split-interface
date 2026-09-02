@@ -822,7 +822,7 @@ def _segment_softmax(logits, cell_start, cell_len, max_share=None):
 
 
 def _vwsr(shares, vol, succ, total_vol):
-    """Volume-weighted success rate per individual. shares: (P, R) -> (P,).
+    """Success rate per individual, over the routed volume. shares: (P, R) -> (P,).
 
     VWSR = sum(vol*share*succ) / sum(cell volume). The denominator is fixed
     (shares sum to 1 within a cell), so this is LINEAR in shares.
