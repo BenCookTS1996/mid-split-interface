@@ -6121,7 +6121,40 @@ def render():
                             # ROUTING_SEARCH_FLOOR=0 reverts this AND the matching reconcile projection
                             # in one switch — they have to move together or they measure different
                             # objects.
-                            _SFLOOR_ON = (os.environ.get("ROUTING_SEARCH_FLOOR", "1") != "0"
+                            # ── DEFAULT OFF as of 19gx. THE 2026-09-02 00:22 RUN FAILED. ──
+                            # RECONCILIATION ERROR 1,457 (was 1), vwsr 0.60128 (was 0.61532),
+                            # feasible=False for the first time in weeks, and the run 50% slower.
+                            # [rung] put 100% of the VAMP error and 62% of the TXN error on the
+                            # SPLIT term — "the GA scored a split it does not ship" — and [step2]
+                            # counted 151,898 differing prop-keys, EXACTLY the presence mask this
+                            # block prints. Every floored row.
+                            #
+                            # THE DESIGN ERROR IS MINE AND IT IS THIS. I called `_fm_deliv`'s
+                            # floor and `compute_vamp_prepost_granular`'s floor "the same thing
+                            # behind one switch". They are not. `_fm_deliv` floors the SHARE
+                            # VECTOR — one value per gateway-cell, before anything is projected.
+                            # `_efloor` floors `t0["prop_share"]` — a different object at a
+                            # different grain, inside the delivered projection, after the template
+                            # is built. Turning both on does not make the two sides agree; it
+                            # makes the GA score a floored SHARE while delivery floors a
+                            # prop_share, and the shipped template still carries neither.
+                            #
+                            # The Search-vs-Delivery Breakdown reading Σ|drift| 0 while the
+                            # RECONCILED block reads 1,457 is that same fact from both ends: the
+                            # two sides agree about the SHIPPED split and disagree about what the
+                            # GA scored.
+                            #
+                            # It also broke [deliv-fuse], whose self-check composes
+                            # `_cp(_el(_bl(x)))` by hand and so no longer matches `_fm_deliv` —
+                            # max|Δ| 1.07e-01, disabled for the process.
+                            #
+                            # THE QUESTION IS STILL LIVE. The live engine does floor at runtime,
+                            # so a search that ignores it optimises a split that gets modified
+                            # before it executes. The fix is to model the floor where delivery
+                            # applies it — on prop_share inside the projection both sides share —
+                            # not on the share vector. ROUTING_SEARCH_FLOOR=1 re-enables this
+                            # version for experiments; do not ship on it.
+                            _SFLOOR_ON = (os.environ.get("ROUTING_SEARCH_FLOOR", "0") != "0"
                                           and float(floor or 0.0) > 0.0)
                             _SFLOOR = float(floor or 0.0) if _SFLOOR_ON else 0.0
 
@@ -6215,10 +6248,14 @@ def render():
                                     "ROUTING_SEARCH_FLOOR=0 reverts this AND the matching reconcile "
                                     "projection, which move together.")
                             else:
-                                log("   [search-floor] OFF — the search scores splits WITHOUT the "
-                                    "exploration floor the live allocation engine applies at runtime, so "
-                                    "it is optimising a split that gets modified before it executes"
-                                    + (" (ROUTING_SEARCH_FLOOR=0)." if float(floor or 0.0) > 0.0
+                                log("   [search-floor] OFF (the 19gx default) — the search scores splits "
+                                    "WITHOUT the exploration floor the live allocation engine applies at "
+                                    "runtime, so it is optimising a split that gets modified before it "
+                                    "executes. That is a REAL gap and still worth closing; the 19gw attempt "
+                                    "to close it put reconciliation error at 1,457 and is off until it is "
+                                    "modelled where delivery actually applies it"
+                                    + (". ROUTING_SEARCH_FLOOR=1 re-enables that version for experiments; "
+                                       "it is NOT correct yet." if float(floor or 0.0) > 0.0
                                        else "; the exploration floor is 0 on this run, so there is "
                                             "nothing to model."))
 
@@ -8448,7 +8485,7 @@ def render():
                                     # ROUTING_PROJ_FLOOR still forces it on independently, for the
                                     # one case worth having it: proving the floor's size against a
                                     # search that does not model it.
-                                    _pj_sfloor = (os.environ.get("ROUTING_SEARCH_FLOOR", "1")
+                                    _pj_sfloor = (os.environ.get("ROUTING_SEARCH_FLOOR", "0")
                                                   != "0")
                                     _pj_floor = (float(ss.get("exploration_floor", 0.0) or 0.0)
                                                  if (_pj_sfloor or os.environ.get(

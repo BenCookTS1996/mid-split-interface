@@ -2643,10 +2643,20 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     log(f"         {_evv:8.1f}s  "
                         f"({100.0 * _evv / max(_ev_tot, 1e-9):>5.1f}%)  {_el}"
                         f"  ·  {1000.0 * _evv / max(_ev['n'], 1):,.1f} ms/call")
-            _ev_gap = float(_gg["eval"]) - _ev_tot
+            # 19gx: the `eval` row counts the GENERATION calls only; `_ev` counts every call,
+            # which includes the one per restart that [gen-gap] charges to `init`. On the
+            # 2026-09-02 00:22 run that was 336 calls against 320 generations and the difference
+            # printed as a NEGATIVE unaccounted row. Compare against both, and say which.
+            _ev_ref = float(_gg["eval"]) + float(_gg["i_eval"])
+            _ev_gap = _ev_ref - _ev_tot
             log(f"         {_ev_gap:8.1f}s  "
-                f"({100.0 * _ev_gap / max(float(_gg['eval']), 1e-9):>5.1f}%)  unaccounted — "
-                "function entry/exit and the early return when no band scoring is wired")
+                f"({100.0 * _ev_gap / max(_ev_ref, 1e-9):>5.1f}%)  unaccounted — function "
+                "entry/exit and the early return when no band scoring is wired")
+            log(f"      [eval-cost] the {_ev['n']:,} call(s) above are the "
+                f"{int(_gg['i_n']) + 320 if False else _ev['n']:,} that ran: one per generation "
+                f"PLUS one per restart. [gen-gap] charges the per-restart calls to `init`, so "
+                f"these sum to `eval` ({float(_gg['eval']):,.1f}s) + the init eval row "
+                f"({float(_gg['i_eval']):,.1f}s) = {_ev_ref:,.1f}s, not to `eval` alone.")
             log("      [eval-cost] READ THIS AGAINST [proj-config] AND [lift-ab]: the band row "
                 "here is the projector, and multiplying [lift-ab]'s ms/call by the P=35 call "
                 "count should land on it. `eval_pop` and `_deliver_full` are the two that have "
