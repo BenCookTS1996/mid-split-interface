@@ -14679,7 +14679,24 @@ def render():
                                     _bs_m = int(_bs.get("matched", 0) or 0)
                                     _bs_a = int(_bs.get("above_floor", 0) or 0)
                                     _bs_nr = int(_bs.get("no_recip", 0) or 0)
-                                    if _bs_m == 0:
+                                    if _bs.get("precondition_failed"):
+                                        # 19hq: a PRECONDITION failed, so nothing was even compared.
+                                        # This used to fall into the branch below and announce a key
+                                        # mismatch it had not measured, with "(unavailable)" for both
+                                        # sample lists — the samples were missing because the
+                                        # precondition branch never records them. Say what actually
+                                        # stopped it.
+                                        log(f"   [Warning] auto-block: the cap pass DID NOT RUN — "
+                                            f"{_bs.get('reason', 'unknown')}. "
+                                            f"{_bs.get('pairs', 0)} flagged pair(s), "
+                                            f"{_bs.get('split_rows', 0):,} split row(s). This is NOT a "
+                                            "key mismatch — no keys were compared.")
+                                        if _bs.get("missing_cols"):
+                                            log(f"      missing column(s): "
+                                                f"{', '.join(_bs['missing_cols'])}")
+                                            log(f"      columns present   : "
+                                                f"{', '.join(_bs.get('split_cols', []))}")
+                                    elif _bs_m == 0:
                                         log("   [Warning] auto-block: NO SPLIT ROW matched a flagged "
                                             f"(bank, gateway) pair — this IS a key mismatch. "
                                             f"{len(_bpairs)} flagged pair(s) vs "

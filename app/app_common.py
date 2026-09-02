@@ -712,10 +712,33 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
     excludes the same rows. Returns (new_split, n_rows_capped). Deterministic; no-op when
     `blocked_pairs` is empty or nothing matches."""
     LAST_BLOCKED_CAP_STATS.clear()
+    _need = {"bin", "gateway", "share"}
+    # NOT `getattr(split, "columns", ()) or ()` — a pandas Index has no truth value and `Index or
+    # ()` raises "The truth value of a Index is ambiguous". tab_2's own [block-ctry] site carries a
+    # comment about this exact trap from the 19:46 run it broke; I wrote it again here and the
+    # fixture below caught it on the first call.
+    _cols = set(split.columns) if getattr(split, "columns", None) is not None else set()
     if not blocked_pairs or split is None or getattr(split, "empty", True) \
-            or not {"bin", "gateway", "share"}.issubset(split.columns):
-        LAST_BLOCKED_CAP_STATS.update(reason="no pairs / no split / missing column(s)",
-                                      matched=0, above_floor=0, no_recip=0, capped=0)
+            or not _need.issubset(_cols):
+        # 19hq: SAY WHICH of the three preconditions failed. This branch used to record only
+        # `reason="no pairs / no split / missing column(s)"` with no counters, and the caller then
+        # printed "NO SPLIT ROW matched a flagged (bank, gateway) pair — this IS a key mismatch"
+        # with "(unavailable)" for both sample lists. That is a CONFIDENT WRONG DIAGNOSIS: the
+        # samples were absent because THIS branch never records them, not because the keys
+        # disagreed. Seen on the 2026-09-02 15:22 run, where the same block had reported 42
+        # matched rows at 12:09.
+        LAST_BLOCKED_CAP_STATS.update(
+            reason=("no blocked pairs" if not blocked_pairs
+                    else "split is None" if split is None
+                    else "split is empty" if getattr(split, "empty", True)
+                    else "split is MISSING column(s): "
+                         + ", ".join(sorted(_need - _cols))),
+            matched=0, above_floor=0, no_recip=0, capped=0,
+            precondition_failed=True,
+            split_rows=int(len(split)) if split is not None else 0,
+            split_cols=sorted(_cols)[:24],
+            missing_cols=sorted(_need - _cols),
+            pairs=len(blocked_pairs or ()))
         return split, 0
     blocked_pairs = set(blocked_pairs)   # O(1) membership in the per-row checks below
     d = split.copy()
