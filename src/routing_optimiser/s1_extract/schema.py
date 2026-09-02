@@ -8,13 +8,13 @@ place to change a column name if your upstream data changes.
 from __future__ import annotations
 
 # --- Decision granularity ---------------------------------------------------
-# Routing decisions are made per CELL. A cell is one combination of:
+# Routing decisions are made per CELL. A profile is one combination of:
 #   RPGT (transaction type) x Currency x Bank
-# The optimiser decides, for each cell, what fraction of that cell's forecast
+# The optimiser decides, for each profile, what fraction of that profile's forecast
 # volume to send to each eligible gateway/MID.
 CELL_KEYS = ["rpgt", "currency", "bin"]
 
-# --- Full profile key -------------------------------------------------------
+# --- Full cell key -------------------------------------------------------
 # The k-means + config generator work at a finer grain (they also carry brand,
 # country, BIN and payment-method-provider). We keep those columns flowing
 # through so the compressed output matches your existing templates.
@@ -74,7 +74,7 @@ SCENARIO_TO_RPGT = {
 
 # --- RPGT -> (term, ConnectorPool type selectors) ---------------------------
 # SINGLE SOURCE OF TRUTH for the connector-pool selector map. Both the
-# script-faithful generator (connector_pool_configs) and the older per-cell
+# script-faithful generator (connector_pool_configs) and the older per-profile
 # pooler (config_generator) import THIS map so the deployed selectors can't
 # drift. 'Annual Sub Sale' carries skuType==SKU_TYPE_PRIMARY, matching
 # 'Monthly Initial' (the other primary/initial-sale RPGT).

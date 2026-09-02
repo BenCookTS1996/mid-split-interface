@@ -151,7 +151,7 @@ def compress_split(
     tgt = {k.lower(): v for k, v in rpgt_targets.items()}
     default_acc = tgt.get("default", 85.0)
 
-    # Build the share matrix: index = cell, columns = gateway.
+    # Build the share matrix: index = profile, columns = gateway.
     mat = (split.pivot_table(index=idx_cols,
                              columns="gateway", values="share", aggfunc="sum")
            .fillna(0.0))
@@ -269,7 +269,7 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
     idx_cols = ["rpgt", "currency", "bin"] + (["pmp"] if has_pmp else [])
     raw_cells = int(split.groupby(idx_cols).ngroups)
 
-    # Uncompressed pool count (each cell keeps its own centroid) from the raw split.
+    # Uncompressed pool count (each profile keeps its own centroid) from the raw split.
     raw_pools = int(count_pools_fn(split))
     curve = [(raw_cells, raw_pools)]
 
@@ -291,8 +291,8 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
     # (kcur) so budgets that collapse to the same clustering don't regenerate configs.
     _ctx = _build_compress_context(split, group_keys, max_gateway_cap, k_max, seed,
                                    method=method, allocation=allocation)
-    _cache = {}          # budget -> (cl, st, pools, cells)
-    _by_kcur = {}        # kcur signature -> (cl, st, pools, cells)
+    _cache = {}          # budget -> (cl, st, pools, profiles)
+    _by_kcur = {}        # kcur signature -> (cl, st, pools, profiles)
 
     # [FN-164]
     def _eval(b):
@@ -601,7 +601,7 @@ def _compress_ext(ctx, n_configs):
     # --- per-group model: labels + centroids at any k, and accuracy at any k --------------
     ward = ctx.setdefault("_ward", [None] * G)     # cached (fine_km, fine_centroids, fine_vol, Z)
 
-    _WARD_RAW_MAX = 500   # groups with <= this many cells: build the tree on the RAW cell vectors
+    _WARD_RAW_MAX = 500   # groups with <= this many profiles: build the tree on the RAW profile vectors
 
     # [FN-172]
     def _ward_model(g):
@@ -609,9 +609,9 @@ def _compress_ext(ctx, n_configs):
             from scipy.cluster.hierarchy import linkage
             n_cells = gX[g].shape[0]
             if n_cells <= max(_WARD_RAW_MAX, int(gKmax[g])):
-                # SMALL group: cluster the raw cell share-vectors directly — no k-means
+                # SMALL group: cluster the raw profile share-vectors directly — no k-means
                 # summarisation step, so the tree cut is a true hierarchical clustering of the
-                # cells and keeps more fidelity. Each cell is its own leaf.
+                # profiles and keeps more fidelity. Each profile is its own leaf.
                 fine_c = gX[g]
                 fine_labels = np.arange(n_cells)
                 fv = np.asarray(gW[g], float)

@@ -98,10 +98,10 @@ import pandas as pd
 # 19cz and 19dd already hoist two classes out of the per-candidate aged loop and into the
 # per-band constant `vconst`: rows with NO ORIGIN (t > period, transactions that predate the
 # split) and rows in a ZERO-POOL group (nothing movable to hand out). This adds the third:
-# rows whose ORIGIN CELL IS FROZEN — no GA share column maps to it, so psum is 0 there for
+# rows whose ORIGIN PROFILE IS FROZEN — no GA share column maps to it, so psum is 0 there for
 # every candidate, for ever.
 # Their contribution is the same constant the other two classes have:
-#     _gks over a frozen cell is 0 (vshare is 0 wherever psum is 0) -> o = -1
+#     _gks over a frozen profile is 0 (vshare is 0 wherever psum is 0) -> o = -1
 #     -> mpc = 0, psh = 0  ->  vamp += pc_vc[j] * (1 - 0) + pc_pool[j] * 0  ==  pc_vc[j]
 # So this needs NO kernel change at all — it widens the mask the existing `vconst` machinery
 # already consumes.
@@ -148,28 +148,28 @@ except Exception:                      # noqa: BLE001
 _GRPK = ["cur", "bin", "rpgt", "pmp", "ctry", "per"]
 
 # ── VAMP CONSERVATION GATE (2026-08-19aq) ─────────────────────────────────────────────────────
-# The VAMP move used to be gated on the origin cell being ROUTED (psum > 0) alone. In a cell that
+# The VAMP move used to be gated on the origin profile being ROUTED (psum > 0) alone. In a profile that
 # is routed but has NO VAMP-positive door, vshare is 0 for every row, so the moved-out VAMP had
 # nowhere to land and was DESTROYED — the projector reported a fraud reduction that does not
 # happen. Delivery has always guarded this (`_move = where(Σ_pshare > 1e-12, _move, 0)`); this is
-# the same guard on the in-search side. Measured cost of NOT having it: 100% of the cell's VAMP
+# the same guard on the in-search side. Measured cost of NOT having it: 100% of the profile's VAMP
 # (165 of 165 on the test_recon616 fixture), and Σ|Δ| 789.8 on the 2026-08-22 13:33 seed.
 #
 # Read ONCE at import so numba treats it as a compile-time constant and folds the branch away —
 # a new kernel ARGUMENT would shift every positional index that [kernel-ab] and [kernel-ga]
 # derive from the signature. ROUTING_VAMP_CONSERVE=0 restores the pre-19aq gate for an A/B.
 _VAMP_CONSERVE = os.environ.get("ROUTING_VAMP_CONSERVE", "1") != "0"
-# 19cu — the vshare denominator. DELIVERY sums prop_raw over EVERY row of the cell-month;
+# 19cu — the vshare denominator. DELIVERY sums prop_raw over EVERY row of the profile-month;
 # in-search summed it over `vcpos` (vampCount > 0) rows only. Default 1 = match delivery.
 # ROUTING_VSHARE_ALLROWS=0 restores the vcpos-masked denominator for an A/B. Module-level, so
 # numba folds it at compile time — which is why these kernels must stay cache=False.
 _VSHARE_ALLROWS = os.environ.get("ROUTING_VSHARE_ALLROWS", "1") != "0"
 # 19cx — the AGE-BY-AGE renormalise. Delivery re-bases the redistribution share a SECOND time,
-# over the aged group (cell, period, t): compute_vamp_prepost_granular does
+# over the aged group (profile, period, t): compute_vamp_prepost_granular does
 #     _psum   = pp.groupby(_gk)["_pshare"].transform("sum")
 #     _move   = where(_psum > 1e-12, _move,   0.0)      <- the no-recipient PASSTHROUGH
 #     _pshare = where(_psum > 1e-12, _pshare / _psum, 0.0)
-# The in-search kernel normalises ONCE, over the origin cell, and has no equivalent pass — so
+# The in-search kernel normalises ONCE, over the origin profile, and has no equivalent pass — so
 # wherever a MID has no row at a given age (ordinary: VAMP arrives from cohorts that age out at
 # different rates) delivery re-bases the survivors up to 1 and the search does not, leaking the
 # absent MID's share. Removing it from DELIVERY is not an option: test_recon616 measures the leak
@@ -234,7 +234,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
     P = prop_raw.shape[0]; nR = propidx.shape[0]
     nA = pc_org.shape[0]; nC = cap_row.shape[0]
     # FROZEN-SCAFFOLD LIFT (2026-08-19ae). `live_rows` / `live_cells` are the scaffold rows and
-    # cells the GA can actually move. Passing arange(nR) / arange(ncell) disables the lift and
+    # profiles the GA can actually move. Passing arange(nR) / arange(ncell) disables the lift and
     # reproduces the pre-19ae kernel exactly, so there is ONE body and no second compile.
     nLR = live_rows.shape[0]; nLC = live_cells.shape[0]
     vamp[:, :] = 0.0; txn[:, :] = 0.0
@@ -285,7 +285,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                 _pshare[r] = _pr[r] / ps; _mvrow[r] = mv_s[r]
             else:
                 _pshare[r] = base[r]; _mvrow[r] = 0.0
-        # ---- per-sub-cell max-share water-fill (only cells with >=2 routed gateways) ----
+        # ---- per-profile max-share water-fill (only profiles with >=2 routed gateways) ----
         if cap < 1.0:
             for _ci in range(nLC):
                 c = live_cells[_ci]
@@ -326,7 +326,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                     if (_psum[c] > 0.0 and _nzc[c] >= 2.0 and _pshare[r] > 1e-12
                             and _pshare[r] < cap - 1e-12 and _rsum[c] > 1e-12):
                         _pshare[r] += (cap - _pshare[r]) / _rsum[c] * _exc[c]
-        # ---- vshare from the (capped) ROUTED share (0 in inactive cells) ----
+        # ---- vshare from the (capped) ROUTED share (0 in inactive profiles) ----
         for _ci in range(nLC):
             c = live_cells[_ci]
             _vpsum[c] = 0.0
@@ -356,7 +356,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
             txn[p, cap_band[j]] += cap_ctot[j] * (cap_base[j] * (1.0 - _mvrow[r])
                                                   + _moved[c] * _pshare[r])
         # ---- 19cy: AGE-BY-AGE RENORMALISE, three passes over the aged rows ----
-        # Delivery re-bases the redistribution share over the aged group (cell, period, t):
+        # Delivery re-bases the redistribution share over the aged group (profile, period, t):
         #     _psum   = pp.groupby(_gk)["_pshare"].transform("sum")
         #     _move   = where(_psum > 1e-12, _move,   0.0)
         #     _pshare = where(_psum > 1e-12, _pshare / _psum, 0.0)
@@ -379,7 +379,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
         for j in range(nA):
             o = pc_org[j]
             # APPEARANCE-MONTH timing: held move = fcp[origin]·pro_rata[appearance] (pc_heldfac),
-            # gated on the ORIGIN cell being routed (psum>0). Pool is pre-built appearance-timed.
+            # gated on the ORIGIN profile being routed (psum>0). Pool is pre-built appearance-timed.
             if _AGE_RENORM:
                 _gsum = _gks[pc_gk[j]]
                 if _gsum <= 1e-12:
@@ -391,8 +391,8 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                 # read under `o >= 0`, so the value stored for o < 0 rows is never used — it is
                 # built with a clipped index purely to avoid a negative-index wrap at construction.
                 _cg = pc_gc[j]
-                # CONSERVATION (19aq): move the VAMP out only if the origin cell is routed AND
-                # has a VAMP recipient. Without the second test, a routed cell with no
+                # CONSERVATION (19aq): move the VAMP out only if the origin profile is routed AND
+                # has a VAMP recipient. Without the second test, a routed profile with no
                 # VAMP-positive door moves the VAMP out and then has vshare == 0 everywhere, so
                 # `pc_pool[j] * psh` returns none of it and the VAMP vanishes. `_VAMP_CONSERVE`
                 # is a module constant, so numba folds this branch at compile time.
@@ -455,10 +455,10 @@ _pop_band_kernel_fm_cache = {}
 
 
 # [FN-010a]
-# ── CELL-BLOCKED KERNEL (2026-08-19bt) ────────────────────────────────────────────────────────
-# See the module patch note. Same arithmetic, same order, one cell at a time instead of fifteen
+# ── PROFILE-BLOCKED KERNEL (2026-08-19bt) ────────────────────────────────────────────────────────
+# See the module patch note. Same arithmetic, same order, one profile at a time instead of fifteen
 # passes over the whole scaffold; `mvrow` and `vshare` are derived in their only reader instead of
-# being materialised. The row-indexed arguments are CELL-MAJOR permutations of the originals
+# being materialised. The row-indexed arguments are PROFILE-MAJOR permutations of the originals
 # (built once per layout by _cb_arrays), so `_pshare[i]` here means the same row as `_pshare[r]`
 # there — only the label changed.
 def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
@@ -482,7 +482,7 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
         for ci in range(nCl):
             c = cells[ci]
             s = cstart[ci]; e = s + ccnt[ci]
-            # ---- pass 1: proposals + the cell sum, in the original row order ----
+            # ---- pass 1: proposals + the profile sum, in the original row order ----
             ps = 0.0
             for i in range(s, e):
                 v = prop_raw[p, propidx_c[i]] * pw_c[i]      # 19dt: weight, not mask
@@ -531,12 +531,12 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
                         vp += _pshare[i]
                 _vpsum[c] = vp
             else:
-                # exactly what the flat kernel's else-branches wrote for an unrouted cell
+                # exactly what the flat kernel's else-branches wrote for an unrouted profile
                 _moved[c] = 0.0
                 _vpsum[c] = 0.0
                 for i in range(s, e):
                     _pshare[i] = base_c[i]
-        # ---- nC: mvrow derived instead of read (mv_c[r] gated on the cell being routed) ----
+        # ---- nC: mvrow derived instead of read (mv_c[r] gated on the profile being routed) ----
         for j in range(nC):
             r = cap_rowc[j]; c = cap_c[j]
             mvr = mv_c[r] if _psum[c] > 0.0 else 0.0
@@ -603,8 +603,8 @@ _PROJ_CB_ON = os.environ.get("ROUTING_PROJ_CELLBLOCK", "1") != "0"
 _PROJ_F32 = os.environ.get("ROUTING_PROJ_FLOAT32", "1") != "0"
 _F32_OK = {"use": _PROJ_F32, "said": False, "dv": None, "dt": None}
 # `use` is flipped off for the process by the live self-check. `sweeps` is the water-fill sweep
-# high-water mark: the ONE case where per-cell convergence could differ from the shipped kernel's
-# global loop is a cell that never converges in 50, so it is counted rather than assumed.
+# high-water mark: the ONE case where per-profile convergence could differ from the shipped kernel's
+# global loop is a profile that never converges in 50, so it is counted rather than assumed.
 _CB_OK = {"use": _PROJ_CB_ON, "checked": False, "sweeps": 0, "why": ""}
 
 
@@ -662,7 +662,7 @@ _LOADED_SENTINEL = "19dt"
 # the live scaffold at the live width on 2026-08-24 20:55: 253.0 -> 240.0 ms, 7 of 7 paired rounds,
 # p=0.016, bit-identical on int64 patterns. 19bo reverted 16 -> 8 and that was CORRECT AT THE TIME:
 # the flat kernel was memory-bandwidth-bound, so extra lanes bought nothing (530.7 vs 536.5 ms).
-# 19bt's cell-blocked kernel made the projector compute-bound, and that is exactly why the eight
+# 19bt's profile-blocked kernel made the projector compute-bound, and that is exactly why the eight
 # idle cores now pay. Cost: 0.58 GB of scratch instead of 0.29 GB. ROUTING_PROJ_LANES=8 reverts.
 # 19cg: 16 -> 32, ADOPTED ON TWO MEASUREMENTS THAT AGREE. [stage-ab] row L, which times the
 # projector at the shipped cap against DOUBLE it on the live scaffold at the live width:
@@ -699,7 +699,7 @@ _PROJ_PAR_SAID = {}
 _PROJ_PAR_NOTES = []
 # 19gi: ONE-OFF BUILD VERDICTS GO IN THEIR OWN LIST, and this is a bug fix, not tidiness.
 # 19fv/19fz appended [pbp-inside], [vconst-frozen], the aged-row hoist, the frozen lift, index
-# width and the cell-blocked layout to _PROJ_PAR_NOTES. They never reached the run log: the
+# width and the profile-blocked layout to _PROJ_PAR_NOTES. They never reached the run log: the
 # projector is BUILT first, then tab 2 calls proj_new_run() at the start of the search, which does
 # `del _PROJ_PAR_NOTES[:]` — correctly, so a warm Streamlit process cannot report a previous run's
 # dispatch paths. The build verdicts were collateral. They belong to the BUILD, so they live here
@@ -1209,7 +1209,7 @@ def _static(T0: pd.DataFrame):
     av_sum = np.bincount(gcode, weights=T0["_av"].to_numpy(float), minlength=ngc)[gcode]
     base = np.where(av_sum > 0, T0["_av"].to_numpy(float) / np.where(av_sum > 0, av_sum, 1.0), 0.0)
     ctot = np.bincount(gcode, weights=T0["vi"].to_numpy(float), minlength=ngc)[gcode]
-    # UNGATED movable fraction; gated on the candidate's per-cell psum>0 at eval time
+    # UNGATED movable fraction; gated on the candidate's per-profile psum>0 at eval time
     # (matches `_project_capped` line 3951: mv = where(psum>0, pr·fcp, 0)).
     mv_static = T0["pr"].to_numpy(float) * T0["fcp"].to_numpy(float)
     return gcode, ngc, base, ctot, mv_static
@@ -1435,7 +1435,7 @@ def _shares(T0, prop, by_rpgt, gcode, ngc, base, by_subcell=False):
     pshare = np.array(base, dtype=float)
     np.divide(prop_raw, psum, out=pshare, where=psum > 0)
     # 19cu — ALLROWS drops the vampCount mask so the denominator matches delivery's, which sums
-    # prop_raw over EVERY row of the cell-month. This helper feeds `project()`, a path the kernels
+    # prop_raw over EVERY row of the profile-month. This helper feeds `project()`, a path the kernels
     # do not go through: it must move with them or the two in-search paths disagree, which
     # test_vconserve.py detects and which is worse than either convention applied consistently.
     vprop = prop_raw * np.asarray(_vok_rows(T0), float)
@@ -1469,7 +1469,7 @@ class BandProjector:
 
         # ---- VAMP: const Σvc  −  psum-gated movement  +  pool routed by ORIGIN vshare ---------
         # APPEARANCE-MONTH timing (see PopulationBandProjector): the held move for an aged row is
-        # fcp[origin] × pro_rata[APPEARANCE cell], not pr[origin]·fcp[origin]. So each aged row's
+        # fcp[origin] × pro_rata[APPEARANCE profile], not pr[origin]·fcp[origin]. So each aged row's
         # held weight is fcp[origin]·prapp_row·vc (was mv_static[origin]·vc). Pool is appearance-timed
         # upstream. Keeps this diagnostic consistent with _project_capped / the population projector.
         pc_to_t0 = _origin_map(self._T0, Pc)
@@ -1489,7 +1489,7 @@ class BandProjector:
         _pc_prapp = (_pr_by_cell.reindex(_pc_ck).fillna(0.0).to_numpy(float)
                      if len(Pc) else np.zeros(0, float))
         # 19dc — the collapse now CARRIES the age renormalise. It used to aggregate the pool by
-        # ORIGIN row alone, which discarded the aged group (cell, period, t) the renormalise
+        # ORIGIN row alone, which discarded the aged group (profile, period, t) the renormalise
         # divides within, so this path silently returned a different answer from the kernels —
         # test_vconserve.py caught it as "the in-search paths disagree with each other by 40.000",
         # and an in-search path that is intermittently wrong is worse than one that is uniformly
@@ -1536,7 +1536,7 @@ class BandProjector:
             self._v_pool_g[key] = np.array([k[1] for k in p], dtype=np.int64)
             self._v_pool_w[key] = np.array(list(p.values()), dtype=float)
 
-        # ---- TXN: per capped t0 row, piecewise on the cell's active mask -----------------------
+        # ---- TXN: per capped t0 row, piecewise on the profile's active mask -----------------------
         # active (psum>0):  ctot·(base·(1−mv) + moved_tot·pshare)
         # inactive (psum==0): ctot·base            (mv=0, moved_tot=0, pshare→base fallback)
         moved_tot = np.bincount(self._gcode, weights=self._base * self._mv,
@@ -1567,7 +1567,7 @@ class BandProjector:
         pshare, vshare, psum = _shares(self._T0, prop, self.by_rpgt,
                                        self._gcode, self._ngc, self._base,
                                        getattr(self, "by_subcell", False))
-        active = psum > 0                                   # per T0 row (broadcast per cell)
+        active = psum > 0                                   # per T0 row (broadcast per profile)
         # CONSERVATION (19aq): the VAMP hold term uses `active AND has-a-VAMP-recipient`, the
         # same gate as the kernel and the dense path. TXN keeps plain `active` — its inactive
         # branch falls back to `base`, so txn already conserves and must not change.
@@ -1703,11 +1703,11 @@ class PopulationBandProjector:
             _pbp_t[0] = _n
 
         self.by_rpgt = by_rpgt
-        # SUB-CELL decision grain: prop keys include pmp/ctry (cur|bin|rpgt|pmp|ctry|mid) so a
-        # per-sub-cell share maps to exactly one scaffold row instead of broadcasting across sub-cells.
+        # PROFILE decision grain: prop keys include pmp/ctry (cur|bin|rpgt|pmp|ctry|mid) so a
+        # per-profile share maps to exactly one scaffold row instead of broadcasting across sub-cells.
         self.by_subcell = by_subcell
-        # Per-sub-cell max-share CAP (matches build_split_exports): no gateway may exceed max_share
-        # of a routed sub-cell; the excess water-fills onto the OTHER gateways already present.
+        # Per-profile max-share CAP (matches build_split_exports): no gateway may exceed max_share
+        # of a routed profile; the excess water-fills onto the OTHER gateways already present.
         # 1.0 = OFF (backward-compatible). This is the SOLE driver of the scored-vs-delivered VAMP
         # residual (proven: reproduces tab-3 delivered within ±3), so folding it in makes the GA
         # fitness score the DELIVERED breach.
@@ -1725,9 +1725,9 @@ class PopulationBandProjector:
         pc_mid = Pc["midl"].to_numpy(); pc_per = Pc["per"].to_numpy().astype(int)
         iscap = T0["iscap"].to_numpy(bool)
 
-        # banded aged rows + their origin cells; banded capped t0 rows + their cells (VECTORISED).
+        # banded aged rows + their origin profiles; banded capped t0 rows + their cells (VECTORISED).
         # `bandset` should be the ACTUALLY-CONSTRAINED (midl,per) pairs only — restricting it here
-        # is what lets the reduced scaffold shrink (fewer banded rows → fewer relevant cells).
+        # is what lets the reduced scaffold shrink (fewer banded rows → fewer relevant profiles).
         _pbp_mark("_origin_map  [19fy: int64 join]")
         _bidx = (pd.MultiIndex.from_tuples(sorted(bandset)) if bandset
                  else pd.MultiIndex.from_arrays([[], []]))
@@ -1739,19 +1739,19 @@ class PopulationBandProjector:
             if (t0_capband.any() or pc_band.any()) else np.zeros(0, np.int64)
 
         _pbp_mark("banded-row masks (MultiIndex.isin)")
-        keep_t0 = np.isin(gcode_full, rel)                 # ALL mids of relevant cells
+        keep_t0 = np.isin(gcode_full, rel)                 # ALL mids of relevant profiles
         t0_idx = np.where(keep_t0)[0]
         full2red = -np.ones(len(T0), np.int64); full2red[t0_idx] = np.arange(len(t0_idx))
         R = T0.iloc[t0_idx].reset_index(drop=True)
 
-        # local per-row statics (recomputed on the reduced frame; base/ctot are cell sums, and
-        # every row of each relevant cell is present, so they match the full-frame values)
-        _pbp_mark("reduce to relevant cells (isin + iloc + reset_index)")
+        # local per-row statics (recomputed on the reduced frame; base/ctot are profile sums, and
+        # every row of each relevant profile is present, so they match the full-frame values)
+        _pbp_mark("reduce to relevant profiles (isin + iloc + reset_index)")
         self._gcode, self._ngc, self._base, self._ctot, self._mv = _static(R)
         self._excl = R["excl"].to_numpy(bool)
         self._emask = R["emask"].to_numpy(bool)
         # 19dt - PER-ROW PROPOSAL WEIGHT. Delivery multiplies prop_raw by `_keep` (the
-        # retained fraction of a gateway that is switching off) BEFORE the cell share, the
+        # retained fraction of a gateway that is switching off) BEFORE the profile share, the
         # cap and vshare are computed, so all three see the reduced proposal. The search had
         # no equivalent. `keep` rides in as a T0 COLUMN so the scaffold reduction slices it
         # with every other per-row static and it cannot fall out of alignment. An absent
@@ -1879,12 +1879,12 @@ class PopulationBandProjector:
         self._K = len(self.prop_keys)
 
         _pbp_mark("prop-key index  [19fz: K strings not nR]")
-        # sparse cell-incidence (ngc × nR); cellsum(x) = (S @ x.T).T  (sparse@dense, C-fast)
+        # sparse profile-incidence (ngc × nR); cellsum(x) = (S @ x.T).T  (sparse@dense, C-fast)
         import scipy.sparse as _sp
         self._S = _sp.csr_matrix((np.ones(nR), (self._gcode, np.arange(nR))),
                                  shape=(max(self._ngc, 1), max(nR, 1)))
 
-        _pbp_mark("scipy csr cell-incidence")
+        _pbp_mark("scipy csr profile-incidence")
         # reduced Pc = banded aged rows only; remap origin to reduced t0 index
         pc_keep = np.where(pc_band)[0]
         self._pc_vc = Pc["vc"].to_numpy(float)[pc_keep]
@@ -1898,15 +1898,15 @@ class PopulationBandProjector:
         # by the APPEARANCE month (the aged row's own period `per`), not the origination month, while
         # keeping fcp1_frac at ORIGINATION. So the movable fraction for an aged row is
         #   move = fcp[origin] × pro_rata[appearance]      (was pr[origin]·fcp[origin]).
-        # Precompute, per reduced Pc row, the appearance-cell t0 pro_rata. Sourced from a t0 row of the
-        # SAME sub-cell at the appearance period (cell key = cur|bin|rpgt|pmp|ctry|per, no mid — pro_rata
-        # is a per-cell go-live weight). Verified bit-exact against compute_vamp_prepost_granular.
+        # Precompute, per reduced Pc row, the appearance-profile t0 pro_rata. Sourced from a t0 row of the
+        # SAME profile at the appearance period (profile key = cur|bin|rpgt|pmp|ctry|per, no mid — pro_rata
+        # is a per-profile go-live weight). Verified bit-exact against compute_vamp_prepost_granular.
         # 19gn: the two 6-part STRING keys this lookup used to build are gone. [pbp-inside] priced
         # this block ("reduced Pc") at 22.9s — 65% of the whole constructor — and the cause was the
         # same one 19fy fixed in _static and _origin_map: ~6.45M concatenated labels on the Pc side
         # and ~1.94M on the T0 side, built only so pandas could hash them. `_codes_pair` gives both
         # sides ONE shared integer code space, decided per DISTINCT VALUE, and a value absent from
-        # T0 codes -1 — which is exactly the "no such cell" the string reindex expressed as NaN.
+        # T0 codes -1 — which is exactly the "no such profile" the string reindex expressed as NaN.
         _t0_pr = (T0["pr"].to_numpy(float) if "pr" in T0.columns else np.ones(len(T0)))
         _CK = ["cur", "bin", "rpgt", "pmp", "ctry", "per"]
         _t0_ck = np.zeros(len(T0), np.int64)
@@ -1950,7 +1950,7 @@ class PopulationBandProjector:
         # month has no t0 row, so delivery's orig_m merge finds nothing and `pc_org` here is -1.
         # That is the guard, and it already works.
         if _ck_ok:
-            # -1 for a cell T0 never had: cannot match, so it lands on the same 0.0 the string
+            # -1 for a profile T0 never had: cannot match, so it lands on the same 0.0 the string
             # reindex produced via NaN.
             _pc_cellkey = np.where(_ck_bad, -1, _pc_ck_full)[pc_keep]
         else:
@@ -1960,19 +1960,19 @@ class PopulationBandProjector:
         self._pc_prapp = (_pr_by_cell.reindex(_pc_cellkey).fillna(0.0).to_numpy(float)
                           if len(pc_keep) else np.zeros(0, float))
 
-        # 19cx — the AGED GROUP: (cell, APPEARANCE period, age). This is delivery's `_gk`
+        # 19cx — the AGED GROUP: (profile, APPEARANCE period, age). This is delivery's `_gk`
         # (_sub + ["period", "t"]) and NOT the origin key above — the renormalise is taken across
-        # the MIDs present at one age of one cell-month, whereas pro_rata is a property of the
+        # the MIDs present at one age of one profile-month, whereas pro_rata is a property of the
         # month the transactions happened in. They differ by exactly `t`, which is why one key
         # cannot serve both.
         if len(pc_keep):
-            # 19gn: the (cell, appearance period, age) group key. Built the same 7-part string for
+            # 19gn: the (profile, appearance period, age) group key. Built the same 7-part string for
             # all 6.45M aged rows just to factorise it. Now: mix the per-column codes into one
             # int64, factorise THAT, and build the string ONLY for the distinct groups — there are
             # ~4 orders of magnitude fewer of those than rows. The strings still exist because a
             # diagnostic names groups with them (19dl, below); they are simply not built per row.
             # THE GROUP KEY IS BUILT FROM Pc's OWN VALUES, and must NOT reuse the T0-shared code
-            # space above. Verified on the live export: sharing it merged every cell absent from T0
+            # space above. Verified on the live export: sharing it merged every profile absent from T0
             # onto one sentinel and collapsed 858,108 groups into 842,329 — a silently different
             # renormalise. The string key never consulted T0, so neither does this.
             _gk_int = None
@@ -2022,7 +2022,7 @@ class PopulationBandProjector:
                 self._n_gk = int(len(_uniq))
             # 19dl — RETAIN THE KEY STRINGS. Diagnostic only; nothing in the kernels reads this.
             # `_pc_gk` is a factorised CODE, so a group can be counted but never NAMED, and the
-            # passthrough-disagreement dump in [vterms-is] needs to print which (cell, period, t)
+            # passthrough-disagreement dump in [vterms-is] needs to print which (profile, period, t)
             # the two projectors decide differently on. Without the strings it can report a count
             # and nothing actionable.
             self._pc_gk_keys = np.asarray(_uniq, dtype=object)
@@ -2153,7 +2153,7 @@ class PopulationBandProjector:
             else:
                 _zero_pool = np.zeros(len(_pool_arr), bool)
             _pc_static = (np.asarray(self._pc_org) < 0) | _zero_pool
-            # ── 19fs: THIRD CLASS — the origin cell is FROZEN. See the module note. ──
+            # ── 19fs: THIRD CLASS — the origin profile is FROZEN. See the module note. ──
             _org = np.asarray(self._pc_org, np.int64)
             _frz_rows = np.zeros(len(_org), bool)
             _fzc = self._frozen_cell_mask()
@@ -2241,7 +2241,7 @@ class PopulationBandProjector:
                   "[gen-gap]'s `eval` row against the previous run before concluding anything "
                   "about what the renormalise cost.")
             _bnote(f"[vconst-frozen] 19fs added the THIRD class: "
-                  f"{_h['frozen']:,} aged row(s) whose ORIGIN CELL IS FROZEN (no GA share "
+                  f"{_h['frozen']:,} aged row(s) whose ORIGIN PROFILE IS FROZEN (no GA share "
                   f"column maps to it, so psum is 0 there for every candidate). "
                   + (# 19gs: the verification narrative is gone. It was a live question for
                      # four runs and has been settled since 19gm deleted the kill switch;
@@ -2251,7 +2251,7 @@ class PopulationBandProjector:
                      "have, so it is summed once instead of per candidate."
                      if _h["frozen_known"] else
                      "NOT APPLIED: the GA incidence had not reached the projector when these "
-                     "arrays were built, so frozen cells could not be identified. "
+                     "arrays were built, so frozen profiles could not be identified. "
                      "set_lift_incidence() invalidates this cache, so a later build picks it "
                      "up - if this line persists, that call is not happening."))
         return self._nbcache
@@ -2271,7 +2271,7 @@ class PopulationBandProjector:
         # reused for its lifetime) fixes it; the main process keeps its original buffers.
         # Numerically identical — same np.zeros scratch, fully overwritten each call.
         # NB: must test EVERY buffer, not just the first. joblib only memmaps arrays over its
-        # size threshold (~1 MB), so the small per-cell scratch (psum/vpsum/moved, sized ncell)
+        # size threshold (~1 MB), so the small per-profile scratch (psum/vpsum/moved, sized ncell)
         # can stay writeable while the large per-row scratch (pr/pshare/vshare/mvrow, sized nR)
         # is memmapped read-only — checking fixed[0] alone would miss that and the kernel fails.
         # LANED as of 2026-08-19y: first axis is the parallel lane, so the candidate loop can be
@@ -2288,7 +2288,7 @@ class PopulationBandProjector:
                      np.zeros((lanes, nR)), np.zeros((lanes, nR)),          # pr, pshare
                      np.zeros((lanes, nR)), np.zeros((lanes, nR)),          # vshare, mvrow
                      np.zeros((lanes, ncell)), np.zeros((lanes, ncell)), np.zeros((lanes, ncell)),
-                     # 19cy: per-lane aged-group sums. Sized n_gk (the (cell, period, t) groups),
+                     # 19cy: per-lane aged-group sums. Sized n_gk (the (profile, period, t) groups),
                      # and zeroed per candidate only at the codes the scaffold touches — see the
                      # kernel note. max(1, ...) so a scaffold with no aged rows still allocates a
                      # valid array rather than a zero-length one numba would have to type.
@@ -2348,7 +2348,7 @@ class PopulationBandProjector:
             _bnote(f"frozen-scaffold LIFT ON: the flat passes skip "
                   f"{len(self._lift_frozen_rows):,} of {nR:,} rows "
                   f"({len(self._lift_frozen_rows) / max(nR, 1):.1%}) in "
-                  f"{len(self._lift_frozen_cells):,} of {ncell:,} frozen cells "
+                  f"{len(self._lift_frozen_cells):,} of {ncell:,} frozen profiles "
                   f"({len(self._lift_frozen_cells) / max(ncell, 1):.1%}). Bit-identical: those "
                   "passes are provable no-ops (psum += 0.0, everything else guarded on psum > 0). "
                   "The nC/nA accumulation loops are NOT touched — reassociating those sums would "
@@ -2597,13 +2597,13 @@ class PopulationBandProjector:
                 globals()["_PROJ_CHUNK_ON"] = False
                 buf = self._nb_buffers(P, 1)
                 nlane = 1
-        # 19bt: CELL-BLOCKED FIRST. It declines (returns None) if the layout cannot be built or
-        # the lift's cell-granularity invariant does not hold, in which case everything below runs
+        # 19bt: PROFILE-BLOCKED FIRST. It declines (returns None) if the layout cannot be built or
+        # the lift's profile-granularity invariant does not hold, in which case everything below runs
         # exactly as before — the flat path is the revert, untouched, and ROUTING_PROJ_CELLBLOCK=0
         # forces it.
         # hasattr, not a bare call: `project_pop_numba` is borrowed by lightweight stand-in
         # objects (the test suite's projector stubs, and any future diagnostic that wants the
-        # kernel without the class). A stand-in without the cell-blocked machinery must fall
+        # kernel without the class). A stand-in without the profile-blocked machinery must fall
         # through to the flat path, not raise.
         if _PROJ_CB_ON and _CB_OK["use"] and hasattr(self, "_project_cb"):
             _cbres = self._project_cb(prop_raw, a, P, par, chunk, _lanes, nlane, buf)
@@ -2649,8 +2649,8 @@ class PopulationBandProjector:
             lr = np.asarray(_lr, np.int64)
             live_cell = np.zeros(ncell, bool)
             live_cell[np.asarray(_lc, np.int64)] = True
-            # THE INVARIANT, both ways round: every live row is in a live cell, and every row of a
-            # live cell is live.
+            # THE INVARIANT, both ways round: every live row is in a live profile, and every row of a
+            # live profile is live.
             if not (live_cell[gc[lr]].all()
                     and int(live_cell[gc].sum()) == int(lr.size)):
                 self._cb = {"key": key, "ok": False}
@@ -2659,7 +2659,7 @@ class PopulationBandProjector:
                        "vshare depend on that. Running the flat kernel, which does not. This is a "
                        "correctness refusal, not a performance one — report it.")
                 return None
-            order = np.argsort(gc[lr], kind="stable")          # STABLE: keeps row order in a cell
+            order = np.argsort(gc[lr], kind="stable")          # STABLE: keeps row order in a profile
             cm = lr[order]
             froz = np.where(~live_cell[gc])[0].astype(np.int64)
             perm = np.concatenate([cm, froz])
@@ -2684,12 +2684,12 @@ class PopulationBandProjector:
                 "primed": None,
             }
             self._cb = cb
-            _bnote(f"cell-blocked layout built: {cb['nLR']:,} live rows in "
-                  f"{cells.size:,} cells (~{cb['nLR'] / max(cells.size, 1):.1f} rows/cell), "
+            _bnote(f"profile-blocked layout built: {cb['nLR']:,} live rows in "
+                  f"{cells.size:,} profiles (~{cb['nLR'] / max(cells.size, 1):.1f} rows/profile), "
                   f"{froz.size:,} frozen rows parked in the tail. The multi-pass block now runs "
-                  "one cell at a time (an L1-sized working set) instead of ~15 passes over the "
+                  "one profile at a time (an L1-sized working set) instead of ~15 passes over the "
                   "whole scaffold, and mvrow / vshare are derived in their only reader instead of "
-                  "being materialised. Bit-identical — stable permutation, so every per-cell sum "
+                  "being materialised. Bit-identical — stable permutation, so every per-profile sum "
                   "keeps its order — and self-checked against the flat kernel on this scaffold "
                   "before any result is used. ROUTING_PROJ_CELLBLOCK=0 reverts.")
             return cb
@@ -2767,7 +2767,7 @@ class PopulationBandProjector:
         nLR = cb["nLR"]
         bc = cb["base_c"]
         for q in range(int(lanes)):
-            psum[q][:] = 0.0                      # frozen CELLS stay 0 for the whole process
+            psum[q][:] = 0.0                      # frozen PROFILES stay 0 for the whole process
             vpsum[q][:] = 0.0
             moved[q][:] = 0.0
             pr[q][nLR:] = 0.0
@@ -2812,7 +2812,7 @@ class PopulationBandProjector:
         cb = self._cb_arrays(a)
         if cb is None:
             return None
-        # The cell-blocked path writes pshare's FROZEN slots at cell-major positions, which are not
+        # The profile-blocked path writes pshare's FROZEN slots at profile-major positions, which are not
         # where the flat kernel expects them. If this path ever hands back to the flat one (a failed
         # self-check, a later decline) the lift must re-prime, so invalidate its idempotence key
         # here rather than relying on the buffer identity changing. Stale frozen slots are a
@@ -2894,7 +2894,7 @@ class PopulationBandProjector:
                 # below, and that comparison hard-coded `.view(np.int64)` on arrays that are
                 # float32 under this setting — which RAISES on any odd band count, because a
                 # (P, B) float32 row is not a whole number of 8-byte words. On 2026-08-24 that
-                # raised, the `except` below disabled cell-blocking for the process, float32 died
+                # raised, the `except` below disabled profile-blocking for the process, float32 died
                 # with it because it lives inside this same path, and a 5 h 22 m run used the flat
                 # float64 kernel throughout — never printing the banner, because the banner is
                 # printed after the line that raised. Under float32 a bit-IDENTITY test is the
@@ -2972,14 +2972,14 @@ class PopulationBandProjector:
                        "engine's real cost profile.")
                 return None
         # 19cf: RE-MEASURE THE DRIFT AT THE LIVE WIDTH, once. The self-check above runs on the
-        # FIRST cell-blocked projection, at whatever P that call happens to use — P=1 on
-        # 2026-08-25 15:48, while the search ran at P=35. Lane count changes the order the per-cell
+        # FIRST profile-blocked projection, at whatever P that call happens to use — P=1 on
+        # 2026-08-25 15:48, while the search ran at P=35. Lane count changes the order the per-profile
         # sums accumulate in, so a P=1 figure is not a claim about the search. This repeats the
         # measurement at the first LARGER P and keeps both, so the width dependence is visible
         # rather than assumed.
         #
         # A FAILURE HERE DISABLES NOTHING. This is a measurement, not a correctness check: the
-        # cell-blocked path was already verified above. 19cd is the lesson in the other direction —
+        # profile-blocked path was already verified above. 19cd is the lesson in the other direction —
         # there, a broken measurement took the engine down with it.
         if (_F32_OK["use"] and _F32_OK.get("live") is None
                 and int(P) > int((_F32_OK.get("first") or {}).get("at_P", 0))):
@@ -3065,7 +3065,7 @@ class PopulationBandProjector:
             return pshare
         gc = self._gcode
         W = pshare.copy()
-        # cappable = active cell with >=2 non-zero routed gateways (guard read ONCE, pre-loop)
+        # cappable = active profile with >=2 non-zero routed gateways (guard read ONCE, pre-loop)
         nz = self._cellsum((W > 1e-12).astype(float))[:, gc]
         cappable = act & (nz >= 2.0)
         if not cappable.any():
@@ -3088,13 +3088,13 @@ class PopulationBandProjector:
         # 19fw: keep a REFERENCE (not a copy) to the last real proposal, so lift_ab_report() can
         # re-time the projection at this run's OWN candidate width and OWN values. Both matter: the
         # lift skips per-candidate flat passes, so its worth scales with P, and the frozen set
-        # depends on which cells the candidate actually put volume in. A synthetic all-ones
-        # prop_raw would make every cell live and measure a lift that is not the one running.
+        # depends on which profiles the candidate actually put volume in. A synthetic all-ones
+        # prop_raw would make every profile live and measure a lift that is not the one running.
         # A reference costs nothing while the search holds the array anyway; the report drops it.
         self._stash_ab(prop_raw)
         prop_raw = np.asarray(prop_raw, float)
         P = prop_raw.shape[0]
-        if not len(self._gcode):                     # no constrained cells this build
+        if not len(self._gcode):                     # no constrained profiles this build
             return np.zeros((P, self._B)), np.zeros((P, self._B))
         pr = prop_raw[:, self._propidx]                         # (P, nR)
         # 19dt: one multiply replaces the mask - pw is 0 on masked rows and carries the
@@ -3106,10 +3106,10 @@ class PopulationBandProjector:
         psum = self._cellsum(pr)[:, self._gcode]                # (P, nR)
         act = psum > 0
         pshare = np.where(act, np.divide(pr, psum, out=np.zeros_like(pr), where=act), base)
-        if self._cap < 1.0:                                     # per-sub-cell max-share cap
+        if self._cap < 1.0:                                     # per-profile max-share cap
             pshare = self._cap_pshare(pshare, act)
         mv = np.where(act, mv_s, 0.0)
-        # vshare from the (capped) ROUTED share only — 0 in inactive cells so no pool leaks there.
+        # vshare from the (capped) ROUTED share only — 0 in inactive profiles so no pool leaks there.
         routed = np.where(act, pshare, 0.0)
         # 19cu — ALLROWS drops the vcpos mask so the denominator matches delivery's.
         # `routed` is read-only from here on (vpsum/vshare both allocate their own output), so
@@ -3124,15 +3124,15 @@ class PopulationBandProjector:
         ptxn = np.where(self._excl[None, :], 0.0, ptxn)
 
         # VAMP over reduced aged rows — APPEARANCE-MONTH timing (see __init__): the movable
-        # fraction is fcp[origin]·pro_rata[appearance], gated on the ORIGIN cell being routed
+        # fraction is fcp[origin]·pro_rata[appearance], gated on the ORIGIN profile being routed
         # (act at the origin t0 row). The pool is pre-built appearance-timed upstream.
         o = self._pc_org
         ok = o >= 0
         oi = np.where(ok, o, 0)
         _heldfac = (self._fcp[oi] * self._pc_prapp)          # (nPc,) appearance-timed held factor
-        # CONSERVATION (19aq): AND the routed test with "the origin cell has a VAMP
+        # CONSERVATION (19aq): AND the routed test with "the origin profile has a VAMP
         # recipient" (vact), matching the kernel and delivery's passthrough. Without it a routed
-        # cell with no VAMP-positive door loses its moved VAMP entirely.
+        # profile with no VAMP-positive door loses its moved VAMP entirely.
         _act_pc = (act & vact) if _VAMP_CONSERVE else act
         move_pc = np.where(ok[None, :], _act_pc[:, oi] * _heldfac[None, :], 0.0)
         psh_pc = np.where(ok[None, :], vshare[:, oi], 0.0)

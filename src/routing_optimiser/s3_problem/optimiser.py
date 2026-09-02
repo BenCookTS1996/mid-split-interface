@@ -15,7 +15,7 @@ import pandas as pd
 from routing_optimiser.s3_problem.constraints import OptimiserSettings
 from routing_optimiser.engines import CellProblem, get_engine
 
-__build__ = "2026-07-29-vamp-lp-singlegw-fixed-cell-revival+2026-09-02-19gz-max-revenue-split-reference+2026-09-02-19he-floor-carried-into-projector+2026-09-02-19hh-emask-pair-grain+2026-09-02-19hi-log-simplification"
+__build__ = "2026-07-29-vamp-lp-singlegw-fixed-cell-revival+2026-09-02-19gz-max-revenue-split-reference+2026-09-02-19he-floor-carried-into-projector+2026-09-02-19hh-emask-pair-grain+2026-09-02-19hi-log-simplification+2026-09-02-19hk-cell-profile-prose"
 
 
 # [FN-191]
@@ -59,19 +59,19 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
     cell_lbl = d["cell"].astype(str).to_numpy()
     cell_rows = _group_indices(cell_lbl)
     mid_rows = _group_indices(d["vampMid"].astype(str).to_numpy())
-    # Only MIDs that CAN breach (some cell rate above the cap) need a constraint.
+    # Only MIDs that CAN breach (some profile rate above the cap) need a constraint.
     over_mids = [m for m, r in mid_rows.items() if float(rate[r].max()) > cap + 1e-12]
     if not over_mids and agg_cap is None:
         return None   # reference already cap-compliant and no aggregate budget — greedy no-ops
 
-    # SINGLE-GATEWAY CELLS ARE STRUCTURALLY FIXED (EXACT, speed #2). A one-gateway cell has its
+    # SINGLE-GATEWAY PROFILES ARE STRUCTURALLY FIXED (EXACT, speed #2). A one-gateway profile has its
     # share pinned at the reference (1.0 — it's the only option), so it can NEVER redistribute.
     # It must not enter the LP: with max_share < 1 its forced share = 1.0 violates the
     # [floor, max_share] bound, making the whole LP infeasible → the solve returns None and the
     # caller silently drops to the slower greedy shave on EVERY run with max_share < 1. We fix
     # these rows at their reference and fold their CONSTANT vol·(rate−cap)·ref contribution into
     # the per-MID (and aggregate) right-hand sides, so the LP still accounts for their true,
-    # unmovable risk. With no single-gateway cells `fixed` is all-False and every expression below
+    # unmovable risk. With no single-gateway profiles `fixed` is all-False and every expression below
     # collapses to the original (RHS constants = 0), so the build is byte-identical in that case.
     _cell_n = {c: len(idx) for c, idx in cell_rows.items()}
     fixed = np.fromiter((_cell_n[cell_lbl[i]] < 2 for i in range(n)), dtype=bool, count=n)
@@ -79,11 +79,11 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
     # Which rows actually enter the LP. Full MOVABLE set unless the reduction applies.
     if agg_cap is None and _reduce:
         _keep_cells = set()
-        for _m in over_mids:                 # every cell holding a MOVABLE over-cap MID row is binding
+        for _m in over_mids:                 # every profile holding a MOVABLE over-cap MID row is binding
             for _i in mid_rows[_m]:
                 if not fixed[_i]:
                     _keep_cells.add(cell_lbl[_i])
-        for _c, _idx in cell_rows.items():    # + any MULTI-gw cell whose reference isn't already feasible
+        for _c, _idx in cell_rows.items():    # + any MULTI-gw profile whose reference isn't already feasible
             if _c in _keep_cells or fixed[_idx[0]]:
                 continue
             _rf = ref[_idx]
@@ -128,7 +128,7 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
         b_ub.append(-_const); _r += 1
     A_ub = sp.coo_matrix((data, (rows, cols)), shape=(_r, 2 * nk)).tocsr()
     erows, ecols, edata, b_eq, _e = [], [], [], [], 0
-    for _c, idx in cell_rows.items():        # each KEPT cell's shares sum to 1 (dropped cells = ref)
+    for _c, idx in cell_rows.items():        # each KEPT profile's shares sum to 1 (dropped cells = ref)
         _kept = [int(i) for i in idx if keep[i]]
         if not _kept:
             continue
@@ -145,7 +145,7 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
         return None
     if not getattr(res, "success", False):
         return None
-    x = ref.copy()                           # dropped (non-binding, feasible) cells stay at reference
+    x = ref.copy()                           # dropped (non-binding, feasible) profiles stay at reference
     x[kidx] = np.clip(np.asarray(res.x[:nk], dtype=float), 0.0, max_share)
     for _c, idx in cell_rows.items():        # exact renormalise (guard tiny LP residuals)
         s = float(x[idx].sum())
@@ -253,7 +253,7 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
     mids = list(pd.unique(mid))
     mid_rows = _group_indices(mid)
     cell_rows = _group_indices(cell)
-    _corder = _cell_recip_order(cell_rows, rate)   # per-cell rows by ascending rate (bit-identical)
+    _corder = _cell_recip_order(cell_rows, rate)   # per-profile rows by ascending rate (bit-identical)
     retired: set = set()
 
     # [FN-196]
@@ -267,7 +267,7 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
     #   den = Σ cell_vol·share ,  num = Σ cell_vol·share·rate  (over its rows).
     # Every move shifts `delta` from ONE row of MID m to ONE row of MID m(j), so we
     # update num/den for just those two MIDs in O(1) — instead of re-summing all of a
-    # MID's rows (which is O(11k) for a MID spanning thousands of cells, the cause of
+    # MID's rows (which is O(11k) for a MID spanning thousands of profiles, the cause of
     # the 5-minute VAMP phase). rate/cell_vol are constants, so the update is exact;
     # accumulated float drift is ~1e-13, far below the 1e-9 decision threshold, so the
     # sequence of moves (and the resulting split) is identical to the full-recompute.
@@ -340,7 +340,7 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
             break
         if not moved:
             # Can't reduce by re-weighting -> retire the MID (dump its volume onto
-            # the lowest-rate other gateways in each of its cells).
+            # the lowest-rate other gateways in each of its profiles).
             retired.add(m)
             _touched = set()
             for i in mid_rows[m]:
@@ -365,7 +365,7 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
             for _tm in _touched:
                 rate_cache[_tm] = _rt(_tm)
 
-    # Renormalise each cell to sum 1 (safety against rounding).
+    # Renormalise each profile to sum 1 (safety against rounding).
     for c, rows in cell_rows.items():
         s = share[rows].sum()
         if s > 0:
@@ -407,7 +407,7 @@ def enforce_mid_volume_caps(df: pd.DataFrame, a_max_by_mid: dict,
     mids = list(pd.unique(mid))
     mid_rows = _group_indices(mid)
     cell_rows = _group_indices(cell)
-    _corder = _cell_recip_order(cell_rows, rate)   # per-cell rows by ascending rate (bit-identical)
+    _corder = _cell_recip_order(cell_rows, rate)   # per-profile rows by ascending rate (bit-identical)
     constrained: set = set()
 
     for m in mids:
@@ -461,7 +461,7 @@ def optimise_split(problems: list[CellProblem],
     # same column order), but pandas builds a frame from dict-of-lists far faster than by
     # inferring schema across one dict per row.
     _c_rpgt, _c_cur, _c_bank, _c_gw = [], [], [], []
-    _c_pmp, _c_ctry = [], []                      # sub-cell identity (default "_all_" = cell grain)
+    _c_pmp, _c_ctry = [], []                      # profile identity (default "_all_" = profile grain)
     _c_share, _c_vol, _c_cvol = [], [], []
     _c_gsr, _c_grr, _c_ces, _c_cer, _c_bshare = [], [], [], [], []
     _c_feas, _c_note = [], []
@@ -489,7 +489,7 @@ def optimise_split(problems: list[CellProblem],
         return pd.DataFrame([])   # preserve the old empty-frame (0×0) shape when nothing routes
     return pd.DataFrame({
         "rpgt": _c_rpgt, "currency": _c_cur, "bin": _c_bank,
-        "pmp": _c_pmp, "ctry": _c_ctry,          # sub-cell identity (carried through for sub-cell grain)
+        "pmp": _c_pmp, "ctry": _c_ctry,          # profile identity (carried through for profile grain)
         "gateway": _c_gw,
         "share": _c_share,
         "volume": _c_vol,

@@ -74,7 +74,7 @@ import scipy.sparse as _sparse
 __build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+global-linear-lp-seed+minimal-move-projection+colocation-report+held-movable-report+movable-provenance+reachable-minimum-no-floor+vamp-positive-sibling+selfcheck+seedgrad+vpsum+usable-recipient+degenerate-gradient-flag+breach-concentration+scoped-frozen-split+gradient-vpsum-regularisation+insearch-rpgt-breakdown+catchall-eps-floor+targeted-move-headroom+2026-08-19bd-raw-basis-claim-labelled+2026-08-19be-recipient-headroom-per-metric+2026-09-01-19go-delivery-faithful-seed-accept-tests"
 
 # Gradient-only vpsum/psum floor used by the SEED SOLVERS (not the diagnostics, not the forward
-# values). Share-scale denominators: real high-VAMP cells sit well above this, near-empty cells
+# values). Share-scale denominators: real high-VAMP profiles sit well above this, near-empty profiles
 # (the 1/vpsum blow-up) get their gradient capped at ~1/_VPS_EPS instead of ~1e18. Tunable.
 _VPS_EPS = 1e-3
 
@@ -102,7 +102,7 @@ class ExactBandModel:
     def __init__(self, exact_bands, incidence, *, vps_eps=0.0):
         pj = exact_bands.projector
         self.pj = pj
-        # GRADIENT-ONLY regularisation: floor the per-cell VAMP/txn denominators (vpsum/psum) at
+        # GRADIENT-ONLY regularisation: floor the per-profile VAMP/txn denominators (vpsum/psum) at
         # `vps_eps` INSIDE the analytic Jacobian only. This tames the 1/vpsum blow-up on near-empty
         # cells (the 1e18 gradients that freeze the seed solvers) WITHOUT changing any forward/breach
         # value — the reported VAMP, `breach`, `spec_values`, and all diagnostics stay exact. Every
@@ -313,7 +313,7 @@ class ExactBandModel:
                     continue
                 # δ (own-column) term: only for q that is a capped row in band b
                 Jtxn[b, sel] += wt[sel] * act[sel] * inv_psum[sel]
-                # cell term: A_b[c] = Σ_{r∈sel, cell c} ctot·moved_tot·pshare, applied to every q∈c
+                # profile term: A_b[c] = Σ_{r∈sel, cell c} ctot·moved_tot·pshare, applied to every q∈c
                 A_bc = np.bincount(gcode[sel], wt[sel] * pshare[sel], minlength=ngc)
                 Jtxn[b, :] -= act * inv_psum * A_bc[gcode]
 
@@ -328,7 +328,7 @@ class ExactBandModel:
                 pool_b = self.pc_pool[m]
                 # δ term: G_b[q] = Σ_{j: o_j=q} pool[j]
                 G = np.bincount(o_b, pool_b, minlength=nR)
-                # cell term: C_b[c] = Σ_{j: gcode[o_j]=c} pool·vcpos[o]·vshare[o]
+                # profile term: C_b[c] = Σ_{j: gcode[o_j]=c} pool·vcpos[o]·vshare[o]
                 C_bc = np.bincount(gcode[o_b], pool_b * self.vcpos[o_b] * vshare[o_b], minlength=ngc)
                 Jvamp[b, :] = self.vcpos * inv_vpsum * (G - C_bc[gcode])
         return Jvamp, Jtxn
@@ -425,14 +425,14 @@ def floor_catchall_shares(shares, floor_mask, share_floor, cell_starts, cell_cou
     if not bump.any():
         return s
     add = np.where(bump, eps - s, 0.0)                                  # mass to add per bumped row
-    cell_add = np.repeat(np.add.reduceat(add, cs), cc)                  # per-cell added mass (broadcast)
+    cell_add = np.repeat(np.add.reduceat(add, cs), cc)                  # per-profile added mass (broadcast)
     donor = ~m                                                          # only non-catch-all rows donate
     donor_mass = np.repeat(np.add.reduceat(np.where(donor, s, 0.0), cs), cc)
-    ok = donor_mass > cell_add + 1e-15                                  # cell-constant: enough to give?
+    ok = donor_mass > cell_add + 1e-15                                  # profile-constant: enough to give?
     scale = np.where(donor_mass > 0, (donor_mass - cell_add) / np.where(donor_mass > 0, donor_mass, 1.0), 1.0)
     out = np.where(bump, eps, s)                                        # bumped rows → floor
     out = np.where(donor, s * scale, out)                              # donors scaled down
-    out = np.where(ok, out, s)                                         # infeasible cell → revert wholesale
+    out = np.where(ok, out, s)                                         # infeasible profile → revert wholesale
     return out
 
 
@@ -516,7 +516,7 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
             info.update(reason="no band-feeding gateways are eligible/movable", breach=b0)
             return s, info
 
-        # per-cell fixed budget for the free rows (total minus the pinned reference of non-free rows)
+        # per-profile fixed budget for the free rows (total minus the pinned reference of non-free rows)
         cell_of = np.repeat(np.arange(len(cs)), cc)
         best_s = s.copy(); best_b = b0
         tr = float(tr_init)
@@ -590,13 +590,13 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
                     rhs.append(vi - lim)
                 rows.append(row)
             # SPARSE LP matrices. At BIN grain nvar≈135k and n_cell≈14k, so a DENSE A_eq would be ~15 GB
-            # (and was rebuilt every step — the hang). A_eq is a cell-membership indicator (exactly one 1
+            # (and was rebuilt every step — the hang). A_eq is a profile-membership indicator (exactly one 1
             # per free column) → ~nvar nonzeros; A_ub is the n_slack dense band-gradient rows. HiGHS solves
             # the sparse LP directly — identical problem, identical result, just representable at BIN grain.
             fidx = np.where(free)[0]
             A_ub = _sparse.csr_matrix(np.asarray(rows, float)) if rows else None
             b_ub = np.asarray(rhs, float)
-            # equality: Σ_free Δs = 0 per cell (keep each cell sum fixed)
+            # equality: Σ_free Δs = 0 per cell (keep each profile sum fixed)
             n_cell = len(cs)
             Aeq = _sparse.coo_matrix((np.ones(fidx.size), (cell_of[fidx], fidx)),
                                      shape=(n_cell, nvar)).tocsr()
@@ -1087,7 +1087,7 @@ def vamp_sibling_report(split, exact_bands, incidence, *, max_list=15):
                 continue
             cells_m = np.unique(gc[rows_m])
             m_per_cell = np.bincount(gc[rows_m], minlength=ncell)
-            has_sib = (vpos_per_cell - m_per_cell) > 0            # another VAMP-positive row in the cell
+            has_sib = (vpos_per_cell - m_per_cell) > 0            # another VAMP-positive row in the profile
             n_with = int(has_sib[cells_m].sum()); n_tot = int(cells_m.size)
             tag = ("reducible by routing" if n_with == n_tot else
                    "SOLE VAMP gateway in ALL its cells → VAMP immovable by share" if n_with == 0 else
@@ -1141,10 +1141,10 @@ def incidence_selfcheck_report(split, exact_bands, incidence, *, mid_id=None, mi
                f"(dropped {mass_share - mass_prop:,.1f} of share mass)",
                ]
         # 19gs: FOUR PARAGRAPHS DELETED. They were the write-up of the 2026-08-31 investigation
-        # into a 9,018-cell coverage gap — how to read Σshare as a cell count, why those cells
-        # cannot reach a band, why [profiles] was not a contradiction, and what the note used to
+        # into a 9,018-profile coverage gap — how to read Σshare as a profile count, why those profiles
+        # cannot reach a band, why [cells] was not a contradiction, and what the note used to
         # say before it was settled. That gap was closed by [require-forecast] (19em), which
-        # removes those cells upstream; coverage has read 100.0% on every run since. Four
+        # removes those profiles upstream; coverage has read 100.0% on every run since. Four
         # paragraphs of settled history printed on every healthy run is what buried the ONE line
         # that matters. It is directly above, and the check below states its own verdict.
         if cov < N:
@@ -1223,7 +1223,7 @@ def seed_gradient_report(split, exact_bands, incidence, *, mid_id, mid_names, ma
             g_own = float(own.max()) if own.size else 0.0
             g_all = float(gi.max()) if gi.size else 0.0
             # A legitimate band gradient is volume-scale (≲ 1e6). Anything ≫ that is the 1/vpsum
-            # blow-up on a near-empty (vpsum≈0) cell — the vshare 0/0 singularity, NOT a usable
+            # blow-up on a near-empty (vpsum≈0) profile — the vshare 0/0 singularity, NOT a usable
             # movable direction. A near-zero own-gradient is the flat cliff. Only in between is it
             # a genuinely healthy, navigable gradient.
             _DEGEN = 1e8
@@ -1380,7 +1380,7 @@ def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mi
         for i, sp in enumerate(specs):
             if len(sp.cols):
                 base_vals[i] = float((t if sp.metric == "txn" else v)[sp.cols].sum())
-        # per aged-row VAMP contribution + its origin projector cell
+        # per aged-row VAMP contribution + its origin projector profile
         mv = inter["mv"]; vshare = inter["vshare"]
         o = model.pc_org; ok = o >= 0; oi = np.where(ok, o, 0)
         move = np.where(ok, mv[oi], 0.0); psh = np.where(ok, vshare[oi], 0.0)
@@ -1434,7 +1434,7 @@ def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mi
             other_usable = usable & (row_mid != m)
             ouc = (np.bincount(model.gcode[other_usable], minlength=ncell)
                    if other_usable.any() else np.zeros(ncell, int))
-            # greedily take highest-VAMP cells until cumulative ≥ overshoot
+            # greedily take highest-VAMP profiles until cumulative ≥ overshoot
             cum = 0.0; n_need = 0; n_need_usable = 0
             for k in order:
                 if cum >= over:
@@ -1442,7 +1442,7 @@ def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mi
                 c = int(cells[k]); cum += float(contrib[k]); n_need += 1
                 if c >= 0 and ouc[c] > 0:
                     n_need_usable += 1
-            # concentration: #cells holding 90% of VAMP
+            # concentration: #profiles holding 90% of VAMP
             cum90 = 0.0; n90 = 0
             for k in order:
                 if cum90 >= 0.9 * tot:
@@ -1505,7 +1505,7 @@ def scoped_frozen_report(split, exact_bands, incidence, *, scoped_rpgts, max_mid
             return ["   ── SCOPED vs FROZEN VAMP ── skipped: projector is not at by-RPGT grain "
                     f"(prop-key has {_nf} fields, need cur|bin|rpgt|mid) — RPGT split unavailable."]
         # RPGT is field index 2 in BOTH cur|bin|rpgt|mid (by_rpgt) and cur|bin|rpgt|pmp|ctry|mid
-        # (by_subcell); using [-2] wrongly grabbed Country at sub-cell grain.
+        # (by_subcell); using [-2] wrongly grabbed Country at profile grain.
         prop_rpgt = np.array([str(pk[j]).split("|")[2].strip().lower()
                               if (j < len(pk) and len(str(pk[j]).split("|")) >= 4) else ""
                               for j in range(max(len(pk), 1))])
@@ -1585,7 +1585,7 @@ def insearch_rpgt_breakdown(split, exact_bands, incidence, *, max_mids=8):
             out.append("      (projector not at by-RPGT grain — per-RPGT split unavailable)")
             return out
         # RPGT is field index 2 in BOTH cur|bin|rpgt|mid (by_rpgt) and cur|bin|rpgt|pmp|ctry|mid
-        # (by_subcell); using [-2] wrongly grabbed Country at sub-cell grain.
+        # (by_subcell); using [-2] wrongly grabbed Country at profile grain.
         prop_rpgt = np.array([str(pk[j]).split("|")[2].strip().lower()
                               if (j < len(pk) and len(str(pk[j]).split("|")) >= 4) else ""
                               for j in range(max(len(pk), 1))])
@@ -1688,24 +1688,24 @@ def solve_global_linear_lp(exact_bands, incidence, base_shares, cell_starts, cel
             J = np.nan_to_num(J, nan=0.0, posinf=0.0, neginf=0.0)
             vals = np.nan_to_num(vals, nan=0.0, posinf=0.0, neginf=0.0)
         # DEGENERATE-SENSITIVITY GUARD: the linear-FRACTIONAL VAMP gradient is ∝ 1/vpsum, so on a
-        # cell whose VAMP-positive volume is ~0 it can be astronomically large but FINITE (e.g. 1e19
+        # profile whose VAMP-positive volume is ~0 it can be astronomically large but FINITE (e.g. 1e19
         # — "shift 1e-19 of share to swing the whole band"). Such a direction is a vanishing-
         # denominator artifact, not a usable move, and any coefficient above ~1e15 makes HiGHS reject
         # the model ("Model error"). Legitimate band gradients are volume-scale (≲ 1e6), so we zero
         # entries beyond a safe threshold: that gateway is simply treated as immovable for that band
-        # (well-conditioned gateways in the same cells still provide the reallocation).
+        # (well-conditioned gateways in the same profiles still provide the reallocation).
         _JCLIP = 1e9
         _big = np.abs(J) > _JCLIP
         _nbig = int(_big.sum())
         if _nbig:
             info["jac_clipped"] = _nbig
             J = np.where(_big, 0.0, J)
-        # A cell is "band-feeding" if ANY of its gateways has a nonzero band gradient at the seed.
-        # We free EVERY eligible gateway in those cells — not just the band-feeders — because
-        # reallocating a band-feeder's share REQUIRES a same-cell sibling to absorb it, and the
-        # per-cell equality (Σ Δs = 0) would otherwise pin a lone free gateway to zero movement.
+        # A profile is "band-feeding" if ANY of its gateways has a nonzero band gradient at the seed.
+        # We free EVERY eligible gateway in those profiles — not just the band-feeders — because
+        # reallocating a band-feeder's share REQUIRES a same-profile sibling to absorb it, and the
+        # per-profile equality (Σ Δs = 0) would otherwise pin a lone free gateway to zero movement.
         # (At a corner seed a band-feeder's OWN gradient can vanish — ∂/∂s = 0 when a sibling sits
-        # at 0 — so a nonzero-gradient-only free set can miss the feeder entirely.) Cells with no
+        # at 0 — so a nonzero-gradient-only free set can miss the feeder entirely.) Profiles with no
         # band involvement stay fixed (Δs = 0), keeping the step minimal.
         cell_id = np.repeat(np.arange(len(cs)), cc)
         feed = np.abs(J).sum(axis=0) > 0
@@ -1781,7 +1781,7 @@ def solve_global_linear_lp(exact_bands, incidence, base_shares, cell_starts, cel
         b_ub = np.nan_to_num(np.concatenate([np.asarray(_b, float), np.zeros(2 * F)]),
                              nan=0.0, posinf=0.0, neginf=0.0)
         c_obj = np.nan_to_num(c_obj, nan=1.0, posinf=0.0, neginf=0.0)
-        # equality: Σ_free Δs = 0 per cell (each cell stays summed to its reference total)
+        # equality: Σ_free Δs = 0 per cell (each profile stays summed to its reference total)
         n_cell = len(cs)
         Aeq = _sparse.coo_matrix((np.ones(F), (cell_id[fidx], fidx)),
                                  shape=(n_cell, nvar)).tocsr()
@@ -2122,10 +2122,10 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                 m_rows = np.where((mid_id == m_idx) & (s > 1e-12) & (elig > 0.5))[0]
                 if m_rows.size == 0:
                     continue
-                # 19be: shed the cells that contribute most to the metric THIS MID is worst over.
+                # 19be: shed the profiles that contribute most to the metric THIS MID is worst over.
                 # It was always the VAMP contribution (s×vol×risk), which is the wrong ordering
                 # for a MID breaching a TRANSACTION ceiling — there the contribution is s×vol and
-                # a low-risk high-volume cell is the one to move.
+                # a low-risk high-volume profile is the one to move.
                 _mj = int(np.argmax(_rel_over(m_idx)))
                 contrib = s[m_rows] * np.maximum(cell_vol[cell_of[m_rows]], 0.0)
                 if _mj == _MET_COL["vamp"]:

@@ -108,8 +108,8 @@ class FullMatrixProblem:
 
     cell_id: np.ndarray      # int (R,)  contiguous group id per row
     gw_id: np.ndarray        # int (R,)  gateway id (for building the output table)
-    mid_id: np.ndarray       # int (R,)  vampMid id per row (spans cells)
-    vol: np.ndarray          # float (R,) cell volume (same for every row of a cell)
+    mid_id: np.ndarray       # int (R,)  vampMid id per row (spans profiles)
+    vol: np.ndarray          # float (R,) profile volume (same for every row of a profile)
     succ: np.ndarray         # float (R,) bin-grain (EB-shrunk) success rate
     risk: np.ndarray         # float (R,) bin-grain VAMP/chargeback rate
     max_share: np.ndarray    # float (R,) per-row hard cap on share (max_gateway_share)
@@ -150,14 +150,14 @@ class FullMatrixProblem:
         original row order so the caller can map the returned split back.
         """
         cell_id = np.asarray(cell_id)
-        # stable sort by cell so groups are contiguous but within-cell order kept
+        # stable sort by profile so groups are contiguous but within-profile order kept
         order = np.argsort(cell_id, kind="stable")
         def _o(a):
             return np.asarray(a, dtype=float)[order]
         cid = cell_id[order]
-        # segment boundaries of the sorted cell ids
+        # segment boundaries of the sorted profile ids
         uniq, starts, lens = _segments(cid)
-        # remap cell ids to dense 0..n_cells-1 in sorted order
+        # remap profile ids to dense 0..n_cells-1 in sorted order
         dense = np.repeat(np.arange(len(uniq)), lens)
         mid = np.asarray(mid_id)[order].astype(int)
         n_mids = int(max(len(mid_hard_cap), (mid.max() + 1) if mid.size else 0))
@@ -322,20 +322,20 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
     elig = np.asarray(ctx.get("elig", np.ones(n_row)), dtype=float) > 0.5
 
     # ── 19eh [prune-inert] ────────────────────────────────────────────────────────────────
-    # Drop whole cells that carry NO forecast volume. Every term the GA scores is
+    # Drop whole profiles that carry NO forecast volume. Every term the GA scores is
     # volume-weighted - vwsr is Sigma vol*share*succ / Sigma vol*share, band metric 1 is
     # Sigma vol*share, metric 2 is Sigma vol*share*risk, metric 3 is their ratio - so a row with
     # vol == 0 contributes exactly 0.0 to all four for every candidate. Removing it cannot move
     # the objective. That is arithmetic, not a measurement.
     #
-    # cell_vol is the CELL total repeated on every row of the cell, so testing it at cell_starts
-    # is the cell's own volume and the whole cell goes together. Dropping part of a cell would
-    # break its simplex; dropping all of it is clean, and FullMatrixProblem.build remaps cell ids
-    # to dense 0..n_cells-1, so the gap in cell ids costs nothing.
+    # cell_vol is the PROFILE total repeated on every row of the profile, so testing it at cell_starts
+    # is the profile's own volume and the whole profile goes together. Dropping part of a profile would
+    # break its simplex; dropping all of it is clean, and FullMatrixProblem.build remaps profile ids
+    # to dense 0..n_cells-1, so the gap in profile ids costs nothing.
     #
-    # SIZE, on the 2026-08-31 18:21 book: 9,018 of 23,870 cells and 103,230 of 257,635 rows
+    # SIZE, on the 2026-08-31 18:21 book: 9,018 of 23,870 profiles and 103,230 of 257,635 rows
     # (40.1%). [frozen-scaffold] already measured what that buys: "92% of a GA generation is
-    # _pop_band_kernel over the cap scaffold (1.28M rows / 22.3k cells) ... So shrinking the
+    # _pop_band_kernel over the cap scaffold (1.28M rows / 22.3k profiles) ... So shrinking the
     # genome alone saves ~6%." The scaffold is 1,933,016 rows to the genome's 257,635, so 40% of
     # the genome is ~5% of the per-generation row traffic. The 38% is real, and it is 38% of the
     # smaller object.
@@ -358,7 +358,7 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
     #    scatter writing every column - which this breaks by construction. So an optimisation that
     #    is on today turns off, and the NET speed effect has to be measured, not assumed.
     #
-    # 3. The delivery transform now meets cells whose every row is 0. The band projector guards its
+    # 3. The delivery transform now meets profiles whose every row is 0. The band projector guards its
     #    own division (`where=psum > 0`); _fm_deliv is a different function and an unguarded
     #    renormalise there would give NaN. Unverified without a run.
     #
@@ -373,7 +373,7 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
         _inert_cell = _cell_vol_by_cell <= 0.0
         if _inert_cell.any():
             _inert_row = _inert_cell[cell_id_full]
-            # Never prune the whole genome - if every cell reads volume-less the volume column is
+            # Never prune the whole genome - if every profile reads volume-less the volume column is
             # wrong, not the book, and running on an empty problem would hide that.
             if bool(_inert_row.all()):
                 _prune_note = (
@@ -435,7 +435,7 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
         mid_band_metric=_bm, mid_band_lo=_blo, mid_band_hi=_bhi,
         global_vamp_cap=global_cap,
     )
-    # renormalise the kept reference within each (kept) cell so it is a valid seed
+    # renormalise the kept reference within each (kept) profile so it is a valid seed
     kept_cell = cell_id_full[keep_idx]
     for cid in np.unique(kept_cell):
         m = kept_cell == cid
@@ -443,8 +443,8 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
         ref_kept[m] = (ref_kept[m] / s) if s > 1e-12 else (1.0 / m.sum())
 
     # 19eh: what to put BACK. Config-banned rows correctly ship 0 (they can never carry share);
-    # a pruned inert cell must NOT - it would export as all-zeros instead of summing to 1. Its
-    # rows are restored to their baseline share, so the shipped split for those cells is the
+    # a pruned inert profile must NOT - it would export as all-zeros instead of summing to 1. Its
+    # rows are restored to their baseline share, so the shipped split for those profiles is the
     # baseline rather than whatever drift the search happened to leave there.
     _restore_idx = np.where(_inert_row)[0]
     _base_full = np.asarray(ctx.get("base", np.zeros(n_row)), dtype=float)
@@ -516,9 +516,9 @@ _SM_FUSE = (os.environ.get("ROUTING_SOFTMAX_FUSE", "1") != "0") and _FX_HAVE_NB
 _CH_FUSE = (os.environ.get("ROUTING_CHILD_FUSE", "1") != "0") and _FX_HAVE_NB
 _SM_OK = {"use": _SM_FUSE, "checked": False, "msg": ""}
 _FX_OK = {"use": _CH_FUSE, "checked": False, "msg": ""}
-# Layout arrays (row->cell map, int32 starts/counts) built ONCE per layout. Keyed on the identity
+# Layout arrays (row->profile map, int32 starts/counts) built ONCE per layout. Keyed on the identity
 # of `cell_len` AND holding a reference to it, so the id cannot be recycled onto a different array
-# while the entry lives — a mis-keyed cell map is a silent wrong answer, not a slow one.
+# while the entry lives — a mis-keyed profile map is a silent wrong answer, not a slow one.
 _FX_LAYOUT = {}
 
 
@@ -691,7 +691,7 @@ def _fx_selfcheck(a, b, rate, strength, cell_start, cell_len, rng, cell_w, refin
 # ── [decode-cap] 19gu: THE CAP IS A PROPERTY OF THE DECODE ──────────────────────────────────
 # Until 19gu the cap was a REPAIR (`_repair_maxshare`, deleted in 19gv). It decoded the whole
 # population to shares,
-# water-filled the over-cap cells, and re-encoded the result with log() back into logits, which
+# water-filled the over-cap profiles, and re-encoded the result with log() back into logits, which
 # `_eval_with_bands` then decoded AGAIN. 98.4% of candidates needed it (a softmax cannot express
 # an upper bound: it gives every live door a positive share and normalises to 1), so on the
 # 2026-09-01 22:09 run that was 91.3s — 20% of the whole search — and three decodes of the
@@ -704,12 +704,12 @@ def _fx_selfcheck(a, b, rate, strength, cell_start, cell_len, rng, cell_w, refin
 # THE RULE IS THE ONE DELIVERY USES, unchanged: the excess goes to each sibling in proportion to
 # (target - share), the room it has left before IT would hit the cap — impact_calcs._cap_rows'
 # water-fill and `_fm_cap`'s reduceat form are both this same arithmetic. Single
-# pass, because Sum(target - share) over a cell's present rows equals (present_rows x target) - 1
-# + excess, so it covers the excess whenever present_rows x target >= 1 — every cell with 2+ live
+# pass, because Sum(target - share) over a profile's present rows equals (present_rows x target) - 1
+# + excess, so it covers the excess whenever present_rows x target >= 1 — every profile with 2+ live
 # rows at a 0.97 cap.
 #
 # THREE IMPLEMENTATIONS HAVE TO AGREE, and a divergence between them is a scored-vs-delivered
-# bug: the numpy reference, the fused numpy path, and the numba kernel's per-cell inner loop.
+# bug: the numpy reference, the fused numpy path, and the numba kernel's per-profile inner loop.
 # The reference is `_cap_shares_ref` below; the fused path calls it (the water-fill is not the
 # hot part — the decode is); the kernel carries its own copy and is verified against numpy by
 # make_fused_eval's existing verify gate, which now compares capped output on both sides.
@@ -814,7 +814,7 @@ def _segment_softmax(logits, cell_start, cell_len, max_share=None):
     if max_share is None or not _DECODE_CAP:
         return _rowpar(lambda _sub: _fn(_sub, cell_start, cell_len), _lg, "softmax")
     # The cap is applied INSIDE the threaded body, not after it: row p of the capped output still
-    # depends only on row p of the input (the water-fill is per (candidate, cell)), so rowpar's
+    # depends only on row p of the input (the water-fill is per (candidate, profile)), so rowpar's
     # candidate-independence premise holds and its bit-identity check still means what it says.
     return _rowpar(lambda _sub: _cap_shares_ref(_fn(_sub, cell_start, cell_len),
                                                 cell_start, cell_len, max_share),
@@ -1007,7 +1007,7 @@ def _fused_eval_kernel(logits, cell_starts, cell_counts, vol, succ, risk,
         for c in range(n_cells):
             s = cell_starts[c]
             n = cell_counts[c]
-            # per-cell softmax (stable): max, exp-sum, then shares
+            # per-profile softmax (stable): max, exp-sum, then shares
             m = logits[i, s]
             for j in range(1, n):
                 lj = logits[i, s + j]
@@ -1115,15 +1115,15 @@ if _HAS_NUMBA:                                       # pragma: no cover - env de
 # ---------------------------------------------------------------------------
 # Compressibility regularizer — VECTOR-QUANTIZATION distortion vs a learned codebook
 # ---------------------------------------------------------------------------
-# The λ_compress reward pushes cells to route ALIKE so the final split collapses into
+# The λ_compress reward pushes profiles to route ALIKE so the final split collapses into
 # few deployable configs. Concretely we learn a CODEBOOK of ~pool-target centroid shapes
-# (volume-weighted k-means over the ELITE's per-vampMid cell shapes, refreshed as the
+# (volume-weighted k-means over the ELITE's per-vampMid profile shapes, refreshed as the
 # elite improves — the same KIND of clustering tab-3 compression uses) and penalise each
 # candidate by its volume-weighted quantization error against that codebook:
 #     D_i = Σ_cells vol_c · ‖shape_ic − centroid[assign_c]‖²  / total_vol .
-# shape_ic[m] = Σ_{rows in cell c with vampMid m} share is the cell's shape (0 on absent
-# mids). This is NOT a 'fewer-gateways' reward: two cells with the SAME shape (however
-# spread across mids) cost 0; a cell that routes DIFFERENTLY from its codebook centroid
+# shape_ic[m] = Σ_{rows in cell c with vampMid m} share is the profile's shape (0 on absent
+# mids). This is NOT a 'fewer-gateways' reward: two profiles with the SAME shape (however
+# spread across mids) cost 0; a profile that routes DIFFERENTLY from its codebook centroid
 # pays. Scored on DELIVERED shares (post eligibility + blocked-caps) so it rewards what
 # actually ships. Kernel is Numba-fused (verify-gated vs the numpy twin); the periodic
 # codebook refit is numpy/sklearn (cheap relative to per-generation evaluation).
@@ -1147,7 +1147,7 @@ def _compress_distortion_kernel(shares, cell_starts, cell_counts, mid_id, vol,
             s = cell_starts[c]
             n = cell_counts[c]
             k = assign[c]
-            for j in range(n):               # accumulate this cell's per-mid shape
+            for j in range(n):               # accumulate this profile's per-mid shape
                 buf[mid_id[s + j]] += shares[i, s + j]
             term_sq = 0.0
             term_cross = 0.0
@@ -1179,7 +1179,7 @@ def _compress_distortion_numpy(shares, cell_start, cell_len, mid_id, vol,
         cm[:, :, m] = np.add.reduceat(sh * (mid_id == m), cell_start, axis=1)
     diff = cm - cent[assign][None, :, :]                     # (P, n_cells, n_mid)
     d2 = (diff * diff).sum(axis=2)                           # (P, n_cells)
-    cvol = vol[cell_start]                                   # (n_cells,) cell volume
+    cvol = vol[cell_start]                                   # (n_cells,) profile volume
     return (d2 * cvol[None, :]).sum(axis=1) / (float(total_vol) or 1.0)
 
 
@@ -1335,9 +1335,9 @@ def make_fused_eval(problem, *, use_numba=False, verify=True, rng=None):
     _k_nm = int(p.n_mids)
 
     _k_gvc = float(getattr(p, "global_vamp_cap", np.inf))
-    # 19gu [decode-cap]: the kernel now water-fills each cell before accumulating, so it decodes
+    # 19gu [decode-cap]: the kernel now water-fills each profile before accumulating, so it decodes
     # the SAME capped shares `_numpy_eval` does. `buf_len` sizes the per-candidate scratch to the
-    # widest cell — passed in rather than derived inside, so the kernel stays allocation-free
+    # widest profile — passed in rather than derived inside, so the kernel stays allocation-free
     # except for that one array and numba can type it.
     _k_dc = bool(_DECODE_CAP)
     _k_bo = float(_DC_BACKOFF)
@@ -1367,7 +1367,7 @@ def make_fused_eval(problem, *, use_numba=False, verify=True, rng=None):
         # 19gu: this gate now covers the CAPPED decode on both sides, which is exactly what it is
         # for — the numpy path and the kernel must decode the same object, and the water-fill is
         # the newest way they could stop doing so. The sample is random logits, so it exercises
-        # over-cap cells: with a 0.97 cap and ~10 rows a cell, some rows land over it.
+        # over-cap profiles: with a 0.97 cap and ~10 rows a profile, some rows land over it.
         return _numba_eval, {"backend": "numba", "verified": True,
                              "decode_cap": bool(_DECODE_CAP)}
     return _numba_eval, {"backend": "numba", "verified": False}
@@ -1405,7 +1405,7 @@ def _shares_to_logits(shares, eps=1e-6, hard_zero=False, cell_start=None,
         return _out
     _z = (_sh <= 0.0)
     if cell_start is not None and cell_len is not None and _z.any():
-        # never empty a cell: that is the only input that turns the stable softmax into nan
+        # never empty a profile: that is the only input that turns the stable softmax into nan
         _cs = np.asarray(cell_start, np.intp)
         _cl = np.asarray(cell_len, np.intp)
         _live = np.add.reduceat((~_z).astype(np.int64), _cs) if _cs.size else np.zeros(0, np.int64)
@@ -1462,7 +1462,7 @@ def _mutate(logits, rate, strength, cell_start, cell_len, rng, cell_w=None):
 
 
 # 19bp: MUTATION WITHOUT THE WASTE. `_mutate` above draws one Gaussian per ROW and discards every
-# one whose cell was not selected — at a 1% cell rate that is ~99% waste, and at 35 children over
+# one whose profile was not selected — at a 1% profile rate that is ~99% waste, and at 35 children over
 # 245,409 rows it is 8.6 MILLION discarded draws per generation, ~170 ms of the ~300 ms [gen-cost]
 # attributes to `genetic` (2026-08-23).
 #
@@ -1478,8 +1478,8 @@ def _mutate(logits, rate, strength, cell_start, cell_len, rng, cell_w=None):
 #   2. `_mutate` is UNTOUCHED and ROUTING_MUT_FAST=0 runs it on the old shared generator, so the
 #      previous answer is one env var away for comparison.
 #
-# The SHAPE of the perturbation is identical: the same per-cell selection at the same probability,
-# the same Gaussian scale, applied to the same whole-cell segments.
+# The SHAPE of the perturbation is identical: the same per-profile selection at the same probability,
+# the same Gaussian scale, applied to the same whole-profile segments.
 def _mutate_fast(logits, rate, strength, cell_start, cell_len, rng, cell_w=None):
     """`_mutate`'s twin, drawing Gaussians only for the rows it perturbs.
 
@@ -1545,7 +1545,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     total_vol = _cell_volume_total(p)
 
     log = log_fn or (lambda *_a, **_k: None)
-    log(f"[fullmatrix-ga] build={__build__} R={R} cells={p.n_cells} mids={p.n_mids}")
+    log(f"[fullmatrix-ga] build={__build__} R={R} profiles={p.n_cells} mids={p.n_mids}")
 
     # Stage-4 fused evaluator (numpy default; opt-in verify-gated numba kernel).
     eval_pop, _eval_info = make_fused_eval(p, use_numba=numba)
@@ -1570,15 +1570,15 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # per-generation M5 band breach is ADDED here from the caller's projector. It maps
     # sorted kept-row shares -> full opt-grain shares internally. This is the faithful
     # replacement for the 30-day linear proxy (matches the tilt engine's band scoring).
-    # COMPRESSIBILITY REGULARIZER (λ_compress ≥ 0). Rewards cells COLLAPSING ONTO A SHARED CODEBOOK of
+    # COMPRESSIBILITY REGULARIZER (λ_compress ≥ 0). Rewards profiles COLLAPSING ONTO A SHARED CODEBOOK of
     # shapes so the split compresses into few deployable configs. We LEARN a codebook of ≈`compress_pools`
-    # centroid shapes (volume-weighted k-means over the ELITE's per-vampMid cell shapes — the same KIND of
+    # centroid shapes (volume-weighted k-means over the ELITE's per-vampMid profile shapes — the same KIND of
     # clustering tab-3 compression uses — refreshed every `compress_refresh` gens as the elite improves) and
     # subtract from VWSR the volume-weighted VQ distortion of each candidate against that codebook
-    # (‖cell_shape − nearest-assigned centroid‖²). This is NOT a 'fewer-gateways' reward: two cells with the
-    # SAME shape (however spread across mids) cost 0; a cell that routes DIFFERENTLY from its centroid pays.
+    # (‖cell_shape − nearest-assigned centroid‖²). This is NOT a 'fewer-gateways' reward: two profiles with the
+    # SAME shape (however spread across mids) cost 0; a profile that routes DIFFERENTLY from its centroid pays.
     # Scored on DELIVERED shares (post blocked-caps + eligibility via `deliver_fn`) so it rewards what
-    # actually ships — a gateway a cell can't use (Country / paymentMethodProvider capability) never enters
+    # actually ships — a gateway a profile can't use (Country / paymentMethodProvider capability) never enters
     # its delivered shape. Distortion is the Numba-fused kernel (verify-gated); the codebook refit is
     # numpy/sklearn. λ=0 ⇒ today's behaviour (regularizer OFF, no per-generation cost).
     _compress_on = float(compress_lambda or 0.0) > 0.0
@@ -1608,7 +1608,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
 
     if _compress_on:
         _nmid = int(p.n_mids)
-        _cvol = np.asarray(p.vol[p.cell_start], float)            # (n_cells,) cell volume
+        _cvol = np.asarray(p.vol[p.cell_start], float)            # (n_cells,) profile volume
         _dist_fn, _dist_backend = make_distortion(p, use_numba=numba)
 
         def _refresh_codebook(logits_row):
@@ -1756,7 +1756,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     f"decode holds 0, and it is BIT-IDENTICAL to the reference water-fill applied "
                     f"to the uncapped decode (int64 bit-pattern comparison on "
                     f"1x{_dc_got.shape[1]:,}, stricter than array_equal). Total share moved "
-                    f"{_dc_moved:.4g}; worst cell sum error {_dc_sums:.2e} (each cell must still "
+                    f"{_dc_moved:.4g}; worst profile sum error {_dc_sums:.2e} (each profile must still "
                     "sum to 1 — the water-fill moves share between rows, it never creates or "
                     "destroys any).")
             else:
@@ -1764,7 +1764,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     f"{_dc_over_after:,} row(s) are STILL above the cap after the capped decode"
                     + ("" if _dc_same else ", and the capped decode is NOT bit-identical to the "
                                            "reference water-fill")
-                    + f" (worst cell sum error {_dc_sums:.2e}). The engineering key below is the "
+                    + f" (worst profile sum error {_dc_sums:.2e}). The engineering key below is the "
                       "backstop and will show it, but do NOT trust this run's split. Set "
                       "ROUTING_DECODE_CAP=0 and re-run.")
         except Exception as _dce:  # noqa: BLE001
@@ -1794,7 +1794,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             f"distortion backend={_dist_backend}, delivery-dedupe={'ON' if _have_full else 'off'}, "
             f"scored on DELIVERED shares "
             f"({'eligibility-aware' if (_have_full or callable(deliver_fn)) else 'raw — no deliver_fn'}) "
-            "— VWSR −= λ·volume-weighted VQ distortion; pushes cells to route ALIKE so the split "
+            "— VWSR −= λ·volume-weighted VQ distortion; pushes profiles to route ALIKE so the split "
             "compresses into fewer configs; trades a little conversion.")
     # ── [decode-loss] 19cm: WHAT THE SEED LOSES ON THE WAY INTO THE GENOME ───────────────────
     # The [never-worse] block has named this mechanism for several builds without ever pricing it.
@@ -1842,12 +1842,12 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 f"RESURRECTED ROW, against a clip floor of 1e-06 \u2014 so each zero came back at "
                 "the floor and was then normalised. That is the encoding, not the search.")
         # THE CLIFF POPULATION, AND WHY IT IS NOT PRINTED AS A NUMBER ON THIS PIPELINE.
-        # The count wants "rows that are the ONLY VAMP-positive gateway in their cell", and the
+        # The count wants "rows that are the ONLY VAMP-positive gateway in their profile", and the
         # only VAMP-positive signal reachable from here is `p.risk`. But the run's risk-seeding
-        # step gives every gateway-cell with no VAMP data the weighted-average rate rather than 0
+        # step gives every gateway-profile with no VAMP data the weighted-average rate rather than 0
         # ("so 0-VAMP gateways aren't treated as risk-free"), which makes `p.risk` DENSE and the
         # count structurally zero whatever the truth is. The 2026-08-26 20:28 run printed that
-        # zero beside a VAMP-POSITIVE SIBLING block reporting 13,425 sole-VAMP cells for braintree
+        # zero beside a VAMP-POSITIVE SIBLING block reporting 13,425 sole-VAMP profiles for braintree
         # usa alone. A measured zero and an unmeasurable one must not print alike (19ce D4, 19cj).
         if _dl_nres:
             _dl_pos = (np.asarray(p.risk, float) > 0.0)
@@ -1855,8 +1855,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             if _dl_dense > 0.99:
                 log(f"[fullmatrix-ga]    THE CLIFF COUNT IS NOT AVAILABLE FROM HERE and is "
                     f"therefore NOT PRINTED: {_dl_dense:.1%} of rows carry a positive VAMP rate, "
-                    "because risk-seeding gives gateway-cells with no VAMP data the weighted-"
-                    "average rate rather than 0. On that vector no cell can have exactly one "
+                    "because risk-seeding gives gateway-profiles with no VAMP data the weighted-"
+                    "average rate rather than 0. On that vector no profile can have exactly one "
                     "VAMP-positive gateway, so any count computed here would be a structural "
                     "zero and would read as 'the cliff is not the mechanism'. It is measured "
                     "properly, on the projector scaffold's vcpos, by the VAMP-POSITIVE SIBLING "
@@ -1866,8 +1866,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                                           np.asarray(p.cell_start, np.intp))
                 _dl_sole = np.repeat(_dl_cnt <= 1, np.asarray(p.cell_len, np.intp)) & _dl_pos
                 log(f"[fullmatrix-ga]    OF THOSE, {int((_dl_res & _dl_sole).sum()):,} sit in a "
-                    "cell where they are the ONLY VAMP-positive gateway. vshare self-normalises, "
-                    "so there a resurrected share of ANY size returns the WHOLE cell's VAMP "
+                    "profile where they are the ONLY VAMP-positive gateway. vshare self-normalises, "
+                    "so there a resurrected share of ANY size returns the WHOLE profile's VAMP "
                     "\u2014 which is why a smaller clip than 1e-6 fixes nothing: the cliff is "
                     "scale-invariant. (APPROXIMATE: counted on the GA's per-row risk, not the "
                     "projector scaffold's vcpos, so it is NOT the same number as the "
@@ -1882,9 +1882,9 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 "unanchored exploration children do not \u2014 the search space is not narrowed.")
             if int(_hz_info.get("rows_unmasked_to_avoid_nan", 0)):
                 log(f"[fullmatrix-ga]    \u26a0 {int(_hz_info['rows_unmasked_to_avoid_nan']):,} "
-                    f"row(s) in {int(_hz_info.get('cells_all_zero', 0)):,} ALL-ZERO cell(s) were "
-                    "left un-masked: masking every row of a cell makes the stable softmax nan. A "
-                    "cell of a valid seed sums to 1, so this should not happen \u2014 report it.")
+                    f"row(s) in {int(_hz_info.get('cells_all_zero', 0)):,} ALL-ZERO profile(s) were "
+                    "left un-masked: masking every row of a profile makes the stable softmax nan. A "
+                    "profile of a valid seed sums to 1, so this should not happen \u2014 report it.")
         else:
             log("[fullmatrix-ga]    ROUTING_SEED_ZEROS=0 (default): the seed is encoded the old "
                 "way and the gap above is being PAID this run. Setting it to 1 encodes exact "
@@ -1969,7 +1969,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
 
     # 19ed: WHAT IS IN `other`? Split ONE candidate's engineering violation into the four
     # terms `_violation` sums, in the same order, plus the two facts in PLAIN UNITS that a
-    # relative sum hides: the worst gateway's share of its cell against the max-share cap,
+    # relative sum hides: the worst gateway's share of its profile against the max-share cap,
     # and the portfolio VAMP rate against the global cap.
     _dec = {"share": [], "glob": [], "midcap": [], "band": [], "resid": [],
             "worst": [], "rows_over": [], "grate": [], "n": 0}
@@ -2028,7 +2028,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             log(f"[ga-census] the INCUMBENT's engineering violation {best_other:.6g} = max-share {_ip['share']:.6g} "
                 f"+ global-VAMP-cap {_ip['glob']:.6g} + per-MID-ceiling {_ip['midcap']:.6g} + kernel-band {_ip['band']:.6g} "
                 f"(Σparts {_isum:.6g}, residual vs the kernel {abs(_isum - float(best_other)):.3g}). "
-                f"IN PLAIN UNITS: worst gateway holds {100.0 * _ix['worst'] * _ix['cap']:.4f}% of its cell against a "
+                f"IN PLAIN UNITS: worst gateway holds {100.0 * _ix['worst'] * _ix['cap']:.4f}% of its profile against a "
                 f"{100.0 * _ix['cap']:.1f}% cap, {_ix['rows_over']:,} row(s) above it; portfolio VAMP rate "
                 f"{100.0 * _ix['grate']:.3f}% against a {100.0 * _ix['gvc']:.2f}% cap.")
         except Exception as _dce:                        # noqa: BLE001
@@ -2061,43 +2061,43 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     n_seeds = max(1, int(n_seeds))
     restarts = max(1, int(restarts))
     _mw_warned = False          # one-shot flag: never spam a per-generation failure 160 times
-    # Per-cell mutation probability, tunable WITHOUT a build (it never was before — there is no UI
+    # Per-profile mutation probability, tunable WITHOUT a build (it never was before — there is no UI
     # input and tab2 does not pass mutation_rate). Default 0.01 = the value the old three-term
     # expression always produced, so the default run is unchanged.
     _MUT_RATE = float(_os_gf.environ.get("ROUTING_MUT_RATE", "") or 0.01)
     _eff_cells = _MUT_RATE * int(p.n_cells)
-    log(f"[fullmatrix-ga] mutation rate {min(float(mutation_rate), _MUT_RATE):.4f} per cell over "
-        f"{int(p.n_cells):,} cells ⇒ ~{min(float(mutation_rate), _MUT_RATE) * int(p.n_cells):,.0f} "
-        f"cell(s) perturbed per exploration child (~"
+    log(f"[fullmatrix-ga] mutation rate {min(float(mutation_rate), _MUT_RATE):.4f} per profile over "
+        f"{int(p.n_cells):,} profiles ⇒ ~{min(float(mutation_rate), _MUT_RATE) * int(p.n_cells):,.0f} "
+        f"profile(s) perturbed per exploration child (~"
         f"{min(float(mutation_rate), _MUT_RATE) * int(p.n_cells) * 0.25:,.0f} per refine child, "
         f"which uses a quarter rate). Ceiling mutation_rate={float(mutation_rate):g} "
         f"{'BINDS' if float(mutation_rate) < _MUT_RATE else 'does not bind'}. "
         "ROUTING_MUT_RATE overrides.")
     # Say it when the 2026-08-19ac removal actually changes this run. The deleted term was
-    # max(0.01, 60/n_cells), which bound only below 6,000 cells — so at the live grain nothing
+    # max(0.01, 60/n_cells), which bound only below 6,000 profiles — so at the live grain nothing
     # moved, but at a coarser grain it did, and a silent halving of the mutation is exactly the
     # kind of thing that gets mistaken for the engine getting worse.
     _old_rate = min(float(mutation_rate), max(0.01, 60.0 / max(int(p.n_cells), 1)))
     if abs(_old_rate - min(float(mutation_rate), _MUT_RATE)) > 1e-12:
         log(f"[fullmatrix-ga] ⚠ MUTATION RATE CHANGED BY BUILD 2026-08-19ac AT THIS GRAIN: the "
             f"deleted `max(0.01, 60/n_cells)` term would have given {_old_rate:.5f} "
-            f"(~{_old_rate * int(p.n_cells):,.0f} cells) on {int(p.n_cells):,} cells, vs "
+            f"(~{_old_rate * int(p.n_cells):,.0f} profiles) on {int(p.n_cells):,} profiles, vs "
             f"{min(float(mutation_rate), _MUT_RATE):.5f} "
-            f"(~{min(float(mutation_rate), _MUT_RATE) * int(p.n_cells):,.0f} cells) now. That term "
-            "bound only below 6,000 cells; the live rpgt×currency×bank grain (23,791) is "
+            f"(~{min(float(mutation_rate), _MUT_RATE) * int(p.n_cells):,.0f} profiles) now. That term "
+            "bound only below 6,000 profiles; the live rpgt×currency×bank grain (23,791) is "
             "unaffected, but this run is coarser. Set ROUTING_MUT_RATE="
             f"{_old_rate:.5f} to reproduce the pre-19ac search exactly.")
     if mut_weight_fn is not None:
-        log("[fullmatrix-ga] mutation is BREACH-TARGETED: cells feeding a still-breached band get "
+        log("[fullmatrix-ga] mutation is BREACH-TARGETED: profiles feeding a still-breached band get "
             "a boosted selection probability, so the fixed budget lands on the MIDs that are "
-            "actually short instead of being spread over every cell. See [mut-target] for the "
-            "boost, the cell counts and which MIDs are aimed at.")
+            "actually short instead of being spread over every profile. See [mut-target] for the "
+            "boost, the profile counts and which MIDs are aimed at.")
     else:
-        log("[fullmatrix-ga] mutation is UNIFORM over cells (no mut_weight_fn) — every cell is "
+        log("[fullmatrix-ga] mutation is UNIFORM over profiles (no mut_weight_fn) — every profile is "
             "equally likely to be perturbed, including the ones feeding already-compliant MIDs.")
     log("[fullmatrix-ga] mutation draws: "
         + ("SPARSE + PER-CHILD STREAMS (19bp) — Gaussians are drawn only for the rows actually "
-           "perturbed (was one per row, ~99% discarded at a 1% cell rate: 8.6M draws per "
+           "perturbed (was one per row, ~99% discarded at a 1% profile rate: 8.6M draws per "
            "generation), and each child has its own deterministic stream keyed on "
            "(seed, seed-index, restart, generation, child). THIS IS A DIFFERENT RANDOM SAMPLE "
            "than any run before 19bp, so success rate and the breach will differ — that is the change, "
@@ -2242,32 +2242,32 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 elite_band = band[order[:_el]].copy()
                 children = np.empty((_pn - _el, R))
                 pool = order[: max(_el, _pn // 2)]
-                # EFFECTIVE per-cell mutation probability. Until 2026-08-19ac this read
+                # EFFECTIVE per-profile mutation probability. Until 2026-08-19ac this read
                 #     min(mutation_rate, max(0.01, 60.0 / max(p.n_cells, 1)))
-                # which at 23,791 cells always reduced to exactly 0.01, with BOTH other terms
-                # inert: 60/23,791 = 0.0025 sat below the 0.01 floor so the "aim for ~60 cells"
+                # which at 23,791 profiles always reduced to exactly 0.01, with BOTH other terms
+                # inert: 60/23,791 = 0.0025 sat below the 0.01 floor so the "aim for ~60 profiles"
                 # intent never applied (it was written for a much smaller problem; once n_cells
                 # passed ~6,000 the floor took over and quadrupled the count to ~238), and
                 # mutation_rate=0.3 sat above the floor so `min` never picked it — and tab2 never
                 # passed it anyway, so the signature default was the only value that ever existed.
                 # Now ONE number. UNCHANGED IN VALUE, AND THEREFORE BIT-IDENTICAL TO 19ab,
                 # ONLY WHEN n_cells >= 6,000 — my first draft of this comment claimed bit-identity
-                # unconditionally and the end-to-end test caught it on a 40-cell fixture.
+                # unconditionally and the end-to-end test caught it on a 40-profile fixture.
                 # 60/n > 0.01 exactly when n < 6,000, so BELOW that the old term really did bind:
-                #     n_cells    old rate   new rate   cells perturbed
+                #     n_cells    old rate   new rate   profiles perturbed
                 #         500     0.12000    0.01000      60 ->    5
                 #       2,974     0.02017    0.01000      60 ->   30
                 #       6,000     0.01000    0.01000      60 ->   60   (and identical above)
                 #      23,791     0.01000    0.01000     238 ->  238
-                # The LIVE grain (rpgt x currency x bank) is 23,791 cells, so the shipped search is
+                # The LIVE grain (rpgt x currency x bank) is 23,791 profiles, so the shipped search is
                 # unchanged. But the coarser "Bank x Currency" grain is roughly 23,791/8 RPGTs
-                # ~= 2,974 cells, where this HALVES the mutation. The banner below says so on any
+                # ~= 2,974 profiles, where this HALVES the mutation. The banner below says so on any
                 # run where it bites, rather than leaving it to be discovered.
                 # `mutation_rate` is kept as a real CEILING so the signature stops being a lie.
                 _base_rate = min(float(mutation_rate), _MUT_RATE)
                 # BREACH-TARGETED MUTATION (2026-08-19ab). `mut_weight_fn()` returns an
                 # (n_cells,) probability multiplier reflecting which bands are STILL breached, so
-                # the fixed mutation budget concentrates on cells that feed them. Called ONCE per
+                # the fixed mutation budget concentrates on profiles that feed them. Called ONCE per
                 # generation (it only reads per-spec penalties the band hook already computed —
                 # no extra projection). None, or any failure, means uniform mutation: the
                 # pre-19ab behaviour, bit-identical including the RNG stream.
@@ -2421,11 +2421,11 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         log("")
         log("[decode-cap] the max-share cap is now a PROPERTY OF THE DECODE, not a repair after "
             "it. Every path that turns the logit genome into shares — the numpy reference, the "
-            "fused numpy path and the numba eval kernel — water-fills each cell as it decodes, "
+            "fused numpy path and the numba eval kernel — water-fills each profile as it decodes, "
             "so an over-cap split is not something a candidate can express. The search does not "
             "reject or correct them; they do not exist.")
         log("[decode-cap]    WHAT THIS REPLACED: [ms-repair], which decoded the whole population, "
-            "water-filled the over-cap cells and re-encoded the result through log() back into "
+            "water-filled the over-cap profiles and re-encoded the result through log() back into "
             "logits, which the evaluator then decoded AGAIN. 98.4% of candidates needed it on the "
             "2026-09-01 22:09 run — a softmax cannot express an upper bound — so it cost 91.3s, "
             "20% of that search, and three decodes of the population per generation instead of "
@@ -2433,7 +2433,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         log("[decode-cap]    THE RULE IS UNCHANGED and is still delivery's: the excess goes to "
             "each sibling in proportion to (target - share), the room it has left before IT would "
             "hit the cap (impact_calcs._cap_rows). Single pass, because Σ(target - share) over a "
-            "cell's present rows is (present_rows × target) - 1 + excess.")
+            "profile's present rows is (present_rows × target) - 1 + excess.")
         log("[decode-cap]    THE ENGINEERING KEY should now read 0.0000 for every candidate, "
             "because none can violate. If `viol` above is ever non-zero on the max-share term, "
             "the water-fill did not hold and that key is what says so.")
@@ -2507,7 +2507,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 f"{_md['share']:.4g} \u00b7 global-VAMP-cap {_md['glob']:.4g} \u00b7 "
                 f"per-MID-ceiling {_md['midcap']:.4g} \u00b7 kernel-band {_md['band']:.4g}.")
             log(f"[ga-census]       IN PLAIN UNITS: the worst gateway holds "
-                f"{100.0 * _md['worst'] * _cap:.4f}% of its cell against a {100.0 * _cap:.1f}% "
+                f"{100.0 * _md['worst'] * _cap:.4f}% of its profile against a {100.0 * _cap:.1f}% "
                 f"cap, with {_ro:,.0f} row(s) above the cap; portfolio VAMP rate "
                 f"{100.0 * _md['grate']:.3f}% against a {100.0 * _gvc:.2f}% cap.")
             _wr = float(np.max(_dec["resid"])) if _dec["resid"] else 0.0
@@ -2691,7 +2691,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
 
 def _cell_volume_total(p: "FullMatrixProblem"):
     """Total volume across cells (each cell's volume counted once)."""
-    # vol is repeated per row; take the first row of each cell segment.
+    # vol is repeated per row; take the first row of each profile segment.
     return float(p.vol[p.cell_start].sum())
 
 

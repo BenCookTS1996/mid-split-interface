@@ -109,7 +109,7 @@ class ThompsonEngine(SoftmaxEngine):
         # No-data gateways: weak Beta centred on the pooled RAW rate (prior_rate =
         # pooled successes/attempts over the scope) — NOT the κ-shrunk success_rate,
         # which would re-import the very shrinkage Thompson deliberately avoids. Only
-        # used where a gateway has genuinely no per-cell evidence.
+        # used where a gateway has genuinely no per-profile evidence.
         if not has_data.all():
             prior_rate_source = p.prior_rate if p.prior_rate is not None else p.success_rates
             pooled_rate = np.clip(np.asarray(prior_rate_source, float), 1e-6, 1.0 - 1e-6)

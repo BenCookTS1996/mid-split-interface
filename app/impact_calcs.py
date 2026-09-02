@@ -240,8 +240,8 @@ def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mid
     # non-prorata fallback has no fcp data, so the movable slice is the go-live fraction only.
     t0["_move"] = np.where(t0["_prop_sum"] > 0, t0["f"], 0.0)
     # VAMP follows the volume: the moved VAMP pool is redistributed by the SAME post-volume
-    # share as the moved transactions (prop_eff), so grown MIDs pick up VAMP at the cell's
-    # blended rate and Σ VAMP_Post == Σ VAMP_Pre (the cell's VAMP total is conserved).
+    # share as the moved transactions (prop_eff), so grown MIDs pick up VAMP at the profile's
+    # blended rate and Σ VAMP_Post == Σ VAMP_Pre (the profile's VAMP total is conserved).
     t0["_vprop"] = t0["prop_eff"]
     t0["_vpsum"] = t0.groupby(["Currency", "BIN", "period"])["_vprop"].transform("sum")
     t0["_vshare"] = np.where(t0["_vpsum"] > 0, t0["_vprop"] / t0["_vpsum"], 0.0)
@@ -349,7 +349,7 @@ def _vamp_post_core(pp, prop_items, excluded_mids=frozenset(), kill_eff=(), mont
     rpgt_col = "RPGT" if "RPGT" in pp.columns else "rpgt"
     pp["RPGT"] = _clean_col(pp[rpgt_col], strip=False)
     pp["pro_rata"] = pd.to_numeric(pp.get("pro_rata", 0.0), errors="coerce").fillna(0.0)
-    # fcp1_frac: fraction of the cell the pipeline actually reroutes (fcpNumber==1 /
+    # fcp1_frac: fraction of the profile the pipeline actually reroutes (fcpNumber==1 /
     # attempt==1 for restricted RPGTs). Missing (old export) -> 1.0 = prior behaviour.
     pp["fcp1_frac"] = pd.to_numeric(pp.get("fcp1_frac", 1.0), errors="coerce").fillna(1.0).clip(0.0, 1.0)
 
@@ -385,7 +385,7 @@ def _vamp_post_core(pp, prop_items, excluded_mids=frozenset(), kill_eff=(), mont
         t0 = pp[pp["t"] == 0].merge(prop, on=["Currency", "BIN", "vampMid"], how="left")
     t0["prop_raw"] = t0["prop_raw"].fillna(0.0)
     # vampMids switched off via gateway_volume_overrides are excluded from BOTH the
-    # pre-go-live retention and the proposed split; the cell total is unchanged so
+    # pre-go-live retention and the proposed split; the profile total is unchanged so
     # their volume is redistributed to the active gateways (transactions conserved).
     # The removal is gated by each switch-off's effective_date (kill_eff): a
     # switched-off vampMid keeps its volume until its effective month, then drops
@@ -394,24 +394,24 @@ def _vamp_post_core(pp, prop_items, excluded_mids=frozenset(), kill_eff=(), mont
     _apply_keep(t0, excluded_mids, kill_eff, month_0)
     t0["prop_raw"] = t0["prop_raw"] * t0["_keep"]
     t0["_active_vi"] = t0["VI_Txn_Count"] * t0["_keep"]
-    # Group the cell keys ONCE and reuse for all three per-cell sums (the 5-col key is
+    # Group the profile keys ONCE and reuse for all three per-profile sums (the 5-col key is
     # otherwise re-factorised per groupby). Bit-identical to grouping separately.
     _g = t0.groupby(grp)
     t0["cell_tot"] = _g["VI_Txn_Count"].transform("sum")
     t0["_active_tot"] = _g["_active_vi"].transform("sum")
     t0["base_share"] = np.where(t0["_active_tot"] > 0, t0["_active_vi"] / t0["_active_tot"], 0.0)
-    # Renormalise proposed shares over the gateways present in each cell so the
-    # redistribution conserves the cell's transactions; if no proposed shares map
-    # to this cell, fall back to the current (baseline) split.
+    # Renormalise proposed shares over the gateways present in each profile so the
+    # redistribution conserves the profile's transactions; if no proposed shares map
+    # to this profile, fall back to the current (baseline) split.
     t0["prop_sum"] = _g["prop_raw"].transform("sum")
     t0["prop_share"] = np.where(t0["prop_sum"] > 0, t0["prop_raw"] / t0["prop_sum"], t0["base_share"])
     # Movable fraction = go-live pro-rata × fcp1 cohort fraction: only that slice of the
-    # cell takes the proposed share; the rest (pre-go-live + FCP2+/retries) stays baseline.
+    # profile takes the proposed share; the rest (pre-go-live + FCP2+/retries) stays baseline.
     # PER-MID movable fraction (fcp1_frac is per-vampMid now): move_mid = pro_rata × fcp1_frac.
     t0["_move"] = np.where(t0["prop_sum"] > 0, t0["pro_rata"] * t0["fcp1_frac"], 0.0)
     # VAMP follows the volume: the moved VAMP pool is redistributed by the SAME post-volume
     # share as the moved transactions (prop_raw, renormalised below to prop_share), so grown
-    # MIDs pick up VAMP at the cell's blended rate and the cell's VAMP total is conserved.
+    # MIDs pick up VAMP at the profile's blended rate and the profile's VAMP total is conserved.
     t0["_vprop"] = t0["prop_raw"]
     t0["_vpsum"] = t0.groupby(grp)["_vprop"].transform("sum")
     t0["_vshare"] = np.where(t0["_vpsum"] > 0, t0["_vprop"] / t0["_vpsum"], 0.0)
@@ -488,10 +488,10 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
         except Exception:  # noqa: BLE001
             pass
 
-        # ---- TARGETED CELL TRACE: full step-by-step for specific cell(s), written to
+        # ---- TARGETED PROFILE TRACE: full step-by-step for specific cell(s), written to
         # _proj_diag_trace.txt. Configure via env ROUTING_PROJ_TRACE = "currency|bin|rpgt"
-        # (multiple separated by ';'); defaults to the WoodForest addon-sale cell under review.
-        # Shows EVERY vampMid in the cell so you can see WoodForest's share vs the others and how
+        # (multiple separated by ';'); defaults to the WoodForest addon-sale profile under review.
+        # Shows EVERY vampMid in the profile so you can see WoodForest's share vs the others and how
         # post_txn = cell_tot·(base_share·(1−move) + moved_tot·prop_share) is formed.
         try:
             _spec = _os.environ.get("ROUTING_PROJ_TRACE", "usd|400022|addon sale")
@@ -528,14 +528,14 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
         except Exception:  # noqa: BLE001
             pass
 
-        # ---- AUTO-SAMPLE OF INCREASING PROFILES: find the cells where a chosen gateway's
+        # ---- AUTO-SAMPLE OF INCREASING CELLS: find the profiles where a chosen gateway's
         # addon-sale volume INCREASES in this projection (post VI > base VI) and dump each so the
         # tab-3-vs-tab-5 gap can be localised without hand-picking a BIN. For every selected
-        # (Currency, BIN) cell it writes (a) per-period base-vs-post VI — directly comparable to
-        # tab 5's monthly BIN row — and (b) the sub-cell decomposition showing WHERE the increase
+        # (Currency, BIN) profile it writes (a) per-period base-vs-post VI — directly comparable to
+        # tab 5's monthly BIN row — and (b) the profile decomposition showing WHERE the increase
         # comes from and whether each row is a back-fill injection (bf=1). Env-tunable:
         # ROUTING_PROJ_SAMPLE_MID (substring, default 'woodforest'),
-        # ROUTING_PROJ_SAMPLE_RPGT (default 'addon sale'), ROUTING_PROJ_SAMPLE_N (default 8 cells).
+        # ROUTING_PROJ_SAMPLE_RPGT (default 'addon sale'), ROUTING_PROJ_SAMPLE_N (default 8 profiles).
         # Written to _proj_diag_sample.txt.
         try:
             _smid = _os.environ.get("ROUTING_PROJ_SAMPLE_MID", "woodforest").strip().lower()
@@ -581,12 +581,12 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
         except Exception:  # noqa: BLE001
             pass
 
-        # ---- TAB3 vs TAB5 (routed) PER-CELL COMPARISON + ROOT-CAUSE SECTIONS. Auto-locates the
+        # ---- TAB3 vs TAB5 (routed) PER-PROFILE COMPARISON + ROOT-CAUSE SECTIONS. Auto-locates the
         # routed _validate export, the exported rules tab 5 read (PoolTargeted_Rules_*.xlsx), the
         # mapping_pct_export, the fid→vampMid map and the export manifest — all relative to pp_path.
         # Sections: (0) config/manifest echo, (A) per-vampMid Δ, (1) INPUT-SPLIT diff tab3-enforced
-        # vs exported-rules, (2) full-cell side-by-side, (3) held/moved both sides, (4) finer-grain
-        # renewal×fcp×attempt for the focus cell, (5) fcp1_frac provenance. Env: ROUTING_PROJ_TAB5CMP=0
+        # vs exported-rules, (2) full-profile side-by-side, (3) held/moved both sides, (4) finer-grain
+        # renewal×fcp×attempt for the focus profile, (5) fcp1_frac provenance. Env: ROUTING_PROJ_TAB5CMP=0
         # to skip; ROUTING_PROJ_TAB5_EXPORT / _RULES_DIR / _BASIS overrides; ROUTING_PROJ_CMP_MID
         # (default 'braintree'). Writes _proj_diag_tab5_compare.txt. Heavy (reads 3M+ rows + 4 xlsx);
         # never raises.
@@ -746,7 +746,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                         except Exception as _e1:  # noqa: BLE001
                             _cl.append(f"\n=== (1) INPUT-SPLIT DIFF: rules read failed ({_e1}) ===")
                     if _rules_share is not None:
-                        # tab3 enforced share per cell from prop_items (7-tuple), normalised to % per cell.
+                        # tab3 enforced share per profile from prop_items (7-tuple), normalised to % per cell.
                         _pi = list(prop_items)
                         if _pi and len(_pi[0]) == 7:
                             _e3 = pd.DataFrame(_pi, columns=["Currency", "BIN", "RPGT", "pmp", "Country", "vampMid", "prop_raw"])
@@ -791,7 +791,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                     # focus cell = the focus MID's single biggest-|Δ| OUTPUT cell (for sections 2-5).
                     _fcell = None
                     _fc = _cmp[_cmp["_vml"].str.contains(_cmid, na=False)]
-                    # Prefer a cell where the focus MID has a real baseline (base>0) so the finer-grain
+                    # Prefer a profile where the focus MID has a real baseline (base>0) so the finer-grain
                     # / provenance sections (4/5) actually have mapping rows for it.
                     _fcb = _fc[_fc["base"] > 0]
                     _pick = _fcb if len(_fcb) else _fc
@@ -799,7 +799,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                         _fr = _pick.reindex(_pick["d"].abs().sort_values(ascending=False).index).iloc[0]
                         _fcell = (_fr["_cur"], _fr["_bn"], _fr["_rp"], _fr["_pm"], _fr["_ct"])
 
-                    # ---- (2) FULL-CELL side-by-side (ALL gateways) for the top-divergent cells. ----
+                    # ---- (2) FULL-PROFILE side-by-side (ALL gateways) for the top-divergent cells. ----
                     _cl.append("")
                     _cl.append("=== (2) FULL-CELL side-by-side (all gateways) — top 6 divergent cells (P1) ===")
                     _c1 = _cmp[_cmp["period"] == (1 if 1 in _pers else _pers[0])]
@@ -836,7 +836,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                         # DECISIVE FIELDS: prop_share (the redistribution share the projection actually
                         # applies), prop_raw (the enforced share after merge), and the merge/coarse/bf
                         # flags. If prop_share≈0 while the exported rules give this MID ~X%, the enforced
-                        # share did NOT reach this sub-cell row (merge miss) — vs a genuine held-cohort
+                        # share did NOT reach this profile row (merge miss) — vs a genuine held-cohort
                         # model effect. coarse=1 => filled from the pmp/Country-agnostic fallback (not the
                         # exact rule); bf=1 => injected back-fill row.
                         _agg3 = dict(held3=("_held3", "sum"), movein3=("_movein3", "sum"),
@@ -852,11 +852,11 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                             _agg3["bf"] = ("_bf_inj", "max")
                         _hm3 = _tf.groupby(_K, observed=True).agg(**_agg3).reset_index()
                         _hm = _hm3.merge(_g5, on=_K, how="left").fillna(0.0)
-                        # Attach the EXPORTED RULE % (tab 5's INPUT share for this MID/cell) beside
+                        # Attach the EXPORTED RULE % (tab 5's INPUT share for this MID/profile) beside
                         # tab 3's enforced prop_raw (tab 3's INPUT). THE decisive check: if praw ≈
                         # rules% but the OUTPUT still diverges, it's application (the two-cohort model);
                         # if praw ≠ rules%, the enforced split tab 3 projects differs from the rules
-                        # tab 5 ran (input problem) — for THIS exact cell, not an average.
+                        # tab 5 ran (input problem) — for THIS exact profile, not an average.
                         if _rules_share is not None:
                             _hm = _hm.merge(_rules_share, on=["_vml", "_rp", "_cur", "_bn", "_pm", "_ct"], how="left")
                         if "rules_pct" not in _hm.columns:
@@ -874,7 +874,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                                        f" | t5 {r['t5_pre']:>6,.0f}→{r['t5']:>6,.0f}(net{r['t5_net']:>+6,.0f})")
 
                     # ---- (4) FINER GRAIN (renewal × fcp × attempt) + (5) fcp1_frac provenance,
-                    # for the focus cell, straight from mapping_pct_export. ----
+                    # for the focus profile, straight from mapping_pct_export. ----
                     if (_fcell is not None and _os.path.exists(_map_path)
                             and _os.environ.get("ROUTING_PROJ_FINEGRAIN", "1") != "0"):
                         try:
@@ -940,7 +940,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
         L.append(f"prop_items={len(list(prop_items))}  enforced={enforced}  by_rpgt={by_rpgt}")
         L.append(f"t0 rows={len(t0):,}  distinct cells={len(_cells):,}")
         L.append("")
-        # prop_raw is on a PERCENT scale (0-100), so a healthy cell sums to ~100. The projection
+        # prop_raw is on a PERCENT scale (0-100), so a healthy profile sums to ~100. The projection
         # is renormalised to 100 (prop_sum≈100 everywhere post-fix); the interesting signal is how
         # far the sum was OFF 100 BEFORE renorm (_psum_pre) — that's the coarse-fill / _keep shift.
         _post = _cells["prop_sum"]; _posta = _post[_post > 1e-9]
@@ -983,7 +983,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
         # view for tab-3-vs-tab-5: post = held + moved-in. `reach` = the reroutable pool the MID
         # can draw from across its RECIPIENT cells (Σ cell_tot·moved_tot where prop_share>0); if a
         # MID's reach is far below what the pipeline gives it, it's a RECIPIENT-COVERAGE gap
-        # (present in too few / too small cells), NOT a share or arithmetic gap. ----
+        # (present in too few / too small profiles), NOT a share or arithmetic gap. ----
         try:
             _d = t0.copy()
             _mv = _d.get("_move", pd.Series(0.0, index=_d.index)).fillna(0.0)
@@ -1030,7 +1030,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
             L.append(f"(per-period pivot failed: {_e3})")
             L.append("")
         # ---- ENFORCED-PROP COVERAGE per vampMid (straight from prop_items) — how many distinct
-        # sub-cells the split routes each MID into, and its total share mass. A back-fill gateway
+        # profiles the split routes each MID into, and its total share mass. A back-fill gateway
         # under-covered HERE (vs the exported templates) is the recipient-coverage smoking gun. ----
         try:
             _pi = list(prop_items)
@@ -1083,13 +1083,13 @@ def _inject_backfill_rows(pp, prop, prop_name_map=None):
 
     Scoped to the enforced (7-tuple) path, which is the only one carrying per-sub-cell shares.
     """
-    # Presence is judged at the pmp/Country SUB-CELL grain (Currency, BIN, RPGT, pmp, Country),
-    # NOT the coarse cell — because the enforced table routes per sub-cell, and a MID present in
-    # ONE sub-cell but routed volume in ANOTHER (e.g. WoodForest has baseline only in
+    # Presence is judged at the pmp/Country PROFILE grain (Currency, BIN, RPGT, pmp, Country),
+    # NOT the coarse profile — because the enforced table routes per profile, and a MID present in
+    # ONE profile but routed volume in ANOTHER (e.g. WoodForest has baseline only in
     # non_gp_ap/non-usa but the template gives it 97% in non_gp_ap/usa) has no row there to
-    # receive it, so its routed sub-cell volume wrongly redistributes to the present MIDs.
-    # GUARD: only inject into (pmp, Country) sub-cells that actually EXIST in the baseline for
-    # the coarse cell — never invent a sub-cell from a pmp/Country label the baseline lacks (a
+    # receive it, so its routed profile volume wrongly redistributes to the present MIDs.
+    # GUARD: only inject into (pmp, Country) profiles that actually EXIST in the baseline for
+    # the coarse profile — never invent a profile from a pmp/Country label the baseline lacks (a
     # pure label mismatch is handled by the hierarchical coarse fallback downstream, not here),
     # which is what previously twinned MIDs across mismatched sub-cells.
     subk = ["Currency", "BIN", "_rpgtl", "_pmp", "_ctry"]
@@ -1101,10 +1101,10 @@ def _inject_backfill_rows(pp, prop, prop_name_map=None):
     # 2026-08-18h) made a MID with an AGED row but no t0 row read as "present": back-fill
     # skipped it, then the t0 merge found nothing and its enforced share was dropped and
     # renormalised onto the survivors. Measured on the Aug baseline: 3,170 enforced items
-    # (156.92 of 14,807 prop mass) vanished across 1,280 sub-cells, and in the worst cases
-    # the ENTIRE sub-cell's routing decision was discarded (ghost 1.0000, surviving 0.0000).
+    # (156.92 of 14,807 prop mass) vanished across 1,280 profiles, and in the worst cases
+    # the ENTIRE profile's routing decision was discarded (ghost 1.0000, surviving 0.0000).
     # `valid_sub` moves with it so we still never invent a (pmp, Country) the t0 baseline
-    # lacks — injecting into a t>0-only sub-cell would create a t0 cell with cell_tot = 0
+    # lacks — injecting into a t>0-only profile would create a t0 profile with cell_tot = 0
     # that contributes nothing but rows.
     _b0 = b[pd.to_numeric(b["t"], errors="coerce").fillna(0).astype(int) == 0]
     present = set(map(tuple, _b0[subk + ["_vml"]].drop_duplicates().to_numpy()))
@@ -1120,12 +1120,12 @@ def _inject_backfill_rows(pp, prop, prop_name_map=None):
     if prop_name_map:
         for _k, _v in prop_name_map.items():
             name_map.setdefault(_k, _v)
-    # Representative RPGT / go-live pro_rata / fcp1 per (sub-cell, period), lowest-t row.
+    # Representative RPGT / go-live pro_rata / fcp1 per (profile, period), lowest-t row.
     reps = (b.sort_values("t").drop_duplicates(subk + ["period"])
             [subk + ["RPGT", "period", "pro_rata", "fcp1_frac"]])
     pc = prop[subk + ["_vml"]].drop_duplicates()
-    # missing = enforced (sub-cell, MID) with no baseline row in that sub-cell, AND the sub-cell
-    # itself exists in the baseline (so we don't fabricate sub-cells from label mismatches).
+    # missing = enforced (profile, MID) with no baseline row in that profile, AND the profile
+    # itself exists in the baseline (so we don't fabricate profiles from label mismatches).
     miss = pc[[(tuple(r) not in present) and (tuple(r[:5]) in valid_sub)
                for r in pc.to_numpy()]]
     if "_bf_inj" not in pp.columns:
@@ -1151,7 +1151,7 @@ def _inject_backfill_rows(pp, prop, prop_name_map=None):
 # originating in that month. Redistribution then shares the movable pool across the rows that
 # exist — so in a sparse layer the pool comes OUT of the two MIDs that had fraud and goes straight
 # BACK to them, and volume routed to a MID with no row at that age has nowhere to land. Measured
-# on the live export: 9.14 CAPABLE MIDs per cell against 2.03 PRESENT per layer.
+# on the live export: 9.14 CAPABLE MIDs per profile against 2.03 PRESENT per layer.
 #
 # Completing the movable layers fixes that at the source. It also makes the two projectors agree
 # WITHOUT the age renormalise: on the 19da fixture, injection alone takes
@@ -1499,7 +1499,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     pp["pro_rata"] = pd.to_numeric(pp.get("pro_rata", 0.0), errors="coerce").fillna(0.0)
     pp["fcp1_frac"] = pd.to_numeric(pp.get("fcp1_frac", 1.0), errors="coerce").fillna(1.0).clip(0.0, 1.0)
     # Keep pmp / Country sub-cells (default '_all_' when the export lacks them) so the
-    # projection can apply the pipeline's per-sub-cell wallet / USA-only enforcement.
+    # projection can apply the pipeline's per-profile wallet / USA-only enforcement.
     pp["_pmp"] = (_clean_col(pp["paymentMethodProvider"], lower=True)
                   if "paymentMethodProvider" in pp.columns else "_all_")
     pp["_ctry"] = (_clean_col(pp["Country"], lower=True)
@@ -1553,14 +1553,14 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         t0 = _t0.merge(prop, on=["Currency", "BIN", "_rpgtl", "_pmp", "_ctry", "_vml"], how="left")
         t0["_prop_from_coarse"] = 0.0   # DIAGNOSTIC flag
         # HIERARCHICAL coarse (pmp, Country) MEAN fallback — REMOVED 2026-08-17.
-        # It filled sub-cells whose exact 6-key merge missed with a MEAN of the enforced
+        # It filled profiles whose exact 6-key merge missed with a MEAN of the enforced
         # share over the surviving sub-cells. A mean is not a routing decision: for a
         # Country/pmp-concentrated gateway it HALVES the share (WoodForest, named in the
         # original comment), and it has NO in-search analogue at all — so every row it
         # touched was pure scored-vs-delivered drift the GA could never model.
-        # An unmatched sub-cell now keeps prop_raw = NaN → 0 just below, so prop_sum = 0
-        # there, _move = 0, and the cell is HELD AT BASELINE — exactly what the band
-        # scaffold does for a cell it cannot represent.
+        # An unmatched profile now keeps prop_raw = NaN → 0 just below, so prop_sum = 0
+        # there, _move = 0, and the profile is HELD AT BASELINE — exactly what the band
+        # scaffold does for a profile it cannot represent.
         # Kill-switch: ROUTING_COARSE_PROP_FALLBACK=1 restores it.
         if os.environ.get("ROUTING_COARSE_PROP_FALLBACK", "0") == "1":
             for _fk in (["Currency", "BIN", "_rpgtl", "_ctry", "_vml"],
@@ -1599,7 +1599,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     _cv_mark("_apply_keep (switch-off gating; per-row Python loop)")
     t0["prop_raw"] = t0["prop_raw"] * t0["_keep"]
     # PIPELINE ENFORCEMENT (static masks): wallet-incapable gateways can't serve wallet-pmp
-    # sub-cells; USA-only gateways can't serve Non-USA sub-cells — zero their proposed share
+    # profiles; USA-only gateways can't serve Non-USA profiles — zero their proposed share
     # there, so the renormalised split matches what the pipeline actually routes.
     # Static masks only for RAW prop_items — enforced shares already have them baked in.
     _wc_s = {str(x).strip().lower() for x in (wallet_incapable or set())}
@@ -1612,7 +1612,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # AND IT CAN RUN AT TWO GRAINS. The pro-rata export carries vampMid, NOT gatewayFid, so a
     # name-set test is only well defined when every fid of a vampMid agrees — and they do not:
     # PaySafe - Total AV is wallet-capable on paysafe-usd-tav but not on paysafe-eur-tav, so the
-    # name-set mask bars PaySafe from wallet sub-cells in USD too. The SEARCH resolved this in
+    # name-set mask bars PaySafe from wallet profiles in USD too. The SEARCH resolved this in
     # 2026-08-17 by keying on (vampMid, CURRENCY); `build_split_exports` resolved it the same
     # day by going FID-grain (its template columns ARE fids). This function is the one consumer
     # left on the coarse test, which is the asymmetry §14 of
@@ -1651,12 +1651,12 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         _emask = _cap_emask()
         t0["prop_raw"] = np.where(_emask, 0.0, t0["prop_raw"])
     t0["_av"] = t0["VI_Txn_Count"] * t0["_keep"]
-    _g = t0.groupby(grp)   # group cell keys ONCE, reuse for all three sums (bit-identical)
+    _g = t0.groupby(grp)   # group profile keys ONCE, reuse for all three sums (bit-identical)
     t0["cell_tot"] = _g["VI_Txn_Count"].transform("sum")
     t0["_at"] = _g["_av"].transform("sum")
     t0["base_share"] = np.where(t0["_at"] > 0, t0["_av"] / t0["_at"], 0.0)
-    # Renormalise each cell's proposed shares back to a clean 100 budget after the coarse
-    # pmp/Country fill and _keep zeroing may have pushed the per-cell sum off 100 (diagnostic:
+    # Renormalise each profile's proposed shares back to a clean 100 budget after the coarse
+    # pmp/Country fill and _keep zeroing may have pushed the per-profile sum off 100 (diagnostic:
     # _psum_pre keeps the pre-renorm sum). NOTE: prop_share below is prop_raw/prop_sum, which is
     # scale-invariant, so this does not change the projected split — it only keeps prop_sum ≈ 100
     # so the shares read as a clean percentage and no downstream code can assume a stale budget.
@@ -1664,11 +1664,11 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     t0["prop_raw"] = np.where(t0["_psum_pre"] > 0, t0["prop_raw"] * 100.0 / t0["_psum_pre"], t0["prop_raw"])
     t0["prop_sum"] = t0.groupby(grp)["prop_raw"].transform("sum")
     t0["prop_share"] = np.where(t0["prop_sum"] > 0, t0["prop_raw"] / t0["prop_sum"], t0["base_share"])
-    _cv_mark("per-cell transforms (cell_tot / _at / base_share / prop_sum)")
-    # EXPLORATION FLOOR (replicate the AllocationEngine): every ELIGIBLE gateway in a routed cell
+    _cv_mark("per-profile transforms (cell_tot / _at / base_share / prop_sum)")
+    # EXPLORATION FLOOR (replicate the AllocationEngine): every ELIGIBLE gateway in a routed profile
     # keeps >= floor of the redistributed share, then renormalise. This is the primary reason a
     # 0%-rule incumbent (e.g. Braintree in a restricted RPGT) still retains volume in tab 5 — the
-    # flat exported rule drives it to ~0, but the engine floors it. Eligible = present in the cell
+    # flat exported rule drives it to ~0, but the engine floors it. Eligible = present in the profile
     # (base_share>0 or prop_raw>0), not switched-off (_keep>0), and NOT wallet/USA-masked (so the
     # floor never un-masks an ineligible gateway). floor=0 → unchanged (backward-compatible).
     _efloor = float(exploration_floor or 0.0)
@@ -1682,7 +1682,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         _nef = t0.assign(_ef=_elig_f.astype(float)).groupby(grp)["_ef"].transform("sum")
         _flc = np.where(_nef > 0, np.minimum(_efloor, 1.0 / np.maximum(_nef, 1.0)), 0.0)
         t0["prop_share"] = np.where(_elig_f, np.maximum(t0["prop_share"], _flc), t0["prop_share"])
-        _psh_sum = t0.groupby(grp)["prop_share"].transform("sum")   # renormalise cells we floored
+        _psh_sum = t0.groupby(grp)["prop_share"].transform("sum")   # renormalise profiles we floored
         _do_renorm = (t0["prop_sum"] > 0) & (_psh_sum > 0)
         t0["prop_share"] = np.where(_do_renorm, t0["prop_share"] / _psh_sum, t0["prop_share"])
     # Movable fraction = go-live pro-rata × fcp1 cohort fraction (see _vamp_post_core).
@@ -1695,7 +1695,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # share came straight from `prop_raw`, so an overridden MID held no VAMP of its own and was
     # then handed a slice of the moved pool. WoodForest 690 and Authorize 227 on the 14:39 run,
     # both from PRE 0. Zeroing `_vprop` removes them from the numerator AND the denominator, so
-    # the remaining recipients absorb the whole pool and the cell VAMP total still conserves.
+    # the remaining recipients absorb the whole pool and the profile VAMP total still conserves.
     #
     # NOT the same as `_keep` above: `_keep` zeroes prop_raw itself, which would also remove the
     # MID's TRANSACTIONS. apply_to:"vamp" must leave the transactions alone — that is the whole
@@ -1708,7 +1708,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # 19df — THE MAX-SHARE CAP, WHICH THE SEARCH HAD AND DELIVERY DID NOT.
     #
     # `band_projection.py:299` is commented `vshare from the (capped) ROUTED share`: the search
-    # renormalises prop_raw to a cell share, runs the max-share water-fill, and THEN builds
+    # renormalises prop_raw to a profile share, runs the max-share water-fill, and THEN builds
     # vshare from the capped value. Delivery built vshare from raw `prop_raw`, which carries no
     # cap at all. Same shares in, two different recipients — and the difference favours exactly
     # the MIDs the cap exists to restrain, so a capped incumbent is SCORED at the cap and
@@ -1716,7 +1716,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # +186, braintree usa +156, worldpay +87 (all capped incumbents, delivered high) against
     # paysafe -156 and checkout -51 (small recipients, delivered low).
     #
-    # Measured on the _19df fixture (one cell, adyen 99 vs 0.5 / 0.5, cap 0.97): Σ|delivered −
+    # Measured on the _19df fixture (one profile, adyen 99 vs 0.5 / 0.5, cap 0.97): Σ|delivered −
     # in-search| is 0.000000 at max_share 1.0 and 8.384 at 0.97, with DELIVERY returning the
     # identical numbers in both regimes — it never saw the cap. One variable, both shipped
     # functions, no code patched to produce it.
@@ -1783,10 +1783,10 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         _tt_ps = pd.to_numeric(t0["prop_share"], errors="coerce").fillna(0.0)
         # ── DENOMINATOR STASH (read-only, opt-in) ──────────────────────────────────
         # prop_share = prop_raw / prop_sum, and the residual is now known to live here.
-        # Stash the per-row numerator and the per-cell denominator so the reconcile can
+        # Stash the per-row numerator and the per-profile denominator so the reconcile can
         # compare them against the in-search prop_raw / psum on the SAME prop vector.
         # Gated on _RECON_MIDS (a set of lower-cased vampMids the reconcile sets just
-        # before this call) and restricted to the cells those MIDs actually occupy, so
+        # before this call) and restricted to the profiles those MIDs actually occupy, so
         # a normal run computes nothing and stores nothing.
         _rmD = globals().get("_RECON_MIDS")
         if _rmD:
@@ -1828,7 +1828,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     except Exception:  # noqa: BLE001 — a diagnostic must never break the projection
         globals()["_LAST_TXN_TERMS"] = None
 
-    # 19gq: the mark below used to cover EVERYTHING from "per-cell transforms" to
+    # 19gq: the mark below used to cover EVERYTHING from "per-profile transforms" to
     # `VAMP_Post` — ~330 lines and 44.7s (32.7%) on the 2026-09-01 20:21 run, the single
     # largest line in [cvp-timing] and the one that could say least about itself. Six marks
     # now split it, so the next run names the expensive half instead of leaving it to be
@@ -1838,13 +1838,13 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     _sub = ["Currency", "BIN", "RPGT", "_pmp", "_ctry"]
     # #2 GO-LIVE TIMING: the pipeline applies the go-live weight by the APPEARANCE month
     # (target month m), not origination. So take the rule×cohort factor (_gf = fcp1 × has-rule
-    # × scope, WITHOUT pro_rata) at the ORIGINATION cell, and multiply by the go-live pro_rata
+    # × scope, WITHOUT pro_rata) at the ORIGINATION profile, and multiply by the go-live pro_rata
     # of the APPEARANCE month (the t0 pro_rata at that period). VI-txn (t=0) is unchanged
     # because appearance == origination there.
-    # BUGFIX: gate the VAMP move on the MID being ACTIVE (_keep>0), not just the cell being routed
+    # BUGFIX: gate the VAMP move on the MID being ACTIVE (_keep>0), not just the profile being routed
     # (prop_sum>0). A switched-off vampMid (target=0 → _keep=0) has no transactions to re-route, so
     # its residual/baseline VAMP must pass through unchanged (VAMP_Post == VAMP_Pre). Previously the
-    # cell-level go-live ramp "moved out" fraud from 0-transaction MIDs (e.g. EPX), draining it into
+    # profile-level go-live ramp "moved out" fraud from 0-transaction MIDs (e.g. EPX), draining it into
     # the pool and breaking the monthly Σ VAMP_Post == Σ VAMP_Pre conservation.
     t0["_gf"] = np.where((t0["prop_sum"] > 0) & (t0["_keep"] > 0), t0["fcp1_frac"], 0.0)
     if scoped_rpgts:
@@ -2078,7 +2078,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # why the shortfall exists, and Σ_pshare cannot tell you: an intended recipient missing from a
     # group is either a MID that genuinely has no fraud of that age (STRUCTURAL — re-basing is
     # correct, and the in-search projector should get the same pass) or a MID the aged frame never
-    # carries for that cell at all (ABSENT — the frame is short and both sides are wrong). This
+    # carries for that profile at all (ABSENT — the frame is short and both sides are wrong). This
     # splits the missing share mass across those two classes and names who carries each.
     _cv_mark("recipient share + move fractions (_move / _pshare / VAMP_Post)")
     # 19fq: ROUTING_PSHARE_WHY DELETED. This stash is not optional instrumentation — tab 2 reads
@@ -2092,13 +2092,13 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         try:
             # INTENDED recipients, at origination: the rows whose vshare made up the 1.0. This is
             # keyed on `grp = _sub + ["period"]` (see above), which is exactly the key `_mv` is
-            # merged back on, so these shares sum to 1 over the cell-month by construction.
+            # merged back on, so these shares sum to 1 over the profile-month by construction.
             _pw_t0 = t0[_sub + ["vampMid", "period", "_vshare"]].copy()
             _pw_t0["_vshare"] = pd.to_numeric(_pw_t0["_vshare"], errors="coerce").fillna(0.0)
             _pw_t0 = _pw_t0[_pw_t0["_vshare"] > 0.0].rename(columns={"period": "orig_m"})
 
             # THE GROUP IS `_gk = _sub + ["period", "t"]`, NOT `orig_m`. 19cs: the previous version
-            # tested membership at (cell, vampMid, orig_m), and orig_m = period - t is MANY-TO-ONE
+            # tested membership at (profile, vampMid, orig_m), and orig_m = period - t is MANY-TO-ONE
             # over _gk — every (period, t) on one diagonal shares an orig_m, so a MID present at any
             # single age was scored present at every age. It found 0 missing on a frame with 168,945
             # short groups. Membership must be asked of the group that has to sum to 1.
@@ -2108,7 +2108,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
 
             # COUNTED, NOT EXPANDED. Expanding groups x intended recipients cost 13.1 s at the live
             # shape and was OOM-killed at 4x it. The expansion was only counting: an intended
-            # (cell, orig_m, mid) with share v misses  v x (live groups there - live groups there
+            # (profile, orig_m, mid) with share v misses  v x (live groups there - live groups there
             # that carry a row for mid). Both are groupby sizes, so this is the same sum
             # reassociated onto the 700k-row INTENDED table. The reconciliation guard below is what
             # holds the reassociation honest.
@@ -2129,7 +2129,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
             _pw_slots = float(_pw_miss["_pw_ngap"].sum())
             _pw_miss["_vshare"] = _pw_miss["_vshare"] * _pw_miss["_pw_ngap"]
 
-            # Of the MISSING, which appear ANYWHERE in the aged frame for that cell? A MID that does
+            # Of the MISSING, which appear ANYWHERE in the aged frame for that profile? A MID that does
             # appear elsewhere is known to the frame and merely has no fraud of this age; one that
             # never appears cannot be represented at all.
             _pw_any = pp[_sub + ["vampMid"]].drop_duplicates().assign(_pw_any=1)
@@ -2219,7 +2219,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
 
             # (2) cf_norenorm — undo ONLY the renormalise-to-1. The shipped line divided by
             #     _psum, so multiplying it back recovers the pre-renorm share exactly.
-            #     CAN ONLY DIFFER if some cell's _psum is not exactly 1: if every live cell
+            #     CAN ONLY DIFFER if some profile's _psum is not exactly 1: if every live profile
             #     already sums to 1, multiplying by it is the identity.
             _vt_nr_live = _vt_sum[_vt_sum > 1e-12]
             if len(_vt_nr_live) and bool((_vt_nr_live.sub(1.0).abs() > 1e-9).any()):
@@ -2233,7 +2233,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
 
             # (3) cf_nopass — undo ONLY the "no recipient -> passthrough" override, so `move`
             #     reverts to gf x pr_app and the pool is rebuilt from that.
-            #     CAN ONLY DIFFER if that override actually fired, i.e. some cell had _psum == 0.
+            #     CAN ONLY DIFFER if that override actually fired, i.e. some profile had _psum == 0.
             #     This is the expensive one: a groupby-transform over the whole aged frame.
             if bool((_vt_sum <= 1e-12).any()):
                 _vt_mv_raw = np.where(pd.to_numeric(pp["orig_m"], errors="coerce").fillna(-1) >= 0,
@@ -2347,7 +2347,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     except Exception:  # noqa: BLE001
         pass
     _cv_mark("conservation check")
-    # Collapse the pmp / Country sub-cells back to the reported grain (sums are exact).
+    # Collapse the pmp / Country profiles back to the reported grain (sums are exact).
     _cv_out = (pp.groupby(["vampMid", "RPGT", "BIN", "Currency", "period", "t"], as_index=False)
                [["VAMP_Pre", "VAMP_Post", "VI_Txn_Pre", "VI_Txn_Post"]].sum())
     _cv_mark("final collapse back to the reported grain")
@@ -2627,9 +2627,9 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     df["share"] = pd.to_numeric(df["share"], errors="coerce").fillna(0.0)
     gateways = sorted(df["gateway"].unique().tolist())
     _pmps = ["GOOGLEPAY", "APPLEPAY", "non_gp_ap"]
-    # SUB-CELL split: if the incoming split already carries pmp/Country per row (from a sub-cell
-    # grain GA run), the rows ARE the sub-cells — build the template DIRECTLY from them instead of
-    # expanding each cell into country×pmp. Cell-grain splits (no pmp/ctry, or all "_all_") take the
+    # PROFILE split: if the incoming split already carries pmp/Country per row (from a profile
+    # grain GA run), the rows ARE the profiles — build the template DIRECTLY from them instead of
+    # expanding each profile into country×pmp. Profile-grain splits (no pmp/ctry, or all "_all_") take the
     # existing expansion path byte-for-byte. Map the split's pmp/ctry to the template's format.
     _has_subcell = ("pmp" in df.columns and "ctry" in df.columns
                     and not df["pmp"].astype(str).str.strip().str.lower().isin(["_all_", "", "nan"]).all())
@@ -2691,9 +2691,9 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
             cs.append("Non-USA")
         return cs or ["Non-USA"]
 
-    # VECTORISED per-row engine. Replaces the old per-(cell × country × pmp) Python loop, which
-    # ran a groupby + Series ops + a 50-sweep cap PER ROW and scaled super-linearly with the cell
-    # count (measured: tens of minutes at ~17k cells). This applies the SAME transforms — base
+    # VECTORISED per-row engine. Replaces the old per-(profile × country × pmp) Python loop, which
+    # ran a groupby + Series ops + a 50-sweep cap PER ROW and scaled super-linearly with the profile
+    # count (measured: tens of minutes at ~17k profiles). This applies the SAME transforms — base
     # normalisation, Non-USA USA-only zeroing, wallet-incapable zeroing, max-share water-fill,
     # 2dp residual-push rounding and BIN-GROUP condition codes — across all rows with array ops.
     # It was proven byte-identical to the previous implementation on random splits, including
@@ -2707,7 +2707,7 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     out = {}
     for rpgt, g_rpgt in df.groupby("RPGT"):
         if _has_subcell:
-            # rows ARE the sub-cells: base per (Currency, BIN, pmp, Country), no expansion.
+            # rows ARE the profiles: base per (Currency, BIN, pmp, Country), no expansion.
             base = (g_rpgt.groupby(["Currency", "BIN", "_PMP", "_CTRY", "gateway"])["share"].sum()
                     .unstack("gateway").reindex(columns=gateways).fillna(0.0))
             base = base.div(base.sum(1).replace(0, np.nan), axis=0).fillna(0.0)
@@ -2719,14 +2719,14 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
             _cur = [k[0] for k in _keys]; _bin = [k[1] for k in _keys]
             _pmp = [k[2] for k in _keys]; _ctry = [k[3] for k in _keys]
         else:
-            # per-cell normalised base (cells sorted by Currency,BIN — the same order the old
+            # per-profile normalised base (profiles sorted by Currency,BIN — the same order the old
             # groupby(["Currency","BIN"]) iterated, so BIN-GROUP condition codes match).
             base = (g_rpgt.groupby(["Currency", "BIN", "gateway"])["share"].sum()
                     .unstack("gateway").reindex(columns=gateways).fillna(0.0))
             base = base.div(base.sum(1).replace(0, np.nan), axis=0).fillna(0.0)
             cells = list(base.index)
             Bm = base.to_numpy(float)
-            # expand rows in the SAME order as before: cell → country → pmp
+            # expand rows in the SAME order as before: profile → country → pmp
             _idx, _cur, _bin, _ctry, _pmp = [], [], [], [], []
             for _ci, (cur, bin_) in enumerate(cells):
                 for country in _countries_for(cur, bin_):
@@ -2759,14 +2759,14 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
         # gateways the optimiser never assigned: an empty row was given 1/n across every valid
         # candidate, and a single-100% row gave each zero-share candidate a hard-coded 5% floor
         # (max(1 - have, 0.05)) before renormalising — with recipients drawn from the GLOBAL
-        # template column set, not the cell's own doors.
+        # template column set, not the profile's own doors.
         #
         # WHY THAT IS INDEFENSIBLE. It is share the GA cannot see at ANY grain, so it could never
         # be optimised against, never be predicted by the search, and never be attributed. It is
         # the mechanism that dumped volume onto Authorize / WoodForest.
         #
         # WHAT HAPPENS INSTEAD. A row left with <2 live gateways passes through UNTOUCHED and is
-        # flagged by the `Check` column — the same treatment a genuinely single-gateway cell has
+        # flagged by the `Check` column — the same treatment a genuinely single-gateway profile has
         # always had. The fix for such a row is data (open a second door in the MID list), not a
         # projection that pretends a door exists.
         #
@@ -2930,8 +2930,8 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
         return tuple()
     allm = pd.concat(frames, ignore_index=True)
     allm["prop_raw"] = pd.to_numeric(allm["prop_raw"], errors="coerce").fillna(0.0)
-    # Key normalisation moved ABOVE the positive filter (2026-08-18p) so an all-zero sub-cell can
-    # still be identified at sub-cell grain before it is discarded. Order of operations only —
+    # Key normalisation moved ABOVE the positive filter (2026-08-18p) so an all-zero profile can
+    # still be identified at profile grain before it is discarded. Order of operations only —
     # the normalisation itself is unchanged.
     allm["Currency"] = allm["Currency"].astype(str).str.strip().str.lower()
     allm["BIN"] = allm["BIN"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
@@ -2945,18 +2945,18 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
     allm["vampMid"] = allm["vampMid"].map({str(v).strip().lower(): v for v in fid2vamp.values()}).fillna(allm["vampMid"])
     _subk = ["Currency", "BIN", "RPGT", "_pmp", "_ctry"]
     _pos = allm[allm["prop_raw"] > 0].copy()
-    # ── CASE A: ZERO-CELL PLACEHOLDERS ────────────────────────────────────────────────────
-    # A sub-cell whose gateways ALL land on zero used to be dropped outright here, so it never
-    # reached prop_items — and `blend_prop_items` only loops over the cells prop_items contains.
-    # `blend_cell_shares` therefore never ran for exactly the cells its own docstring is about
-    # ("No specific share in the cell → undefined profile → fall back to the catch-all alone"),
+    # ── CASE A: ZERO-PROFILE PLACEHOLDERS ────────────────────────────────────────────────────
+    # A profile whose gateways ALL land on zero used to be dropped outright here, so it never
+    # reached prop_items — and `blend_prop_items` only loops over the profiles prop_items contains.
+    # `blend_cell_shares` therefore never ran for exactly the profiles its own docstring is about
+    # ("No specific share in the profile → undefined cell → fall back to the catch-all alone"),
     # which is why the tab-3 parity line reports "0 new key(s)" while the in-search twin injects
     # the catch-all into 145 such cells. That asymmetry is 20 of the 27 remaining reconciliation
-    # units, confirmed per-MID by the [blend-cells] counterfactual.
-    # Keeping ONE zero-prop row per such sub-cell is enough for the blend to see the cell:
+    # units, confirmed per-MID by the [blend-profiles] counterfactual.
+    # Keeping ONE zero-prop row per such profile is enough for the blend to see the profile:
     # blend_cell_shares filters `> 0`, gets an empty `spec`, and takes the catch-all branch. With
-    # no catch-all configured it returns dict(spec) == {} and the cell emits nothing, i.e. exactly
-    # today's behaviour; and with no blend at all a prop_raw of 0.0 adds nothing to any per-sub-cell
+    # no catch-all configured it returns dict(spec) == {} and the profile emits nothing, i.e. exactly
+    # today's behaviour; and with no blend at all a prop_raw of 0.0 adds nothing to any per-profile
     # sum and moves no volume. Kill-switch: ROUTING_CA_ZEROCELL=0.
     _ph_n = 0
     if os.environ.get("ROUTING_CA_ZEROCELL", "1") != "0":
@@ -2975,7 +2975,7 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
             _ph_n = 0
     if _ph_n:
         # SAFETY RAIL. The whole fix depends on `split` already being scope-restricted. Measured
-        # offline on the Aug baseline: 176 uncovered sub-cells among the SCOPED RPGTs (0.2% of t0
+        # offline on the Aug baseline: 176 uncovered profiles among the SCOPED RPGTs (0.2% of t0
         # volume) versus 16,592 among the UNSCOPED ones (67%), which are frozen by design
         # (hold_unselected_at_baseline). If unscoped RPGTs ever reach here the placeholder count
         # explodes and the catch-all would reroute two thirds of the book — so say so loudly
@@ -3215,7 +3215,7 @@ def pool_targeted_compression(ss, split_ideal, *, target_pools, sig, wallet_ctx,
     except Exception:  # noqa: BLE001
         _dpath = None
 
-    # Parallel k-ary budget search: probe several cell budgets per round across the cores so
+    # Parallel k-ary budget search: probe several profile budgets per round across the cores so
     # the (expensive) config-generation counts overlap. Same result as the serial binary search
     # (verified budget ≤ target). Bounded to ≤8 workers; ROUTING_COMPRESS_PARALLEL=1 disables it.
     _par = int(os.environ.get("ROUTING_COMPRESS_PARALLEL", "0") or 0)

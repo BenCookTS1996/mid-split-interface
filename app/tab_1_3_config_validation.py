@@ -21,7 +21,7 @@ try:
 except Exception:  # noqa: BLE001 - schema should import, but never hard-fail the tab
     RPGT_MAP = {}
 
-# Provider dropdown label -> the profile token used in the configs.
+# Provider dropdown label -> the cell token used in the configs.
 _PROVIDERS = {
     "(Any)": None,
     "ApplePay": "APPLEPAY",
@@ -162,11 +162,11 @@ def render_profile_lookup(named_pools, key_prefix="cfgval_"):
     # Charts sit below the inputs and reflect the CURRENT filter (the matching configs).
     _rcpc([(fn, p) for fn, p in matches])
     if not any(want.values()):
-        st.info(f"Showing all **{len(matches)}** config(s). Set one or more profile fields to narrow the lookup.")
+        st.info(f"Showing all **{len(matches)}** config(s). Set one or more cell fields to narrow the lookup.")
     else:
         st.markdown(f"**{len(matches)}** config(s) route this profile.")
     if not matches:
-        st.warning("No config routes this exact profile. Try relaxing a field to (Any).")
+        st.warning("No config routes this exact cell. Try relaxing a field to (Any).")
         return
     _sel_fn = st.selectbox("Config filename", [fn for fn, _ in matches], key=key_prefix + "json_fname",
                            help="Pick one of the configs that route this profile to view its JSON.")
@@ -189,13 +189,13 @@ def render(ss, PROJECT_ROOT):
 
     # LEFT column: the full config generator (which contains the 'Exported rules folder' input).
     # A distinct key_prefix keeps its widgets/results independent of the '4 · Generate configs' tab;
-    # its own per-config find panel is suppressed here (the profile lookup on the right replaces it).
+    # its own per-config find panel is suppressed here (the cell lookup on the right replaces it).
     with _gen_col:
-        st.markdown("##### Generate Configs")   # in-line with 'Look up configs by profile' (same h5)
+        st.markdown("##### Generate Configs")   # in-line with 'Look up configs by cell' (same h5)
         import tab_4_generate_configs
         tab_4_generate_configs.render(ss, PROJECT_ROOT, key_prefix="cv_", show_find=False)
 
-    # RIGHT column: profile lookup over a loaded folder of configs — side by side with the generator.
+    # RIGHT column: cell lookup over a loaded folder of configs — side by side with the generator.
     with _lookup_col:
         st.markdown("##### Look up configs by profile")
         _fc, _bc = st.columns([5, 1], vertical_alignment="bottom")

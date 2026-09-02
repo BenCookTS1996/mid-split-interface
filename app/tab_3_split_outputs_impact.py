@@ -232,7 +232,7 @@ def render():
                 # typo) is handled upstream in load_success_data (schema.SCENARIO_TO_RPGT); the fixed
                 # attempts_success.sql now emits canonical names and the impact join is case-
                 # insensitive, so no per-tab RPGT remap is needed here.
-                # Grain reconciliation. Exported rules mix two grains: some cells name explicit
+                # Grain reconciliation. Exported rules mix two grains: some profiles name explicit
                 # BINs (the annual sheet), the rest use a catch-all row (BIN == "Other"). Set each
                 # attempt's bank to the explicit BIN when the split names it for that
                 # (rpgt, currency); OTHERWISE keep the attempt's real issuing-bank name (from
@@ -265,13 +265,13 @@ def render():
                     raise ValueError("Base 30-day metrics could not be built from the attempts data.")
                 # Volume basis + actual observed baseline routing. The parsed rules carry neither
                 # cell_volume nor baseline_share. Build the split the impact/bridge is scored on
-                # from two kinds of cell:
+                # from two kinds of profile:
                 #   • BIN-specific (explicit numeric BIN — here only Annual Sub Renewal) → the
                 #     exported OVERRIDE routing (proposed share) measured against the OBSERVED
-                #     per-BIN baseline. These are the only cells that move the bridge.
+                #     per-BIN baseline. These are the only profiles that move the bridge.
                 #   • catch-all ("Other") → NOT a routing change: for the ~96% of traffic with no
                 #     BIN-specific rule the routing is dictated by the LIVE ACTUALS. Rebuild these
-                #     cells straight from the observed 30D attempts (ALL gateways, incl. any not in
+                #     profiles straight from the observed 30D attempts (ALL gateways, incl. any not in
                 #     the sheet), with baseline == proposed → exactly 0 impact and a distribution
                 #     that matches actuals.
                 # (cell_att / gw_att / attempts arrive as pandas *nullable* Int64; convert to numpy
@@ -309,7 +309,7 @@ def render():
                 else:
                     _spec = pd.DataFrame(columns=_keep)
 
-                # Catch-all cells rebuilt from the observed live actuals (all gateways).
+                # Catch-all profiles rebuilt from the observed live actuals (all gateways).
                 _adf_o = _adf_v[~_is_num(_adf_v["bin"]).to_numpy()].copy()
                 _adf_o["_a"] = pd.to_numeric(_adf_o.get("attempts", 0), errors="coerce").fillna(0.0).astype("float64")
                 _obs = _adf_o.groupby(["rpgt", "currency", "bin", "gateway"], as_index=False)["_a"].sum()
@@ -392,7 +392,7 @@ def render():
         variations = ss["variations"]
         weights = [v["weight"] for v in variations]
 
-        # 30D baseline metrics (cell/gateway success rates, avg ticket, base totals)
+        # 30D baseline metrics (profile/gateway success rates, avg ticket, base totals)
         # — computed once and shared with the Routing-engine tab visuals.
         _ensure_base_30d_metrics()
         cache = ss["cached_base_30d_metrics"]
@@ -484,7 +484,7 @@ def render():
                 _si = split_ideal
                 if ss.get("variations_engine") == "validate":
                     # Validate: only the BIN-specific overrides are a real deployed change — every
-                    # other cell is the live-actuals fallback. Count pools from the BIN-specific
+                    # other profile is the live-actuals fallback. Count pools from the BIN-specific
                     # rows only, so the Pools card reflects the splits actually being validated.
                     _num = (_si["bin"].astype(str).str.strip()
                             .str.replace(".", "", 1, regex=False).str.isdigit())
@@ -512,7 +512,7 @@ def render():
             _impact_split = split_ideal
             if _basis_compressed and _comp_long is not None:
                 # Carry the baseline (pre) split + volume so the impact's pre/post is correct;
-                # gateways new to a cell via the cluster centroid get baseline_share 0.
+                # gateways new to a profile via the cluster centroid get baseline_share 0.
                 _cl = _comp_long.copy()
                 if "baseline_share" in split_ideal.columns:
                     _bl = split_ideal[["rpgt", "currency", "bin", "gateway", "baseline_share"]].drop_duplicates(
@@ -584,7 +584,7 @@ def render():
                     _enf = _enf.merge(_bl, on=["rpgt", "currency", "bin", "gateway"], how="outer")
                     _enf["share"] = _enf["share"].fillna(0.0)
                     _enf["baseline_share"] = _enf["baseline_share"].fillna(0.0)
-                # Carry per-cell volume through so the eval frame can size pre/post volume + revenue.
+                # Carry per-profile volume through so the eval frame can size pre/post volume + revenue.
                 # (The ideal split has `cell_volume`; the enforced split from build_split_exports does
                 # NOT — without this, _impact_eval_frame's cell_volume/volume would be missing.)
                 _cvsrc = None
@@ -598,7 +598,7 @@ def render():
                     _enf["cell_volume"] = pd.to_numeric(_enf["cell_volume"], errors="coerce").fillna(0.0)
                     _enf["volume"] = _enf["cell_volume"] * _enf["share"]
                 # Belt-and-suspenders: drop switched-off gateways (target=0, trx/both) from the eval
-                # split and renormalise each cell's post-share, so a turned-off gateway can NEVER show
+                # split and renormalise each profile's post-share, so a turned-off gateway can NEVER show
                 # routed share in the revenue view regardless of how it entered (engine candidate,
                 # backup pool, or the baseline outer-merge).
                 try:
@@ -644,7 +644,7 @@ def render():
             eval_df["exp_succ"] = eval_df["post_succ"]
             eval_df["exp_rev"] = eval_df["post_rev"]
 
-            # Validate mode isolates the BIN-specific overrides: catch-all ("Other") cells were set
+            # Validate mode isolates the BIN-specific overrides: catch-all ("Other") profiles were set
             # to pre == post (status quo) in the eval frame, so the baseline the cards compare
             # against is the eval frame's own PRE (Σ pre_succ / Σ pre_rev), NOT the raw 30D actual.
             # This makes the SR / Revenue cards agree with the bridge — only BIN-specific rules move.
@@ -899,14 +899,14 @@ def render():
                 _sc = _evframe.copy()
                 if _sc is None or getattr(_sc, "empty", True):
                     return
-                # Cell key = (rpgt, currency, bank); cell_volume is the cell total on every row.
+                # Profile key = (rpgt, currency, bank); cell_volume is the profile total on every row.
                 _sc["_cellk"] = (_sc["rpgt_join"].astype(str) + "|"
                                  + _sc["currency_join"].astype(str) + "|"
                                  + _sc["bin_join"].astype(str))
                 _sc["cell_volume"] = pd.to_numeric(_sc.get("cell_volume", 0), errors="coerce").fillna(0.0)
                 _sc["gw_sr"] = pd.to_numeric(_sc.get("gw_sr", 0), errors="coerce").fillna(0.0)
-                # Max-approval hypothetical: the single highest-gw_sr eligible gateway per cell takes
-                # the whole cell's volume (ignores VAMP / share caps; eligibility already implied by
+                # Max-approval hypothetical: the single highest-gw_sr eligible gateway per profile takes
+                # the whole profile's volume (ignores VAMP / share caps; eligibility already implied by
                 # the candidate set present in the frame).
                 _sc["_maxwin"] = 0.0
                 _valid = _sc[_sc["cell_volume"] > 0]
@@ -1916,7 +1916,7 @@ def render():
                     # For most engines that's the Bayesian-SHRUNK success_rate; Thompson uses
                     # its own Beta posterior from the RAW (time-decayed) counts — no κ shrinkage
                     # — so for Thompson show the raw rate, which is what it genuinely scores on.
-                    # For a single Bank/Currency it's that cell's score; for the whole portfolio
+                    # For a single Bank/Currency it's that profile's score; for the whole portfolio
                     # it's volume-weighted (by all-time attempts) per gateway.
                     _escore = {}
                     _agg = ss.get("agg_sr")
@@ -2268,7 +2268,7 @@ def render():
                         # Validate isolates the BIN-specific overrides: the eval-frame PRE is already
                         # the authoritative baseline (catch-all cells = live actuals, pre == post).
                         # Rescaling to the raw actual base_succ re-introduces a scale factor that
-                        # would drift those 0-movement cells, so keep PRE unscaled here — this also
+                        # would drift those 0-movement profiles, so keep PRE unscaled here — this also
                         # matches the SR card baseline, which is overridden to Σ pre_succ / base_att.
                         if ss.get("variations_engine") == "validate":
                             _cur_scale = 1.0
@@ -2913,7 +2913,7 @@ def render():
                             Expected_Success=("exp_succ", "sum"),
                             Expected_Rev=("exp_rev", "sum"))
                         # Baseline revenue at the SAME per-RPGT ticket as Post (eval frame pre_rev,
-                        # summed over the gateway's RPGT cells) → "Pre Revenue (Adj)" now reconciles
+                        # summed over the gateway's RPGT profiles) → "Pre Revenue (Adj)" now reconciles
                         # with the Financial Impact tables and with Post Revenue at the RPGT grain.
                         if "pre_rev" in b_df.columns:
                             _agg_kw["Pre_Rev"] = ("pre_rev", "sum")
@@ -3119,7 +3119,7 @@ def render():
                     workings_full["Eff. Ticket (per-RPGT)"] = np.where(
                         _exp_succ > 0, workings_full["Post Revenue"] / _exp_succ, 0.0)
                     # ALLOCATION chain: the floor / max-share parameters, plus the NET move from the raw
-                    # softmax share to the final proposed share. Floor, max-share cap and the cross-cell
+                    # softmax share to the final proposed share. Floor, max-share cap and the cross-profile
                     # VAMP/MID enforcement are applied together (not per-gateway-decomposable), so their
                     # combined effect is shown as one reconcilable shift = Proposed − Softmax (pre-floor).
                     workings_full["Exploration floor %"] = float(ss.get("exploration_floor", 0.0) or 0.0) * 100.0
@@ -3139,7 +3139,7 @@ def render():
                             workings_full["Temperature (cell)"] = [
                                 _celltemp.get(f"{c}|{b}", _fb) for c, b in
                                 zip(workings_full["currency_join"], workings_full["bin_join"])]
-                            _k = workings_full["Temperature (cell)"].astype(float) * 100.0   # per-cell multiplier
+                            _k = workings_full["Temperature (cell)"].astype(float) * 100.0   # per-profile multiplier
                         else:
                             _k = float(_temp) * 100.0            # dial 0.16 -> k = 16
                         _es = workings_full["Engine Score (Smoothed SR)"].astype(float)  # fraction
@@ -3151,20 +3151,20 @@ def render():
                             workings_full["Total Weighting"] > 0,
                             workings_full["Weighting"] / workings_full["Total Weighting"], 0.0)
                         # ALLOCATION chain: net move from the raw softmax share to the final proposed
-                        # share = exploration floor + max-share cap + cross-cell VAMP/MID enforcement,
+                        # share = exploration floor + max-share cap + cross-profile VAMP/MID enforcement,
                         # combined (they're not per-gateway-decomposable). = Proposed − Softmax(pre-floor).
                         workings_full["Floor+cap+enforce shift (pp)"] = (
                             pd.to_numeric(workings_full["Proposed Share"], errors="coerce").fillna(0.0)
                             - pd.to_numeric(workings_full["Softmax Share (pre-floor)"], errors="coerce").fillna(0.0)
                         ) * 100.0
 
-                    # Genetic engine has NO per-cell pre-softmax score. Instead show its OWN
+                    # Genetic engine has NO per-profile pre-softmax score. Instead show its OWN
                     # workings: the revenue-greedy REFERENCE (dial-100 waterfall: fill the best
                     # gateways up to the max share), the TILT the GA applied, and the FINAL share.
                     _is_genetic = ss.get("variations_engine") in ("genetic", "genetic_numba")
                     if _is_genetic:
                         _gcap = float((ss.get("wallet_ctx") or {}).get("max_share", 0.97))
-                        # Explicit per-cell loop (robust: groupby.apply returning a Series can be
+                        # Explicit per-profile loop (robust: groupby.apply returning a Series can be
                         # coerced to a DataFrame in some pandas versions).
                         _ref_col = pd.Series(0.0, index=workings_full.index)
                         for _grp_key, _idxs in workings_full.groupby(["BIN", "Currency"]).groups.items():
@@ -3461,7 +3461,7 @@ def render():
                     _f_per = fg[4].selectbox("period", _per_opts, index=_per_def, key=f"{mode}_pp_period")
                     _f_t = fg[5].selectbox("t", ["(All)"] + sorted(_gr["t"].unique().tolist()), key=f"{mode}_pp_t")
 
-                    # Frame filtered by the profile fields only (period/t excluded)
+                    # Frame filtered by the cell fields only (period/t excluded)
                     # so the monthly chart spans all periods.
                     _fp = _gr.copy()
                     for _c, _v in [("vampMid", _f_mid), ("RPGT", _f_rpgt), ("BIN", _f_bin), ("Currency", _f_cur)]:
@@ -4328,7 +4328,7 @@ def render():
                             _proj_prop = _bpi(_proj_prop, _bcatch, fid2vamp)
                         except Exception:  # noqa: BLE001
                             pass   # any failure → keep the un-blended enforced split
-                    # Exploration floor for the projection (replicates the engine's per-cell floor so
+                    # Exploration floor for the projection (replicates the engine's per-profile floor so
                     # 0%-rule incumbents keep >= floor). Kill-switch: ROUTING_PROJ_FLOOR=0 disables it
                     # (to compare against the old flat-rule projection). Default = the run's floor.
                     _proj_floor = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"

@@ -129,9 +129,9 @@ def _empirical_bayes_kappa(grp: pd.DataFrame, scope: list[str],
     rows = []
     # Gateways must be compared only against OTHER GATEWAYS IN THE SAME BANK,
     # otherwise cross-bank differences leak into the "between-gateway" spread and
-    # bias kappa. So `bank` is always part of the per-cell grouping (added here if
+    # bias kappa. So `bank` is always part of the per-profile grouping (added here if
     # it isn't already in `scope`); we measure the spread WITHIN each
-    # (scope, bank) cell, then attempt-weight-pool those cells up to `scope`.
+    # (scope, bank) profile, then attempt-weight-pool those profiles up to `scope`.
     cell_extra = [] if "bin" in scope else ["bin"]
     for key, g in grp.groupby(scope):
         key = key if isinstance(key, tuple) else (key,)
@@ -151,7 +151,7 @@ def _empirical_bayes_kappa(grp: pd.DataFrame, scope: list[str],
             m = n > 0
             n, x = n[m], x[m]
             if len(n) < 2 or n.sum() <= 0:
-                # single-gateway bank cell carries no between-gateway signal — skip it
+                # single-gateway bank profile carries no between-gateway signal — skip it
                 continue
             p = x / n
             mu_b = x.sum() / n.sum()                               # this bank's own mean
@@ -329,14 +329,14 @@ def rpgt_gateway_sensitivity(sr_df, avg_ticket: float = 1.0, min_attempts: float
     cell = d.groupby(["rpgt", "currency", "bin"], as_index=False).agg(
         vol=("attempts", "sum"), rmax=("success_rate", "max"),
         rmin=("success_rate", "min"), ngw=("gateway", "nunique"))
-    # Only cells with ≥2 eligible gateways are reroutable; single-gateway cells
-    # contribute NOTHING — not to the gap, and not to the volume/cells denominators
+    # Only profiles with ≥2 eligible gateways are reroutable; single-gateway profiles
+    # contribute NOTHING — not to the gap, and not to the volume/profiles denominators
     # either — so they can't dilute sensitivity_pp or dollars_at_stake.
     routable = cell["ngw"] >= 2
     cell["gap"] = np.where(routable, (cell["rmax"] - cell["rmin"]).clip(lower=0.0), 0.0)
     cell["rvol"] = np.where(routable, cell["vol"], 0.0)      # routable volume only
     cell["gapvol"] = cell["gap"] * cell["rvol"]
-    cell["rcell"] = routable.astype(int)                    # routable-cell counter
+    cell["rcell"] = routable.astype(int)                    # routable-profile counter
     rp = cell.groupby("rpgt", as_index=False).agg(
         volume=("rvol", "sum"), gapvol=("gapvol", "sum"), cells=("rcell", "sum"))
     rp["sensitivity_pp"] = np.where(rp["volume"] > 0, rp["gapvol"] / rp["volume"] * 100.0, 0.0)

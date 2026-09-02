@@ -128,7 +128,7 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
 
     for p in range(P):
         # ---- decode: per-column tilt score `a`, then STABILISED softmax -------------
-        # First store `a` per eligible column; the per-cell exp below subtracts that cell's MAX
+        # First store `a` per eligible column; the per-profile exp below subtracts that profile's MAX
         # `a` (shift-invariant → identical result) so exp can never overflow to +inf — which used
         # to give inf/inf = NaN for a large tilt·z. Mirrors seed_search._decode_midtilt3.
         for g in range(N):
@@ -140,11 +140,11 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                 aa[g] = a
             else:
                 aa[g] = 0.0
-        # ---- per-cell stabilised weights + renormalise ------------------------------
+        # ---- per-profile stabilised weights + renormalise ------------------------------
         for c in range(C):
             s0 = cs[c]
             s1 = s0 + cc[c]
-            # per-cell max of `a` over ELIGIBLE columns (0.0 if the cell has none eligible)
+            # per-profile max of `a` over ELIGIBLE columns (0.0 if the profile has none eligible)
             have_max = False
             amax = 0.0
             for g in range(s0, s1):
@@ -163,7 +163,7 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
             for g in range(s0, s1):
                 X[g] = w[g] / seg
         # ---- HARD exploration-floor water-fill (lift-then-take, up to 50 sweeps) -----
-        # ANALOGY: like levelling water between connected tanks in a cell — top up any gateway
+        # ANALOGY: like levelling water between connected tanks in a profile — top up any gateway
         # below its floor, and skim that top-up proportionally off the gateways above the floor;
         # repeat until nobody is under (or 50 sweeps).
         if has_floor:
@@ -221,7 +221,7 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
         for g in range(N):
             Xout[p, g] = X[g]
         # ---- eligibility on the DECODED shares (mirror eligibility.apply_elig_pop) ----
-        # bans -> 0 + per-cell renorm, then wallet blend + renorm, then USA blend + renorm,
+        # bans -> 0 + per-profile renorm, then wallet blend + renorm, then USA blend + renorm,
         # IN THIS ORDER — so the kernel scores the SAME actually-routable split the NumPy
         # `_obj_viol` does when ctx['elig_op'] is active. Uses the operator's OWN segments
         # (ecs/ecc), exactly as apply_elig_pop / _renorm_pop / _blend_pop do.
@@ -242,7 +242,7 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                         for g in range(s0, s1):
                             X[g] = X[g] / seg
             # (2) wallet capability blend: incapable keeps (1-wf) of its share; wf portion
-            #     redistributes to the capable gateways in the cell, then per-cell renorm.
+            #     redistributes to the capable gateways in the profile, then per-profile renorm.
             if e_has_w == 1:
                 for c in range(Ce):
                     s0 = ecs[c]

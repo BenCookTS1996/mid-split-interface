@@ -560,7 +560,7 @@ def _variance_gap_temp(agg_sr, anchor=0.17, t_ceiling=0.30, n_cap=500.0):
             continue
         p1, p2 = float(sub["_p"].iloc[0]), float(sub["_p"].iloc[1])
         # Cap effective attempts: beyond n_cap, more data shouldn't keep inflating
-        # the t-stat (otherwise every high-volume cell saturates the ceiling). The
+        # the t-stat (otherwise every high-volume profile saturates the ceiling). The
         # dial then reflects WHETHER the gap is real, not how many millions prove it.
         n1 = min(float(sub["_n"].iloc[0]), n_cap)
         n2 = min(float(sub["_n"].iloc[1]), n_cap)
@@ -701,11 +701,11 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
             split_rows=int(len(d)))
         return d, 0
     # REDISTRIBUTION GROUP. The default omits `ctry`, so freed share from a bank-blocked row is
-    # spread across the USA and Non-USA sub-cells of a (rpgt, currency, BIN, pmp) group TOGETHER.
-    # The in-search twin (tab_2_routing_engine._fm_block) redistributes within the search's own sub-cell
+    # spread across the USA and Non-USA profiles of a (rpgt, currency, BIN, pmp) group TOGETHER.
+    # The in-search twin (tab_2_routing_engine._fm_block) redistributes within the search's own profile
     # segments, which DO include ctry — so the GA scores a redistribution it does not ship. See the
     # [block-why] probe. `group_keys=None` keeps the historical tuple byte-identical; pass an
-    # explicit tuple to align the grain with a caller's own cell definition.
+    # explicit tuple to align the grain with a caller's own profile definition.
     _key = ([c for c in group_keys if c in d.columns] if group_keys
             else [c for c in ("rpgt", "currency", "bin", "pmp") if c in d.columns]) or ["bin"]
     _sh = pd.to_numeric(d["share"], errors="coerce").fillna(0.0).to_numpy()
@@ -717,14 +717,14 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
     _rw_cell = _grp["_rw"].transform("sum").to_numpy()
     _has_recip = _rw_cell > 1e-12
     _add = np.where(_has_recip, d["_rw"].to_numpy() * _freed_cell / np.where(_has_recip, _rw_cell, 1.0), 0.0)
-    # Apply the cap+redistribute only in cells that HAVE a non-blocked recipient; a cell whose
+    # Apply the cap+redistribute only in profiles that HAVE a non-blocked recipient; a profile whose
     # gateways are ALL blocked is left untouched (nowhere to move the freed volume).
     _new = np.where(_has_recip, _cap + _add, _sh)
     d["share"] = _new
     d = d.drop(columns=["_freed", "_rw"])
     _capped = int((_isb & _has_recip & (_new < _sh - 1e-12)).sum())
     # CASE 2 vs CASE 3. `matched` rows paired with a blocked gateway. Of those, `above_floor` sit
-    # ABOVE the cap and so have something to give up; `no_recip` are in a cell with no unblocked
+    # ABOVE the cap and so have something to give up; `no_recip` are in a profile with no unblocked
     # gateway to give it to. matched > 0 with above_floor == 0 is the BENIGN zero -- the rows were
     # already at or below the floor, which is what the pre-enforcement pass leaves behind.
     _above = int((_isb & (_sh > float(floor) + 1e-12)).sum())
@@ -779,14 +779,14 @@ DEFAULT_GATEWAY_FIDS = "(" + ",".join(f"'{f}'" for f in _TAV_FIDS + _TDR_FIDS + 
 
 
 APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a stale base and
-# deleted the 2026-08-18 +exact-subcell-capability work, so the GA scored eligibility with the
-# global wallet/Non-USA fraction while delivery applied the exact pure-sub-cell rule. That is
+# deleted the 2026-08-18 +exact-profile-capability work, so the GA scored eligibility with the
+# global wallet/Non-USA fraction while delivery applied the exact pure-profile rule. That is
 # the 17:21 regression: [elig-grain] 147,944/245,409 -> 0/1, RECONCILIATION ERROR 0 -> 7,865,
 # [rung] 100% SPLIT, 78,822 differing prop-keys. Rebased on git HEAD, in-place twin retained
 # and re-proven bit-identical, plus a canary that shouts if the module ever regresses again.
                            # [deliv-cost] split the 52.2% `deliver` row into eligibility
                            # 840ms (71.5%), blocked-caps 312ms (26.6%), scatter 22.5ms.
-                           # (1) BLOCKED-CAPS restricted to the cells a blocked row can
+                           # (1) BLOCKED-CAPS restricted to the profiles a blocked row can
                            # reach — 68 of 23,418 on the 16:01 run. Elsewhere _freed == 0
                            # so _outb == _capd + 0.0 == _X exactly. [deliv-cost] already
                            # proved it np.array_equal on the live 35x242,670 array and
@@ -820,7 +820,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # scatter / blocked-caps / eligibility AND tests the one
                            # optimisation the code offers — `_fm_block` builds ~8
                            # full-width temporaries for a mask covering 91 of 245,409
-                           # rows, so only the cells holding a blocked row can change. The
+                           # rows, so only the profiles holding a blocked row can change. The
                            # block RUNS the restricted version and diffs it with
                            # np.array_equal, so the next run says whether it is safe
                            # rather than leaving it an argument. NOT a behaviour change.
@@ -870,7 +870,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # allowed to continue until delivery put it 14 over. Recipients
                            # now need room under EVERY ceiling they hold, each budget in
                            # its own units, ranked by binding share-capacity; the donor
-                           # orders cells by whichever of ITS metrics is worst over.
+                           # orders profiles by whichever of ITS metrics is worst over.
                            # Never-worse untouched. ROUTING_TMOVE_ALLBANDS=0 ignores
                            # recipients' txn ceilings. Floors still out of scope.
                            # 19bd: (a) solve_targeted_moves' "strictly better" now says it is
@@ -880,7 +880,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # infinite room for a VAMP shed). Claim only — no shares move.
                            # (b) [kernel-ab] prints the NUMBER of paired rounds an undecided
                            # variant needs, and flags a lane cap below the thread count.
-                           # (c) new [zero-cells]: genome cells that cannot move either
+                           # (c) new [zero-profiles]: genome profiles that cannot move either
                            # objective. All read-only.
                            # 19bc:
                            # (1) A and B each printed TWICE with contradictory
@@ -1013,7 +1013,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # (3) [zero-rows]: how many nC/nA loop rows are EXACTLY 0.0
                            # for every candidate. Scoped to what is actually provable —
                            # my "899k back-fill rows are droppable" claim was WRONG,
-                           # base and ctot are CELL SUMS.
+                           # base and ctot are PROFILE SUMS.
                            # (4) C/D/E/F BACK plus G (int32), reps 5 -> 15. Three of the
                            # four were retired against a 4.8% floor they sat INSIDE, so
                            # they were never measured. C and G claim bit-identity and
@@ -1043,8 +1043,8 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # six changes stale and [proj-par] blamed numba for a drained
                            # note list. Both fixed. RESTART THE APP after a src/ change;
                            # IN-SEARCH VAMP CONSERVATION — the move is now gated on the
-                           # origin cell having a VAMP RECIPIENT (vpsum>0), not just being
-                           # routed (psum>0). A routed cell with no VAMP-positive door was
+                           # origin profile having a VAMP RECIPIENT (vpsum>0), not just being
+                           # routed (psum>0). A routed profile with no VAMP-positive door was
                            # DESTROYING the moved VAMP (measured 165 of 165), so the GA was
                            # scoring a fraud reduction that does not happen. All three
                            # in-search paths. BEHAVIOUR CHANGE — expect worse-looking VAMP.
@@ -1098,7 +1098,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # a no-op that tripled mutation); grain log labels; [frozen-scaffold]
                            # measurement; mutation rate = one explicit number
                            # (dead 60/n_cells term removed, ROUTING_MUT_RATE added);
-                           # breach-TARGETED mutation (cells feeding a breached band get a
+                           # breach-TARGETED mutation (profiles feeding a breached band get a
                            # boosted selection probability); breach_fixed 0.3; 4 silent
                            # fallbacks -> raise; scipy hard;
                            # exact-proj seed unconditional (checkbox gone); [feas-starts];
@@ -1177,7 +1177,7 @@ def _ensure_base_30d_metrics():
 
     # Average value per successful transaction at the Bank x Currency level (ONE
     # value per bank x currency), used consistently for every revenue figure so the
-    # impact tables reconcile. Falls back to $25 if a cell has no successes.
+    # impact tables reconcile. Falls back to $25 if a profile has no successes.
     bc_val = adf_30d.groupby([adf_30d["currency"].astype(str).str.strip().str.lower(),
                               adf_30d["bin"].astype(str).str.strip().str.lower()]).agg(
         bc_rev=("succ_amount", "sum"), bc_succ=("success", "sum"), bc_att=("attempts", "sum")
@@ -1284,9 +1284,9 @@ def _impact_eval_frame(split, cache, by_rpgt=False):
         ev["avg_ticket"] = _bc_ticket.fillna(25.0)
     ev["share"] = pd.to_numeric(ev.get("share", 0), errors="coerce").fillna(0.0)
     ev["baseline_share"] = pd.to_numeric(ev.get("baseline_share", 0), errors="coerce").fillna(0.0)
-    # ROOT FIX (dilution): the proposed `share` can arrive summing to ≪1 per cell — the
+    # ROOT FIX (dilution): the proposed `share` can arrive summing to ≪1 per profile — the
     # optimiser runs at parent-bank grain but the split is exploded to BINs, so each row's
-    # share is a slice of the parent's total spread across its ~N BINs (≈ 1/N per cell),
+    # share is a slice of the parent's total spread across its ~N BINs (≈ 1/N per profile),
     # which understates post volume/revenue by ≈N. Renormalise share (and baseline_share) to a
     # proper per-(rpgt,currency,bank) distribution HERE, at the shared source, so post_att /
     # post_succ / post_rev are correct for every downstream table (Bank Analysis, Financial

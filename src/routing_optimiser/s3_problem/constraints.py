@@ -16,14 +16,14 @@ from dataclasses import dataclass, field
 class HardConstraints:
     """Feasibility rules. Any candidate split violating one is rejected."""
 
-    # Max fraction of a single cell's volume any one gateway may carry (0-1).
+    # Max fraction of a single profile's volume any one gateway may carry (0-1).
     # Keeping this < 1 forces at least some diversification. Mirrors the
     # MAX_GATEWAY_CAP = 97% "always keep a backup" idea in your k-means script.
     max_gateway_share: float = 0.97
 
-    # VAMP / chargeback ceiling for the cell, as a rate (e.g. 0.009 = 0.9%).
+    # VAMP / chargeback ceiling for the profile, as a rate (e.g. 0.009 = 0.9%).
     # Enforced as: sum_g(share_g * expected_risk_rate_g) <= vamp_cap.
-    # None disables the per-cell cap (e.g. when you enforce risk only at the
+    # None disables the per-profile cap (e.g. when you enforce risk only at the
     # portfolio level in a later aggregation step).
     vamp_cap: float | None = 0.009
 

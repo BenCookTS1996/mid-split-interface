@@ -27,7 +27,7 @@ def cell_baseline_vs_proposed(split: pd.DataFrame,
             return float(avg_ticket.get(rpgt, _default_ticket))
         return float(avg_ticket)
 
-    # Expected success rate per cell under each split (volume/ share weighted).
+    # Expected success rate per profile under each split (volume/ share weighted).
     g = split.copy()
     g["proposed_succ"] = g["share"] * g["gateway_success_rate"]
     g["baseline_succ"] = g["baseline_share"] * g["gateway_success_rate"]

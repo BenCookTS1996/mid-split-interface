@@ -104,8 +104,8 @@ def build_cell_problems(
     # row (a Series) rather than a multi-row DataFrame — otherwise float(row[...]) raises.
     if sr.index.has_duplicates:
         sr = sr[~sr.index.duplicated(keep="first")]
-    # Attempts-WEIGHTED pooled prior (an unweighted mean over cells would let tiny, noisy
-    # cells count as much as huge ones).
+    # Attempts-WEIGHTED pooled prior (an unweighted mean over profiles would let tiny, noisy
+    # profiles count as much as huge ones).
     if len(sr) and {"success", "attempts"}.issubset(sr.columns) and float(sr["attempts"].sum()) > 0:
         _global_rate = float(sr["success"].sum() / sr["attempts"].sum())
     elif len(sr):
@@ -137,9 +137,9 @@ def build_cell_problems(
                 kap.append(float(row["kappa"]) if _has_kappa else 0.0)
                 is_pool.append(False)
             else:
-                # No per-cell attempts data for this gateway: fall back to the
-                # pooled mean. Flag it so the UI can show which cells are on
-                # the pooled prior rather than real per-cell evidence.
+                # No per-profile attempts data for this gateway: fall back to the
+                # pooled mean. Flag it so the UI can show which profiles are on
+                # the pooled prior rather than real per-profile evidence.
                 _n_pool += 1
                 succ.append(_global_rate)
                 obs_s.append(0.0)
@@ -155,7 +155,7 @@ def build_cell_problems(
 
         # Risk-rate sample size = the transaction/sales count the VAMP rate was
         # measured over. Prefer an explicit 'risk_n' column; else fall back to the
-        # cell's routing volume (which, on the granular path, IS the Txn count).
+        # profile's routing volume (which, on the granular path, IS the Txn count).
         if "risk_n" in cell.columns:
             risk_n = pd.to_numeric(cell["risk_n"], errors="coerce").fillna(0.0).to_numpy(float)
         elif "volume" in cell.columns:
@@ -190,7 +190,7 @@ def build_cell_problems(
             _expl = np.zeros(len(gateways), bool)
         problem.is_explore = _expl  # type: ignore[attr-defined]
         problems.append(problem)
-    # Surface silent join misses: if most gateways found no per-cell success data, the
+    # Surface silent join misses: if most gateways found no per-profile success data, the
     # forecast/success-rate keys probably don't line up (e.g. BIN vs bankName) and every
     # rate is really the pooled prior — a real, otherwise-invisible data bug.
     if _n_gw and _n_pool / _n_gw > 0.5:
@@ -203,12 +203,12 @@ def build_cell_problems(
                 f"forecast and success-rate join keys don't line up AT ALL (likely a BIN-vs-bankName "
                 f"mismatch on 'bin'); every rate is the pooled prior.", stacklevel=2)
         else:
-            # Keys ALIGN (some matched) but per-cell data is sparse — EXPECTED on a granular
+            # Keys ALIGN (some matched) but per-profile data is sparse — EXPECTED on a granular
             # BIN-level forecast, where most BIN×gateway combos have no direct attempts and
             # correctly inherit the pooled prior. Informational, not a key mismatch.
             logger.info(
-                f"   build_cell_problems: {_n_pool}/{_n_gw} ({_pct:.0f}%) gateway-cells on the pooled "
-                f"prior (sparse per-cell attempts); {_matched} matched, so the join keys ARE aligned — "
+                f"   build_cell_problems: {_n_pool}/{_n_gw} ({_pct:.0f}%) gateway-profiles on the pooled "
+                f"prior (sparse per-profile attempts); {_matched} matched, so the join keys ARE aligned — "
                 f"expected at BIN grain, not a mismatch.")
     return problems
 
@@ -268,7 +268,7 @@ def build_subcell_problems(
 
         succ, obs_s, obs_a, is_pool, prior_r, kap = [], [], [], [], [], []
         for gw in gateways:
-            key = (_nk(rpgt), _nk(currency), _nk(bin_), _nk(gw))   # CELL-grain rate (broadcast)
+            key = (_nk(rpgt), _nk(currency), _nk(bin_), _nk(gw))   # PROFILE-grain rate (broadcast)
             _n_gw += 1
             if key in sr.index:
                 row = sr.loc[key]

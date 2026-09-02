@@ -57,7 +57,7 @@ class PortfolioEngine(SoftmaxEngine):
 
     # [FN-423]
     def _ref_param_key(self, p: CellProblem):
-        # The CVaR reference depends only on prior_count (plus per-cell risk_n / attempts,
+        # The CVaR reference depends only on prior_count (plus per-profile risk_n / attempts,
         # which are immutable on `p`). Temperature / γ don't affect it, so they're dropped
         # from the key — a temperature change won't invalidate this cache.
         return (round(float(self.params.get("prior_count", 30.0)), 9),)
@@ -114,16 +114,16 @@ class PortfolioEngine(SoftmaxEngine):
         # the return magnitude in THIS cell. Then a gateway with an average
         # downside pays ~_AVERSION of its return, above-average (volatile / thin)
         # gateways get trimmed, and a clearly-best low-downside gateway keeps its
-        # share — consistently across cells whatever the absolute risk scale.
+        # share — consistently across profiles whatever the absolute risk scale.
         mean_return = float(returns[eligible].mean()) if eligible_count else 0.0
         downside_eligible = downside[eligible]
         downside_eligible = downside_eligible[np.isfinite(downside_eligible)]   # guard against Beta-ppf NaNs
         mean_downside = float(downside_eligible.mean()) if downside_eligible.size else 0.0
         # Auto risk-aversion. The penalty is self-normalising (γ·downside ≈ AVERSION·return),
         # but FLOOR the denominator by a small fraction of the return so a near-zero-dispersion
-        # cell can't blow γ up (or divide by ~0) — it just concentrates on the best converter,
+        # profile can't blow γ up (or divide by ~0) — it just concentrates on the best converter,
         # which is correct when there's no risk spread to diversify against. Also cap γ so a
-        # pathological cell can't force a degenerate uniform split. (C1/γ-degeneracy)
+        # pathological profile can't force a degenerate uniform split. (C1/γ-degeneracy)
         downside_floor = max(mean_downside, 1e-4 * max(mean_return, 1e-9))
         gamma = float(np.clip(_AVERSION * mean_return / downside_floor, 0.0, 5000.0)) if mean_return > 0 else 0.0
 
@@ -184,8 +184,8 @@ class PortfolioEngine(SoftmaxEngine):
             x = x_next; t = t_next
 
         # Validity / failure check: a finite split summing to 1 that BEATS the trivial
-        # return-weighted fallback. If not, flag the cell infeasible (surfaced downstream via
-        # base._is_feasible → CellSolution.feasible) and fall back — a failed cell is never
+        # return-weighted fallback. If not, flag the profile infeasible (surfaced downstream via
+        # base._is_feasible → CellSolution.feasible) and fall back — a failed profile is never
         # reported as healthy (parity with Softmax's infeasible path).
         if np.all(np.isfinite(x)) and abs(float(x.sum()) - 1.0) < 1e-6 and _f(x) <= _f(x_start) + 1e-9:
             p._ref_infeasible = False       # type: ignore[attr-defined]

@@ -177,7 +177,7 @@ def render():
         # Entropy is retired from the UI; 'genetic_ref' (the revenue reference) is not offered as a
         # standalone engine — it stays in the backend as the genetic engine's internal reference.
         # ONLY the full-matrix GA is offered. The registry engines (softmax / thompson /
-        # portfolio / entropy) and the per-cell tilt GA are retired from the UI and their modules
+        # portfolio / entropy) and the per-profile tilt GA are retired from the UI and their modules
         # now live in routing_optimiser.legacy_engines. They stay IMPORTABLE and stay in the
         # ENGINES registry on purpose - `OptimiserSettings.engine` still defaults to "entropy",
         # ThompsonEngine and PortfolioEngine both subclass SoftmaxEngine, and the GA's own
@@ -186,7 +186,7 @@ def render():
         # registry would break all three; removing them from this list only hides them.
         choices = []
         # 19gd: the "Genetic Algorithm" option is the FULL-MATRIX GA
-        # (genetic_fullmatrix.run_fullmatrix_ga). The cross-cell tilt CMA-ES it replaced is in
+        # (genetic_fullmatrix.run_fullmatrix_ga). The cross-profile tilt CMA-ES it replaced is in
         # legacy_engines.midtilt_cmaes and is not reachable,
         # dispatched directly by the app (not a registry engine). CONSOLIDATED: the former separate
         # 'genetic' (NumPy) and 'genetic_numba' options are gone — there is now ONE genetic engine:
@@ -463,14 +463,14 @@ def render():
                 _auto_explore = True       # auto-explore capable-but-untested gateways
                 ss["eng_rpgt_hold_others"] = True
                 ss["eng_auto_explore"] = True
-                # Exploration min cell volume gate REMOVED (input deleted) and pinned to 0 = explore
-                # all. Non-zero left single-gateway cells with an UNSATISFIABLE 97% max-share cap
+                # Exploration min profile volume gate REMOVED (input deleted) and pinned to 0 = explore
+                # all. Non-zero left single-gateway profiles with an UNSATISFIABLE 97% max-share cap
                 # (a lone gateway is forced to 100%), which floored the GA at a large structural
                 # violation and made every run infeasible. 0 injects a fallback gateway into every
-                # single-gateway cell, so the search stays feasible.
+                # single-gateway profile, so the search stays feasible.
                 ss["explore_min_cell_vol"] = 0
                 _grc1, _grc2 = st.columns(2)
-                # 19gb: "Bank × Currency" REMOVED from both grains. It pooled RPGT into one cell /
+                # 19gb: "Bank × Currency" REMOVED from both grains. It pooled RPGT into one profile /
                 # one blended rate, and every run has used a per-RPGT grain for months. Its code
                 # paths were dead weight that still had to be reasoned about at every change - and
                 # because it could be re-selected, `_opt_by_rpgt` had to be threaded through
@@ -1066,7 +1066,7 @@ def render():
             _C_est *= _ratio(int(ss.get("max_configs", 0) or 0), _perf0.get("pool_target"),
                              lo=0.3, hi=3.0)
             _T_est = max(_PRE_est + _E_est + _C_est, 1.0)
-            _f_cells = 26.0 / _T_est                    # assembling-cells checkpoint
+            _f_cells = 26.0 / _T_est                    # assembling-profiles checkpoint
             _f_eng = _PRE_est / _T_est                  # engine start
             _f_eng_end = (_PRE_est + _E_est) / _T_est   # engine done → compression start
             # [FN-302]
@@ -1727,7 +1727,7 @@ def render():
                                         "same-brand sibling with any attempt data.")
                         except Exception as _e:  # noqa: BLE001
                             log(f"   [Note] cross-brand processor benchmark unavailable ({_e}); untested MIDs "
-                                "use same-brand sibling / cell average.")
+                                "use same-brand sibling / profile average.")
 
                     _progress(0.02, "Pre-processing…")
                     _stage("② Pre-processing")
@@ -1786,7 +1786,7 @@ def render():
                         #
                         # It is stated even when healthy on purpose. A low overlap here is the
                         # cause of a high pooled-prior rate hundreds of lines later, and on
-                        # 2026-08-31 that surfaced as "86% of gateway-cells on the pooled prior
+                        # 2026-08-31 that surfaced as "86% of gateway-profiles on the pooled prior
                         # ... expected at BIN grain, not a mismatch" - a reassurance written from
                         # the wrong side of a rename.
                         _fc_bins = set(forecast_temp["bin"].dropna().astype(str).str.strip().str.upper())
@@ -1799,14 +1799,14 @@ def render():
                         if not _ad_bins:
                             log("   ⚠ [bin-key] THE ATTEMPTS FRAME HAS NO `bin` COLUMN. Every "
                                 "(rpgt, currency, bin, gateway) rate will fall to the pooled "
-                                "prior and no per-cell success rate in this run is measured. "
+                                "prior and no per-profile success rate in this run is measured. "
                                 "Check attempts_success.sql still emits `bin` and that "
                                 "load_success_data still maps it.")
                         elif _bk_hit == 0:
                             log("   ⚠ [bin-key] THE JOIN IS DEAD: the attempts frame and the "
                                 f"forecast share ZERO BIN values ({len(_ad_bins):,} vs "
                                 f"{len(_fc_bins):,} distinct). Fix the key before reading any "
-                                "result below — every per-cell rate is a pooled prior.")
+                                "result below — every per-profile rate is a pooled prior.")
                         else:
                             # 19gz: say what it MEANS, not what it joins on.
                             # 19hd: headline first, consequence under it. The single sentence
@@ -1859,14 +1859,14 @@ def render():
                     _do_rpgt_filter = bool(_sel_rpgts and _sel_rpgts != _all_rpgts)
                     # 19gb: both are STRUCTURALLY True now - every remaining grain is per-RPGT.
                     # Kept as named constants rather than deleted because ~15 sites read them and
-                    # they are still the honest description of the cell key; they no longer VARY.
+                    # they are still the honest description of the profile key; they no longer VARY.
                     _score_by_rpgt = True
                     _opt_by_rpgt = True
-                    # This one still varies - the sub-cell grain is the only remaining choice.
+                    # This one still varies - the profile grain is the only remaining choice.
                     _opt_subcell = (_opt_grain == "Bank × Currency × RPGT × pmp × Country")
                     # The RPGT filter that narrows attempts/forecast to the SELECTED RPGTs is
                     # applied further down (after the currency / switch-off cleanups) — NOT here.
-                    # Why: in Bank×Currency mode the ENGINE SCORE must pool ALL RPGTs for the cell
+                    # Why: in Bank×Currency mode the ENGINE SCORE must pool ALL RPGTs for the profile
                     # (all transaction types inform the gateway's success rate), while only the
                     # volume routed, eligibility and the VAMP cap are restricted to the selected
                     # RPGTs. In Bank×Currency×RPGT mode each selected RPGT is scored on its own.
@@ -2091,7 +2091,7 @@ def render():
                         _diag("②·diag DATA SHAPES after pre-processing/filters:")
                         # 19gy: the two `rows=… · currencies=… · gateways=…` shape lines are
                         # deleted. Every figure on them is stated with context somewhere else —
-                        # the cell counts in ④·diag, the RPGT split in the RPGT-scope table, the
+                        # the profile counts in ④·diag, the RPGT split in the RPGT-scope table, the
                         # window in RUN CONFIG — and a bare shape line invites a reader to
                         # reconcile two numbers that were never the same population.
                         _rpgts_all = locals().get("_all_rpgts"); _rpgts_sel = locals().get("_sel_rpgts")
@@ -2108,7 +2108,7 @@ def render():
                         # independently, so DON'T collapse BINs into their issuing parent
                         # bank. Identity map ⇒ parent_bank == bank == BIN, so _gk keys on
                         # BIN and ctx (hence the full-matrix genome) is built per BIN. All
-                        # downstream steps are grain-agnostic — they just get more cells
+                        # downstream steps are grain-agnostic — they just get more profiles
                         # (slower). This is what makes "GA - Full matrix" actually BIN-grain.
                         bin_to_bank = {b: b for b in agg_adf["bin"].unique()}
                         # 19hc: the "[full-matrix] TRUE BIN GRAIN" log line was DELETED. It was a
@@ -2131,17 +2131,17 @@ def render():
                     agg_forecast["parent_bank"] = agg_forecast["bin"].map(bin_to_bank).fillna(agg_forecast["bin"])
                     agg_adf["parent_bank"] = agg_adf["bin"].map(bin_to_bank).fillna(agg_adf["bin"])
 
-                    # Optimisation grain (the CELL grain — where the split is made & traffic moved).
-                    # Bank×Currency collapses RPGT into ONE cell per (currency, parent_bank);
-                    # Bank×Currency×RPGT keeps RPGT in the cell key (a split per RPGT). Cell keys
+                    # Optimisation grain (the PROFILE grain — where the split is made & traffic moved).
+                    # Bank×Currency collapses RPGT into ONE profile per (currency, parent_bank);
+                    # Bank×Currency×RPGT keeps RPGT in the profile key (a split per RPGT). Profile keys
                     # use `_gk`. The Engine Score grain (_score_by_rpgt) is separate and is aligned
-                    # to these cells below.
+                    # to these profiles below.
                     _gk = ["rpgt", "currency", "parent_bank"]
                     # Name the grain ACTUALLY selected. Until 2026-08-19ad this printed
-                    # "Bank×Currency×RPGT (per-RPGT cells)" whenever _opt_by_rpgt was true, which
-                    # is ALSO true at the 5-part sub-cell grain — so the 2026-08-21 21:24 run,
+                    # "Bank×Currency×RPGT (per-RPGT profiles)" whenever _opt_by_rpgt was true, which
+                    # is ALSO true at the 5-part profile grain — so the 2026-08-21 21:24 run,
                     # configured as Bank×Currency×RPGT×pmp×Country, logged the 3-part description.
-                    # A log that misstates its own grain is how a cell count gets attributed to
+                    # A log that misstates its own grain is how a profile count gets attributed to
                     # the wrong configuration.
                     # 19hb: the log line here was DELETED as a duplicate — the RUN CONFIG table
                     # already prints "optimisation grain" and "engine score grain" straight from
@@ -2162,11 +2162,11 @@ def render():
                     agg_adf = agg_adf.groupby(_gk + ["gateway"]).sum(numeric_only=True).reset_index()
                     agg_adf["bin"] = agg_adf["parent_bank"]
 
-                    # Build the routing cells from those attempts-based gateways.
+                    # Build the routing profiles from those attempts-based gateways.
                     # Current split (baseline_share) = each gateway's 30D attempts share;
-                    # per-gateway volume = forecast cell total x that share. A cell the forecast
+                    # per-gateway volume = forecast profile total x that share. A profile the forecast
                     # does NOT cover is dropped (19em) rather than given its attempt count as a
-                    # stand-in, so the cell total always equals the forecast — which is what the
+                    # stand-in, so the profile total always equals the forecast — which is what the
                     # sentence here used to claim while `fillna` made it false.
                     att = agg_adf[_gk + ["gateway", "attempts"]].copy()
                     att["cell_att"] = att.groupby(_gk)["attempts"].transform("sum")
@@ -2174,23 +2174,23 @@ def render():
                     att = att.merge(fc_tot, on=_gk, how="left")
 
                     # ── 19em [require-forecast] ───────────────────────────────────────────────
-                    # This LEFT join leaves NaN on every cell the forecast has no row for, and
-                    # until 19em the next line was `fillna(att["cell_att"])` — the cell's 30-DAY
+                    # This LEFT join leaves NaN on every profile the forecast has no row for, and
+                    # until 19em the next line was `fillna(att["cell_att"])` — the profile's 30-DAY
                     # ATTEMPT COUNT substituted for forecast volume. Historic attempts are not
                     # forecast transactions, and swapping one for the other put 40.1% of the
                     # genome on a stand-in:
                     #
                     #   forecast baseline Σvolume                      184,165
-                    #   cells assembled, total forecast volume         207,877
+                    #   profiles assembled, total forecast volume         207,877
                     #                                                 --------
                     #                                  substituted in   23,712
-                    #   [profiles] 9,018 dropped profiles Σattempts     24,033   (within 1.3%)
+                    #   [cells] 9,018 dropped cells Σattempts     24,033   (within 1.3%)
                     #
-                    # Those cells then fail the delivered explode's INNER merge against
+                    # Those profiles then fail the delivered explode's INNER merge against
                     # orig_forecast (103,230 of 257,635 rows), map to no prop-key ("154,405/
                     # 257,635 ... 59.9%"), and reach no band ceiling — so the GA optimised them,
                     # they shipped in the rules, and nothing checked them. [prune-inert] found
-                    # only 2 volume-less cells for the same reason: `fillna` had given them all
+                    # only 2 volume-less profiles for the same reason: `fillna` had given them all
                     # a volume.
                     #
                     # LIVE ROUTING CHANGE, and an INTENDED one (19en): those BINs now carry NO
@@ -2203,7 +2203,7 @@ def render():
                         _rf_cells = int(att.loc[_rf_miss, _gk].drop_duplicates().shape[0])
                         _rf_rows = int(_rf_miss.sum())
                         if not bool((~_rf_miss).any()):
-                            # EVERY cell missing is a broken join key, not an uncovered book.
+                            # EVERY profile missing is a broken join key, not an uncovered book.
                             # 19em kept the substitution here; that violated the rule this
                             # project runs on — a guard may flag a root cause, it may NEVER
                             # silently change what ships — and it would have done so on 100% of
@@ -2224,7 +2224,7 @@ def render():
                         # switch back) is settled and lives in the block comment above, which is
                         # where a reader who needs it will be. What a RUN needs to show is how much
                         # of the book was dropped and what happens to it.
-                        log(f"   [require-forecast] {_rf_cells:,} cell(s) / {_rf_rows:,} "
+                        log(f"   [require-forecast] {_rf_cells:,} profile(s) / {_rf_rows:,} "
                             f"gateway-row(s) dropped - not present in forecast")
                     att["volume"] = att["fc_volume"] * att["baseline_share"]
 
@@ -2250,7 +2250,7 @@ def render():
                         rf["_gwk"] = rf["gateway"].astype(str).str.strip().str.lower()
                         rf["_rk"] = rf["rpgt"].astype(str).str.strip().str.lower()
                         rf["_vw"] = pd.to_numeric(rf["risk_rate"], errors="coerce").fillna(0.0) * pd.to_numeric(rf["volume"], errors="coerce").fillna(0.0)
-                        # Risk rate follows the OPTIMISATION (cell) grain: per-RPGT when cells are
+                        # Risk rate follows the OPTIMISATION (profile) grain: per-RPGT when profiles are
                         # per-RPGT, else pooled across RPGTs (classic behaviour).
                         _rkeys = ["_rk", "_ck", "_pk", "_gwk"]
                         rr = rf.groupby(_rkeys).agg(_vw=("_vw", "sum"), _v=("volume", "sum")).reset_index()
@@ -2267,7 +2267,7 @@ def render():
                         agg_forecast = agg_forecast.drop(columns=["_ck", "_pk", "_gwk", "_rk", "risk_cb", "_v"])
                     # Seed the VAMP rate of NO-VAMP-DATA gateways (risk_rate 0/NaN or risk_n==0 — e.g.
                     # WoodForest, whose 0 is a data gap, NOT true zero-risk) with the risk_n-weighted
-                    # average VAMP rate of gateways WITH data at the OPTIMISATION-grain cell, so they
+                    # average VAMP rate of gateways WITH data at the OPTIMISATION-grain profile, so they
                     # aren't treated as risk-free and over-favoured by the risk-min dial. Falls back to
                     # the currency-level, then global weighted rate, then the 0.006 default below.
                     try:
@@ -2291,7 +2291,7 @@ def render():
                             _seedrate = agg_forecast["_cellrate"].fillna(agg_forecast["_currate"]).fillna(_globrate)
                             agg_forecast["risk_rate"] = np.where(_nodata.to_numpy(), _seedrate.to_numpy(), _rrv2.to_numpy())
                             agg_forecast = agg_forecast.drop(columns=["_cellrate", "_currate"])
-                            log(f"   risk seeding: {int(_nodata.sum()):,} gateway-cell(s) with NO VAMP data seeded from "
+                            log(f"   risk seeding: {int(_nodata.sum()):,} gateway-profile(s) with NO VAMP data seeded from "
                                 f"the opt-grain weighted-avg VAMP rate (currency/global fallback {_globrate:.4f}) — "
                                 "so 0-VAMP gateways aren't treated as risk-free.")
                     except Exception as _e:  # noqa: BLE001
@@ -2304,7 +2304,7 @@ def render():
                     # volume under every engine/dial. We add capable-but-untested gateways as
                     # candidates (volume 0 / baseline 0) so the engine CAN explore them. Two sources:
                     #   • explore_untested_gateways list (manual, always on), and
-                    #   • the auto toggle → every gateway approved for the cell's currency in
+                    #   • the auto toggle → every gateway approved for the profile's currency in
                     #     Master_MID_List (minus scrubbed / switched-off).
                     # The injected rows are SEEDED below (after the score is built) at the bank×
                     # currency AVERAGE rate as a WEAK prior — so Thompson keeps a wide posterior
@@ -2386,17 +2386,17 @@ def render():
                                 f"(from {_n0}; dropped {_drop_inact} inactive, {_drop_pp} PayPal, "
                                 f"{_drop_brand} other-brand vs '{sr_company}').")
                         if _explore:
-                            # PER-CELL presence: a gateway present in ONE bank of a currency must still
+                            # PER-PROFILE presence: a gateway present in ONE bank of a currency must still
                             # be injected into OTHER banks of that currency where it's absent (the old
                             # (currency, gateway) check skipped it everywhere → 0 injected → single-
-                            # gateway cells never got a fallback → 100% in the export). We backfill
-                            # ONLY cells that would otherwise be single-gateway (fewer than _MIN_GW
-                            # eligible), so well-populated cells aren't bloated. The explore share cap
+                            # gateway profiles never got a fallback → 100% in the export). We backfill
+                            # ONLY profiles that would otherwise be single-gateway (fewer than _MIN_GW
+                            # eligible), so well-populated profiles aren't bloated. The explore share cap
                             # keeps the injected fallbacks to ≤10% combined so the primary stays dominant.
                             # ANY-BIN ELIGIBILITY (ALWAYS ON; the toggle was removed in
                             # 2026-08-19p): a huge _MIN_GW
-                            # makes the "cell already has ≥ _MIN_GW gateways" skip below never fire, so the
-                            # eligible-but-untested gateways are injected into EVERY currency-matched cell
+                            # makes the "profile already has ≥ _MIN_GW gateways" skip below never fire, so the
+                            # eligible-but-untested gateways are injected into EVERY currency-matched profile
                             # (not just single-gateway ones) — the full business eligibility footprint.
                             # ALWAYS ON as of 2026-08-19p — the "Eligibility: any-BIN
                             # routing" checkbox was removed. Any-BIN eligibility IS the
@@ -2416,7 +2416,7 @@ def render():
                                 _cell_gws.setdefault(_k, set()).add(_gw)
                             _cells = agg_forecast[_cellkey_cols].drop_duplicates()
                             _cells_cur = _cells["currency"].astype(str).str.strip().str.lower().to_numpy()
-                            # OPT-IN volume gate: per-cell total forecast volume, used to skip
+                            # OPT-IN volume gate: per-profile total forecast volume, used to skip
                             # exploration injection in near-empty cells. 0 → no gating (unchanged).
                             _expl_min_vol = float(ss.get("explore_min_cell_vol", 0) or 0)
                             _cell_vol_map = {}
@@ -2436,15 +2436,15 @@ def render():
                                 for _c in _sel.itertuples(index=False):
                                     _cd = _c._asdict()
                                     _ck = tuple(str(_cd[c]).strip().lower() for c in _cellkey_cols)
-                                    if len(_cell_gws.get(_ck, ())) >= _MIN_GW:   # cell already has a fallback
+                                    if len(_cell_gws.get(_ck, ())) >= _MIN_GW:   # profile already has a fallback
                                         continue
                                     if _ck + (_g,) in _have:
                                         continue
                                     if _expl_min_vol > 0 and _cell_vol_map.get(_ck, 0.0) < _expl_min_vol:
-                                        _pruned_cells.add(_ck)          # near-empty cell → skip exploration
+                                        _pruned_cells.add(_ck)          # near-empty profile → skip exploration
                                         continue
                                     # 19gb: the "ALL_RPGTS" default is unreachable now (every
-                                    # cell carries a real rpgt); kept as a loud, wrong-looking
+                                    # profile carries a real rpgt); kept as a loud, wrong-looking
                                     # value so a missing key shows up instead of defaulting quietly.
                                     _rp = _cd.get("rpgt", "ALL_RPGTS")
                                     _nr = {k: _cd[k] for k in _gk}
@@ -2459,14 +2459,14 @@ def render():
                             if _new_rows:
                                 agg_forecast = pd.concat([agg_forecast, pd.DataFrame(_new_rows)], ignore_index=True)
                                 log(f"   exploration: injected {len(_new_rows):,} candidate row(s) "
-                                    "into eligible cells")
+                                    "into eligible profiles")
                                 log(f"                {'EVERY eligible cell (any-BIN eligibility ON)' if _explore_all else 'single-gateway cells'}"
                                     f" · {len(set(k[3] for k in _inj_fc_keys))} gateway(s) · "
                                     f"{'auto: currency-capable' if _auto_explore else 'explore list'}"
                                     " · seeded at the bank×currency average (weak prior).")
                             if _expl_min_vol > 0:
-                                log(f"   exploration volume gate ON (min cell volume {_expl_min_vol:,.0f}): "
-                                    f"skipped {len(_pruned_cells)} near-empty cell(s) → fewer fallback rows "
+                                log(f"   exploration volume gate ON (min profile volume {_expl_min_vol:,.0f}): "
+                                    f"skipped {len(_pruned_cells)} near-empty profile(s) → fewer fallback rows "
                                     "injected, smaller GA matrix (A/B: compare total gateway-rows + dial-0 "
                                     "VAMP/revenue/MIDs-over-cap vs a run at 0).")
                     except Exception as _e:  # noqa: BLE001
@@ -2494,7 +2494,7 @@ def render():
                         time_decay_half_life_days=(float(decay_half) if apply_decay else None),
                         prior_scope=("rpgt", "currency", "bin"), empirical_bayes=use_eb)
 
-                    log(f"   {len(agg_sr):,} dense aggregated cell × gateway success rates (full-window rate, 30D eligibility)")
+                    log(f"   {len(agg_sr):,} dense aggregated profile × gateway success rates (full-window rate, 30D eligibility)")
 
                     # Cross-border penalty: multiply the Engine Score (smoothed SR)
                     # by xborder_penalty for gateways flagged isCrossBorder=TRUE in the
@@ -2514,24 +2514,24 @@ def render():
                     if xborder_fids and xborder_penalty is not None:
                         _xmask = agg_sr["gateway"].astype(str).str.strip().str.lower().isin(xborder_fids)
                         agg_sr.loc[_xmask, "success_rate"] = agg_sr.loc[_xmask, "success_rate"] * float(xborder_penalty)
-                        log(f"   cross-border penalty {xborder_penalty:.0%} applied to {int(_xmask.sum())} gateway cells "
+                        log(f"   cross-border penalty {xborder_penalty:.0%} applied to {int(_xmask.sum())} gateway profiles "
                             f"({len(xborder_fids)} cross-border FIDs)")
                     ss["xborder_fids"] = xborder_fids
 
                     # 19gb: the score→opt GRAIN ALIGNMENT is gone with the Bank × Currency option.
                     # It existed for the two MISMATCHED combinations only — broadcast a pooled
-                    # Bank×Currency score onto per-RPGT cells, or pool per-RPGT scores up to one
+                    # Bank×Currency score onto per-RPGT profiles, or pool per-RPGT scores up to one
                     # bank rate. Both grains are per-RPGT now, so agg_sr's rpgt values already match
                     # agg_forecast's and build_cell_problems joins on (rpgt, currency, bank, gateway)
                     # with no realignment. 25 lines deleted.
 
                     # Seed the injected exploration candidates at the bank×currency AVERAGE rate
-                    # (a WEAK prior). For each injected (currency, bank, rpgt) cell we take the mean
-                    # success/prior rate over the cell's RATED gateways and add an agg_sr row for the
+                    # (a WEAK prior). For each injected (currency, bank, rpgt) profile we take the mean
+                    # success/prior rate over the profile's RATED gateways and add an agg_sr row for the
                     # untested gateway with attempts=0 — so Thompson keeps a WIDE posterior (weak
                     # pseudo-count → natural exploration, no dilution cap needed) and softmax scores
                     # it at the local average + the exploration floor. The injected forecast risk is
-                    # filled with the cell-average risk (else the 0.006 default).
+                    # filled with the profile-average risk (else the 0.006 default).
                     if _inj_fc_keys:
                         try:
                             _sr = agg_sr.copy()
@@ -2552,7 +2552,7 @@ def render():
                                         .groupby(["_ck", "_bk", "_rk"])["risk_rate"].mean().to_dict())
                             # ---- Sibling-processor prior (#9): if an untested gatewayFid's PROCESSOR
                             # (Master-MID 'gateway' col) + brand + currency has other gatewayFids WITH
-                            # data, seed it from their volume-weighted average instead of the cell mean
+                            # data, seed it from their volume-weighted average instead of the profile mean
                             # (a same-processor rate is a better prior than the bank×currency average).
                             _fid_pb = {}
                             try:
@@ -2635,7 +2635,7 @@ def render():
                             _wp = ("wide Thompson posterior the Thompson engine samples to explore"
                                    if engine_key == "thompson"
                                    else "weak/uncertain prior, scored cautiously")
-                            log(f"   exploration seeding: {len(_sr_rows)} untested gateway cell(s) seeded "
+                            log(f"   exploration seeding: {len(_sr_rows)} untested gateway profile(s) seeded "
                                 f"(attempts=0 → {_wp}): {_n_sib} from a same-"
                                 f"processor+brand+currency sibling, {_n_xbrand} from a CROSS-BRAND processor "
                                 f"benchmark, {len(_sr_rows) - _n_sib - _n_xbrand} from the bank×currency average.")
@@ -2676,17 +2676,17 @@ def render():
                     # / forecast HISTORY bypassed them entirely and could be routed volume it cannot
                     # take. Gated here, at the single choke every candidate passes through:
                     #   • currency=EXCLUDED  — no usable currency in the MID list  → drop  [HARD]
-                    #   • currency mismatch  — fid's designated currency != cell's → drop  [HARD]
+                    #   • currency mismatch  — fid's designated currency != profile's → drop  [HARD]
                     #   • brand mismatch     — fid's brand != the run's company    → drop  [HARD]
                     #   • IsActive=FALSE     — REPORT-ONLY: logs what it WOULD remove and how much
                     #                          baseline volume rides on it, changes nothing.
                     #                          Enforce with ROUTING_MIDLIST_ACTIVE=1.     [REPORT]
-                    # processWallet is gated after the sub-cell expansion below (it needs the pmp
-                    # column, so it only bites at sub-cell grain).
+                    # processWallet is gated after the profile expansion below (it needs the pmp
+                    # column, so it only bites at profile grain).
                     # VOLUME IS CONSERVED: a dropped row's volume is redistributed across the
-                    # surviving doors of the SAME cell, never deleted — the demand is real even if
-                    # that particular door cannot serve it. Cells the gates would empty are left
-                    # untouched (an unroutable cell is worse than a bad door).
+                    # surviving doors of the SAME profile, never deleted — the demand is real even if
+                    # that particular door cannot serve it. Profiles the gates would empty are left
+                    # untouched (an unroutable profile is worse than a bad door).
                     # Kill-switch: ROUTING_MIDLIST_FILTER=0 disables the whole block.
                     _mf_wallet = {}
                     if (os.environ.get("ROUTING_MIDLIST_FILTER", "1") != "0"
@@ -2745,7 +2745,7 @@ def render():
                                       if _mf_act else pd.Series(False, index=_ix))
                             _act_on = os.environ.get("ROUTING_MIDLIST_ACTIVE", "0") == "1"
                             _hard = _d_excl | _d_cur | _d_brand | (_d_act if _act_on else False)
-                            # ---- never leave a cell with no candidate --------------------------
+                            # ---- never leave a profile with no candidate --------------------------
                             _ckf = [_c for _c in ["rpgt", "currency", "bin"] if _c in agg_forecast.columns]
                             if _ckf and bool(_hard.any()):
                                 _t1 = pd.DataFrame({"_k": (~_hard).astype(int).to_numpy()})
@@ -2755,8 +2755,8 @@ def render():
                                 _resc1 = _hard & (_surv1 <= 0)
                                 if bool(_resc1.any()):
                                     log(f"   [midlist-filter] {int(_resc1.sum()):,} row(s) KEPT despite failing a "
-                                        "gate — they are the ONLY candidates left in their cell, and an "
-                                        "unroutable cell is worse than an unsuitable door.")
+                                        "gate — they are the ONLY candidates left in their profile, and an "
+                                        "unroutable profile is worse than an unsuitable door.")
                                     _hard = _hard & ~_resc1
                             # ---- IsActive: report-only unless explicitly enforced --------------
                             if bool(_d_act.any()):
@@ -2773,7 +2773,7 @@ def render():
                                 for _fk, _fr in _ai.head(20).iterrows():
                                     log(f"      {_fk}: {float(_fr['sum']):,.0f} baseline volume across "
                                         f"{int(_fr['size']):,} candidate row(s)")
-                            # ---- apply the hard gates, CONSERVING cell volume ------------------
+                            # ---- apply the hard gates, CONSERVING profile volume ------------------
                             if bool(_hard.any()):
                                 _byf = {}
                                 for _nm, _msk in (("currency=EXCLUDED", _d_excl),
@@ -2785,7 +2785,7 @@ def render():
                                 _nh = int(_hard.sum())
                                 _vlost = float(_volm[_hard].sum()) if _volm is not None else 0.0
                                 if _ckf and _volm is not None:
-                                    # scale survivors so each cell's TOTAL volume is preserved
+                                    # scale survivors so each profile's TOTAL volume is preserved
                                     _t1v = pd.DataFrame({"_v": _volm.to_numpy(),
                                                          "_s": np.where(_hard.to_numpy(), 0.0, _volm.to_numpy())})
                                     for _c in _ckf:
@@ -2799,8 +2799,8 @@ def render():
                                 log(f"   [midlist-filter] dropped {_nh:,} candidate row(s) on Master_MID_List "
                                     "capability: " + " · ".join(f"{_k} {_v:,}" for _k, _v in _byf.items())
                                     + f". Their {_vlost:,.0f} volume was REDISTRIBUTED across the surviving "
-                                    "doors of the same cell (demand is real even where that door can't serve "
-                                    "it), so no cell total changed. These rows could never ship, so they were "
+                                    "doors of the same profile (demand is real even where that door can't serve "
+                                    "it), so no profile total changed. These rows could never ship, so they were "
                                     "consuming decision variables and share mass the band projector cannot "
                                     "see. Kill-switch: ROUTING_MIDLIST_FILTER=0.")
                             else:
@@ -2812,12 +2812,12 @@ def render():
                                 "for history-derived gateways this run.")
 
                     _progress(_f_cells, "Assembling cells…")
-                    _stage("③ Assemble routing cells from 30D attempts (forecast supplies volume only)")
+                    _stage("③ Assemble routing profiles from 30D attempts (forecast supplies volume only)")
                     if _opt_subcell:
-                        # SUB-CELL decision grain: apportion each cell's forecast volume across its
-                        # (pmp, Country) sub-cells by the pro-rata export's VI-Txn fractions (volume
+                        # PROFILE decision grain: apportion each profile's forecast volume across its
+                        # (pmp, Country) profiles by the pro-rata export's VI-Txn fractions (volume
                         # glue), then assemble one problem per sub-cell (success rates BROADCAST from
-                        # cell grain). build_cell_problems is left untouched for the cell-grain path.
+                        # profile grain). build_cell_problems is left untouched for the profile-grain path.
                         from routing_optimiser.s3_problem.subcell import (subcell_vi_fractions,
                                                                expand_forecast_to_subcells)
                         from routing_optimiser.s1_extract.data_loader import build_subcell_problems
@@ -2829,17 +2829,17 @@ def render():
                                 "(vamp_t_period_prorata_export.csv) in the outputs dir — not found.")
                         _fr_sc = subcell_vi_fractions(pd.read_csv(_ppf_sc))
                         _agg_sc = expand_forecast_to_subcells(agg_forecast, _fr_sc)
-                        # ── processWallet GATE (Master_MID_List, sub-cell grain) ───────────────
+                        # ── processWallet GATE (Master_MID_List, profile grain) ───────────────
                         # A fid with processWallet=FALSE cannot serve a GOOGLEPAY / APPLEPAY
                         # sub-cell. Until now this was only a downstream MASK: the row stayed a
                         # candidate, the GA spent share on it, and the band projector's emask +
                         # build_split_exports zeroed it and renormalised afterwards — e.g.
-                        # authorize-usd-tav taking 71.2% of a googlepay sub-cell in
+                        # authorize-usd-tav taking 71.2% of a googlepay profile in
                         # usd|402347|Addon Sale, all of which delivery threw away. Removing the
-                        # CANDIDATE instead means each sub-cell's simplex only ever contains doors
+                        # CANDIDATE instead means each profile's simplex only ever contains doors
                         # that can actually serve it: scored == shippable on this axis, fewer
                         # decision variables, and share mass the projector can see.
-                        # Volume is conserved (redistributed within the sub-cell) and a sub-cell
+                        # Volume is conserved (redistributed within the profile) and a profile
                         # that would be emptied is left alone. Kill-switch: ROUTING_MIDLIST_WALLET=0.
                         _mf_w = locals().get("_mf_wallet") or {}
                         if (_mf_w and os.environ.get("ROUTING_MIDLIST_WALLET", "1") != "0"
@@ -2861,7 +2861,7 @@ def render():
                                     _resc2 = _dropw & (_sur2 <= 0)
                                     if bool(_resc2.any()):
                                         log(f"   [midlist-wallet] {int(_resc2.sum()):,} wallet-incapable row(s) "
-                                            "KEPT — sole candidate(s) in their sub-cell; the downstream emask "
+                                            "KEPT — sole candidate(s) in their profile; the downstream emask "
                                             "still zeroes them.")
                                         _dropw = _dropw & ~_resc2
                                 if bool(_dropw.any()):
@@ -2881,27 +2881,27 @@ def render():
                                         _agg_sc = _agg_sc.assign(volume=_v2 * _sc2)
                                     _agg_sc = _agg_sc[~_dropw].reset_index(drop=True)
                                     log(f"   [midlist-wallet] dropped {int(_dropw.sum()):,} candidate row(s): "
-                                        "processWallet=FALSE fid in a GOOGLEPAY/APPLEPAY sub-cell "
+                                        "processWallet=FALSE fid in a GOOGLEPAY/APPLEPAY profile "
                                         f"({len(_fw)} fid(s): {', '.join(_fw[:8])}"
                                         + (" …" if len(_fw) > 8 else "")
-                                        + f"); their {_vw:,.0f} sub-cell volume was REDISTRIBUTED across the "
-                                        "wallet-capable doors of the same sub-cell. Previously these stayed "
+                                        + f"); their {_vw:,.0f} profile volume was REDISTRIBUTED across the "
+                                        "wallet-capable doors of the same profile. Previously these stayed "
                                         "candidates and were zeroed only AFTER the GA had spent share on them. "
                                         "Kill-switch: ROUTING_MIDLIST_WALLET=0.")
                                 else:
                                     log("   [midlist-wallet] no wallet-incapable candidate found in a "
-                                        "GOOGLEPAY/APPLEPAY sub-cell.")
+                                        "GOOGLEPAY/APPLEPAY profile.")
                             except Exception as _mwe:  # noqa: BLE001
                                 log(f"   [midlist-wallet] SKIPPED ({type(_mwe).__name__}: {_mwe}) — "
                                     "wallet-incapable doors remain candidates (masked downstream only).")
                         agg_problems = build_subcell_problems(_agg_sc, agg_sr)
-                        log(f"   [sub-cell] optimisation grain = Bank×Currency×RPGT×pmp×Country: "
-                            f"{len(agg_problems):,} sub-cell problems from {len(agg_forecast):,} "
-                            f"cell-gateway rows (volume split by pro-rata VI, success rates broadcast).")
+                        log(f"   [profile] optimisation grain = Bank×Currency×RPGT×pmp×Country: "
+                            f"{len(agg_problems):,} profile problems from {len(agg_forecast):,} "
+                            f"profile-gateway rows (volume split by pro-rata VI, success rates broadcast).")
                     else:
                         agg_problems = build_cell_problems(agg_forecast, agg_sr)
 
-                    # ---- CELL / GATEWAY DIAGNOSTICS (verbose) ----------------------------
+                    # ---- PROFILE / GATEWAY DIAGNOSTICS (verbose) ----------------------------
                     try:
                         _ng = np.array([p.n() for p in agg_problems], dtype=float)
                         _nelig = np.array([int((np.asarray(p.risk_rates) >= 0).sum()) for p in agg_problems], dtype=float) if agg_problems else np.array([])
@@ -2911,24 +2911,24 @@ def render():
                         # [FN-312]
                         def _q(a, x):
                             return float(np.quantile(a, x)) if len(a) else 0.0
-                        _diag("④·diag ROUTING CELLS assembled:")
-                        _diag(f"      cells={len(agg_problems):,} · total gateway-rows={int(_ng.sum()):,} · "
+                        _diag("④·diag ROUTING PROFILES assembled:")
+                        _diag(f"      profiles={len(agg_problems):,} · total gateway-rows={int(_ng.sum()):,} · "
                               f"total forecast volume={_vols.sum():,.0f}")
-                        # 19hd: "cells with 1 gateway / cells >50 gateways" DELETED. Both read 0
+                        # 19hd: "profiles with 1 gateway / profiles >50 gateways" DELETED. Both read 0
                         # on every run, and structurally so while exploration is on: the inject
-                        # above puts a fallback candidate into EVERY eligible cell, so a
-                        # 1-gateway cell cannot survive it, and no cell reaches 50 doors at this
-                        # grain. If exploration is ever switched off, 1-gateway cells become
+                        # above puts a fallback candidate into EVERY eligible profile, so a
+                        # 1-gateway profile cannot survive it, and no profile reaches 50 doors at this
+                        # grain. If exploration is ever switched off, 1-gateway profiles become
                         # possible again and this pair is worth reviving — the cap-unsatisfiable
                         # case is real, it just cannot arise under the shipped configuration.
-                        _diag(f"      gateway-rows on POOLED prior (no per-cell attempts): {_npool:,} · "
+                        _diag(f"      gateway-rows on POOLED prior (no per-profile attempts): {_npool:,} · "
                               f"auto-explore injected rows: {_nexpl:,}")
                         # 19hd: the currencies / distinct-BINs / rpgt-grain-values line DELETED.
                         # All three are properties of the CONFIGURATION, restated: the currencies
                         # and RPGTs are in RUN CONFIG and the RPGT-scope table, and the BIN count
-                        # is the cell count already printed two lines above.
+                        # is the profile count already printed two lines above.
                     except Exception as _e:  # noqa: BLE001
-                        _diag(f"   [cell diagnostics failed: {_e}]")
+                        _diag(f"   [profile diagnostics failed: {_e}]")
 
                     # Temperature for the softmax-based reference. Softmax, Portfolio and Genetic
                     # ALL build their slider-100 (revenue) reference with the softmax engine, so
@@ -2952,11 +2952,11 @@ def render():
                                 p.temperature = float(t)
                                 _matched += 1
                         if cell_temp:
-                            log(f"   variance-scaled temperature: set on {_matched} cell(s) "
+                            log(f"   variance-scaled temperature: set on {_matched} profile(s) "
                                 f"(shared with the revenue reference); median gap t-stat={_medz:.2f}, "
                                 f"range {min(cell_temp.values()):.3f}–{max(cell_temp.values()):.3f}.")
                         else:
-                            log("   variance-scaled temperature: no valid cells; using fallback 0.170.")
+                            log("   variance-scaled temperature: no valid profiles; using fallback 0.170.")
 
                     # 5 variations (0, 25, 50, 75, 100) instead of 21: each non-reference
                     # weight re-runs the full granular enforcement (VAMP recap + per-MID /
@@ -2985,16 +2985,16 @@ def render():
                     # [FN-313]
                     # [explode-keep] logs once (_explode has 6 callers). THE SCOPE IS STASHED
                     # HERE, in render()'s own scope, because `_sel_rpgts` is a CLOSURE variable as
-                    # seen from inside `_explode` — a closure cell only exists if the name is
+                    # seen from inside `_explode` — a closure profile only exists if the name is
                     # referenced syntactically, so locals()/globals() there return NOTHING. That
                     # made the entire keep block fail closed and silently no-op on the 23:32 run,
                     # and the unit test missed it because its harness injected the name as a
                     # module global (which globals() DOES see) instead of a closure variable.
                     _EXKEEP = {"said": False, "scope": set(locals().get("_sel_rpgts") or ())}
                     def _explode(agg_split):
-                        # Per-RPGT optimisation: cells already carry the real RPGT — the split IS
+                        # Per-RPGT optimisation: profiles already carry the real RPGT — the split IS
                         # the exploded split, so map parent_bank back to the BIN-level bank(s) but
-                        # keep each cell's own RPGT (no fan-out across RPGTs).
+                        # keep each profile's own RPGT (no fan-out across RPGTs).
                         if _opt_by_rpgt:
                             sc = agg_split.copy()
                             sc["_rk"] = sc["rpgt"].astype(str).str.strip().str.lower()
@@ -3006,32 +3006,32 @@ def render():
                             _mp = _mp.rename(columns={"rpgt": "_orig_rpgt", "bin": "_orig_bank"}).drop(columns=["rpgt"], errors="ignore")
                             ex = _mp.merge(sc.drop(columns=["rpgt"], errors="ignore"),
                                            on=["currency", "parent_bank", "_rk"], how="inner")
-                            # ── KEEP PROFILES THAT CARRY TRAFFIC (2026-08-19g) ──────────────
+                            # ── KEEP CELLS THAT CARRY TRAFFIC (2026-08-19g) ──────────────
                             # This INNER merge is the only place the delivered split loses rows
                             # (_endpoint_agg above it is a verified passthrough). It drops every
-                            # GA profile whose (currency, parent_bank, rpgt) is absent from
+                            # GA cell whose (currency, parent_bank, rpgt) is absent from
                             # orig_forecast. SUPERSEDED FIGURES: this read "8,611 of 23,791 ...
                             # 8,435 phantom / 176 real / 145 blend-invented" from an offline
                             # sample. [drop-measure] measured it on 2026-08-20: 97,465 row(s)
-                            # across 8,978 sub-cell key(s) = 23,791 − 14,813 exactly, and ALL of
+                            # across 8,978 profile key(s) = 23,791 − 14,813 exactly, and ALL of
                             # them carry a vampMid (the split has no vampMid-less rows at all), so
                             # the "phantom, correctly dropped" split does not exist as described.
-                            # 145 of the real ones are exactly the cells the in-search backup blend invents,
+                            # 145 of the real ones are exactly the profiles the in-search backup blend invents,
                             # worth Σ|Δ| 19 of reconciliation error and the whole of DELIVERY
-                            # DRIFT. They are live profiles with no specific rule, so keep them
+                            # DRIFT. They are live cells with no specific rule, so keep them
                             # and let the split carry the GA's OWN shares — then both sides
                             # normalise the same vector and neither needs the catch-all there.
                             # THE VOLUME AND SCOPE TESTS ARE THE WHOLE SAFETY STORY: without
                             # cell_volume > 0 this admits the 8,435 phantoms; without the RPGT
-                            # scope filter it reaches baseline-frozen RPGTs (16,768 cells / 67% of
+                            # scope filter it reaches baseline-frozen RPGTs (16,768 profiles / 67% of
                             # t0 volume).
                             # DEFAULT OFF as of 2026-08-19j. Shipped default-on in 19g/19i on the
                             # premise that `cell_volume > 0` isolated ~145 profiles. The 00:01 run
-                            # measured the real population: 97,465 rows / ~8,978 profiles, ALL with
+                            # measured the real population: 97,465 rows / ~8,978 cells, ALL with
                             # cell_volume > 0 and ALL scoped — both guards biting, neither selective.
                             # `cell_volume` in the GA frame is forecast volume APPORTIONED to the
-                            # sub-cell by pro-rata VI, so it is positive almost everywhere; it is NOT
-                            # the same object as "the export has a VI_Txn_Count row for this profile",
+                            # profile by pro-rata VI, so it is positive almost everywhere; it is NOT
+                            # the same object as "the export has a VI_Txn_Count row for this cell",
                             # which is what the 8,435-phantom measurement used. And [ca-reach] shows
                             # the kept rows land in CASE B — positive share, still no prop — so they
                             # do not even reach the delivered projection: Σshare mapped fell to 62.3%.
@@ -3042,10 +3042,10 @@ def render():
                             # ── MEASUREMENT ONLY (2026-08-19k) ──────────────────────────────
                             # Establish the keep population by KEY before any keep is written
                             # again. `cell_volume > 0` was the 19g/19i scope and it admitted
-                            # 97,465 rows / ~8,978 profiles, because in the GA frame that column
+                            # 97,465 rows / ~8,978 cells, because in the GA frame that column
                             # is forecast volume apportioned by pro-rata VI and so is positive
                             # almost everywhere. Stash the dropped rows' keys here and let the
-                            # [blend-cells] block — which owns the 145 invented cells, derived
+                            # [blend-profiles] block — which owns the 145 invented profiles, derived
                             # from the blend's own +blend/-blend vectors rather than a volume
                             # proxy — do the intersection. NOTHING about the split changes.
                             # ARMED for ONE call (the delivered explode). `_explode` has six
@@ -3082,7 +3082,7 @@ def render():
                                     _EXKEEP["drop_cnt"] = _dcnt
                                     _EXKEEP["drop_cells"] = len(_dcnt)
                                     # BIN vs PARENT_BANK is the one grain question the
-                                    # [blend-cells] side cannot settle alone, so hand it BOTH
+                                    # [blend-profiles] side cannot settle alone, so hand it BOTH
                                     # vocabularies and let it count the overlap. Reading the
                                     # prop-key comment and assuming is how six mechanisms got
                                     # asserted wrong today.
@@ -3145,12 +3145,12 @@ def render():
                                         f"{len(sc):,} row(s); the INNER merge against "
                                         f"orig_forecast drops {len(_dmiss):,} of them across "
                                         f"{len(_dcnt):,} distinct {tuple(_dkc)} key(s). Stashed "
-                                        f"for the [blend-cells] intersection — the split is "
+                                        f"for the [blend-profiles] intersection — the split is "
                                         f"UNCHANGED by this block.")
                                 except Exception as _dmE:  # noqa: BLE001
                                     _EXKEEP["dropped"] = None
                                     log(f"   [drop-measure] skipped "
-                                        f"({type(_dmE).__name__}: {_dmE}) — the [blend-cells] "
+                                        f"({type(_dmE).__name__}: {_dmE}) — the [blend-profiles] "
                                         "intersection will say it has no stash.")
                             return ex.rename(columns={"_orig_rpgt": "rpgt", "_orig_bank": "bin"}).drop(
                                 columns=["parent_bank", "_rk"], errors="ignore")
@@ -3164,8 +3164,8 @@ def render():
                         ex = mapping_df.merge(sc, on=["currency", "parent_bank"], how="inner")
                         return ex.rename(columns={"orig_rpgt": "rpgt", "orig_bank": "bin"}).drop(columns=["parent_bank"])
 
-                    # Reference = conversion-optimal split (no per-cell cap). The risk
-                    # constraint is applied CROSS-CELL, per vampMid, afterwards.
+                    # Reference = conversion-optimal split (no per-profile cap). The risk
+                    # constraint is applied CROSS-PROFILE, per vampMid, afterwards.
                     from routing_optimiser.s3_problem import optimiser as _optmod
                     from routing_optimiser.s3_problem.optimiser import (enforce_mid_vamp_caps, enforce_mid_volume_caps)
                     # 19fk: the pre-clustering swap that used to sit here is gone with
@@ -3205,22 +3205,22 @@ def render():
                     log(f"   maximum revenue split reference (build {_ob or 'UNKNOWN'})"
                         + ("" if _ob else "  ⚠ no __build__ marker — this IS the stale-bytecode "
                                          "signature; clear __pycache__ and re-run."))
-                    # Softmax and Thompson are per-cell engines: the reference IS their
+                    # Softmax and Thompson are per-profile engines: the reference IS their
                     # slider=100 split, and the shared risk layer below (reference→compliant
                     # blend + hard-enforce) does the rest. For the genetic engine the
-                    # reference is only cell STRUCTURE (gateways, rates, baseline) — the
+                    # reference is only profile STRUCTURE (gateways, rates, baseline) — the
                     # global GA overwrites the shares — so it falls back to the fast softmax.
                     # Softmax and Thompson: their slider-100 reference IS revenue/conversion-
                     # optimal, so use it directly. Portfolio's own reference prices CVaR at every
                     # dial (never revenue-optimal), which starves dial 100 — so it takes the
                     # softmax revenue reference here and gets its CVaR split as the dial-0 endpoint
                     # in a dedicated branch below.
-                    # Each per-cell engine builds its OWN slider-100 reference so the engines
+                    # Each per-profile engine builds its OWN slider-100 reference so the engines
                     # diverge and can be compared: softmax = exp(success/temp), Thompson = bandit
-                    # probability-of-best, portfolio = mean-CVaR. Genetic uses softmax only for cell
+                    # probability-of-best, portfolio = mean-CVaR. Genetic uses softmax only for profile
                     # STRUCTURE (its global GA overwrites the shares in its own branch).
                     # Each engine builds its OWN slider-100 reference — no borrowing. Softmax/
-                    # Thompson/Portfolio are per-cell engines whose reference IS their split;
+                    # Thompson/Portfolio are per-profile engines whose reference IS their split;
                     # genetic uses its OWN revenue-greedy waterfall reference (genetic_ref), NOT
                     # softmax, so it's genuinely standalone.
                     _ref_engine = engine_key if engine_key in ("softmax", "thompson", "portfolio") else "genetic_ref"
@@ -3256,13 +3256,13 @@ def render():
                             _g["rate"] = _g["vc"] / _g["vt"].replace(0, np.nan)
                             mid_rate = _g["rate"].dropna().to_dict()
                             _substep("④·1  BUILD THE PROJECTION SCAFFOLD")
-                            log(f"   MID VAMP rates from pro-rata export ({len(mid_rate):,} MID×cell rates).")
+                            log(f"   MID VAMP rates from pro-rata export ({len(mid_rate):,} MID×profile rates).")
                         except Exception as e:
                             log(f"   [Warning] pro-rata rate load failed ({e}); using period-0 rates.")
                     else:
                         log("   pro-rata export not found — using period-0 risk rates for MID caps.")
 
-                    # Build the cross-cell input and enforce per-vampMid caps. The cell key
+                    # Build the cross-profile input and enforce per-vampMid caps. The profile key
                     # includes RPGT, so traffic is moved within each (currency, bank, RPGT) cell.
                     # 19gb: the Bank×Currency mode that collapsed rpgt to a constant is gone.
                     _mc = ref_agg.copy()
@@ -3271,7 +3271,7 @@ def render():
                     _mc["cell"] = (_mc["currency"].astype(str).str.lower() + "|"
                                    + _mc["bin"].astype(str).str.lower() + "|" + _rp_key)
                     if _opt_subcell:
-                        # SUB-CELL decision grain: extend the cell key with pmp/ctry (carried through
+                        # PROFILE decision grain: extend the profile key with pmp/ctry (carried through
                         # from optimise_split), so G["_cellk"]/cell_starts give one softmax simplex
                         # PER SUB-CELL. bank stays the raw BIN (band scaffold aligns on bin/pmp/ctry).
                         _mc["cell"] = (_mc["cell"] + "|"
@@ -3523,14 +3523,14 @@ def render():
                     else:
                         log("   [vamp-off] no MID is set to receive zero fraud (no volume "
                             "override uses apply_to:'vamp' target 0).")
-                    # Precompute the STATIC projection scaffold ONCE (restricted to the cells
+                    # Precompute the STATIC projection scaffold ONCE (restricted to the profiles
                     # containing a capped MID — a capped MID's projected VAMP depends only on
-                    # its own cells, so this is EXACT). Each feedback iteration then only
+                    # its own profiles, so this is EXACT). Each feedback iteration then only
                     # recomputes the prop-dependent parts on this small frame, instead of
                     # re-projecting millions of pro-rata rows.
                     _capped_l = {_row[0] for _row in _mid_month_rules}
                     # ── CANDIDATE-DOOR COVERAGE SET (replaces the old ROUTING_TXN_FULLCOVER) ──
-                    # WHY: the band scaffold was BASELINE-anchored — a (cell, MID) pair with no
+                    # WHY: the band scaffold was BASELINE-anchored — a (profile, MID) pair with no
                     # pro-rata baseline row got no prop-key, so the incidence DROPPED that share
                     # column and the band projector never saw volume the split routed there.
                     # Measured on the 2026-08-17 12:12 run: only 29.1% of the 235,164 share columns
@@ -3538,19 +3538,19 @@ def render():
                     # mass invisible; 22-73% dropped per banded MID). That is the bulk of the
                     # scored-vs-delivered gap.
                     # The old fix (ROUTING_TXN_FULLCOVER=1) forced the txn-band MIDs into EVERY
-                    # coarse cell — the OPPOSITE error, since delivery only gives a receiving row
+                    # coarse profile — the OPPOSITE error, since delivery only gives a receiving row
                     # where the enforced template actually routes (impact_calcs._inject_backfill_
                     # rows), so scoring over-covered them (adyen-na: scored 27,709 vs delivered
                     # 15,144). It traded an under-count for an over-count.
                     # NOW: cover every banded MID exactly where it is a CANDIDATE DOOR — wherever
-                    # its gateway appears in that currency×parent-bank×rpgt cell in `agg_sr`, the
+                    # its gateway appears in that currency×parent-bank×rpgt profile in `agg_sr`, the
                     # same universe G (and therefore the incidence) is built from. agg_sr is a
                     # superset of G's doors, so coverage is complete BY CONSTRUCTION; any extra row
                     # simply receives 0 share and contributes nothing to VAMP or txn.
                     # Keys match band_projection._prop_key exactly (rpgt LOWER-CASED).
                     # Kill-switch: ROUTING_FULL_DOOR_COVER=0 restores the baseline-anchored set.
-                    _door_pairs = None      # DataFrame(_ck, _mid, _midl) — (cell, banded MID) doors
-                    _door_cells = set()     # the _cur|_bin|_rkl cells those doors live in
+                    _door_pairs = None      # DataFrame(_ck, _mid, _midl) — (profile, banded MID) doors
+                    _door_cells = set()     # the _cur|_bin|_rkl profiles those doors live in
                     if _capped_l and os.environ.get("ROUTING_FULL_DOOR_COVER", "1") != "0":
                         try:
                             _f2v_l = {str(_k).strip().lower(): str(_v).strip()
@@ -3579,7 +3579,7 @@ def render():
                                 _door_pairs = _dj[["_ck", "_mid", "_midl"]].drop_duplicates()
                                 _door_cells = set(_door_pairs["_ck"].unique())
                                 log(f"   [door-cover] candidate-door set: {len(_door_pairs):,} "
-                                    f"(cell, banded-MID) pair(s) across {len(_door_cells):,} cell(s) "
+                                    f"(profile, banded-MID) pair(s) across {len(_door_cells):,} profile(s) "
                                     f"for {_dc['_midl'].nunique()} banded MID(s). The scaffold will cover "
                                     "ALL of these, so the incidence can no longer DROP share the split "
                                     "routes. Replaces ROUTING_TXN_FULLCOVER. Kill-switch: "
@@ -3631,11 +3631,11 @@ def render():
                                          "_per", "_t"], as_index=False).agg(
                             _vi=("_vi", "sum"), _vc=("_vc", "sum"), _pr=("_pr", "first"), _fcp=("_fcp", "first"))
                         _rc["agg"] = int(len(_P))           # [scaffold-recon] step 2
-                        # Cell key on the LOWER-CASED rpgt so it matches the prop-key grain
+                        # Profile key on the LOWER-CASED rpgt so it matches the prop-key grain
                         # (band_projection._prop_key lower-cases rpgt) and the candidate-door set.
                         # 19dq — RPGT SCOPE, EXPLICITLY, IN THE SEARCH. Delivery holds unscoped RPGTs at
                         # baseline; the search never read the scope selection and only avoided moving them
-                        # because an unscoped cell gets no proposed share (psum == 0 -> not routed). That is
+                        # because an unscoped profile gets no proposed share (psum == 0 -> not routed). That is
                         # a coincidence, not a rule, and it breaks the moment anything puts share into one
                         # of those cells. `_fcp` is upstream of all three movable factors — mv_static (TXN),
                         # the projector's _fcp[origin] (VAMP), and _fcp_orig_map -> _mvraw (the POOL) — so
@@ -3673,7 +3673,7 @@ def render():
                         # 19dr — SWITCHED-OFF GATEWAYS, EXPLICITLY, IN THE SEARCH. A gateway on a volume
                         # override of target 0 gets no transactions, so fraud already on its books cannot
                         # be rerouted — there is nothing to reroute it WITH. Delivery encodes that as
-                        # `_gf = 0 where _keep == 0`; the search only ever asked whether the CELL was
+                        # `_gf = 0 where _keep == 0`; the search only ever asked whether the PROFILE was
                         # routed, so it moved that fraud onto the gateway's neighbours. Same landing spot
                         # as the scope gate above, and for the same reason: `_fcp` is upstream of the TXN
                         # movable fraction, the VAMP movable fraction AND the pool, so one zeroing covers
@@ -3746,16 +3746,16 @@ def render():
                         _cellk = _P["_cur"] + "|" + _P["_bin"] + "|" + _P["_rkl"]
                         _keep = set(_cellk[_P["_midl"].isin(_capped_l)].unique())
                         _keep_base = len(_keep)
-                        # ALSO keep cells where a banded MID is only a CANDIDATE DOOR (no baseline
-                        # row of its own): without them the cell is dropped from _P entirely, so the
-                        # injection below has no sub-cells to hang a receiving row on and the
-                        # incidence drops that share. Every MID of a kept cell is retained, so
+                        # ALSO keep profiles where a banded MID is only a CANDIDATE DOOR (no baseline
+                        # row of its own): without them the profile is dropped from _P entirely, so the
+                        # injection below has no profiles to hang a receiving row on and the
+                        # incidence drops that share. Every MID of a kept profile is retained, so
                         # psum/vpsum stay exact. Kill-switch: ROUTING_DOOR_COVER_CELLS=0.
                         if _door_cells and os.environ.get("ROUTING_DOOR_COVER_CELLS", "1") != "0":
                             _keep = _keep | (_door_cells & set(_cellk.unique()))
                             if len(_keep) != _keep_base:
-                                log(f"   [door-cover] scaffold cells {_keep_base:,} → {len(_keep):,} "
-                                    f"(+{len(_keep) - _keep_base:,} candidate-door-only cell(s)). This is "
+                                log(f"   [door-cover] scaffold profiles {_keep_base:,} → {len(_keep):,} "
+                                    f"(+{len(_keep) - _keep_base:,} candidate-door-only profile(s)). This is "
                                     "the COST of full coverage — the per-generation projection scales "
                                     "with scaffold rows, so expect a slower search. Kill-switch: "
                                     "ROUTING_DOOR_COVER_CELLS=0.")
@@ -3767,27 +3767,27 @@ def render():
                         _T0 = _P[_P["_t"] == 0].copy()
                         _rc["t0"] = int(len(_T0))           # [scaffold-recon] step 4
                         _T0["_bf"] = 0   # 0 = real baseline row, 1 = injected back-fill row
-                        # ---- BACK-FILL sub-cell rows (mirror the tab-3 projection fix) --------
-                        # A MID present in a cell but absent from one of its pmp/Country sub-cells
-                        # gets no routed volume there, so that sub-cell's proposed shares
+                        # ---- BACK-FILL profile rows (mirror the tab-3 projection fix) --------
+                        # A MID present in a profile but absent from one of its pmp/Country profiles
+                        # gets no routed volume there, so that profile's proposed shares
                         # renormalise onto the MIDs that ARE present — overstating their projected
                         # txn (the WoodForest-in-non-usa / routed-in-usa case). Give every MID a
-                        # ZERO-baseline t0 row in every sub-cell of any cell it already appears in.
+                        # ZERO-baseline t0 row in every profile of any profile it already appears in.
                         # The proposed share is broadcast by the coarse cur|bin|rpgt key, so this
                         # is SPLIT-INDEPENDENT → computed once here, no per-call cost in the loop.
-                        # Only sibling sub-cells of an existing cell are targeted (never invents a
-                        # sub-cell), and injected rows carry _vi=_vc=0 so they receive volume but
+                        # Only sibling profiles of an existing profile are targeted (never invents a
+                        # profile), and injected rows carry _vi=_vc=0 so they receive volume but
                         # hold none and add no VAMP — matching _inject_backfill_rows in tab 3.
                         if len(_T0):
                             _T0["_rkl"] = _T0["_rpgt"].astype(str).str.strip().str.lower()
                             _ck = _T0["_cur"] + "|" + _T0["_bin"] + "|" + _T0["_rkl"]
                             _mids_in_cell = (_T0.assign(_ck=_ck)[["_ck", "_mid", "_midl"]]
                                              .drop_duplicates())
-                            # Extend each cell's MID set with the CANDIDATE DOORS computed above, so
+                            # Extend each profile's MID set with the CANDIDATE DOORS computed above, so
                             # the injection below gives every banded MID a zero-baseline t0 row
                             # (_vi=_vc=0 ⇒ it RECEIVES moved volume, holds none, adds no VAMP) in
-                            # every sub-cell of every cell it can actually be routed to. Symmetric
-                            # twin of tab-3's _inject_backfill_rows; the sub-cell guard below is
+                            # every profile of every profile it can actually be routed to. Symmetric
+                            # twin of tab-3's _inject_backfill_rows; the profile guard below is
                             # unchanged, so we still never invent a pmp/Country the baseline lacks.
                             if _door_pairs is not None and len(_door_pairs):
                                 _canon = (_mids_in_cell.drop_duplicates("_midl")
@@ -3799,7 +3799,7 @@ def render():
                                 _mids_in_cell = (pd.concat(
                                     [_mids_in_cell, _add[["_ck", "_mid", "_midl"]]],
                                     ignore_index=True).drop_duplicates(["_ck", "_midl"]))
-                                log(f"   [door-cover] (cell, MID) pairs {_before_p:,} → "
+                                log(f"   [door-cover] (profile, MID) pairs {_before_p:,} → "
                                     f"{len(_mids_in_cell):,} "
                                     f"(+{len(_mids_in_cell) - _before_p:,} candidate-door pair(s) with "
                                     "no baseline row).")
@@ -3808,7 +3808,7 @@ def render():
                                        [["_ck", "_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per", "_pr", "_fcp"]])
                             _grid = _subper.merge(_mids_in_cell, on="_ck")
                             # Vectorised anti-join (replaces a Python membership loop over the grid):
-                            # keep grid (sub-cell × MID) rows with NO existing t0 row — bit-identical
+                            # keep grid (profile × MID) rows with NO existing t0 row — bit-identical
                             # to the `[k not in _have ...]` filter it replaces (a set-membership test,
                             # no arithmetic).
                             _bkey = ["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per", "_midl"]
@@ -3829,7 +3829,7 @@ def render():
                         _T0 = _T0.drop(columns=["_rkl"], errors="ignore")
                         # 19dt - back-fill rows are concatenated above and carry no `_keepf`; a NaN there
                         # would silently zero a live gateway's proposal, the opposite of the bug being
-                        # fixed. They are zero-baseline recipients in cells that ARE routed, so 1.0 (fully
+                        # fixed. They are zero-baseline recipients in profiles that ARE routed, so 1.0 (fully
                         # retained) is correct, and is what they had before 19dt.
                         if "_keepf" not in _T0.columns:
                             _T0["_keepf"] = 1.0
@@ -3841,7 +3841,7 @@ def render():
                         _T0["_at"] = _T0.groupby(_grpk)["_av"].transform("sum")
                         _T0["_base"] = np.where(_T0["_at"] > 0, _T0["_av"] / _T0["_at"], 0.0)
                         # Static pipeline-enforcement mask per t0 row: wallet-incapable MID in a
-                        # wallet-pmp sub-cell, or USA-only MID in a Non-USA sub-cell. Zeroes that
+                        # wallet-pmp profile, or USA-only MID in a Non-USA sub-cell. Zeroes that
                         # MID's proposed share there (matches build_split_exports).
                         #
                         # (vampMid, CURRENCY) GRAIN (2026-08-17). The scaffold carries no gatewayFid,
@@ -3849,7 +3849,7 @@ def render():
                         # well defined when every fid of that vampMid agrees. They do NOT always
                         # agree: PaySafe - Total AV is wallet-capable on paysafe-usd-tav but not on
                         # paysafe-eur-tav / -gbp-tav, so a vampMid-only mask barred PaySafe from
-                        # wallet sub-cells in USD as well. Currency IS on the scaffold, and every
+                        # wallet profiles in USD as well. Currency IS on the scaffold, and every
                         # fid is currency-specific, so (vampMid, currency) resolves it exactly.
                         # Built straight from Master_MID_List.csv + routing_restrictions.json rather
                         # than from ss["wallet_ctx"], which is written LATER in the run and would
@@ -3881,7 +3881,7 @@ def render():
                             + ("DELIVERY now masks at the SAME grain (ROUTING_EMASK_PAIRS=1) — "
                                "the two agree. This CHANGES THE DELIVERED NUMBER against an "
                                "unarmed run: a vampMid is no longer barred from a wallet or "
-                               "Non-USA sub-cell in a currency where one of its fids can serve "
+                               "Non-USA profile in a currency where one of its fids can serve "
                                "it, so the renormalised split moves. ROUTING_EMASK_PAIRS=0 "
                                "reverts."
                                if _emp_on else
@@ -3924,7 +3924,7 @@ def render():
                         _Pc = _P[_P["_midl"].isin(_capped_l)].copy()
                         _Pc["_om"] = _Pc["_per"] - _Pc["_t"]
                         log(f"   per-MID cap projection scaffold: {len(_T0):,} t0 rows, "
-                            f"{len(_Pc):,} capped-MID rows ({len(_keep):,} cells).")
+                            f"{len(_Pc):,} capped-MID rows ({len(_keep):,} profiles).")
                         # ── [cap-timing] 19gt: SPLIT THE 54.5s ────────────────────────────
                         # The gap between this line and 'per-MID target±tolerance caps' was
                         # 54.5s on the 2026-09-01 22:09 run — the largest single step in the
@@ -3990,7 +3990,7 @@ def render():
                             # counts and a term ("candidate-door-only") defined nowhere near it.
                             _rc_cn = int(_rc.get("cells", 0))
                             _rc_cb = int(_rc.get("cells_band", 0))
-                            log(f"      cells: {_rc_cn:,} cell(s) the search can route into — "
+                            log(f"      profiles: {_rc_cn:,} profile(s) the search can route into — "
                                 f"{_rc_cb:,} already had a banded MID with baseline history there, "
                                 f"{_rc_cn - _rc_cb:,} exist only because a candidate door was "
                                 "injected into them.")
@@ -4077,7 +4077,7 @@ def render():
                         # (was Σ vc·pro_rata·fcp1 using each aged row's OWN pro_rata — origination timing).
                         # go-live pro_rata is applied by the month the VAMP APPEARS, while fcp1_frac (the
                         # first-attempt reroutable slice) stays at ORIGINATION. _P holds every MID in the
-                        # kept cells, so the sum is complete; split-independent → precomputed once.
+                        # kept profiles, so the sum is complete; split-independent → precomputed once.
                         # Verified bit-exact vs compute_vamp_prepost_granular (tests/test_band_timing_reconcile).
                         _P0 = _P[_P["_t"] == 0]
                         _fcp_orig_map = _P0.set_index(
@@ -4212,15 +4212,15 @@ def render():
                         _ptxn = np.where(_T0_excl_a, 0.0, _ptxn)
                         # TWO-COHORT VAMP (pipeline-faithful): hold (1-move) of each capped MID's
                         # VAMP; the pooled moved VAMP is redistributed ONLY across VAMP-carrying
-                        # MIDs (zero-VAMP MIDs stay 0), conserving the cell VAMP total.
+                        # MIDs (zero-VAMP MIDs stay 0), conserving the profile VAMP total.
                         _vprop = prop_raw * (_T0_vc_a > 0)
                         _vpsum = np.bincount(_T0_gcodes, weights=_vprop, minlength=_n_gc)[_T0_gcodes]
                         _vshare = np.zeros_like(_vprop, dtype=float)
                         np.divide(_vprop, _vpsum, out=_vshare, where=_vpsum > 0)
                         _gi = np.where(_Pc_to_t0 >= 0, _Pc_to_t0, 0)
                         # APPEARANCE-MONTH timing (matches the pool above + compute_vamp_prepost_granular):
-                        # held move = fcp1_frac[ORIGIN t0 row] × pro_rata[APPEARANCE cell], gated on the
-                        # ORIGIN cell being routed (psum>0). Was _mv[_gi] = pr[origin]·fcp[origin].
+                        # held move = fcp1_frac[ORIGIN t0 row] × pro_rata[APPEARANCE profile], gated on the
+                        # ORIGIN profile being routed (psum>0). Was _mv[_gi] = pr[origin]·fcp[origin].
                         _act_o = _psum[_gi] > 0
                         _heldfac_pc = _T0_fcp_a[_gi] * _pc_prapp_a
                         _move_pc = np.where((_Pc_to_t0 >= 0) & _act_o, _heldfac_pc, 0.0)
@@ -4349,7 +4349,7 @@ def render():
 
                     # Country capability — USA-only gateways (explicit list in the JSON) can
                     # only serve country='USA'. Enforced like wallet: keep only the USA share
-                    # of each cell, redistribute the Non-USA portion. Needs a per-(currency,
+                    # of each profile, redistribute the Non-USA portion. Needs a per-(currency,
                     # bank) Non-USA fraction from the attempts data.
                     _usa_only, _nonusa_frac, _nonusa_default = set(), {}, 0.0
                     for _f in load_usa_only(_rr_path):
@@ -4425,7 +4425,7 @@ def render():
                     # eligibility, iterating to a consistent split. So the delivered split
                     # is both eligibility-respecting AND VAMP-compliant, and compliance is
                     # measured on what is actually routed.
-                    # Everything _mid_cap_granular builds (_cur/_pb/_gw/_vm/cell/_key/rate/
+                    # Everything _mid_cap_granular builds (_cur/_pb/_gw/_vm/profile/_key/rate/
                     # cell_vol) depends only on the row's currency/bank/gateway/rpgt/cell_volume —
                     # NOT on `share`. The VAMP loop runs it 2× per pass across both passes, so we
                     # memoise the static columns on a content hash of those key columns and only
@@ -4582,7 +4582,7 @@ def render():
                             "t": _Pc["_t"].to_numpy(), "vc": _Pc["_vc"].to_numpy()})
                         # ONLY the actually-constrained (midl, period) pairs — restricting the band
                         # set here is what lets the reduced scaffold shrink (fewer banded rows →
-                        # fewer relevant cells). Derived from the live per-MID month rules.
+                        # fewer relevant profiles). Derived from the live per-MID month rules.
                         _bset = set()
                         for (_mk, _mo, _mtr, _tg, _tl, _dir) in _mid_month_rules:
                             if _mtr not in ("txn", "vamp"):
@@ -4663,7 +4663,7 @@ def render():
                             _ncell = int(_pbp._ngc); _nrel = int(len(_pbp._gcode))
                             _npc = int(len(_pbp._pc_bandcol)); _ncap = int(len(_pbp._t_rows))
                             log(f"   ── gate-2 band-score COST probe ── reduced scaffold: "
-                                f"cells={_ncell:,} · t0_rows={_nrel:,} · prop_keys={_K:,} · "
+                                f"profiles={_ncell:,} · t0_rows={_nrel:,} · prop_keys={_K:,} · "
                                 f"banded_aged_rows={_npc:,} · cap_rows={_ncap:,} · bands={_B} · "
                                 f"build={_build_ms:.0f}ms")
                             _rng = np.random.default_rng(0)
@@ -4726,11 +4726,11 @@ def render():
                             log("   ── gate-2 band-score COMPRESSION probe (lossless minimal grain) ──")
                             log(f"      raw scaffold            : t0_rows={_cur_rows:,} · fine_cells={_cur_cells:,}")
                             log(f"      collapse pmp/ctry only  : rows={_coll_rows:,} ({_cur_rows/max(_coll_rows,1):.1f}×) "
-                                f"· cells={_coll_cells:,} ({_cur_cells/max(_coll_cells,1):.1f}×)")
+                                f"· profiles={_coll_cells:,} ({_cur_cells/max(_coll_cells,1):.1f}×)")
                             log(f"      exact (mask-signature)  : rows={_exact_rows:,} ({_cur_rows/max(_exact_rows,1):.1f}×) "
-                                f"· cells={_exact_cells:,} ({_cur_cells/max(_exact_cells,1):.1f}×)")
+                                f"· profiles={_exact_cells:,} ({_cur_cells/max(_exact_cells,1):.1f}×)")
                             log(f"      distinct signatures per (cur,bin,rpgt,per): mean={_mean_sig:.2f} · max={_max_sig} "
-                                "(≈1 ⇒ masking is uniform ⇒ near-full collapse; ≫1 ⇒ masking splits cells)")
+                                "(≈1 ⇒ masking is uniform ⇒ near-full collapse; ≫1 ⇒ masking splits profiles)")
                             log(f"      → exact projection cost scales with rows, so ≈{_cur_rows/max(_exact_rows,1):.0f}× "
                                 "cheaper is the ceiling. Apply to the last project_pop time to see if exact-in-loop "
                                 "(or even per-candidate) is revived.")
@@ -4762,7 +4762,7 @@ def render():
                             return None
                         from routing_optimiser.s4_search.band_projection import PopulationBandProjector as _PBP
                         _T0a, _Pca, _poolarr, _bset, _byr = _fr
-                        # max_share (0.97) folds the per-sub-cell max-share cap into the fitness
+                        # max_share (0.97) folds the per-profile max-share cap into the fitness
                         # projection so the GA scores the DELIVERED breach (proven: the cap is the
                         # entire scored-vs-delivered VAMP residual).
                         _band_diag_state["pbp"] = _PBP(_T0a, _Pca, _poolarr, _bset, by_rpgt=_byr,
@@ -4911,7 +4911,7 @@ def render():
                             _cellvol = _T0a.assign(_k=_ck(_T0a)).groupby("_k")["vi"].sum().sort_values(ascending=False)
                             _cum = _cellvol.cumsum() / max(float(_cellvol.sum()), 1e-9)
                             _t0k = _ck(_T0a); _pck = _ck(_Pca)
-                            log("   ── gate-2 ENABLER 1: volume pruning (drop near-zero-volume cell tail) ──")
+                            log("   ── gate-2 ENABLER 1: volume pruning (drop near-zero-volume profile tail) ──")
                             log(f"      full: t0_rows={len(_T0a):,} · project_pop(P=25)={_full_ms:.0f}ms")
                             for _cov in (0.99, 0.999):
                                 _keep = set(_cum.index[_cum.to_numpy() <= _cov]) | {_cum.index[0]}
@@ -4992,7 +4992,7 @@ def render():
                                        if _inc_rev_rate else {})
 
                     # #4b toggle (default OFF = uniform scaling, the safe baseline). When ON,
-                    # _scale_mids_in_gran's DOWN path cuts a MID from its CHEAPEST cells first
+                    # _scale_mids_in_gran's DOWN path cuts a MID from its CHEAPEST profiles first
                     # (cost-ordered) instead of uniformly. _restrict_and_recap flips this ON only
                     # for a Pareto-guarded A/B, so it can never regress. A mutable holder so the
                     # closure can toggle it.
@@ -5045,7 +5045,7 @@ def render():
                         # the exact enforcement, so it matches softmax on compliance. λ (from
                         # the slider) still shapes the GA's own search.
                         import routing_optimiser.s4_search.seed_search as _gg
-                        # 19gs: this said "the CROSS-CELL per-vampMid tilt search (Active
+                        # 19gs: this said "the CROSS-PROFILE per-vampMid tilt search (Active
                         # CMA-ES)". That engine was unreachable and 19gd moved it out to
                         # legacy_engines/; what remains in seed_search is the band-aware
                         # constrained projection — seed stage 1 — and nothing else.
@@ -5056,7 +5056,7 @@ def render():
                         log("   seed stage 1 of 3: band-aware constrained projection — the "
                             "warm-start the GA begins from.")
                         # From the 30D attempts, build the SAME quantities tab 4 uses for
-                        # incremental revenue: avg ticket + cell attempts + raw gateway SR,
+                        # incremental revenue: avg ticket + profile attempts + raw gateway SR,
                         # keyed by (currency, parent-bank[, gateway]).
                         _at_map, _cellatt_map, _gwsr_map = {}, {}, {}
                         try:
@@ -5092,7 +5092,7 @@ def render():
                         except Exception as _e:
                             log(f"   [Warning] revenue basis (attempts/SR/ticket) failed ({_e}); using fallbacks.")
                         # Build the GA context on the aggregate split rows (sorted so each
-                        # cell is a contiguous block). Carry the softmax reference share and
+                        # profile is a contiguous block). Carry the softmax reference share and
                         # the softmax compliant share through the sort so the reparameterised
                         # GA can use the reference as its decode base (θ=0) in GA row order.
                         G = _mc.copy()
@@ -5121,13 +5121,13 @@ def render():
                         _cur_l = G["currency"].astype(str).str.strip().str.lower().tolist()
                         _pb_l = G["bin"].astype(str).str.strip().str.lower().tolist()
                         _gw_l = G["gateway"].astype(str).str.strip().str.lower().tolist()
-                        # sub-cell identity per G row (always present via optimise_split; "_all_" at cell grain)
+                        # profile identity per G row (always present via optimise_split; "_all_" at profile grain)
                         _pmp_l = (G["pmp"].astype(str).str.strip().str.lower().tolist()
                                   if "pmp" in G.columns else ["_all_"] * len(G))
                         _ctry_l = (G["ctry"].astype(str).str.strip().str.lower().tolist()
                                    if "ctry" in G.columns else ["_all_"] * len(G))
                         _tick = np.array([_at_map.get((c, b), 25.0) for c, b in zip(_cur_l, _pb_l)], dtype=float)
-                        # Revenue basis = 30D cell attempts × SHRUNK gateway SR × avg ticket. Uses
+                        # Revenue basis = 30D profile attempts × SHRUNK gateway SR × avg ticket. Uses
                         # the SAME shrunk success rate the report and softmax trust (gateway_success_
                         # rate), NOT the raw 30D rate — so a noisy "100% on 2 attempts" gateway can't
                         # look revenue-optimal to the GA, and the GA optimises what's displayed. (E2)
@@ -5261,7 +5261,7 @@ def render():
                         # Fold the SAME bans + wallet/USA-only capability enforcement applies
                         # (apply_restrictions) into a static per-row operator so the GA SCORES the
                         # actually-routable shares, instead of a split eligibility later perturbs.
-                        # Built on G's exact (sorted, contiguous) row order, so its cell segments match
+                        # Built on G's exact (sorted, contiguous) row order, so its profile segments match
                         # cell_starts; it reproduces apply_restrictions row-for-row (proven to ~2e-16).
                         # Applied ONLY in the scoring path (_obj_viol/_mid_over) — the returned best stays
                         # the RAW decode so enforcement blends exactly once (wallet/USA blend isn't
@@ -5282,12 +5282,12 @@ def render():
                                 import routing_optimiser.s3_problem.eligibility as _elig_mod_bl
                                 _rpgt_col = (G["rpgt"].astype(str).to_numpy() if "rpgt" in G.columns
                                              else np.array([str(c).split("|")[-1] for c in _cellk]))
-                                # pmp / ctry are what make the capability rules EXACT: at sub-cell
-                                # grain a cell is purely wallet or purely card, purely USA or purely
+                                # pmp / ctry are what make the capability rules EXACT: at profile
+                                # grain a profile is purely wallet or purely card, purely USA or purely
                                 # not, so the reroute factor is 0 or 1 rather than the global 33%/40%
                                 # fraction. Without these columns the operator cannot tell, and the
                                 # GA scores a split it does not ship (SPLIT divergence 2,843 on the
-                                # 2026-08-18 sub-cell run vs exactly 0 at cell grain). Absent at cell
+                                # 2026-08-18 profile run vs exactly 0 at profile grain). Absent at profile
                                 # grain, where the fraction remains correct and nothing changes.
                                 _cells_layout = pd.DataFrame({
                                     "cell": _cellk,
@@ -5315,24 +5315,24 @@ def render():
                                 # 19bl: this counter is the CANARY for the 19bk clobber. It read
                                 # 147,944/245,409 (60%) on every run up to 16:01 and 0/1 (0%) at
                                 # 17:21, because the file had lost `+exact-subcell-capability`. At
-                                # sub-cell grain 0% is not "nothing to do" — it means the GA is
+                                # profile grain 0% is not "nothing to do" — it means the GA is
                                 # scoring with the global fraction while delivery applies the exact
                                 # rule, which is a guaranteed SPLIT divergence. Flag it, do not
                                 # silently accept it.
                                 if _elig_op.get("n_rows") is None:
                                     log("   [elig-grain] \u26a0\u26a0 THE OPERATOR HAS NO `n_rows` KEY. "
                                         "routing_optimiser.s3_problem.eligibility is an OLD build without "
-                                        "+exact-subcell-capability, so the GA cannot see pure "
-                                        "wallet / pure-USA sub-cells and will score a split it does "
+                                        "+exact-profile-capability, so the GA cannot see pure "
+                                        "wallet / pure-USA profiles and will score a split it does "
                                         "not ship. This is what broke reconciliation at 17:21 on "
                                         "2026-08-23 (RECONCILIATION ERROR 7,865, 100% SPLIT). "
                                         f"Loaded build: {getattr(_elig_mod_bl, '__build__', '?')}")
-                                # 19hi: shortened. The old version explained the MIXED-cell
+                                # 19hi: shortened. The old version explained the MIXED-profile
                                 # fraction it replaced, which nothing in the run uses any more.
                                 log(f"   [elig-grain] capability is a clean yes/no on "
                                     f"{100.0 * _wx_e / _nr_e:.0f}% of rows for wallet and "
                                     f"{100.0 * _ux_e / _nr_e:.0f}% for USA-only "
-                                    f"({_wx_e:,} and {_ux_e:,} of {_nr_e:,}). Each profile is a "
+                                    f"({_wx_e:,} and {_ux_e:,} of {_nr_e:,}). Each cell is a "
                                     "single payment-method and a single country, so a gateway "
                                     "either can serve it or cannot. The search and delivery apply "
                                     "the same rule, so what is scored is what ships.")
@@ -5346,7 +5346,7 @@ def render():
                             # "GA scores ELIGIBILITY-ADJUSTED shares" line — easy to miss, and easy to
                             # mistake a var that never reached the process for a completed experiment.
                             log("   GA eligibility DISABLED (ROUTING_GA_ELIG=0) — DIAGNOSTIC ONLY. The GA "
-                                "now scores RAW pre-eligibility shares: the cell-grain wallet / USA-only "
+                                "now scores RAW pre-eligibility shares: the profile-grain wallet / USA-only "
                                 "FRACTIONAL blend is not applied in-search. Delivery still applies it, so "
                                 "DELIVERY DRIFT is EXPECTED TO MOVE. A material change confirms the "
                                 "eligibility grain mismatch is implicated; an unchanged drift rules it "
@@ -5356,7 +5356,7 @@ def render():
                         # INELIGIBLE for the search, so the GA never routes real volume to a door the bank
                         # has closed and instead optimises the redistribution itself, rather than the
                         # post-hoc enforcement cap doing it afterward. Same detector + parent-bank keying
-                        # as the enforcement cap. GUARD: a cell whose gateways are ALL blocked is left
+                        # as the enforcement cap. GUARD: a profile whose gateways are ALL blocked is left
                         # untouched (nowhere to move the volume — mirrors _apply_blocked_caps). Enforcement
                         # still caps to the floor as a safety net. Only ~0.1% of rows, so no material speed
                         # effect. NOTE: excluded rows get 0 share in the search (vs the exploration floor
@@ -5382,14 +5382,14 @@ def render():
                                 if _blk_ga:
                                     _row_blk = np.array([(b, g) in _blk_ga
                                                          for b, g in zip(_pb_l, _gw_l)], dtype=bool)
-                                    # per-cell counts: exclude blocked rows ONLY in cells that still keep a
-                                    # non-blocked gateway (a fully-blocked cell is left for enforcement).
+                                    # per-profile counts: exclude blocked rows ONLY in profiles that still keep a
+                                    # non-blocked gateway (a fully-blocked profile is left for enforcement).
                                     _blk_per_cell = np.add.reduceat(_row_blk.astype(float), _cell_starts)
                                     _cell_mixed = (_blk_per_cell > 0) & (_blk_per_cell < _counts.astype(float))
                                     _excl = _row_blk & np.repeat(_cell_mixed, _counts)
                                     _n_excl = int(_excl.sum())
                                     # Do NOT hard-exclude these routes from the search. With EXACT in-search
-                                    # band scoring, removing a blocked route can starve a cross-cell per-MID
+                                    # band scoring, removing a blocked route can starve a cross-profile per-MID
                                     # band and force a hard infeasibility (observed 2026-08-04: 56 rows
                                     # excluded → all 8 seeds infeasible, violation 0.001913). Blocked
                                     # gateways are still capped to the exploration floor in the DELIVERED
@@ -5443,7 +5443,7 @@ def render():
                                     _dead = 0
                                 log(f"   hard pre-search ban mask: {int(_ban_mask.sum())} banned row(s) "
                                     "set elig=0 (the search never routes to them)" +
-                                    (f"; ⚠ {_dead} cell(s) now have NO eligible gateway and will route "
+                                    (f"; ⚠ {_dead} profile(s) now have NO eligible gateway and will route "
                                      "nothing — check the ban config." if _dead else "."))
                         ctx = {
                             "n_row": len(G), "n_mid": len(_mids_u),
@@ -5481,10 +5481,10 @@ def render():
                             # the base is already slightly compliant. 0 = no lean (unbiased reference).
                             "ref_gamma": float(ss.get("ga_ref_gamma", 0.25) or 0.0),
                         }
-                        # CROSS-CELL per-MID tilt search — CMA-ES (2026-07-25 rebuild of the old GA).
+                        # CROSS-PROFILE per-MID tilt search — CMA-ES (2026-07-25 rebuild of the old GA).
                         # Genome per vampMid = [θr risk-tilt | θq revenue-tilt | g gain] (3·n_mid dims),
-                        # shifting a MID toward its LOW-risk / HIGH-revenue cells and moving its overall
-                        # presence — directly controlling the per-MID CROSS-cell VAMP rate (the actual
+                        # shifting a MID toward its LOW-risk / HIGH-revenue profiles and moving its overall
+                        # presence — directly controlling the per-MID CROSS-profile VAMP rate (the actual
                         # constraint). CMA-ES ranks feasibility-FIRST (compliant always beats breaching;
                         # among compliant, higher revenue wins), with a smooth (no fixed-step) breach
                         # measure, reseeded restarts + a Nelder–Mead polish. Freed share redistributes
@@ -5573,7 +5573,7 @@ def render():
                                         continue
                                     _vm = str(_vm).strip()
                                     for _bin in _bins_by.get((_cur_l[_j], _pb_l[_j], _rpgt_g[_j]), ()):
-                                        if _opt_subcell:   # sub-cell prop-key: cur|bin|rpgt|pmp|ctry|mid
+                                        if _opt_subcell:   # profile prop-key: cur|bin|rpgt|pmp|ctry|mid
                                             _pk = (f"{_cur_l[_j]}|{_bin}|{_rpgt_g[_j]}|"
                                                    f"{_pmp_l[_j]}|{_ctry_l[_j]}|{_vm}")
                                         elif _byr:
@@ -5629,7 +5629,7 @@ def render():
                                 ctx["band_incidence"] = _inc
                                 # Hand the projector the incidence so the FROZEN-SCAFFOLD LIFT can
                                 # work out which prop-keys no GA column maps to (those are 0 in
-                                # prop_raw for every candidate, so cells made only of such rows
+                                # prop_raw for every candidate, so profiles made only of such rows
                                 # have psum == 0 always and every flat pass over them is a no-op).
                                 # Without this the lift stays OFF and the kernel runs full ranges.
                                 try:
@@ -5720,7 +5720,7 @@ def render():
                         # `cells` = rpgt×currency×bank problems the search steers; genome D = 3·vampMids
                         # (a risk-tilt, a revenue-tilt and a gain per MID). CMA-ES per-generation cost grows
                         # with D² (rank-µ covariance update) and D³ at each periodic eigen-refresh — so D,
-                        # NOT the cell count, is what k-means pre-clustering would actually shrink. Small D
+                        # NOT the profile count, is what k-means pre-clustering would actually shrink. Small D
                         # ⇒ clustering is a rounding error; large D ⇒ the cube term makes it a real win.
                         _ga_D = 3 * _n_mid
                         if engine_key == "genetic_fullmatrix":
@@ -5728,15 +5728,15 @@ def render():
                             # size, with none of the CMA-ES / genome-D / k-means framing (which is tilt-only).
                             # Same fix as the grain line above: this hard-coded
                             # "(rpgt×currency×bank)" regardless of the selected grain, so the
-                            # 21:24 sub-cell run reported its 23,791 SUB-CELLS as if they were
+                            # 21:24 profile run reported its 23,791 PROFILES as if they were
                             # 3-part cells.
                             _fm_grain_lbl = ("rpgt×currency×bank×pmp×ctry SUB-CELLS"
                                              if _opt_subcell else "rpgt×currency×bank")
-                            log(f"   full-matrix problem size: {_n_cells} cells ({_fm_grain_lbl}), "
-                                f"{int(len(G))} cell×gateway rows, {_n_mid} vampMids.")
+                            log(f"   full-matrix problem size: {_n_cells} profiles ({_fm_grain_lbl}), "
+                                f"{int(len(G))} profile×gateway rows, {_n_mid} vampMids.")
                         else:
-                            log(f"   GA problem size: {_n_cells} cells (rpgt×currency×bank), {int(len(G))} "
-                                f"cell×gateway rows, {_n_mid} vampMids → genome D = {_ga_D}. "
+                            log(f"   GA problem size: {_n_cells} profiles (rpgt×currency×bank), {int(len(G))} "
+                                f"profile×gateway rows, {_n_mid} vampMids → genome D = {_ga_D}. "
                                 f"CMA-ES per-generation cost ∝ D² (covariance update) and ∝ D³ (eigen-refresh); "
                                 f"D is the dimension k-means pre-clustering would reduce.")
                         _pop_ovr = int(ss.get("ga_pop_override", 0) or 0)   # 0 = auto-size
@@ -5762,7 +5762,7 @@ def render():
                                               # (module constant, also read by the settings-aware ETA)
                         _GA_GAIN_MAX = 3.5   # wider per-MID gain range (was 2.0) → more cross-MID reach
                         # 19gf/19ga: the legacy GA knobs (breach-targeted mutation, smart init,
-                        # adaptive λ) applied to the per-cell GA that the tilt CMA-ES replaced. 19ga
+                        # adaptive λ) applied to the per-profile GA that the tilt CMA-ES replaced. 19ga
                         # DELETED all fifteen of them from run_midtilt_ga's signature — they were
                         # accepted and never read — and 19gf deleted the wiring that passed them. This
                         # comment described a compatibility shim that no longer exists.
@@ -5886,7 +5886,7 @@ def render():
                             return True
                         # Revenue-max (dial 99) endpoint = the greedy revenue reference already shaved to
                         # compliance by the LP (enforce_mid_vamp_caps), which is MINIMUM-MOVEMENT optimal
-                        # for the per-cell revenue objective under the cross-cell VAMP cap. The CMA-ES
+                        # for the per-profile revenue objective under the cross-profile VAMP cap. The CMA-ES
                         # smart-search that used to run here (~40 min) was consistently matched-or-beaten
                         # by that greedy+LP split and its output DISCARDED — so it's removed. Dial 99 takes
                         # the greedy compliant split directly; the CMA-ES still runs for the harder risk-min
@@ -5898,10 +5898,10 @@ def render():
                             f"LP-optimal here, so its result was always discarded).")
                         _progress(_f_rmin, "GA risk-min endpoint…")
                         # SECOND GA run for the SAFE (dial-0) endpoint: same setup + a risk-minimisation
-                        # term so it tilts each MID further toward its low-risk cells while staying
+                        # term so it tilts each MID further toward its low-risk profiles while staying
                         # compliant. mu is auto-scaled from the reference so the risk term is a bounded
                         # fraction (~risk_aversion) of reference revenue — trades some revenue for lower
-                        # aggregate VAMP without degenerating (the θ-tilt keeps it revenue-shaped per cell).
+                        # aggregate VAMP without degenerating (the θ-tilt keeps it revenue-shaped per profile).
                         _rev_ref = max(_rev_of(_ref_share_G), 1.0)
                         _vamp_ref = max(float((_cvol * _ref_share_G * _rkr).sum()), 1.0)
                         _risk_aversion = 0.0   # FIXED: dial removed — always revenue-shaped (no extra risk-min beyond the caps)
@@ -5924,14 +5924,14 @@ def render():
                         # dial 0 sits inside every band harder. Intermediate dials inherit this via the
                         # frontier blend between the dial-0 and dial-99 endpoints.
                         _exact_G = None    # optional exact projector-defined seed (successive-LP); see below
-                        # CATCH-ALL ε-FLOOR MASK — NOW OFF BY DEFAULT (obsolete after the cell-level
+                        # CATCH-ALL ε-FLOOR MASK — NOW OFF BY DEFAULT (obsolete after the profile-level
                         # catch-all fix). It was built to dodge the OLD per-gateway re-add: back then a
                         # gateway zeroed by the split was re-added at ~10.6%, so pinning catch-all
                         # gateways ≥ ε (0.1%) beat 0. Since data_extractor now drops the catch-all in any
-                        # cell that has a specific rule, zeroing a gateway in a routed cell gives a clean
+                        # profile that has a specific rule, zeroing a gateway in a routed profile gives a clean
                         # 0 (no re-add) — so flooring it at 0.1% would only pin unwanted risk share onto
                         # the very MIDs we want at zero. Default ε=0 ⇒ mask None ⇒ solvers get no floor
-                        # (they minimise the raw breach, which == the deployed breach under cell-level).
+                        # (they minimise the raw breach, which == the deployed breach under profile-level).
                         # Set ss['fm_catchall_floor'] > 0 only to revive the old dodge (not needed now).
                         _catchall_row_mask = None
                         _fm_catch_eps = float(ss.get("fm_catchall_floor", 0.0) or 0.0)
@@ -6002,10 +6002,10 @@ def render():
                         _fm_use_exact = (_fm_eb is not None and _fm_inc is not None)
                         if _fm_use_exact:
                             # Eligibility-aware band scoring: reproduce the DELIVERED eligibility
-                            # transform (bans→0 + per-cell renorm, wallet blend + renorm, USA-only
+                            # transform (bans→0 + per-profile renorm, wallet blend + renorm, USA-only
                             # blend + renorm) on the shares BEFORE the M5 band projection. This is the
                             # row-for-row twin of delivery-time _restrict/apply_restrictions (via the
-                            # precomputed operator ctx["elig_op"], whose cell segments match the
+                            # precomputed operator ctx["elig_op"], whose profile segments match the
                             # projector's). Without it the GA scored the RAW pre-eligibility split, so
                             # the live 'MID unmet' UNDER-counted vs tab 3's delivered breakdown (e.g. 3
                             # vs 5). No-op if eligibility is disabled (ROUTING_GA_ELIG=0 / elig_op None).
@@ -6017,7 +6017,7 @@ def render():
                             # BANK AUTO-BLOCK flooring — reproduce the DELIVERED _apply_blocked_caps in the
                             # band hook (delivery applies it BEFORE eligibility). Blocked (bank,gateway)
                             # rows are capped to the exploration floor and the freed share redistributed to
-                            # the cell's non-blocked rows; a cell with no non-blocked recipient is left
+                            # the profile's non-blocked rows; a profile with no non-blocked recipient is left
                             # unchanged. Without this the delivered split (tab 3) can show 1 extra breach
                             # the GA never saw (the Adyen-TotalAV-NA Txn case). No-op if auto-block off.
                             _fm_blk_row = None
@@ -6063,15 +6063,15 @@ def render():
                             _fm_bcs = np.asarray(ctx["cell_starts"], np.intp)
                             _fm_bcc = np.asarray(ctx["cell_counts"], np.intp)
                             _fm_bfloor = float(floor)
-                            # ── RESTRICTED TO THE CELLS THAT CAN CHANGE (19bk) ────────────
+                            # ── RESTRICTED TO THE PROFILES THAT CAN CHANGE (19bk) ────────────
                             # [gen-cost] 2026-08-23 16:01: `deliver` is 52.2% of a
                             # generation and [deliv-cost] put blocked-caps at 26.6% of that
                             # (14.0% of a generation) — for a mask covering 98 of 242,670
-                            # rows. Only a cell holding a blocked row can change: elsewhere
+                            # rows. Only a profile holding a blocked row can change: elsewhere
                             # _capd == _X, so _freed == 0, so _fc == 0, so _add == 0, so
                             # _outb == _capd + 0.0 == _X EXACTLY (IEEE: x + 0.0 == x for
                             # every x except -0.0, and [deliv-cost] counts the -0.0s — 0 on
-                            # this data). 68 of 23,418 cells qualified, and the restricted
+                            # this data). 68 of 23,418 profiles qualified, and the restricted
                             # result was np.array_equal to the full one on the live
                             # 35 x 242,670 array. 312 ms -> 19.1 ms measured.
                             #
@@ -6079,7 +6079,7 @@ def render():
                             # narrow path uses np.add.reduceat and np.repeat exactly as
                             # below. My first draft used `.sum(axis=1)` and read 5.6e-17
                             # different, because reduceat does NOT sum a segment
-                            # left-to-right. Gather the hit cells' rows, run the SAME
+                            # left-to-right. Gather the hit profiles' rows, run the SAME
                             # expression, scatter back.
                             _fm_blk_hit = _fm_blk_rows = _fm_blk_scs = _fm_blk_scc = None
                             _FM_BLK_RESTRICT = os.environ.get(
@@ -6099,10 +6099,10 @@ def render():
                                         [[0], np.cumsum(_fm_blk_scc)[:-1]]).astype(np.intp)
                                     log(f"   [block-restrict] blocked-caps will run on "
                                         f"{int(_fm_blk_hit.sum()):,} of {_fm_bcs.size:,} "
-                                        f"cell(s) ({_fm_blk_hit.mean():.2%}) carrying "
+                                        f"profile(s) ({_fm_blk_hit.mean():.2%}) carrying "
                                         f"{_fm_blk_rows.size:,} of {int(_fm_bcc.sum()):,} "
-                                        "row(s) — the only cells a blocked row can reach. "
-                                        "Every other cell's output is its input, exactly. "
+                                        "row(s) — the only profiles a blocked row can reach. "
+                                        "Every other profile's output is its input, exactly. "
                                         "SELF-CHECKED against the full-width transform on "
                                         "the first call; ROUTING_BLOCK_RESTRICT=0 reverts.")
                                 except Exception as _bhE:  # noqa: BLE001
@@ -6202,9 +6202,9 @@ def render():
                                             "REVERTING to the full-width transform for the "
                                             "rest of this run, so the shipped answer is the "
                                             "known-good one. The restriction's premise "
-                                            "(_freed == 0 in every cell with no blocked row) "
+                                            "(_freed == 0 in every profile with no blocked row) "
                                             "does not hold on this data — most likely a "
-                                            "-0.0 share or a cell whose recipient sum sits "
+                                            "-0.0 share or a profile whose recipient sum sits "
                                             "within 1e-12 of the `_has` threshold.")
                                 return _o[0] if _one else _o
 
@@ -6254,8 +6254,8 @@ def render():
                             # (impact_calcs._cap_rows, inside build_split_exports); the
                             # search capped before it and never looked again, so it could
                             # score a split as compliant that delivery then had to
-                            # correct. Worked example: a cell at A 96 / B 3 / C 1 with a
-                            # 0.97 cap is compliant; zero B and C for a Non-USA sub-cell,
+                            # correct. Worked example: a profile at A 96 / B 3 / C 1 with a
+                            # 0.97 cap is compliant; zero B and C for a Non-USA profile,
                             # renormalise, and A is at 1.00. The GA scored 1.00; the
                             # deployed template ships 0.97.
                             #
@@ -6273,10 +6273,10 @@ def render():
                             # residual 19fe measured between the two.
                             #
                             # SAME KERNEL AS THE REPAIR, headroom-weighted and ONE pass:
-                            # sum(cap - share) over a cell's present rows is
+                            # sum(cap - share) over a profile's present rows is
                             # (present_rows x cap) - 1 + excess, so it covers the excess
-                            # whenever present_rows x cap >= 1 — every cell with 2+ live
-                            # rows at 0.97. A cell that cannot satisfy it is left alone,
+                            # whenever present_rows x cap >= 1 — every profile with 2+ live
+                            # rows at 0.97. A profile that cannot satisfy it is left alone,
                             # which is what _cap_rows does too (its `m` mask skips any row
                             # with fewer than 2 present gateways).
                             #
@@ -6295,7 +6295,7 @@ def render():
                                 log("   [deliv-cap] OFF — "
                                     + ("ROUTING_DELIV_CAP=0, so the search caps the genome "
                                        "BEFORE eligibility and never re-caps, while "
-                                       "delivery caps AFTER. A cell where eligibility "
+                                       "delivery caps AFTER. A profile where eligibility "
                                        "zeroing lifts a survivor past the cap is scored "
                                        "differently from what ships."
                                        if os.environ.get("ROUTING_DELIV_CAP", "1") == "0"
@@ -6347,8 +6347,8 @@ def render():
                                 return _Y[0] if _one else _Y
 
                             # ── [search-floor] 19gw: THE EXPLORATION FLOOR THE ENGINE APPLIES AT RUNTIME ──
-                            # WHAT IT IS. Every ELIGIBLE gateway in a routed cell keeps at least the
-                            # exploration floor of the share, then the cell is renormalised. It is the
+                            # WHAT IT IS. Every ELIGIBLE gateway in a routed profile keeps at least the
+                            # exploration floor of the share, then the profile is renormalised. It is the
                             # reason a 0%-rule incumbent still carries volume in tab 5.
                             #
                             # WHERE IT LIVES, and this is what decided the design. It is NOT in the
@@ -6399,7 +6399,7 @@ def render():
                             # THE DESIGN ERROR IS MINE AND IT IS THIS. I called `_fm_deliv`'s
                             # floor and `compute_vamp_prepost_granular`'s floor "the same thing
                             # behind one switch". They are not. `_fm_deliv` floors the SHARE
-                            # VECTOR — one value per gateway-cell, before anything is projected.
+                            # VECTOR — one value per gateway-profile, before anything is projected.
                             # `_efloor` floors `t0["prop_share"]` — a different object at a
                             # different grain, inside the delivered projection, after the template
                             # is built. Turning both on does not make the two sides agree; it
@@ -6503,8 +6503,8 @@ def render():
                             if _SFLOOR_ON:
                                 log(f"   [search-floor] ON (19gw) — the search now models the EXPLORATION "
                                     f"FLOOR the live allocation engine applies at runtime: every eligible "
-                                    f"gateway in a routed cell keeps at least {_SFLOOR:.2%} of the share, "
-                                    "then the cell is renormalised. It is NOT in the shipped template "
+                                    f"gateway in a routed profile keeps at least {_SFLOOR:.2%} of the share, "
+                                    "then the profile is renormalised. It is NOT in the shipped template "
                                     "(build_split_exports applies no floor) — it is what happens to that "
                                     "template once it runs, which is why it belongs in the delivery "
                                     "transform and not in the decode. EXPECT A DIFFERENT SPLIT AND A "
@@ -6663,7 +6663,7 @@ def render():
                                     # determinism is readable WITHOUT a special control run.
                                     #
                                     # WHY. On 2026-08-26 three runs with byte-identical inputs (same
-                                    # cells, rows, volume, scaffold, caps, incidence and attempts
+                                    # profiles, rows, volume, scaffold, caps, incidence and attempts
                                     # cache) produced band-aware breach 0.7159, 0.7157 and 0.7159.
                                     # Everything upstream of this stage matched exactly, so the
                                     # divergence starts HERE — and this stage has run its starts
@@ -6744,7 +6744,7 @@ def render():
                                         "measurement only — the seed itself is unaffected.")
                                 # Confirm the band-aware seed is LIVE + emit a FEASIBILITY CHECK: run
                                 # the exact projector on the constrained-projection seed (min band
-                                # breach s.t. per-cell simplex + max-share) and report the verdict.
+                                # breach s.t. per-profile simplex + max-share) and report the verdict.
                                 # Reaching 0 breach is a genuine feasibility CERTIFICATE (a compliant
                                 # split exists); non-zero is a strong — not proof — infeasibility signal.
                                 try:
@@ -6763,7 +6763,7 @@ def render():
                                     _v1 = float(ctx["exact_bands"].penalty(
                                         _s2pr_seed(_sb(_band_greedy_G), _inc_seed))[0])
                                     log(f"   seed stage 1/3 BAND-AWARE constrained projection "
-                                        f"(per-cell simplex + max-share QP, "
+                                        f"(per-profile simplex + max-share QP, "
                                         f"{'DELIVERED' if _seed_dlv is not None else 'RAW'} basis): "
                                         f"band breach "
                                         f"{_v0:.4g} (revenue-greedy start) → {_v1:.4g}. Stage 2 is "
@@ -6783,7 +6783,7 @@ def render():
                                     _nb = len(_rep_s)
                                     _substep("④·2  BUILD THE WARM-START SEED")
                                     log("   ── FEASIBILITY CHECK (constrained projection: min band breach "
-                                        "s.t. per-cell simplex + max-share) ──")
+                                        "s.t. per-profile simplex + max-share) ──")
                                     if not _unmet:
                                         log(f"      verdict: ✓ a COMPLIANT split EXISTS — all {_nb} band(s) "
                                             "satisfiable (feasibility certificate); seeded into the search.")
@@ -6794,7 +6794,7 @@ def render():
                                         log("      still unmet: " + ", ".join(sorted(set(_unmet))))
                                 except Exception:  # noqa: BLE001
                                     log("   seed stage 1/3 BAND-AWARE constrained projection "
-                                        "(per-cell simplex + max-share QP); its per-band breakdown "
+                                        "(per-profile simplex + max-share QP); its per-band breakdown "
                                         "was unavailable this run.")
                             else:
                                 log("   seed: revenue-greedy compliant ONLY — no active month "
@@ -6813,7 +6813,7 @@ def render():
                                         _risk_greedy_G, _rg_mask, _fm_catch_eps,
                                         ctx["cell_starts"], ctx["cell_counts"])
                                     log(f"   [full-matrix] catch-all ε-floor: {int(_rg_mask.sum()):,} "
-                                        f"catch-all gateway-cell(s) pinned ≥ {_fm_catch_eps:.2%} across the "
+                                        f"catch-all gateway-profile(s) pinned ≥ {_fm_catch_eps:.2%} across the "
                                         "seeds so none is left at 0 — dodges the pipeline re-add and the "
                                         "solvers optimise the DEPLOYED split (raw==deployed in the floored box).")
                                 except Exception as _fe:  # noqa: BLE001
@@ -7039,7 +7039,7 @@ def render():
                                     # ── VAMP-POSITIVE SIBLING (READ-ONLY) ───────────────────────────────
                                     # The cliff test: a breached VAMP MID's share only lowers its VAMP where a
                                     # co-located VAMP-positive (vcpos>0) gateway exists (vshare self-normalises).
-                                    # Cells where it's the SOLE VAMP gateway are structurally immovable by the
+                                    # Profiles where it's the SOLE VAMP gateway are structurally immovable by the
                                     # softmax engine. Read-only; never breaks the run.
                                     try:
                                         from routing_optimiser.s4_search.exact_band_solver import vamp_sibling_report as _vsib
@@ -7086,9 +7086,9 @@ def render():
                                         log(f"   extra root-cause diagnostics skipped ({type(_dxe).__name__}: {_dxe}).")
                                     # ── CO-LOCATION DIAGNOSTIC (READ-ONLY) ──────────────────────────────
                                     # For every breached ceiling MID, at the engine's BIN×currency×RPGT grain:
-                                    # in the exact cells where that MID carries share, is a headroom SIBLING
+                                    # in the exact profiles where that MID carries share, is a headroom SIBLING
                                     # present as an eligible gateway-row? Answers "search failure vs true
-                                    # cell-grain infeasibility". Changes NO share; never breaks the run.
+                                    # profile-grain infeasibility". Changes NO share; never breaks the run.
                                     try:
                                         from routing_optimiser.s4_search.exact_band_solver import colocation_report as _colo
                                         _dg_split = np.asarray(
@@ -7202,7 +7202,7 @@ def render():
                                         f"split, so the search STARTS here instead of losing it in the genome fit.")
                             except Exception as _ae:  # noqa: BLE001
                                 log(f"   anchor: skipped ({type(_ae).__name__}: {_ae}); default reference kept.")
-                        _n_fine_rm = int(min(40, max(0, _n_cells)))   # #4 richer per-cell genome (bounded)
+                        _n_fine_rm = int(min(40, max(0, _n_cells)))   # #4 richer per-profile genome (bounded)
                         _rm_w = _risk_aversion * _rev_ref / _vamp_ref
                         # #6 DISK CACHE: the risk-min search is deterministic, so a re-run with identical
                         # inputs returns the SAME split instantly. The key hashes the engine build + every
@@ -7386,22 +7386,22 @@ def render():
                                             # Until 2026-08-18l this hard-coded 3 parts
                                             # (cur|bin|rpgt) in the >=4 branch, which is correct
                                             # for the 4-part key it was written for but WRONG for
-                                            # the 6-part sub-cell prop-key band_projection now
+                                            # the 6-part profile prop-key band_projection now
                                             # emits (cur|bin|rpgt|pmp|ctry|mid). It therefore
-                                            # divided by the COARSE cell's specific mass, pooling
-                                            # every (pmp, ctry) sub-cell of a cur|bin|rpgt triple:
-                                            # per-cell prop budgets came out at 1/n for n sub-cells
+                                            # divided by the COARSE profile's specific mass, pooling
+                                            # every (pmp, ctry) profile of a cur|bin|rpgt triple:
+                                            # per-profile prop budgets came out at 1/n for n profiles
                                             # (measured p05 0.333 / p50 0.500 / p95 1.000, 47.9% of
-                                            # cells — the singletons — at exactly 1.0) and total
+                                            # profiles — the singletons — at exactly 1.0) and total
                                             # prop mass fell 14,813 -> 10,603 (-28%), against a
-                                            # DELIVERED blend that holds 100% of cells at exactly
-                                            # 1.0. pshare divides by the cell sum, so a NON-uniform
-                                            # budget change moves every pshare in the touched cells
+                                            # DELIVERED blend that holds 100% of profiles at exactly
+                                            # 1.0. pshare divides by the profile sum, so a NON-uniform
+                                            # budget change moves every pshare in the touched profiles
                                             # — chain step 1, ~19 of the remaining 40.
                                             # `_ps[:-1]` is backward-compatible by construction:
                                             #   3-part -> (cur, bin)              == old else branch
                                             #   4-part -> (cur, bin, rpgt)        == old if branch
-                                            #   6-part -> (cur, bin, rpgt, pmp, ctry)  == sub-cell
+                                            #   6-part -> (cur, bin, rpgt, pmp, ctry)  == profile
                                             # The catch-all POOL lookup below is a different key at
                                             # a different grain and is deliberately unchanged.
                                             _ckk = tuple(_ps[:-1])
@@ -7427,11 +7427,11 @@ def render():
                                         _AbT = _Ab.T.tocsr()
 
                                         def _fm_blend_pr(_pr, _A=_Ab, _AT=_AbT, _injv=_inj_b):
-                                            # CELL-LEVEL twin of backup_blend.blend_cell_shares: a cell with ANY
+                                            # PROFILE-LEVEL twin of backup_blend.blend_cell_shares: a profile with ANY
                                             # specific mass ships only its specific shares (renormalised to 1) — the
-                                            # catch-all does NOT fire there. The catch-all is injected ONLY into cells
-                                            # with NO specific share (a genuinely undefined profile). Matches the fixed
-                                            # pipeline (data_extractor drops Expanded catch-all rows in routed cells),
+                                            # catch-all does NOT fire there. The catch-all is injected ONLY into profiles
+                                            # with NO specific share (a genuinely undefined cell). Matches the fixed
+                                            # pipeline (data_extractor drops Expanded catch-all rows in routed profiles),
                                             # so scored == deployed.
                                             _pr = np.ascontiguousarray(_pr, dtype=float)
                                             _one = _pr.ndim == 1
@@ -7439,27 +7439,27 @@ def render():
                                                 _pr = _pr[None, :]
                                             _pos = _pr > 0.0
                                             _specpos = np.where(_pos, _pr, 0.0)
-                                            _S = np.asarray((_A @ _specpos.T).T)          # (P,nc) specific mass per cell
-                                            _Sb = np.asarray((_AT @ _S.T).T)              # (P,K) cell specific mass per col
-                                            _empty = _Sb <= 0.0                           # cells with NO specific share
+                                            _S = np.asarray((_A @ _specpos.T).T)          # (P,nc) specific mass per profile
+                                            _Sb = np.asarray((_AT @ _S.T).T)              # (P,K) profile specific mass per col
+                                            _empty = _Sb <= 0.0                           # profiles with NO specific share
                                             _injcol = np.where(_empty, _injv[None, :], 0.0)
-                                            _INJ = np.asarray((_A @ _injcol.T).T)         # (P,nc) catch-all mass, empty cells
+                                            _INJ = np.asarray((_A @ _injcol.T).T)         # (P,nc) catch-all mass, empty profiles
                                             _INJb = np.asarray((_AT @ _INJ.T).T)          # (P,K)
                                             _out = np.where(
                                                 _empty,
                                                 np.where(_INJb > 0.0, _injcol / np.where(_INJb > 0.0, _INJb, 1.0), _pr),
                                                 np.where(_Sb > 0.0, _specpos / np.where(_Sb > 0.0, _Sb, 1.0), 0.0))
                                             return _out[0] if _one else _out
-                                        log("   [full-matrix] backup catch-all FOLDED INTO the fitness (CELL-LEVEL: "
+                                        log("   [full-matrix] backup catch-all FOLDED INTO the fitness (PROFILE-LEVEL: "
                                             f"{int((_inj_b > 0).sum()):,} prop-key(s) eligible, but injected ONLY in "
-                                            "cells with no specific share) — matches the fixed pipeline, so scored == "
+                                            "profiles with no specific share) — matches the fixed pipeline, so scored == "
                                             "tab-3/tab-5 delivered.")
-                                        log(f"   [full-matrix] blend renormalisation cell = the prop-key minus the "
+                                        log(f"   [full-matrix] blend renormalisation profile = the prop-key minus the "
                                             f"MID: {len(str(_pk_b[0]).split('|')) - 1 if _pk_b else 0}-part key over "
-                                            f"{_ncb:,} cell(s) for {_Kb:,} prop-key(s). Pre-2026-08-18l this was "
+                                            f"{_ncb:,} profile(s) for {_Kb:,} prop-key(s). Pre-2026-08-18l this was "
                                             "hard-coded to 3 parts (cur|bin|rpgt), which pooled every (pmp, ctry) "
-                                            "sub-cell and cut per-cell prop budgets to 1/n. Cross-check against the "
-                                            "[step1] budget distribution below: every cell must read exactly 1.000.")
+                                            "profile and cut per-profile prop budgets to 1/n. Cross-check against the "
+                                            "[step1] budget distribution below: every profile must read exactly 1.000.")
                                     except Exception as _fbe:  # noqa: BLE001
                                         _fm_blend_pr = None
                                         log(f"   [full-matrix] backup-blend fold-in DISABLED "
@@ -7518,7 +7518,7 @@ def render():
                                     # global-LP branch that WAS a competitor is deleted (it cost ~71s
                                     # and its own log read 0.3532 → 0.3566, i.e. worse than the seed
                                     # it linearised at; it never won selection).
-                                    #   band-aware   (~33s)  constrained projection, per-cell simplex
+                                    #   band-aware   (~33s)  constrained projection, per-profile simplex
                                     #        ↓                + max-share QP
                                     #   exact-proj   (~105s) successive-LP on the TRUE band values,
                                     #        ↓                STARTS FROM band-aware
@@ -7747,7 +7747,7 @@ def render():
                                     #                    eligibility helpers never mutate their input in place,
                                     #                    verified) so no (P×n_row) allocation per generation.
                                     #   _fm_gather     : full-grain delivered → gather the kept rows back +
-                                    #                    per-cell renormalise (kept-grain shape for the
+                                    #                    per-profile renormalise (kept-grain shape for the
                                     #                    distortion). Together bit-identical to the old
                                     #                    scatter→deliver→gather done once per hook.
                                     # Respects Country / paymentMethodProvider capability (USA-only + wallet)
@@ -7943,24 +7943,24 @@ def render():
                                     f"{_fm_pop} · restart-mode {_fm_rmode}; "
                                     + ("early-stop DISABLED (run-all-generations ON)"
                                        if _fm_no_stop else f"patience {_fm_pat}") + ".")
-                                # ── BREACH-TARGETED MUTATION: cells weighted by the VAMP/TXN
+                                # ── BREACH-TARGETED MUTATION: profiles weighted by the VAMP/TXN
                                 #    they can actually SHED ─────────────────────────────────────
-                                # 2026-08-19ad. The 19ab version asked "does this cell contain a
+                                # 2026-08-19ad. The 19ab version asked "does this profile contain a
                                 # row feeding the breached MID" and the 21:24 run answered YES for
-                                # 23,791 of 23,791 cells — because `exploration: injected 142,544
-                                # fallback candidate row(s) into EVERY eligible cell` puts a row
+                                # 23,791 of 23,791 profiles — because `exploration: injected 142,544
+                                # fallback candidate row(s) into EVERY eligible profile` puts a row
                                 # for nearly every MID in nearly every cell. Presence cannot
-                                # discriminate here. Worse, a x3 boost on every cell is just a
+                                # discriminate here. Worse, a x3 boost on every profile is just a
                                 # uniform rate of 0.03: 19ab tripled mutation instead of aiming it.
                                 #
                                 # MASS, not presence. Per `_mid_vamp` (rate = Σvol·share·risk /
                                 # Σvol·share) a row's share-independent capacity to move a
                                 #   VAMP band is vol·risk ; a TXN band, vol.
-                                # Summed per (spec, cell) that is exactly "how much of this band
-                                # could this cell shed" — and an injected zero-volume exploration
+                                # Summed per (spec, profile) that is exactly "how much of this band
+                                # could this profile shed" — and an injected zero-volume exploration
                                 # row scores ~0, so it stops polluting the signal.
                                 # reduceat is safe on p.cell_start (FullMatrixProblem.build sorts
-                                # rows by cell, so segments ARE ascending and contiguous — unlike
+                                # rows by profile, so segments ARE ascending and contiguous — unlike
                                 # the projector's gcode, which is not sorted; see [frozen-scaffold]).
                                 _fm_mut_boost = float(os.environ.get("ROUTING_MUT_BOOST", "3") or 3)
                                 _fm_mut_on = os.environ.get("ROUTING_MUT_TARGET", "1") != "0"
@@ -7991,12 +7991,12 @@ def render():
                                                      if _mid_by_lbl.get(
                                                          str(_sp.midl).strip().lower()) is None]
                                         _nz = int((_fm_spec_mass.sum(axis=0) > 0).sum())
-                                        log(f"   [mut-target] spec→cell CAPACITY map: {len(_sp_list)} "
-                                            f"band spec(s) over {int(_fm_p.n_cells):,} cells; "
-                                            f"{_nz:,} cell(s) carry non-zero capacity for at least "
+                                        log(f"   [mut-target] spec→profile CAPACITY map: {len(_sp_list)} "
+                                            f"band spec(s) over {int(_fm_p.n_cells):,} profiles; "
+                                            f"{_nz:,} profile(s) carry non-zero capacity for at least "
                                             "one band (vol·risk for a VAMP band, vol for a TXN "
                                             "band). Replaces the 19ab PRESENCE mask, which the "
-                                            "2026-08-21 21:24 run showed selecting 100% of cells.")
+                                            "2026-08-21 21:24 run showed selecting 100% of profiles.")
                                         if _unmapped:
                                             log(f"      ⚠ {len(_unmapped)} spec(s) have NO matching "
                                                 f"vampMid in the GA's mid list and can never be "
@@ -8014,7 +8014,7 @@ def render():
 
                                 _fm_mut_stat = {"gen": 0, "cells": 0, "mids": (), "cover": 0.0,
                                                 "wmax": 1.0, "wmin": 1.0, "share": 0.0}
-                                # Above this share of cells the target set is not discriminating and
+                                # Above this share of profiles the target set is not discriminating and
                                 # the run is reported as DEGENERATE rather than as targeted.
                                 _FM_MUT_DEGEN = 0.95
 
@@ -8026,17 +8026,17 @@ def render():
                                     # BREACHED = the population MINIMUM of a spec's weighted
                                     # penalty is > 0, i.e. even the BEST candidate still breaches
                                     # it. Order-independent, so it does not need the ranking.
-                                    # TARGET SET = the smallest set of cells, by descending
+                                    # TARGET SET = the smallest set of profiles, by descending
                                     # capacity, covering `_cover` of the breached mass. This is the
                                     # log's own [breach concentration] framing ("90% of VAMP in
-                                    # 10,736 of 38,359 cells") rather than an opaque threshold.
+                                    # 10,736 of 38,359 profiles") rather than an opaque threshold.
                                     # BUDGET-NEUTRAL: w is divided by its mean, so expected
                                     # mutated cells = rate x n_cells, UNCHANGED. Targeting
                                     # redistributes the budget; it does not inflate it. That is
                                     # what makes ROUTING_MUT_TARGET=0 a clean A/B instead of one
                                     # confounded with "more mutation" — the defect that made the
                                     # 21:24 run uninterpretable.
-                                    # SELF-CORRECTING: if the target set is EVERY cell then
+                                    # SELF-CORRECTING: if the target set is EVERY profile then
                                     # mean(w) == boost, so w == 1 everywhere and the result is
                                     # exactly uniform. The 19ab pathology degrades to a no-op.
                                     if not _on or _sm is None:
@@ -8064,13 +8064,13 @@ def render():
                                     _w = _w / _m                      # mean(w) == 1
                                     _st["gen"] += 1
                                     _st["cells"] = int(_k)
-                                    # SHARE of cells, not just the count. The degenerate case that
+                                    # SHARE of profiles, not just the count. The degenerate case that
                                     # bit build 19ab is "the target set is ~everything", and that
                                     # is a FRACTION test — checking _k == n_cells only catches it
                                     # when the set is exactly all cells. At cover=0.999 on flat
                                     # capacity the set came out at 99.9%, where the weights are
                                     # ~1.0007 / 0.334: harmless and still budget-neutral, but
-                                    # reporting it as "aimed at 19,980 of 20,000 cells" would read
+                                    # reporting it as "aimed at 19,980 of 20,000 profiles" would read
                                     # as targeting when nothing is being aimed.
                                     _st["share"] = float(_k) / float(max(_mass.size, 1))
                                     _st["cover"] = float(_cum[_k - 1] / _tot)
@@ -8104,8 +8104,8 @@ def render():
                                 _fm_best, _fm_info = _fm_run(_fm_p, **_fm_kw)
                                 # [frozen-scaffold] HOW MUCH OF THE PROJECTOR IS PERMANENTLY
                                 # CONSTANT? 92% of a GA generation is _pop_band_kernel over the cap
-                                # scaffold (1.28M rows / 22.3k cells), an object sized by the
-                                # DELIVERED forecast grain + back-filled sub-cell rows, not by the
+                                # scaffold (1.28M rows / 22.3k profiles), an object sized by the
+                                # DELIVERED forecast grain + back-filled profile rows, not by the
                                 # GA genome. So shrinking the genome alone saves ~6%. The real prize
                                 # is dropping scaffold rows out of the per-generation kernel.
                                 # That is EXACT, not approximate, wherever psum == 0. From the
@@ -8113,11 +8113,11 @@ def render():
                                 # moved[c]=0, so
                                 #     txn  += ctot[r]*base[r]      (constant)
                                 #     vamp += pc_vc[j]             (constant)
-                                # i.e. the cell contributes a FIXED vector to every band for every
+                                # i.e. the profile contributes a FIXED vector to every band for every
                                 # candidate, summable once before the search.
-                                # WHICH cells qualify candidate-INDEPENDENTLY: prop_raw =
+                                # WHICH profiles qualify candidate-INDEPENDENTLY: prop_raw =
                                 # incidence @ shares, so a prop-key with an all-zero incidence row
-                                # is zero for EVERY candidate. A cell whose every row is either
+                                # is zero for EVERY candidate. A profile whose every row is either
                                 # masked or on such an unmapped prop-key therefore has psum==0
                                 # always — permanently frozen, with no assumption about the split.
                                 # READ-ONLY. This measures; it does not change the kernel.
@@ -8156,9 +8156,9 @@ def render():
                                         # never asks. `_fs_live` is already per-row: a row is DEAD
                                         # when the GA cannot move it at all (masked, bad index, or
                                         # its prop-key has an all-zero incidence row). The lift
-                                        # collapses that to CELL grain and freezes a cell only when
+                                        # collapses that to PROFILE grain and freezes a profile only when
                                         # EVERY row in it is dead. So the rows worth counting are
-                                        # the DEAD ones inside LIVE cells: still walked every
+                                        # the DEAD ones inside LIVE profiles: still walked every
                                         # generation, contributing the same thing every time.
                                         #
                                         # This is the same measurement for BOTH open projector
@@ -8179,19 +8179,19 @@ def render():
                                                 f"({_pr_walked / max(_fs_nR, 1):.1%}) are DEAD "
                                                 "(the GA cannot move them, so their contribution "
                                                 "is the same for every candidate) but sit in a "
-                                                "LIVE cell, so the frozen-scaffold lift still "
+                                                "LIVE profile, so the frozen-scaffold lift still "
                                                 "walks them every generation. SEPARATELY, and "
                                                 "NOT a breakdown of that figure: across the WHOLE "
                                                 f"scaffold {_pr_unreach:,} row(s) are dead because "
                                                 "their prop-key has an all-zero incidence row and "
                                                 f"{_pr_masked:,} because they are masked "
                                                 "(excl|emask) — those two OVERLAP, and most of them "
-                                                "are already inside frozen cells, which is why "
+                                                "are already inside frozen profiles, which is why "
                                                 "neither bounds the headline. The headline is the "
                                                 "only actionable number.")
                                             if _pr_walked <= 0:
                                                 log("      [prop-reach] ⇒ NOTHING TO WIN. Every "
-                                                    "dead row is already inside a frozen cell, so "
+                                                    "dead row is already inside a frozen profile, so "
                                                     "the lift is already dropping all of them and "
                                                     "a row-level reduction would be a no-op. Both "
                                                     "projector ideas are CLOSED by this number.")
@@ -8222,9 +8222,9 @@ def render():
                                                     "scaffold's shape changes materially.")
                                                 log("      [prop-reach]    THE RISK THAT MAKES IT "
                                                     "NOT FREE: a dead "
-                                                    "row can still feed a CELL-level denominator "
+                                                    "row can still feed a PROFILE-level denominator "
                                                     "(psum / vpsum / ctot) that a LIVE row in the "
-                                                    "same cell divides by. Dropping it would then "
+                                                    "same profile divides by. Dropping it would then "
                                                     "move that denominator and the answer with it. "
                                                     "What would settle it: build the reduced "
                                                     "scaffold, run the projector on both, and "
@@ -8247,7 +8247,7 @@ def render():
                                             "EVERY candidate.")
                                         log(f"      scaffold rows masked (excl|emask): "
                                             f"{int(_fs_mk.sum()):,} of {_fs_nR:,}")
-                                        log(f"      FROZEN scaffold cells (psum==0 for every "
+                                        log(f"      FROZEN scaffold profiles (psum==0 for every "
                                             f"candidate, so their vamp/txn contribution is a "
                                             f"constant): {_fs_frz_cells:,} of {_fs_ng:,} "
                                             f"({_fs_frz_cells / max(_fs_ng, 1):.1%}), carrying "
@@ -8324,21 +8324,21 @@ def render():
                                                 "provable no-ops, verified against the pre-lift "
                                                 "kernel on stale-scratch fixtures).")
                                         log("      CAVEAT: this counts rows that can NEVER be "
-                                            "moved. A cell whose rows are reachable but happen to "
+                                            "moved. A profile whose rows are reachable but happen to "
                                             "be 0 in the current split is NOT counted — it could "
                                             "become non-zero, so freezing it would be wrong. This "
                                             "is deliberately the safe, candidate-independent set.")
 
-                                        # ── [zero-cells] DOES THE GENOME CONTAIN CELLS THAT CANNOT MATTER? ──
+                                        # ── [zero-profiles] DOES THE GENOME CONTAIN PROFILES THAT CANNOT MATTER? ──
                                         # (read-only) Distinct from [frozen-scaffold] above, which counts
-                                        # PROJECTOR cells the GA cannot reach. This counts the GA's OWN
-                                        # decision cells — the ones crossover and mutation spend budget on.
-                                        # A cell with no forecast volume contributes nothing to vwsr for any
-                                        # candidate; a cell where every row has a zero VAMP rate contributes
-                                        # nothing to any VAMP band. A cell with BOTH is a genome dimension
+                                        # PROJECTOR profiles the GA cannot reach. This counts the GA's OWN
+                                        # decision profiles — the ones crossover and mutation spend budget on.
+                                        # A profile with no forecast volume contributes nothing to vwsr for any
+                                        # candidate; a profile where every row has a zero VAMP rate contributes
+                                        # nothing to any VAMP band. A profile with BOTH is a genome dimension
                                         # that cannot move either objective, so a mutation landing there is
                                         # spent on a direction with no gradient. Also splits out SINGLE-ROW
-                                        # cells, where the share is forced to 1.0 and there is no choice to
+                                        # profiles, where the share is forced to 1.0 and there is no choice to
                                         # make at all.
                                         try:
                                             if _settled_skip("[zero-cells]", "every multi-row genome cell carries either forecast volume or a non-zero VAMP rate, so no part of the mutation budget is spent on a dimension that cannot move the objective."):
@@ -8349,19 +8349,19 @@ def render():
                                             _zc_risk = np.asarray(ctx["risk"], float)
                                             _zc_n = int(_zc_st.size)
                                             _zc_nrow = int(_zc_ct.sum())
-                                            # cell_vol is the CELL total repeated on every row of the cell
+                                            # cell_vol is the PROFILE total repeated on every row of the profile
                                             _zc_vol = _zc_vol_r[_zc_st]
-                                            # max VAMP rate within each cell over its own contiguous rows
+                                            # max VAMP rate within each profile over its own contiguous rows
                                             _zc_maxr = np.maximum.reduceat(_zc_risk, np.asarray(_zc_st, np.intp))
                                             _zc_novol = _zc_vol <= 0.0
                                             _zc_novamp = _zc_maxr <= 0.0
                                             _zc_both = _zc_novol & _zc_novamp
                                             _zc_one = _zc_ct <= 1
-                                            _zc_free = ~_zc_one            # cells with a choice to make
+                                            _zc_free = ~_zc_one            # profiles with a choice to make
                                             _zc_dead = _zc_both & _zc_free  # a real decision that cannot matter
-                                            log("   ── [zero-cells] cells in the GA's OWN genome that cannot move "
+                                            log("   ── [zero-profiles] profiles in the GA's OWN genome that cannot move "
                                                 "either objective (read-only) ──")
-                                            log(f"      genome {_zc_n:,} cell(s) over {_zc_nrow:,} row(s) · "
+                                            log(f"      genome {_zc_n:,} profile(s) over {_zc_nrow:,} row(s) · "
                                                 f"single-row (share forced to 1.0, no choice) {int(_zc_one.sum()):,} "
                                                 f"({_zc_one.mean():.1%}) · multi-row {int(_zc_free.sum()):,}")
                                             log(f"      ZERO forecast volume {int(_zc_novol.sum()):,} "
@@ -8369,8 +8369,8 @@ def render():
                                                 f"{int(_zc_novamp.sum()):,} ({_zc_novamp.mean():.1%}) · BOTH "
                                                 f"{int(_zc_both.sum()):,} ({_zc_both.mean():.1%})")
                                             if _zc_dead.any():
-                                                log(f"      ⇒ {int(_zc_dead.sum()):,} MULTI-ROW cell(s) "
-                                                    f"({_zc_dead.sum() / max(int(_zc_free.sum()), 1):.1%} of the cells "
+                                                log(f"      ⇒ {int(_zc_dead.sum()):,} MULTI-ROW profile(s) "
+                                                    f"({_zc_dead.sum() / max(int(_zc_free.sum()), 1):.1%} of the profiles "
                                                     "that actually have a choice) have no volume AND no VAMP anywhere "
                                                     "in them. A uniformly-chosen mutation lands on one with that "
                                                     "probability and cannot change success rate or any band. Excluding them "
@@ -8379,22 +8379,22 @@ def render():
                                                     "budget-NEUTRAL — it concentrates the same effort rather than "
                                                     "adding any. NOT DONE: it is a search change, not a measurement.")
                                             else:
-                                                log("      ⇒ NONE with a choice to make. Every multi-row genome cell "
+                                                log("      ⇒ NONE with a choice to make. Every multi-row genome profile "
                                                     "carries either forecast volume or a non-zero VAMP rate, so no "
                                                     "part of the mutation budget is spent on a dimension that cannot "
                                                     "move the objective. Note the risk-seeding step earlier in the run "
-                                                    "deliberately gives zero-VAMP gateway-cells the opt-grain weighted "
+                                                    "deliberately gives zero-VAMP gateway-profiles the opt-grain weighted "
                                                     "average rate rather than 0 — which is WHY this can read 0% even "
-                                                    "though many cells have no OBSERVED VAMP.")
+                                                    "though many profiles have no OBSERVED VAMP.")
                                         except _SettledSkip:
                                             pass
                                         except Exception as _zcE:  # noqa: BLE001
-                                            log(f"   [zero-cells] skipped ({type(_zcE).__name__}: {_zcE}) — READ-ONLY, "
+                                            log(f"   [zero-profiles] skipped ({type(_zcE).__name__}: {_zcE}) — READ-ONLY, "
                                                 "nothing else is affected.")
 
                                         # ── [zero-rows] PROVABLY-ZERO LOOP ROWS ─────────────
                                         # A different reduction from the lift above: not frozen
-                                        # CELLS skipped in the flat passes, but individual nC/nA
+                                        # PROFILES skipped in the flat passes, but individual nC/nA
                                         # LOOP ROWS whose term is exactly 0.0 for every candidate.
                                         # Dropping those is bit-identical (x + 0.0 == x), which
                                         # hoisting a frozen contribution out of the same loops is
@@ -8403,7 +8403,7 @@ def render():
                                         # SCOPE. This deliberately does NOT count "injected
                                         # back-fill rows". I claimed on 2026-08-22 that those were
                                         # provably droppable; they are not. `base` and `ctot` are
-                                        # CELL SUMS (Σ_cell _av, Σ_cell vi), so removing a t0 row
+                                        # PROFILE SUMS (Σ_cell _av, Σ_cell vi), so removing a t0 row
                                         # with vi > 0 changes ctot for every other row in its
                                         # cell. The claim only holds at LOOP-ROW level, where the
                                         # arrays are already flattened per-j and no denominator is
@@ -8448,8 +8448,8 @@ def render():
                                                     "filtering itself costs a pass. The 899k "
                                                     "injected back-fill rows are NOT in this "
                                                     "count and cannot be — they carry vi > 0 into "
-                                                    "a cell sum, so dropping them would move "
-                                                    "ctot for their whole cell.")
+                                                    "a profile sum, so dropping them would move "
+                                                    "ctot for their whole profile.")
                                             else:
                                                 log("      ⇒ WORTH MEASURING: enough loop rows "
                                                     "qualify that variant C has something real to "
@@ -8473,7 +8473,7 @@ def render():
                                 # ever breached mutates UNIFORMLY — indistinguishable from the
                                 # targeted case unless stated. Each branch names which happened.
                                 # The 19ab version of this block also emitted a nonsense sentence
-                                # when the target set was EVERY cell ("~238 cells were perturbed
+                                # when the target set was EVERY cell ("~238 profiles were perturbed
                                 # but only ~238 of them could move a breached band"), because it
                                 # assumed the targeted count was a strict subset. It now reports
                                 # the degenerate case as the no-op it is.
@@ -8493,10 +8493,10 @@ def render():
                                          if 0 <= _i < len(_sp_list)})) or "none"
                                     if not _fm_mut_on:
                                         log("   [mut-target] OFF — ROUTING_MUT_TARGET=0, so "
-                                            f"mutation was UNIFORM over all {_mt_tot:,} cells. "
+                                            f"mutation was UNIFORM over all {_mt_tot:,} profiles. "
                                             "This is the A/B baseline: because targeting is "
                                             "budget-neutral as of 2026-08-19ad, a targeted run "
-                                            "perturbs the SAME expected number of cells, so any "
+                                            "perturbs the SAME expected number of profiles, so any "
                                             "difference in the result is the aiming and not the "
                                             "amount of mutation.")
                                     elif _fm_spec_mass is None:
@@ -8512,7 +8512,7 @@ def render():
                                             "called with detail_out= (it feeds the breach read).")
                                     elif _mt_share >= _FM_MUT_DEGEN:
                                         log(f"   [mut-target] DEGENERATE — the target set is "
-                                            f"{_mt_c:,} of {_mt_tot:,} cells ({_mt_share:.1%}, at "
+                                            f"{_mt_c:,} of {_mt_tot:,} profiles ({_mt_share:.1%}, at "
                                             f"or above the {_FM_MUT_DEGEN:.0%} threshold), so it "
                                             "is not discriminating and targeting is effectively a "
                                             f"NO-OP this run (weights {_mt_wmin:.4f}–{_mt_wmax:.4f}, "
@@ -8520,22 +8520,22 @@ def render():
                                             "rate — mean-1 normalisation guarantees that, which is "
                                             "the specific failure of build 19ab (a uniform ×3). "
                                             "Cause is usually that the breached bands' routable "
-                                            "capacity is spread evenly across every cell. Lower "
+                                            "capacity is spread evenly across every profile. Lower "
                                             f"ROUTING_MUT_COVER (currently {_fm_mut_cover:.2f}) to "
-                                            "concentrate on fewer, higher-capacity cells.")
+                                            "concentrate on fewer, higher-capacity profiles.")
                                     else:
                                         log(f"   [mut-target] ON (boost ×{_fm_mut_boost:g}, cover "
                                             f"{_fm_mut_cover:.0%}) — aimed mutation at {_mt_c:,} of "
-                                            f"{_mt_tot:,} cells ({_mt_c / max(_mt_tot, 1):.1%}), "
+                                            f"{_mt_tot:,} profiles ({_mt_c / max(_mt_tot, 1):.1%}), "
                                             f"which carry {_mt_cov:.1%} of the breached bands' "
                                             f"routable capacity, across {_mt_n:,} generation(s). "
                                             f"Bands targeted on the last generation: {_mt_names}.")
-                                        log(f"      Per-cell probability: "
+                                        log(f"      Per-profile probability: "
                                             f"{min(_mt_rate * _mt_wmax, 1.0):.4f} on a targeted "
-                                            f"cell vs {_mt_rate * _mt_wmin:.4f} elsewhere "
+                                            f"profile vs {_mt_rate * _mt_wmin:.4f} elsewhere "
                                             f"(base rate {_mt_rate:.4f}). BUDGET-NEUTRAL: weights "
                                             "have mean 1, so the expected number of perturbed "
-                                            f"cells is still ~{_mt_rate * _mt_tot:,.0f} — the same "
+                                            f"profiles is still ~{_mt_rate * _mt_tot:,.0f} — the same "
                                             "as a uniform run. Targeting redistributes the budget, "
                                             "it does not add to it, so ROUTING_MUT_TARGET=0 is a "
                                             "clean A/B. ROUTING_MUT_BOOST / ROUTING_MUT_COVER tune "
@@ -8586,7 +8586,7 @@ def render():
                                     for _pn_msg in _ppn:
                                         # 19fv: the list now also carries the projector's one-off
                                         # BUILD verdicts ([vconst-frozen], the aged-row hoist, the
-                                        # frozen lift, index width, cell-blocked layout), which
+                                        # frozen lift, index width, profile-blocked layout), which
                                         # bring their own tag. Don't bury a tag under [proj-par] --
                                         # these are the lines you grep for.
                                         log(f"   {_pn_msg}" if str(_pn_msg).startswith("[")
@@ -8635,14 +8635,14 @@ def render():
                                             log(f"   [deliv-cap] the cap fired on "
                                                 f"{_DCAP['hit']:,} of {_DCAP['calls']:,} delivery "
                                                 f"call(s), repairing {_DCAP['cells']:,} "
-                                                f"(candidate, cell) pair(s) that eligibility "
+                                                f"(candidate, profile) pair(s) that eligibility "
                                                 f"zeroing had lifted past {_DCAP['cap']:.4g}. "
                                                 f"Total share moved {_DCAP['moved']:.4g}; largest "
                                                 f"single-row move {_DCAP['worst']:.4g}. EVERY one "
                                                 "of those is a split the pre-19fg search scored as "
                                                 "compliant and delivery then had to correct — that "
                                                 "gap is what this closes.")
-                                        log(f"   [deliv-cap] cells where the cap is unsatisfiable "
+                                        log(f"   [deliv-cap] profiles where the cap is unsatisfiable "
                                             f"(live rows hold less room than the excess): "
                                             f"{_DCAP['infeas']:,} — left at baseline, exactly as "
                                             "_cap_rows leaves a row with fewer than 2 present "
@@ -8667,9 +8667,9 @@ def render():
                                 # AS THE GENOME DECODES IT (genetic_fullmatrix ~1117:
                                 # s0 = softmax(log(clip(seed, 1e-6)))) — not against the seed we
                                 # actually hold. The clip revives shares the seed drove to exactly
-                                # 0, and in a cell where the breached MID is the SOLE VAMP-positive
-                                # gateway that flips vshare 0 -> 1, handing the whole cell's VAMP
-                                # straight back. That run measured 19,271 of 59,575 adyen cells,
+                                # 0, and in a profile where the breached MID is the SOLE VAMP-positive
+                                # gateway that flips vshare 0 -> 1, handing the whole profile's VAMP
+                                # straight back. That run measured 19,271 of 59,575 adyen profiles,
                                 # 12,601 worldpay and 13,425 braintree in exactly that state.
                                 # So: score BOTH through the SAME `_fm_breach` (the one shared
                                 # ExactBandPenalty the GA ranks and the log prints) and ship the
@@ -9273,7 +9273,7 @@ def render():
 
                                     if _nw_seed_skipped:
                                         # [nw-skip]: decided by arithmetic above. Print the same
-                                        # table the full path prints, with the seed's cells marked
+                                        # table the full path prints, with the seed's profiles marked
                                         # "not projected" rather than left blank — a reader must be
                                         # able to see WHICH number is missing and why, not wonder
                                         # whether the guard ran.
@@ -9501,8 +9501,8 @@ def render():
                                             "cannot start from the seed. Its genome is logits, so "
                                             "the seed enters as softmax(log(clip(share, 1e-6))) — "
                                             "any share the seed set to exactly 0 comes back "
-                                            "non-zero, and in a SOLE-VAMP-POSITIVE cell that flips "
-                                            "vshare 0 -> 1 and returns the whole cell's VAMP. The "
+                                            "non-zero, and in a SOLE-VAMP-POSITIVE profile that flips "
+                                            "vshare 0 -> 1 and returns the whole profile's VAMP. The "
                                             "search then improves from that damaged start and "
                                             "still lands short. Read the [seed-basis] and "
                                             "VAMP-POSITIVE SIBLING blocks above for the size of "
@@ -9533,7 +9533,7 @@ def render():
                                 #    (read-only, ~8 extra projections) ─────────────────────────
                                 # A  as shipped                    B  frozen-scaffold lift OFF
                                 # C  provably-zero loop rows dropped (BIT-IDENTICAL)
-                                # D  nC/nA sorted by cell          E  fastmath compile
+                                # D  nC/nA sorted by profile          E  fastmath compile
                                 # F  float32 floats                G  int32 indices (BIT-IDENTICAL)
                                 # plus A' (fresh copies) and A" (A re-timed last) as CONTROLS: the
                                 # three A timings are the same computation, so their spread IS this
@@ -9757,7 +9757,7 @@ def render():
                                         except Exception as _eC:  # noqa: BLE001
                                             log(f"      [kernel-ab] C build FAILED ({type(_eC).__name__}: {_eC}).")
 
-                                        # D — sort nC by cell, nA by origin cell, for locality.
+                                        # D — sort nC by profile, nA by origin profile, for locality.
                                         # REASSOCIATES the float accumulation, so NOT bit-identical
                                         # and not supposed to be.
                                         try:
@@ -9863,10 +9863,10 @@ def render():
                                         _vmax = float(np.abs(_oA[0]).max())
                                         log("   ── [kernel-ab] kernel speed-up ideas, measured "
                                             f"on THIS run's scaffold (P={_kP}, nR={_knR:,}, "
-                                            f"cells={_knc:,}) ──")
+                                            f"profiles={_knc:,}) ──")
                                         # 19bt: SAY WHAT ROW A IS NOW. This block calls
                                         # `_pop_band_kernel` — the FLAT kernel — directly, and
-                                        # since 19bt the shipped path is the CELL-BLOCKED one
+                                        # since 19bt the shipped path is the PROFILE-BLOCKED one
                                         # (measured 1.96x on the flat kernel at the live shape,
                                         # bit-identical, self-checked live). So row A is a
                                         # reference baseline, not this run's projector cost, and
@@ -9880,7 +9880,7 @@ def render():
                                                     _kbcb._CB_OK.get("use"):
                                                 log("      NOTE: row A is the FLAT kernel, which "
                                                     "is no longer the shipped path — 19bt ships "
-                                                    "the CELL-BLOCKED kernel (1.96x on the flat "
+                                                    "the PROFILE-BLOCKED kernel (1.96x on the flat "
                                                     "one at this shape, bit-identical). Read A "
                                                     "and every ratio below it as a comparison "
                                                     "BETWEEN IDEAS on a common baseline, NOT as "
@@ -9889,7 +9889,7 @@ def render():
                                                     "path again.")
                                         except Exception as _kbe:  # noqa: BLE001
                                             log(f"      NOTE: could not tell whether the shipped "
-                                                f"projector is cell-blocked "
+                                                f"projector is profile-blocked "
                                                 f"({type(_kbe).__name__}: {_kbe}).")
                                         log(f"      LIVE PATH: pop {_fm_pop} - elite {_kEl} = "
                                             f"{_kP} children per generation ⇒ "
@@ -10181,7 +10181,7 @@ def render():
                                         log("        C zero-rows  DEAD — [zero-rows] caps it at 0.5% of "
                                             "loop rows and the filter costs a pass. Needs ~1,500 "
                                             "rounds to resolve an effect that small; not worth one.")
-                                        log("        D cell-sort  DEAD — reassociates the sum, so NOT "
+                                        log("        D profile-sort  DEAD — reassociates the sum, so NOT "
                                             "bit-identical, for ~1% that needs ~280 rounds. Fails the "
                                             "bit-identity bar before the speed question is even asked.")
                                         log("        E fastmath   DEAD — same: not bit-identical, and "
@@ -10191,7 +10191,7 @@ def render():
                                         # measured on a FLAT float32 kernel over a COPY of prop_raw
                                         # at this block's width — was what the decision to accept
                                         # the drift was made on. The SHIPPED float32 path is the
-                                        # CELL-BLOCKED kernel on the live scaffold and measured
+                                        # PROFILE-BLOCKED kernel on the live scaffold and measured
                                         # ~11.96 on the same run: a 7x gap between two numbers that
                                         # read as the same quantity. Both now print together.
                                         log("        F float32    REAL, and NOT bit-identical, so it "
@@ -10251,7 +10251,7 @@ def render():
                                                 log("        F drift      ROW F ABOVE AND THE SHIPPED "
                                                     "PATH MEASURE DIFFERENT THINGS \u2014 row F is a "
                                                     "FLAT float32 kernel on a COPY of prop_raw; the "
-                                                    "shipped path is the CELL-BLOCKED kernel on the "
+                                                    "shipped path is the PROFILE-BLOCKED kernel on the "
                                                     "live scaffold. ROW F at P="
                                                     + str(int(_kP)) + ": "
                                                     + ("%.4g txn / %.4g vamp. " % (_kf_row[1],
@@ -10275,7 +10275,7 @@ def render():
                                                        "nothing shipped carries this \u0394")
                                                     + ". Row F's max|\u0394| is a FLAT float32 kernel "
                                                     "on a COPY of prop_raw, NOT the drift the "
-                                                    "cell-blocked float32 path would carry. Switch "
+                                                    "profile-blocked float32 path would carry. Switch "
                                                     "ROUTING_PROJ_FLOAT32=1 and read [proj-config] "
                                                     "for the figure that matters.")
                                         except Exception as _kfe:   # noqa: BLE001
@@ -10406,7 +10406,7 @@ def render():
                                                     # 0.0 for every candidate (nC: cap_ctot == 0;
                                                     # nA: pc_vc == 0 AND pc_pool == 0) — dropping
                                                     # them is bit-identical because x + 0.0 == x.
-                                                    # D keeps every row but SORTS them by cell for
+                                                    # D keeps every row but SORTS them by profile for
                                                     # locality, which reassociates the sum and is
                                                     # deliberately NOT bit-identical.
                                                     if "sel" not in _memo:
@@ -10788,7 +10788,7 @@ def render():
                                 # 19br: this reads the 19bq NO-CAPABLE-GATEWAY GUARD counter, not
                                 # the in-place twin (the comment here used to say the latter — it
                                 # was copy-pasted from that block, and it was wrong). eligibility's
-                                # _blend_pop skips a full-width np.where whenever every cell has at
+                                # _blend_pop skips a full-width np.where whenever every profile has at
                                 # least one capable gateway, and counts skip vs select. An empty
                                 # string means no blend ran at all, so there is nothing to report.
                                 # PRINTED ONCE: 19bq inserted this block twice by accident and the
@@ -10896,11 +10896,11 @@ def render():
                             # This shipped OFF from 2026-08-18l because it CHANGES THE DEPLOYED
                             # ROUTING. It is now ON by default for two reasons, in this order:
                             #  1. the alternative is coarsening the SEARCH to match delivery, which
-                            #     would discard the (pmp, ctry) sub-cell grain the engine is built
+                            #     would discard the (pmp, ctry) profile grain the engine is built
                             #     on — so refining delivery is the only real way to make the two
                             #     sides agree;
                             #  2. independent of reconciliation, moving share freed in a USA
-                            #     sub-cell onto Non-USA doors is a cross-border reroute the search
+                            #     profile onto Non-USA doors is a cross-border reroute the search
                             #     would never pick. The missing `ctry` reads as an oversight in the
                             #     group tuple, not a policy.
                             # Measured 2026-08-20: BIN 414398 carries 1,779 USA / 460 Non-USA
@@ -10913,13 +10913,13 @@ def render():
                                 _bwGK = tuple(c for c in ("rpgt", "currency", "bin", "pmp", "ctry")
                                               if c in _ga_gran.columns)
                                 log(f"   [block-ctry] blocked-caps redistribution groups by "
-                                    f"{_bwGK}, matching the search's sub-cell grain — DEFAULT ON "
+                                    f"{_bwGK}, matching the search's profile grain — DEFAULT ON "
                                     "since 2026-08-19o"
                                     + (" (explicitly set)"
                                        if os.environ.get("ROUTING_BLOCK_CTRY") is not None
                                        else " (default, no env var set)")
                                     + ". A blocked row's freed share stays inside its own country "
-                                    "sub-cell instead of spreading across USA/Non-USA. This IS a "
+                                    "profile instead of spreading across USA/Non-USA. This IS a "
                                     "deployed-split change vs pre-19o runs, and it is the last unit "
                                     "of reconciliation error. ROUTING_BLOCK_CTRY=0 reverts.")
                             _ga_gran, _ = _apply_blocked_caps(_ga_gran, _blk_pairs_pre, float(floor),
@@ -10934,7 +10934,7 @@ def render():
                         # The in-search band readouts above (BAND-TRANSFORM / per-RPGT) project the RAW+
                         # eligibility split through the fast per-generation scaffold. tab-3 SHIPS the
                         # ENFORCED split (build_split_exports: cap / wallet / USA / <2-gw back-fill),
-                        # whose per-sub-cell concentration re-adds vshare-weighted VAMP to breached
+                        # whose per-profile concentration re-adds vshare-weighted VAMP to breached
                         # sole-pool MIDs (e.g. WorldPay +~120). That raw→enforced delta is structural
                         # (build_split_exports can't run per-candidate), so it only surfaces here. This
                         # one-shot runs the EXACT tab-3 pipeline (enforced_prop_items →
@@ -10976,22 +10976,22 @@ def render():
                                 # real scored-vs-delivered gap. The GA fitness DOES fold the catch-all
                                 # in (see "backup catch-all FOLDED INTO the fitness"), so the omission
                                 # was one-sided. Both are now applied, and the log states which.
-                                # ── [ca-reach] WHICH CELLS CAN THE DELIVERED CATCH-ALL NOT REACH? ──
+                                # ── [ca-reach] WHICH PROFILES CAN THE DELIVERED CATCH-ALL NOT REACH? ──
                                 # blend_prop_items iterates prop_items ONLY, and
-                                # enforced_prop_items drops every all-zero cell at
-                                # `allm[allm["prop_raw"] > 0]`. So a scoped sub-cell that carries
+                                # enforced_prop_items drops every all-zero profile at
+                                # `allm[allm["prop_raw"] > 0]`. So a scoped profile that carries
                                 # volume but whose gateways all land on zero never reaches
                                 # blend_cell_shares, and its catch-all cannot fire — while the
                                 # in-search twin injects into 145 such cells. Measured offline on
-                                # this run's own export: of 14,983 SCOPED sub-cells, 176 have no
+                                # this run's own export: of 14,983 SCOPED profiles, 176 have no
                                 # enforced prop, carrying 2,598 volume (0.2%). The UNSCOPED RPGTs
-                                # (16,592 cells, 2.3M volume, 67%) are held at baseline by design
+                                # (16,592 profiles, 2.3M volume, 67%) are held at baseline by design
                                 # and must NOT be touched — sourcing the universe from the volume
                                 # frame unfiltered would reroute two thirds of all volume.
                                 # This block decides the fix: (a) the split HAS an all-zero row
                                 # there → keep a zero-prop placeholder in enforced_prop_items, one
                                 # change that every caller shares; (b) the split has NO row →
-                                # a cell universe must be threaded into blend_prop_items at each
+                                # a profile universe must be threaded into blend_prop_items at each
                                 # call site instead. MEASUREMENT ONLY.
                                 if os.environ.get("ROUTING_CA_REACH", "1") != "0":
                                     try:
@@ -11033,11 +11033,11 @@ def render():
                                             _crHas = [tuple(_r) in _crH
                                                       for _r in _crA[_crK].astype(str).to_numpy()]
                                             _crA["_has"] = _crHas
-                                            # cells the ENFORCED prop actually covers
+                                            # profiles the ENFORCED prop actually covers
                                             _crM = _crA[~_crA["_has"]]
                                             _crPos = int((_crM["share"] > 1e-12).sum())
                                             _crZero = int((_crM["share"] <= 1e-12).sum())
-                                            log(f"   [ca-reach] SCOPED sub-cells in the delivered "
+                                            log(f"   [ca-reach] SCOPED profiles in the delivered "
                                                 f"split: {len(_crA):,} · covered by enforced prop "
                                                 f"{int(_crA['_has'].sum()):,} · NOT covered "
                                                 f"{len(_crM):,}. (Offline on this run's export the "
@@ -11048,7 +11048,7 @@ def render():
                                                 "the same object and this block is unreliable.)")
                                             log(f"   [ca-reach]   of the uncovered: {_crZero:,} "
                                                 f"carry an ALL-ZERO share row (CASE A — the split "
-                                                f"HAS the cell and enforced_prop_items drops it at "
+                                                f"HAS the profile and enforced_prop_items drops it at "
                                                 f"`prop_raw > 0`; fix belongs in "
                                                 f"enforced_prop_items, one change all callers "
                                                 f"share) · {_crPos:,} carry POSITIVE share that "
@@ -11059,12 +11059,12 @@ def render():
                                                 "ON PURPOSE: they are held at baseline "
                                                 "(hold_unselected_at_baseline), and the same "
                                                 "measurement over ALL RPGTs reads 16,768 uncovered "
-                                                "cells / 67% of t0 volume. Any fix that sources its "
-                                                "cell universe without this filter reroutes two "
+                                                "profiles / 67% of t0 volume. Any fix that sources its "
+                                                "profile universe without this filter reroutes two "
                                                 "thirds of the book.")
                                         else:
                                             log("   [ca-reach] skipped — the granular split lacks "
-                                                f"the sub-cell key columns (have {sorted(_crC)[:8]}).")
+                                                f"the profile key columns (have {sorted(_crC)[:8]}).")
                                     except Exception as _crE:  # noqa: BLE001
                                         log(f"   [ca-reach] skipped ({type(_crE).__name__}: {_crE})")
                                 # ── [ca-zerocell] SURFACE THE SAFETY RAIL IN THIS LOG ────────────
@@ -11079,9 +11079,9 @@ def render():
                                     if _caz:
                                         _cazN = int(_caz.get("n", 0) or 0)
                                         _cazB = _caz.get("by_rpgt") or {}
-                                        log(f"   [ca-zerocell] {_cazN:,} zero-share sub-cell(s) kept "
+                                        log(f"   [ca-zeroprofile] {_cazN:,} zero-share profile(s) kept "
                                             "as placeholders so the backup catch-all can fire in "
-                                            "profiles with NO specific rule (previously dropped at "
+                                            "cells with NO specific rule (previously dropped at "
                                             "`prop_raw > 0`, so it never reached them)"
                                             + ((" · by RPGT: "
                                                 + " · ".join(f"{_k} {int(_v):,}" for _k, _v
@@ -11093,23 +11093,23 @@ def render():
                                                  {str(_r).strip().lower()
                                                   for _r in (locals().get("_sel_rpgts") or ())}]
                                         if _cazN > 2000 or _cazU:
-                                            log("   [ca-zerocell] ⚠ STOP — placeholders reached "
-                                                f"{_cazN:,} cell(s)"
+                                            log("   [ca-zeroprofile] ⚠ STOP — placeholders reached "
+                                                f"{_cazN:,} profile(s)"
                                                 + (f" and include UNSCOPED RPGT(s) {_cazU}" if _cazU
                                                    else "")
                                                 + ". Unscoped RPGTs are held at baseline; measured "
-                                                "offline they are 16,592 cells / 67% of t0 volume "
+                                                "offline they are 16,592 profiles / 67% of t0 volume "
                                                 "against 176 / 0.2% for the scoped set. The "
                                                 "catch-all must NOT reroute frozen baseline volume "
-                                                "— set ROUTING_CA_ZEROCELL=0 and treat every "
+                                                "— set ROUTING_CA_ZEROPROFILE=0 and treat every "
                                                 "delivered number in this run as suspect.")
                                     elif _caz is not None:
-                                        log("   [ca-zerocell] 0 placeholders — no sub-cell in this "
+                                        log("   [ca-zeroprofile] 0 placeholders — no profile in this "
                                             "split has zero share everywhere, so Case A has nothing "
-                                            "to add here. At CELL grain that is expected; the 176 "
-                                            "were measured at SUB-CELL grain.")
+                                            "to add here. At PROFILE grain that is expected; the 176 "
+                                            "were measured at PROFILE grain.")
                                 except Exception as _cazE:  # noqa: BLE001
-                                    log(f"   [ca-zerocell] stash unavailable "
+                                    log(f"   [ca-zeroprofile] stash unavailable "
                                         f"({type(_cazE).__name__})")
                                 _rec_notes = []
                                 _rec_bc = ss.get("backup_catchall") or {}
@@ -11129,7 +11129,7 @@ def render():
                                         from routing_optimiser.s5_deliver.backup_blend import (
                                             blend_prop_items as _rec_bpi)
                                         # Report the SHARE MASS the blend moves, not the item COUNT —
-                                        # blend_prop_items renormalises every cell, so it can change
+                                        # blend_prop_items renormalises every profile, so it can change
                                         # every value while leaving the count identical. The count-only
                                         # log could not distinguish "did nothing" from "changed a lot".
                                         _n_before = len(_rec_ep)
@@ -11172,7 +11172,7 @@ def render():
                                                   f"month_0={_rec_m0}, scoped_rpgts={len(_rec_scoped)}")
                                 _substep("④·5  DELIVER AND RECONCILE")
                                 log("   [reconcile] tab-3 parity: " + " · ".join(_rec_notes))
-                                # Ask impact_calcs to stash the per-row numerator / per-cell
+                                # Ask impact_calcs to stash the per-row numerator / per-profile
                                 # denominator for the banded TXN MIDs (see the [denom] block).
                                 # Must be set BEFORE the projection; harmless if it fails.
                                 # 19fi: [proj-memo]'s `_pj_setup` already set this, before the
@@ -11297,7 +11297,7 @@ def render():
                                             _cty_r = (_sg_r["ctry"].astype(str).str.strip().str.lower()
                                                       if "ctry" in _sg_r.columns
                                                       else pd.Series("_all_", index=_sg_r.index))
-                                            # Match the projector's OWN key arity — 6-part sub-cell,
+                                            # Match the projector's OWN key arity — 6-part profile,
                                             # 4-part by_rpgt, else 3-part. Never guess from settings.
                                             _np_r = len(str(_pkeys_r[0]).split("|"))
                                             if _np_r >= 6:
@@ -11367,7 +11367,7 @@ def render():
                                     # ── RUNG B2: the DELIVERED prop items, through the IN-SEARCH projector ──
                                     # See the module note: separates ENFORCEMENT (build_split_exports +
                                     # backup blend rewriting prop_raw) from PROJECTION MATH (same shares,
-                                    # different M5 model), and measures the cell-vs-sub-cell grain gap
+                                    # different M5 model), and measures the profile-vs-profile grain gap
                                     # that sits between them. Read-only.
                                     _enf_by_midl, _enf_note = {}, ""
                                     try:
@@ -11400,8 +11400,8 @@ def render():
                                                     continue
                                                 _kpos_e[_n9] = _i9
                                             _acc_e = {}          # projector key -> summed prop
-                                            _sub_of = {}         # cell key -> set of (pmp, ctry)
-                                            _spread = {}         # (cell, mid) -> list of per-sub-cell prop
+                                            _sub_of = {}         # profile key -> set of (pmp, ctry)
+                                            _spread = {}         # (profile, mid) -> list of per-profile prop
                                             for _t8 in _rec_ep:
                                                 _cu8 = str(_t8[0]).strip().lower()
                                                 _bn8 = str(_t8[1]).strip()
@@ -11420,30 +11420,30 @@ def render():
                                                 _acc_e[_kk8] = _acc_e.get(_kk8, 0.0) + _pv8
                                                 _sub_of.setdefault(_ck8, set()).add((_pm8, _ct8))
                                                 _spread.setdefault(_kk8, []).append(_pv8)
-                                            # CELL-grain projector, SUB-CELL-grain prop items: in-search
-                                            # broadcasts one share to every sub-cell, so the like-for-like
-                                            # cell value is the MEAN over the cell's sub-cells — NOT the
-                                            # sum (which would scale a MID by how many sub-cells it
+                                            # PROFILE-grain projector, PROFILE-grain prop items: in-search
+                                            # broadcasts one share to every profile, so the like-for-like
+                                            # profile value is the MEAN over the profile's profiles — NOT the
+                                            # sum (which would scale a MID by how many profiles it
                                             # happens to appear in). At 6-part keys the grains already
                                             # match and the divisor is 1.
                                             _pr_enf = np.zeros(len(_pk_e), dtype=float)
                                             _map_e = _drop_e = 0.0
                                             for _kk8, _vv8 in _acc_e.items():
-                                                # DIVISOR = the sub-cells THIS (cell, MID) occupies, not
-                                                # the sub-cells the CELL has. enforced_prop_items drops
+                                                # DIVISOR = the profiles THIS (profile, MID) occupies, not
+                                                # the profiles the PROFILE has. enforced_prop_items drops
                                                 # prop_raw<=0 rows, so a sparse MID occupies fewer; the
-                                                # cell-count divisor scaled it down by the ratio and
+                                                # profile-count divisor scaled it down by the ratio and
                                                 # under-counted exactly the MIDs the GA zeroed most
                                                 # (adyen-na read 15,700 against a true ~26,700).
-                                                # MASS-CONSERVING divisor: the CELL's sub-cell count.
-                                                # Each sub-cell's shares sum to 1, so dividing every
-                                                # (cell, MID) sum by n gives a cell total of exactly 1.
+                                                # MASS-CONSERVING divisor: the PROFILE's profile count.
+                                                # Each profile's shares sum to 1, so dividing every
+                                                # (profile, MID) sum by n gives a profile total of exactly 1.
                                                 # Dividing by the pair's OWN count (tried 2026-08-17j)
                                                 # sums to >1 whenever MIDs occupy different subsets —
                                                 # p50 1.052 / p95 1.776, caught by the budget guard.
                                                 # NOTE this divisor is still only an APPROXIMATION: see
-                                                # the SUB-CELL PRESENCE line — absence is not
-                                                # representable at cell grain at all.
+                                                # the PROFILE PRESENCE line — absence is not
+                                                # representable at profile grain at all.
                                                 _nsub = max(len(_sub_of.get(_kk8.rsplit("|", 1)[0], ())), 1)
                                                 _val8 = _vv8 / float(_nsub)
                                                 _ix8 = _kpos_e.get(_nk_e(_kk8))
@@ -11452,9 +11452,9 @@ def render():
                                                 else:
                                                     _pr_enf[_ix8] = _val8
                                                     _map_e += _val8
-                                            # PER-CELL PROP BUDGET — the invariant that catches a bad
-                                            # collapse. The shipped prop sums to exactly 1.0 per cell, so
-                                            # the enforced prop must after aggregation. A cell summing to
+                                            # PER-PROFILE PROP BUDGET — the invariant that catches a bad
+                                            # collapse. The shipped prop sums to exactly 1.0 per profile, so
+                                            # the enforced prop must after aggregation. A profile summing to
                                             # 0.5 means half its mass was divided away; this is what the
                                             # previous divisor did and nothing flagged it.
                                             try:
@@ -11471,9 +11471,9 @@ def render():
                                                 if _csum.size:
                                                     _p05, _p50, _p95 = np.percentile(_csum, [5, 50, 95])
                                                     _bad = float(np.mean(np.abs(_csum - 1.0) > 0.02) * 100.0)
-                                                    log(f"   [rung2] per-cell prop budget (must be ~1.000): "
+                                                    log(f"   [rung2] per-profile prop budget (must be ~1.000): "
                                                         f"p05 {_p05:.3f} · p50 {_p50:.3f} · p95 {_p95:.3f} · "
-                                                        f"{_bad:.1f}% of cells off by >2%."
+                                                        f"{_bad:.1f}% of profiles off by >2%."
                                                         + ("  ✓ collapse conserves mass."
                                                            if _bad <= 5.0 else
                                                            ("  NOTE: the budgets are uniformly ≈"
@@ -11484,15 +11484,15 @@ def render():
                                                             if (abs(_p05 - _p50) < 0.01
                                                                 and abs(_p95 - _p50) < 0.01
                                                                 and _p50 > 1.5)
-                                                            else "  ⚠ the sub-cell→cell collapse is "
+                                                            else "  ⚠ the profile→profile collapse is "
                                                                  "LOSING mass and it is NOT a uniform "
                                                                  "rescale — treat this rung as "
                                                                  "unreliable.")))
                                             except Exception as _bE:  # noqa: BLE001
                                                 log(f"   [rung2] budget check skipped ({type(_bE).__name__})")
-                                            # SUB-CELL PRESENCE — the absence-side of GRAIN DISPERSION,
+                                            # PROFILE PRESENCE — the absence-side of GRAIN DISPERSION,
                                             # which only compared rows that EXIST and so read 0.0% while a
-                                            # MID missing from most of its cell's sub-cells sailed through.
+                                            # MID missing from most of its profile's profiles sailed through.
                                             try:
                                                 _sp_n = _sp_part = 0
                                                 _sp_m = _sp_pm = 0.0
@@ -11503,12 +11503,12 @@ def render():
                                                     if _ncS > len(_lS):
                                                         _sp_part += 1; _sp_pm += _avS
                                                 _presence_frac = ((_sp_pm / _sp_m) if _sp_m > 1e-9 else 0.0)
-                                                log(f"   [rung2] SUB-CELL PRESENCE: {_sp_part:,} of {_sp_n:,} "
-                                                    f"(cell, MID) pair(s) are ABSENT from at least one of "
-                                                    f"their cell's sub-cells, carrying "
+                                                log(f"   [rung2] PROFILE PRESENCE: {_sp_part:,} of {_sp_n:,} "
+                                                    f"(profile, MID) pair(s) are ABSENT from at least one of "
+                                                    f"their profile's profiles, carrying "
                                                     f"{(100.0 * _sp_pm / _sp_m) if _sp_m > 1e-9 else 0.0:.1f}% "
-                                                    "of proposed mass. Delivery gives those sub-cells 0 and "
-                                                    "renormalises the rest; a CELL-grain prop-key cannot — "
+                                                    "of proposed mass. Delivery gives those profiles 0 and "
+                                                    "renormalises the rest; a PROFILE-grain prop-key cannot — "
                                                     "this is the part of the grain question the dispersion "
                                                     "line was blind to.")
                                             except Exception as _pE:  # noqa: BLE001
@@ -11538,10 +11538,10 @@ def render():
                                                     _enf_by_midl[str(_re8.get("midl", "")).strip().lower()] = \
                                                         _re8.get("now")
                                             # GRAIN DISPERSION: how much do the enforced shares actually
-                                            # DIFFER across the sub-cells of one cell? If ~0, the 4-part
+                                            # DIFFER across the profiles of one profile? If ~0, the 4-part
                                             # in-search key loses nothing and the gap is pure maths. If
                                             # large, the two sides are modelling different objects and no
-                                            # code fix closes it — only running at sub-cell grain does.
+                                            # code fix closes it — only running at profile grain does.
                                             _nsp = _nvar = 0
                                             _mass_all = _mass_var = 0.0
                                             for _kk8, _lst8 in _spread.items():
@@ -11567,14 +11567,14 @@ def render():
                                                 log(f"   [rung2] delivered prop items rolled onto the "
                                                     f"projector's keys ({_enf_note}).")
                                             log(f"   [rung2] GRAIN DISPERSION: {_nvar:,} of {_nsp:,} "
-                                                f"(cell, MID) pair(s) have an enforced share that VARIES by "
-                                                f">1pp across the cell's (pmp, Country) sub-cells, carrying "
+                                                f"(profile, MID) pair(s) have an enforced share that VARIES by "
+                                                f">1pp across the profile's (pmp, Country) profiles, carrying "
                                                 f"{(100.0 * _mass_var / _mass_all) if _mass_all > 1e-9 else 0.0:.1f}% "
-                                                "of proposed mass. The in-search prop-key is CELL grain, so "
-                                                "it broadcasts ONE share to every sub-cell and cannot "
+                                                "of proposed mass. The in-search prop-key is PROFILE grain, so "
+                                                "it broadcasts ONE share to every profile and cannot "
                                                 "represent that variation. Near 0% ⇒ grain is harmless and "
                                                 "the gap is projection MATH. Large ⇒ the two sides model "
-                                                "different objects; the fix is to run at sub-cell "
+                                                "different objects; the fix is to run at profile "
                                                 "optimisation grain, not to patch the maths.")
                                     except Exception as _e8:  # noqa: BLE001
                                         _enf_by_midl, _enf_note = {}, f"FAILED ({type(_e8).__name__}: {_e8})"
@@ -11614,7 +11614,7 @@ def render():
                                             _pr_nb = np.zeros(len(_pk_e), dtype=float)
                                             _map_n = _drop_n = 0.0
                                             for _kk9, _vv9 in _acc_n.items():
-                                                # same divisor fix as rung2 — count THIS pair's sub-cells
+                                                # same divisor fix as rung2 — count THIS pair's profiles
                                                 _ns9 = max(len(_sub_n.get(_kk9.rsplit("|", 1)[0], ())), 1)
                                                 _val9 = _vv9 / float(_ns9)
                                                 _ix9 = _kp_fn.get(_nk_fn(_kk9))
@@ -11664,7 +11664,7 @@ def render():
                                             # MASK PARITY: the kernel zeroes on (excl | emask)
                                             # (band_projection 567 / 663); this replay previously
                                             # used emask alone, so excl-carried prop mass inflated
-                                            # psum and every share in that cell with it.
+                                            # psum and every share in that profile with it.
                                             _emx = np.asarray(_pj._emask, bool)
                                             _exl = np.asarray(getattr(_pj, "_excl", _emx * False), bool)
                                             _exm = _emx | _exl
@@ -11840,7 +11840,7 @@ def render():
                                                         _vok & (_vps[_gc] > 0.0),
                                                         _psh / np.where(_vps[_gc] > 0.0, _vps[_gc], 1.0),
                                                         0.0)
-                                                    # (2) 19cy age-by-age renormalise over (cell,per,t).
+                                                    # (2) 19cy age-by-age renormalise over (profile,per,t).
                                                     _pgk = np.asarray(_pj._pc_gk, np.int64)
                                                     _pvc = np.asarray(_pj._pc_vc, float)
                                                     _ppl = np.asarray(_pj._pc_pool, float)
@@ -11873,7 +11873,7 @@ def render():
                                                     _sfo = np.where(_okv, _porg, 0)
                                                     _cgv = np.asarray(_pj._gcode, np.int64)[_sfo]
                                                     # 19aq conservation gate: move only if the ORIGIN
-                                                    # cell is routed AND has a VAMP recipient.
+                                                    # profile is routed AND has a VAMP recipient.
                                                     _mpc = np.where(
                                                         _okv & (_psum[_cgv] > 0.0) & (_vps[_cgv] > 0.0),
                                                         _phf, 0.0)
@@ -12176,7 +12176,7 @@ def render():
                                                                              dtype=object)
                                                             # 19dp — THE TWO "MOVABLE" DEFINITIONS WERE NOT THE SAME, AND THAT IS MINE.
                                                             # Delivery's universe is built from `_gf x _pr_app`, which is GATED: the origin
-                                                            # cell routed, the vampMid switched on, the RPGT in scope. The search's was
+                                                            # profile routed, the vampMid switched on, the RPGT in scope. The search's was
                                                             # built from `_phf` alone — fcp[origin] x pro_rata[appearance] with NO gate but
                                                             # "an origin row exists". So the search's set contained rows it would never
                                                             # actually move, and the 19dn field diff attributed that to the PROJECTORS when
@@ -12184,7 +12184,7 @@ def render():
                                                             # search-only BINs are exactly what an ungated definition picks up.
                                                             #
                                                             # Gate it on what the search ACTUALLY gates on (band_projection:2394, the 19aq
-                                                            # conservation gate): the origin cell is routed AND has a VAMP recipient. NOT on
+                                                            # conservation gate): the origin profile is routed AND has a VAMP recipient. NOT on
                                                             # the age renormalise — that IS the passthrough under test, and including it
                                                             # would make the universe circular. Delivery avoids the same circularity by
                                                             # computing `_pt_mv` before its passthrough line; this now matches that.
@@ -12487,7 +12487,7 @@ def render():
                                                                 _t = _t[:-2]
                                                             _o.append(_t)
                                                         return "|".join(_o)
-                                                    # delivered: per-cell denominator + per-row numerator
+                                                    # delivered: per-profile denominator + per-row numerator
                                                     _dcellD = {}
                                                     _dmidsD = {}
                                                     for _tD5 in _ddD.itertuples(index=False):
@@ -12499,7 +12499,7 @@ def render():
                                                         _dmidsD.setdefault(_kD5, {})[_mD5] = (
                                                             float(_tD5.praw), float(_tD5.pshare),
                                                             float(_tD5.keep), float(_tD5.bf))
-                                                    # in-search: rows of each cell, via one stable sort
+                                                    # in-search: rows of each profile, via one stable sort
                                                     _ordD = np.argsort(_gc, kind="stable")
                                                     _gcsD = _gc[_ordD]
                                                     _arD = np.arange(_nc)
@@ -12520,7 +12520,7 @@ def render():
                                                         return _c
 
                                                     log("      [denom] pshare = prop_raw / Σ_cell "
-                                                        "prop_raw. Per recipient cell: ratio of "
+                                                        "prop_raw. Per recipient profile: ratio of "
                                                         "delivered/in-search prop_raw over the rows BOTH "
                                                         "sides carry. CONSTANT ⇒ numerators agree and the "
                                                         "sums run over different ROW SETS (membership). "
@@ -12541,7 +12541,7 @@ def render():
                                                             if not _qlD:
                                                                 continue
                                                             # class: 0 exact, 1 membership, 2 numerator,
-                                                            #        3 cell absent from delivery
+                                                            #        3 profile absent from delivery
                                                             _mD = [0.0, 0.0, 0.0, 0.0, 0.0]
                                                             _nD = [0, 0, 0, 0, 0]
                                                             _dlD = [0.0, 0.0, 0.0, 0.0, 0.0]
@@ -12600,7 +12600,7 @@ def render():
                                                                             _oiA[_xD] = _oiA.get(_xD, 0.0) + _isM[_xD]
                                                                             # NAME IT: the export DOES list
                                                                             # this pair (rung 2 is 1:1 at
-                                                                            # sub-cell grain, so prop mass
+                                                                            # profile grain, so prop mass
                                                                             # here implies a delivered item)
                                                                             # yet delivery has no row for it.
                                                                             # Print the key so the two
@@ -12612,7 +12612,7 @@ def render():
                                                                             # six (as this did until
                                                                             # 2026-08-18f) samples the
                                                                             # near-zero tail and hides the
-                                                                            # cells that carry the drift.
+                                                                            # profiles that carry the drift.
                                                                             if len(_exOff) < 5000:
                                                                                 _exOff.append((
                                                                                     _ckD1, int(_moD), _xD,
@@ -12633,7 +12633,7 @@ def render():
                                                                                ("membership" if _clD == 1 else
                                                                                 "numerator" if _clD == 2 else
                                                                                 "absent" if _clD == 3 else "exact"))
-                                                            # CLASS 4 — cells in the DELIVERED frame
+                                                            # CLASS 4 — profiles in the DELIVERED frame
                                                             # with no in-search counterpart. The probe
                                                             # walks _t_rows, so without this it cannot
                                                             # see them at all and under-reports by
@@ -12653,7 +12653,7 @@ def render():
                                                                 continue
                                                             if not _hdrD:
                                                                 log("      [denom]   MID / month        class"
-                                                                    "            cells   MOVED-IN(IS)   "
+                                                                    "            profiles   MOVED-IN(IS)   "
                                                                     "MOVED-IN(DEL)          Δ")
                                                                 _hdrD = True
                                                             log(f"      [denom]   {_mlD[:22]:<22} m{_moD}")
@@ -12684,9 +12684,9 @@ def render():
                                                                                     key=lambda _r: -abs(_r[3]))
                                                                     log(f"      [denom]       NAMED offenders "
                                                                         f"— TOP 6 of {len(_exOff):,} by prop "
-                                                                        "mass (sub-cell | per | MID | "
-                                                                        "in-search prop | DEL rows in cell | "
-                                                                        "cell ΔMOVED-IN). These pairs carry "
+                                                                        "mass (profile | per | MID | "
+                                                                        "in-search prop | DEL rows in profile | "
+                                                                        "profile ΔMOVED-IN). These pairs carry "
                                                                         "in-search prop mass and have NO "
                                                                         "delivered row:")
                                                                     for _e1, _e2, _e3, _e4, _e5, _e6 in _exSrt[:6]:
@@ -12707,16 +12707,16 @@ def render():
                                                                         f"top 6 carry {_exTop:,.2f} of "
                                                                         f"{_exTot:,.2f} prop mass "
                                                                         f"({(100.0 * _exTop / _exTot) if _exTot > 1e-12 else 0.0:.1f}%)"
-                                                                        " — high ⇒ a few cells to fix, low ⇒ "
+                                                                        " — high ⇒ a few profiles to fix, low ⇒ "
                                                                         "a systematic rule, not a data edge.")
                                                                     log("      [denom]       ⇒ check each key "
                                                                         "against the pro-rata export: if the "
-                                                                        "5-part sub-cell is ABSENT from the "
+                                                                        "5-part profile is ABSENT from the "
                                                                         "baseline, the `valid_sub` guard "
                                                                         "fired (it refuses to invent a "
                                                                         "pmp/Country the baseline lacks, and "
                                                                         "silently drops the enforced item). "
-                                                                        "If the sub-cell IS present but not "
+                                                                        "If the profile IS present but not "
                                                                         "at this period, the `reps` "
                                                                         "inner-merge dropped it instead. "
                                                                         "Different one-line fixes.")
@@ -12747,7 +12747,7 @@ def render():
                                                                             "'of what the probe can see', "
                                                                             "not as the whole story."))
                                                             if _worstD[0]:
-                                                                log(f"      [denom]     worst cell "
+                                                                log(f"      [denom]     worst profile "
                                                                     f"[{_worstD[4]}] {str(_worstD[0])[:44]}"
                                                                     f"  IS {_worstD[1]:,.0f} · DEL "
                                                                     f"{_worstD[2]:,.0f} · pshare_IS "
@@ -12756,7 +12756,7 @@ def render():
                                                         log("      [denom] READ: the class carrying the Δ is "
                                                             "the mechanism. MEMBERSHIP ⇒ the two sides sum "
                                                             "the SAME per-row values over DIFFERENT rows — "
-                                                            "fix by making the scaffold's cell membership "
+                                                            "fix by making the scaffold's profile membership "
                                                             "match the delivered frame (door-cover "
                                                             "injections and back-fill rows are the two "
                                                             "known sources, and the only-IN-SEARCH / "
@@ -12772,14 +12772,14 @@ def render():
                                             if _hdr:
                                                 log("      [terms] NOTE: POOL is NOT like-for-like — "
                                                     "door-cover gives every banded MID a row in every "
-                                                    "candidate cell, so the in-search POOL is the SAME "
+                                                    "candidate profile, so the in-search POOL is the SAME "
                                                     "total for every MID. Those extra rows carry "
                                                     "prop_raw = 0 and add nothing to MOVED-IN, so ignore "
                                                     "the POOL Δ and read HELD / MOVED-OUT / MOVED-IN.")
                                                 log("      [terms] READ: MOVED-OUT Δ ≈ 0 and MOVED-IN Δ "
                                                     "large ⇒ the sides agree on how much volume LEAVES and "
                                                     "disagree on where it LANDS — look at POOL (moved_tot, "
-                                                    "the per-cell pool) vs pshare (the recipient slice, "
+                                                    "the per-profile pool) vs pshare (the recipient slice, "
                                                     "which includes the max-share water-fill each side "
                                                     "implements in a DIFFERENT place). MOVED-OUT Δ large ⇒ "
                                                     "the movable fraction (pro_rata × fcp1_frac) itself "
@@ -12794,7 +12794,7 @@ def render():
                                     # ── STEP 2 (SPLIT) and STEP 1 (BLEND) AT KEY LEVEL ───────────
                                     # The last two surviving chain steps. Both are vector diffs on the
                                     # projector's own prop-keys, so they can be attributed to named
-                                    # (sub-cell, MID) keys with no aggregation and no extra projection.
+                                    # (profile, MID) keys with no aggregation and no extra projection.
                                     try:
                                         _pkS = list(getattr(locals().get("_eb"), "prop_keys", []) or [])
                                         if not _pkS:
@@ -12867,18 +12867,18 @@ def render():
                                             log("   [step2] skipped — the raw or pre-blend shipped vector "
                                                 "is unavailable this run.")
 
-                                        # ---- WHO ARE THESE PROFILES? (2026-08-19n) ----------------
-                                        # MEASUREMENT ONLY. PART A tests the dropped profiles against
+                                        # ---- WHO ARE THESE CELLS? (2026-08-19n) ----------------
+                                        # MEASUREMENT ONLY. PART A tests the dropped cells against
                                         # the 30D ATTEMPTS frame — real observed transactions, at the
                                         # exact 3-field grain the merge drops on, and the frame the
-                                        # routing cells were built from. It deliberately does NOT test
+                                        # routing profiles were built from. It deliberately does NOT test
                                         # against orig_forecast (absence from it IS the definition of
                                         # dropped, so that test is circular and would read 0% real
                                         # whatever the truth) nor against `cell_volume` (apportioned
                                         # forecast volume, positive almost everywhere — the 19i error).
                                         # PART B prints the discrepancy keys FULL; [step2] truncates
                                         # them at 44 chars, which cuts the pmp/ctry/MID tail off
-                                        # exactly where the profile is identified.
+                                        # exactly where the cell is identified.
                                         if os.environ.get("ROUTING_PROFILES", "1") != "0":
                                             try:
                                                 _prN = max(1, int(
@@ -12914,14 +12914,14 @@ def render():
                                                                 int(_agn.get(_k3, 0)) if _agn is not None
                                                                 else -1)
                                                     else:
-                                                        log("   [profiles] PART A unavailable — the "
+                                                        log("   [cells] PART A unavailable — the "
                                                             "attempts frame is missing a column of "
                                                             f"{_acols + ['attempts']}; without real "
                                                             "transaction history there is NO honest test "
-                                                            "of whether these profiles are real, so no "
+                                                            "of whether these cells are real, so no "
                                                             "verdict is printed.")
                                                 except Exception as _aE:  # noqa: BLE001
-                                                    log(f"   [profiles] PART A attempts lookup failed "
+                                                    log(f"   [cells] PART A attempts lookup failed "
                                                         f"({type(_aE).__name__}: {_aE})")
                                                 # ---- the circularity self-check set ----
                                                 _fcT = set()
@@ -12938,8 +12938,8 @@ def render():
                                                     _fcT = set()
                                                 _nTri = len(_dTri)
                                                 if not _nTri:
-                                                    log("   [profiles] PART A skipped — no dropped-row "
-                                                        "stash this run, so there are no profiles to "
+                                                    log("   [cells] PART A skipped — no dropped-row "
+                                                        "stash this run, so there are no cells to "
                                                         "identify. Look for a [drop-measure] line above.")
                                                 elif _attT:
                                                     _real = [_k for _k in _dTri
@@ -12947,18 +12947,18 @@ def render():
                                                     _sumA = sum(_attT.get(_k, (0.0, 0))[0]
                                                                 for _k in _real)
                                                     _inFc = sum(1 for _k in _dTri if _k in _fcT)
-                                                    log(f"   [profiles] PART A — ARE THE DROPPED PROFILES "
+                                                    log(f"   [cells] PART A — ARE THE DROPPED CELLS "
                                                         f"REAL? {_nTri:,} distinct (currency, bank, rpgt) "
-                                                        f"profile(s) sit behind the "
+                                                        f"cell(s) sit behind the "
                                                         f"{_EXKEEP.get('drop_rows', 0):,} dropped row(s). "
                                                         f"Ground truth = the 30D attempts frame (REAL "
                                                         f"observed transactions).")
-                                                    log(f"   [profiles]   WITH real attempts: "
+                                                    log(f"   [cells]   WITH real attempts: "
                                                         f"{len(_real):,} of {_nTri:,} "
                                                         f"({100.0 * len(_real) / max(_nTri, 1):.1f}%) · "
                                                         f"Σattempts {_sumA:,.0f} · WITHOUT any history: "
                                                         f"{_nTri - len(_real):,}")
-                                                    log(f"   [profiles]   self-check: {_inFc:,} of "
+                                                    log(f"   [cells]   self-check: {_inFc:,} of "
                                                         f"{_nTri:,} also appear in orig_forecast — this "
                                                         f"MUST read 0, because absence from orig_forecast "
                                                         f"is the DEFINITION of dropped. Anything else "
@@ -12969,12 +12969,12 @@ def render():
                                                         key=lambda kv: -_attT.get(
                                                             (kv[0][0], kv[0][1], kv[0][2]),
                                                             (0.0, 0))[0])
-                                                    log("   [profiles]   EXAMPLES — DROPPED profiles with "
+                                                    log("   [cells]   EXAMPLES — DROPPED cells with "
                                                         "the MOST real traffic (full key, untruncated):")
                                                     for _t, _n in _ex[:_prN]:
                                                         _k3 = (_t[0], _t[1], _t[2])
                                                         _at, _gw = _attT.get(_k3, (0.0, 0))
-                                                        log(f"   [profiles]     {'|'.join(_t)}"
+                                                        log(f"   [cells]     {'|'.join(_t)}"
                                                             f"  ·  30D attempts {_at:>9,.0f}"
                                                             + (f" over {_gw} gateway(s)" if _gw >= 0
                                                                else "")
@@ -12985,49 +12985,49 @@ def render():
                                                             if _attT.get((_t[0], _t[1], _t[2]),
                                                                          (0.0, 0))[0] <= 0]
                                                     if _zer:
-                                                        log(f"   [profiles]   EXAMPLES — DROPPED profiles "
+                                                        log(f"   [cells]   EXAMPLES — DROPPED cells "
                                                             f"with NO history at all ({len(_zer):,} row(s) "
                                                             f"of the drop):")
                                                         for _t, _n in _zer[:_prN]:
-                                                            log(f"   [profiles]     {'|'.join(_t)}"
+                                                            log(f"   [cells]     {'|'.join(_t)}"
                                                                 f"  ·  30D attempts         0"
                                                                 f"  ·  {_n} split row(s)  ·  NO HISTORY")
                                                     else:
-                                                        log("   [profiles]   there are NO zero-history "
-                                                            "profiles in the drop — every dropped profile "
+                                                        log("   [cells]   there are NO zero-history "
+                                                            "cells in the drop — every dropped cell "
                                                             "has real attempts behind it.")
                                                     _frac = len(_real) / max(_nTri, 1)
                                                     if _inFc:
-                                                        log("   [profiles]   ⇒ NO VERDICT — the self-check "
+                                                        log("   [cells]   ⇒ NO VERDICT — the self-check "
                                                             "above is non-zero, so the keys are not "
                                                             "comparable. Fix that before reading the "
                                                             "percentages.")
                                                     elif _frac > 0.9:
-                                                        log("   [profiles]   ⇒ VERDICT: REAL. These "
-                                                            "profiles carry actual transaction history, "
-                                                            "and the routing cells were built from that "
+                                                        log("   [cells]   ⇒ VERDICT: REAL. These "
+                                                            "cells carry actual transaction history, "
+                                                            "and the routing profiles were built from that "
                                                             "same attempts frame — the pipeline ADMITS "
                                                             "them at stage ③ and the export merge "
                                                             "discards them afterwards. So OPTION 1 (let "
                                                             "them through) is aimed at a real population. "
                                                             "It CHANGES LIVE ROUTING, so it still needs "
-                                                            "the per-profile row count from "
+                                                            "the per-cell row count from "
                                                             "[inv-vs-drop] before anything is written.")
                                                     elif _frac < 0.1:
-                                                        log("   [profiles]   ⇒ VERDICT: NOT REAL. These "
-                                                            "profiles have no transaction history — they "
+                                                        log("   [cells]   ⇒ VERDICT: NOT REAL. These "
+                                                            "cells have no transaction history — they "
                                                             "are exploration-injected candidates. OPTION "
                                                             "2 (stop planning for them) is the right one: "
                                                             "narrowing the search cannot lose anything "
                                                             "real and changes nothing that ships.")
                                                     else:
-                                                        log(f"   [profiles]   ⇒ VERDICT: MIXED — "
+                                                        log(f"   [cells]   ⇒ VERDICT: MIXED — "
                                                             f"{100.0 * _frac:.0f}% have history. Neither "
                                                             f"option is right for all of them and a "
                                                             f"single-sided change is wrong for the other "
                                                             f"group. Split the population on THIS test "
                                                             f"before building either.")
-                                                # ---- PART B: the discrepancy profiles, in full ----
+                                                # ---- PART B: the discrepancy cells, in full ----
                                                 if (_rawF is not None and _shnbF is not None
                                                         and len(_rawF) == len(_shnbF)):
                                                     _dB2 = _shnbF - _rawF
@@ -13046,7 +13046,7 @@ def render():
                                                         _t3 = _tri3(_ix)[1]
                                                         if _t3 is not None and _t3 in _dTri:
                                                             _onD += 1
-                                                    log(f"   [profiles] PART B — WHICH PROFILES CARRY THE "
+                                                    log(f"   [cells] PART B — WHICH CELLS CARRY THE "
                                                         f"DISCREPANCY? {len(_nz2):,} prop-key(s) differ "
                                                         f"between the split the GA SCORED and the one it "
                                                         f"SHIPS · Σ|Δprop| {np.abs(_dB2).sum():,.4f}. Full "
@@ -13056,33 +13056,33 @@ def render():
                                                     _ord2 = _nz2[np.argsort(-np.abs(_dB2[_nz2]))]
                                                     for _ix in _ord2[:_prN]:
                                                         _kk, _t3 = _tri3(_ix)
-                                                        log(f"   [profiles]     {_kk}  ·  Δprop "
+                                                        log(f"   [cells]     {_kk}  ·  Δprop "
                                                             f"{float(_dB2[int(_ix)]):+.6f}"
-                                                            + ("  ·  ON A DROPPED PROFILE"
+                                                            + ("  ·  ON A DROPPED CELL"
                                                                if (_t3 is not None and _t3 in _dTri)
-                                                               else "  ·  this profile DOES ship"))
+                                                               else "  ·  this cell DOES ship"))
                                                     if len(_nz2):
-                                                        log(f"   [profiles]   of the {len(_nz2):,} "
+                                                        log(f"   [cells]   of the {len(_nz2):,} "
                                                             f"discrepancy key(s), {_onD:,} sit on a "
-                                                            f"DROPPED profile."
+                                                            f"DROPPED cell."
                                                             + ("  ⇒ the discrepancy and the drop are the "
                                                                "SAME problem, so fixing the drop should "
                                                                "close it."
                                                                if _onD > 0.5 * len(_nz2) else
-                                                               "  ⇒ the discrepancy is on profiles that "
+                                                               "  ⇒ the discrepancy is on cells that "
                                                                "DO ship, so it is INDEPENDENT of the "
                                                                "drop and needs its own fix — see "
                                                                "ROUTING_BLOCK_CTRY, which is DEFAULT "
                                                                "ON since 19o — so with it unset this "
                                                                "should read 0 keys."))
                                                     else:
-                                                        log("   [profiles]   no key differs, so there is "
-                                                            "no discrepancy profile to name this run.")
+                                                        log("   [cells]   no key differs, so there is "
+                                                            "no discrepancy cell to name this run.")
                                                 else:
-                                                    log("   [profiles] PART B skipped — the scored or "
+                                                    log("   [cells] PART B skipped — the scored or "
                                                         "shipped prop vector is unavailable this run.")
                                             except Exception as _prE:  # noqa: BLE001
-                                                log(f"   [profiles] skipped "
+                                                log(f"   [cells] skipped "
                                                     f"({type(_prE).__name__}: {_prE})")
 
                                         # ---- BLOCK B: the TWO BLENDS, effect vs effect ----
@@ -13093,20 +13093,20 @@ def render():
                                             # effect vectors, and its "disagreement" was a CONVENTION
                                             # artefact, not a blend disagreement:
                                             #   _pr_nb  comes from _m_before = enforced_prop_items()
-                                            #           BEFORE blend_prop_items -> 0-100 per sub-cell
+                                            #           BEFORE blend_prop_items -> 0-100 per profile
                                             #           (the parity line's own Sprop_raw 1,481,300).
                                             #   _pr_enf comes from _rec_ep AFTER blend_prop_items,
-                                            #           which renormalises -> 0-1 per sub-cell
+                                            #           which renormalises -> 0-1 per profile
                                             #           (measured on the run's dumped enforced-prop
-                                            #           CSV: Sprop_raw 14,807, per-sub-cell p50 1.0).
+                                            #           CSV: Sprop_raw 14,807, per-profile p50 1.0).
                                             # 1,481,300 / 14,807 = 100.04, so the delivered "effect"
                                             # was ~100x the in-search one and the reported
                                             # S|disagreement| 1,462,277 was byte-identical to the
                                             # parity line's S|Dprop_raw| -- i.e. it re-measured the
                                             # rescale. The 64,318-vs-332 asymmetry was contaminated
                                             # the same way.
-                                            # Both blends redistribute share WITHIN a cell, so
-                                            # per-cell normalisation is the scale-free form of the
+                                            # Both blends redistribute share WITHIN a profile, so
+                                            # per-profile normalisation is the scale-free form of the
                                             # object this block claims to compare, and it removes the
                                             # delivered blend's renormalisation component (not a
                                             # routing disagreement). BOTH sides go through the SAME
@@ -13151,7 +13151,7 @@ def render():
                                             _shnbN, _bud2, _bv2 = _cnormS(_shnbF)
                                             _enfN, _bud3, _bv3 = _cnormS(_enfF)
                                             _nbN, _bud4, _bv4 = _cnormS(_nbF)
-                                            log("   [step1] per-cell prop BUDGET, distribution "
+                                            log("   [step1] per-profile prop BUDGET, distribution "
                                                 "(pshare = prop_raw / Σ_cell prop_raw is what the "
                                                 "txn formula consumes, so the BUDGET is the object "
                                                 "— not a unit convention):")
@@ -13160,17 +13160,17 @@ def render():
                                                               ("enforced +blend ", _bv3),
                                                               ("enforced −blend ", _bv4)):
                                                 log(f"   [step1]   {_bl} {_budS(_bvv)}")
-                                            log(f"   [step1] per-cell prop budget BEFORE normalising "
+                                            log(f"   [step1] per-profile prop budget BEFORE normalising "
                                                 f"(p50) — shipped+blend {_bud1:,.3f} · shipped−blend "
                                                 f"{_bud2:,.3f} · enforced+blend {_bud3:,.3f} · "
                                                 f"enforced−blend {_bud4:,.3f}. These are NOT on one "
-                                                "scale: enforced_prop_items emits 0–100 per sub-cell "
+                                                "scale: enforced_prop_items emits 0–100 per profile "
                                                 "and blend_prop_items renormalises to 1, so the raw "
                                                 "delivered effect is ~100× the in-search one. All "
-                                                "four are normalised to per-cell sum 1 before the "
+                                                "four are normalised to per-profile sum 1 before the "
                                                 "diff below.")
                                             # NO-OP CHECK on the in-search side: its vectors are
-                                            # already per-cell-normalised, so normalisation must
+                                            # already per-profile-normalised, so normalisation must
                                             # barely move them. If it does, the premise is wrong.
                                             _noop1 = float(np.abs(_shbN - _shbF).sum())
                                             _noop2 = float(np.abs(_shnbN - _shnbF).sum())
@@ -13179,17 +13179,17 @@ def render():
                                                 f"(+blend) / {_noop2:,.3f} (−blend) on Σ "
                                                 f"{np.abs(_shbF).sum():,.1f}"
                                                 + ("  ✓ both in-search vectors were already "
-                                                   "per-cell normalised, so any rescale is "
+                                                   "per-profile normalised, so any rescale is "
                                                    "entirely on the delivered side."
                                                    if max(_noop1, _noop2) < 0.01 * max(
                                                        float(np.abs(_shbF).sum()), 1e-9)
                                                    else "  ⚠ the +blend vector is NOT normalised "
                                                         "while −blend IS: the IN-SEARCH BLEND "
-                                                        "CHANGES THE PER-CELL BUDGET. That is not "
+                                                        "CHANGES THE PER-PROFILE BUDGET. That is not "
                                                         "a reason to distrust the diff below — "
-                                                        "pshare divides by the cell sum, so a "
+                                                        "pshare divides by the profile sum, so a "
                                                         "budget change moves EVERY pshare in the "
-                                                        "cells it touches. It IS the mechanism. "
+                                                        "profiles it touches. It IS the mechanism. "
                                                         "Read it against the budget distribution "
                                                         "above and chain step 1."))
                                             _eIS = _shbN - _shnbN          # in-search blend's effect
@@ -13201,7 +13201,7 @@ def render():
                                             _onlyDL_B = int(np.count_nonzero((np.abs(_eDL) > 1e-12)
                                                                              & (np.abs(_eIS) <= 1e-12)))
                                             log(f"   [step1] THE TWO BACKUP BLENDS, effect vs effect, "
-                                                f"BOTH NORMALISED to per-cell sum 1 — in-search Σ|Δ| "
+                                                f"BOTH NORMALISED to per-profile sum 1 — in-search Σ|Δ| "
                                                 f"{np.abs(_eIS).sum():,.3f} · delivered Σ|Δ| "
                                                 f"{np.abs(_eDL).sum():,.3f} · they DISAGREE on "
                                                 f"{_nzB:,} of {len(_dB):,} keys (Σ|disagreement| "
@@ -13209,7 +13209,7 @@ def render():
                                                 f"{_dB.sum():+,.3f}")
                                             log(f"   [step1]   scale sanity: both Σ|Δ| are now share "
                                                 f"units on a Σprop of {np.abs(_shbN).sum():,.0f} "
-                                                f"(≈ one unit per cell). Compare against [step2]'s "
+                                                f"(≈ one unit per profile). Compare against [step2]'s "
                                                 f"Σ|Δprop| directly — the two are finally in the "
                                                 "same units.")
                                             log(f"   [step1]   keys the IN-SEARCH blend touches and the "
@@ -13228,20 +13228,20 @@ def render():
                                                 log("   [step1]   by MID (Σ|disagreement|): "
                                                     + " · ".join(f"{_m[:20]} {_v:.3f}"
                                                                  for _m, _v in _permidS(_dB)))
-                                                # ---- BLOCK C: the cells the IN-SEARCH blend INVENTS ----
-                                                # `_fm_blend_pr` injects the catch-all into every cell
+                                                # ---- BLOCK C: the profiles the IN-SEARCH blend INVENTS ----
+                                                # `_fm_blend_pr` injects the catch-all into every profile
                                                 # with NO specific share and renormalises it to 1. The
                                                 # delivered side cannot: the parity line reports "0 new
                                                 # key(s)" — blend_prop_items only rescales keys
                                                 # enforced_prop_items already emitted. So the in-search
-                                                # blend creates prop in sub-cells the delivered frame
-                                                # has no rows for, and the cell counts above show it
+                                                # blend creates prop in profiles the delivered frame
+                                                # has no rows for, and the profile counts above show it
                                                 # exactly: 14,958 − 14,813 = 145 = Σ|disagreement|, one
                                                 # unit of budget per invented cell.
                                                 # THE CHECK EVERY OTHER RUNG HAS AND THIS ONE DID NOT:
-                                                # a cell with cell_tot ≈ 0 contributes NOTHING to
+                                                # a profile with cell_tot ≈ 0 contributes NOTHING to
                                                 # post = cell_tot·(…) no matter what its prop says. So
-                                                # zero the injection in exactly those cells, re-project,
+                                                # zero the injection in exactly those profiles, re-project,
                                                 # and see whether the M5 change reproduces chain step 1.
                                                 try:
                                                     _sB = np.bincount(_cidS, weights=_shbF,
@@ -13250,10 +13250,10 @@ def render():
                                                                       minlength=len(_cposS))
                                                     _invC = (np.abs(_sB) > 1e-12) & (np.abs(_sN) <= 1e-12)
                                                     _invK = _invC[_cidS]
-                                                    # ── INVENTED CELLS vs WHAT THE MERGE DROPPED
+                                                    # ── INVENTED PROFILES vs WHAT THE MERGE DROPPED
                                                     #    (2026-08-19k) — MEASUREMENT ONLY ───────
                                                     # The question the 19g/19i keep should have
-                                                    # been built on and was not: of the cells the
+                                                    # been built on and was not: of the profiles the
                                                     # in-search blend invents, how many are the
                                                     # very rows `_explode`'s INNER merge threw
                                                     # away, and HOW MANY ROWS is that? `_invC`
@@ -13276,7 +13276,7 @@ def render():
                                                         else:
                                                             _dkcC = list(
                                                                 _EXKEEP.get("drop_keys") or [])
-                                                            log(f"   [inv-vs-drop] invented cells "
+                                                            log(f"   [inv-vs-drop] invented profiles "
                                                                 f"{len(_ivKeys):,} · merge-dropped "
                                                                 f"rows "
                                                                 f"{_EXKEEP.get('drop_rows', 0):,} "
@@ -13285,7 +13285,7 @@ def render():
                                                                 f"distinct key(s), keyed on "
                                                                 f"{tuple(_dkcC)}")
                                                             log("   [inv-vs-drop]   sample INVENTED "
-                                                                "cell key(s): "
+                                                                "profile key(s): "
                                                                 + (" · ".join(_ivKeys[:4])
                                                                    or "(none)"))
                                                             log("   [inv-vs-drop]   sample DROPPED "
@@ -13334,12 +13334,12 @@ def render():
                                                             log(f"   [inv-vs-drop]   MATCH on the "
                                                                 f"full (cur, bank, rpgt, pmp, ctry) "
                                                                 f"key: {_m5:,} of {len(_ivT):,} "
-                                                                f"invented cell(s) · ignoring the "
+                                                                f"invented profile(s) · ignoring the "
                                                                 f"bank field: {_m4:,} of "
                                                                 f"{len(_ivT4):,}")
                                                             if not _ivT:
                                                                 log("   [inv-vs-drop]   ⚠ the "
-                                                                    "invented cell keys have fewer "
+                                                                    "invented profile keys have fewer "
                                                                     "than 5 fields, so they cannot "
                                                                     "carry (pmp, ctry) and this "
                                                                     "comparison is at the WRONG "
@@ -13348,7 +13348,7 @@ def render():
                                                             elif _m5 == 0 and _m4 == 0:
                                                                 log("   [inv-vs-drop]   ⚠ NO "
                                                                     "overlap under either key. "
-                                                                    "Either the invented cells are "
+                                                                    "Either the invented profiles are "
                                                                     "NOT merge casualties — in "
                                                                     "which case Option 3 is aimed "
                                                                     "at the wrong mechanism — or "
@@ -13358,7 +13358,7 @@ def render():
                                                             elif _m5 < len(_ivT):
                                                                 log(f"   [inv-vs-drop]   ⚠ only "
                                                                     f"{_m5:,} of {len(_ivT):,} "
-                                                                    f"invented cells are merge "
+                                                                    f"invented profiles are merge "
                                                                     f"casualties, so keeping them "
                                                                     f"cannot close all of chain "
                                                                     f"step 1. The remainder has a "
@@ -13367,7 +13367,7 @@ def render():
                                                                     f"leave it.")
                                                             else:
                                                                 log("   [inv-vs-drop]   every "
-                                                                    "invented cell is a merge "
+                                                                    "invented profile is a merge "
                                                                     "casualty ⇒ the keep, scoped "
                                                                     "to this key set, is the whole "
                                                                     "of chain step 1.")
@@ -13375,23 +13375,23 @@ def render():
                                                                 log(f"   [inv-vs-drop]   ⇒ THE NUMBER "
                                                                     f"THAT DECIDES THE BUILD: a keep "
                                                                     f"scoped to EXACTLY the invented "
-                                                                    f"cells would re-admit {_rIn:,} "
+                                                                    f"profiles would re-admit {_rIn:,} "
                                                                     f"split row(s) across {_m5:,} "
-                                                                    f"profile(s). The 19i attempt, "
+                                                                    f"cell(s). The 19i attempt, "
                                                                     f"scoped by cell_volume > 0, "
                                                                     f"re-admitted 97,465 rows / ~8,978 "
-                                                                    f"profiles.")
+                                                                    f"cells.")
                                                     except Exception as _ivE:  # noqa: BLE001
                                                         log(f"   [inv-vs-drop] skipped "
                                                             f"({type(_ivE).__name__}: {_ivE})")
-                                                    # ---- DO THE INVENTED CELLS CARRY TRAFFIC? ----
+                                                    # ---- DO THE INVENTED PROFILES CARRY TRAFFIC? ----
                                                     # This is the Option 1 vs Option 2 decision and
-                                                    # nothing else in the run answers it. A cell with
-                                                    # cell_tot ≈ 0 is a profile that carries no
+                                                    # nothing else in the run answers it. A profile with
+                                                    # cell_tot ≈ 0 is a cell that carries no
                                                     # transactions, so injecting the catch-all there
                                                     # is inventing traffic and the IN-SEARCH side is
-                                                    # wrong (Option 1). A cell with real cell_tot is a
-                                                    # live profile with no specific rule — exactly what
+                                                    # wrong (Option 1). A profile with real cell_tot is a
+                                                    # live cell with no specific rule — exactly what
                                                     # a catch-all is for — so the DELIVERED side is the
                                                     # one missing rows (Option 2). Offline, the six
                                                     # keys [step1] prints as worst are all present in
@@ -13405,7 +13405,7 @@ def render():
                                                         if _pjB is not None and _pkB:
                                                             _ctB = np.asarray(_pjB._ctot, float)
                                                             _pidB = np.asarray(_pjB._propidx, np.int64)
-                                                            # cell_tot is constant within a cell, so take
+                                                            # cell_tot is constant within a profile, so take
                                                             # the max over its rows rather than a sum.
                                                             _ckB = [str(_k).rsplit("|", 1)[0]
                                                                     for _k in _pkB]
@@ -13419,42 +13419,42 @@ def render():
                                                             _nReal = int((_ivVol > 1e-9).sum())
                                                             _nPhan = int(len(_ivIdx) - _nReal)
                                                             _inv2k = {_v: _k for _k, _v in _cposS.items()}
-                                                            log(f"   [blend-cells]   VOLUME CHECK on the "
-                                                                f"{len(_ivIdx):,} invented cell(s): "
+                                                            log(f"   [blend-profiles]   VOLUME CHECK on the "
+                                                                f"{len(_ivIdx):,} invented profile(s): "
                                                                 f"{_nReal:,} carry cell_tot > 0 "
                                                                 f"(Σ {_ivVol.sum():,.0f} txns, median "
                                                                 f"{float(np.median(_ivVol)) if len(_ivVol) else 0.0:,.1f})"
                                                                 f" · {_nPhan:,} carry NO volume")
                                                             for _oB in np.argsort(-_ivVol)[:6]:
-                                                                log(f"   [blend-cells]     "
+                                                                log(f"   [blend-profiles]     "
                                                                     f"{_inv2k.get(int(_ivIdx[_oB]), '?')[:58]:<58} "
                                                                     f"cell_tot {_ivVol[_oB]:>9,.1f}")
                                                             _frR = (_nReal / max(len(_ivIdx), 1))
                                                             if _frR > 0.9:
-                                                                log("   [blend-cells]   ⇒ READING: these are "
-                                                                    "REAL profiles that carry traffic and "
+                                                                log("   [blend-profiles]   ⇒ READING: these are "
+                                                                    "REAL cells that carry traffic and "
                                                                     "have no specific rule — precisely what "
                                                                     "a catch-all exists for. The IN-SEARCH "
                                                                     "side is right to serve them and the "
                                                                     "DELIVERED side is missing the rows, so "
-                                                                    "OPTION 2 (emit these cells on the "
+                                                                    "OPTION 2 (emit these profiles on the "
                                                                     "delivered side) is the fix, NOT Option "
                                                                     "1. They are absent from the delivered "
                                                                     "split because `_explode`'s INNER merge "
                                                                     "against orig_forecast drops them — "
                                                                     "[ca-reach] reads 0 uncovered because it "
-                                                                    "only sees cells the split already has, "
+                                                                    "only sees profiles the split already has, "
                                                                     "so it is blind to these by construction.")
                                                             elif _frR < 0.1:
-                                                                log("   [blend-cells]   ⇒ READING: these cells "
+                                                                log("   [blend-profiles]   ⇒ READING: these profiles "
                                                                     "carry no transactions, so the in-search "
-                                                                    "blend is inventing traffic for profiles "
+                                                                    "blend is inventing traffic for cells "
                                                                     "that do not exist. OPTION 1 (stop "
                                                                     "injecting there) is the fix, and my "
                                                                     "offline 6-of-6 'all real' sample was "
                                                                     "unrepresentative — say so.")
                                                             else:
-                                                                log(f"   [blend-cells]   ⇒ READING: MIXED "
+                                                                log(f"   [blend-profiles]   ⇒ READING: MIXED "
                                                                     f"({100.0 * _frR:.0f}% carry volume). "
                                                                     "Neither Option 1 nor Option 2 is right "
                                                                     "for all 145 — the fix must split them, "
@@ -13462,23 +13462,23 @@ def render():
                                                                     "wrong for the other group. Do not pick "
                                                                     "one on the aggregate.")
                                                         else:
-                                                            log("   [blend-cells]   VOLUME CHECK skipped — "
+                                                            log("   [blend-profiles]   VOLUME CHECK skipped — "
                                                                 "the projector or its prop_keys are not "
                                                                 "available in this scope.")
                                                     except Exception as _bvE:  # noqa: BLE001
-                                                        log(f"   [blend-cells]   VOLUME CHECK skipped "
+                                                        log(f"   [blend-profiles]   VOLUME CHECK skipped "
                                                             f"({type(_bvE).__name__}: {_bvE})")
-                                                    log(f"   [blend-cells] the in-search blend INVENTS "
-                                                        f"{int(_invC.sum()):,} cell(s) that carry no "
+                                                    log(f"   [blend-profiles] the in-search blend INVENTS "
+                                                        f"{int(_invC.sum()):,} profile(s) that carry no "
                                                         f"specific shipped share, across "
                                                         f"{int(_invK.sum()):,} prop-key(s). Identity "
-                                                        f"check: cells(+blend) − cells(−blend) = "
+                                                        f"check: profiles(+blend) − profiles(−blend) = "
                                                         f"{int((np.abs(_sB) > 1e-12).sum()) - int((np.abs(_sN) > 1e-12).sum()):,}"
                                                         f" vs Σ|disagreement| {np.abs(_dB).sum():,.3f}"
                                                         + ("  ✓ same population."
                                                            if abs(int(_invC.sum()) - float(np.abs(_dB).sum())) < 1.0
                                                            else "  ⚠ these should match; they do not, so "
-                                                                "the invented-cell set is NOT what the "
+                                                                "the invented-profile set is NOT what the "
                                                                 "disagreement measures."))
                                                     if int(_invC.sum()):
                                                         _mAg = {}
@@ -13486,7 +13486,7 @@ def render():
                                                             _k = str(_pkS[int(_i)]) if int(_i) < len(_pkS) else ""
                                                             _m = _k.rsplit("|", 1)[-1]
                                                             _mAg[_m] = _mAg.get(_m, 0.0) + float(_shbF[int(_i)])
-                                                        log("   [blend-cells]   catch-all recipients "
+                                                        log("   [blend-profiles]   catch-all recipients "
                                                             "(Σ injected prop): "
                                                             + " · ".join(f"{_m[:22]} {_v:.3f}" for _m, _v
                                                                          in sorted(_mAg.items(),
@@ -13511,36 +13511,36 @@ def render():
                                                                     [(0, _r) for _r in _rows])
                                                         _tS1 = sum(abs(_r[2]) for _r in _rows
                                                                    if _r[2] is not None)
-                                                        log(f"   [blend-cells]   COUNTERFACTUAL — zeroing "
-                                                            f"the injection in those cells moves M5 by "
+                                                        log(f"   [blend-profiles]   COUNTERFACTUAL — zeroing "
+                                                            f"the injection in those profiles moves M5 by "
                                                             f"Σ|Δ| {_tEff:,.0f} across {len(_rows):,} "
                                                             f"MID(s); chain step 1 totals Σ|Δ| "
                                                             f"{_tS1:,.0f}."
-                                                            + ("  ✓ CONFIRMED — the invented cells ARE "
+                                                            + ("  ✓ CONFIRMED — the invented profiles ARE "
                                                                "chain step 1. Fix: stop injecting where "
                                                                "the delivered frame has no rows, or make "
                                                                "enforced_prop_items emit them."
                                                                if _tS1 > 0.5 and abs(_tEff - _tS1) <= max(0.35 * _tS1, 1.0)
-                                                               else ("  ⚠ these cells carry (near) NO "
+                                                               else ("  ⚠ these profiles carry (near) NO "
                                                                      "volume — cell_tot ≈ 0, so the prop "
                                                                      "there cannot move M5. The 145 is "
                                                                      "BOOKKEEPING and chain step 1 is "
                                                                      "STILL UNMEASURED; do not read this "
                                                                      "block as an explanation."
                                                                      if _tEff <= 0.5 else
-                                                                     "  ⚠ PARTIAL — the invented cells "
+                                                                     "  ⚠ PARTIAL — the invented profiles "
                                                                      "move M5 but do not account for "
                                                                      "step 1. Something else carries the "
                                                                      "rest; treat this as one term, not "
                                                                      "the mechanism.")))
                                                         for _m, _eff, _s1 in sorted(_rows,
                                                                                     key=lambda r: -abs(r[1]))[:6]:
-                                                            log(f"   [blend-cells]     {_m[:26]:<26} "
-                                                                f"invented-cell effect {_eff:>+8,.0f}"
+                                                            log(f"   [blend-profiles]     {_m[:26]:<26} "
+                                                                f"invented-profile effect {_eff:>+8,.0f}"
                                                                 + (f" · chain step 1 {_s1:>+8,.0f}"
                                                                    if _s1 is not None else ""))
                                                 except Exception as _bcE:  # noqa: BLE001
-                                                    log(f"   [blend-cells] skipped "
+                                                    log(f"   [blend-profiles] skipped "
                                                         f"({type(_bcE).__name__}: {_bcE})")
                                         else:
                                             # NOT A FAILURE when no catch-all is configured.
@@ -13690,7 +13690,7 @@ def render():
                                         #       bigger in aggregate. A COVERAGE problem.
                                         #   (b) the totals agree but the split BETWEEN MIDs differs — an
                                         #       ALLOCATION problem (different pshare / cell_tot).
-                                        # Summing both sides settles which, and no per-sub-cell tooling
+                                        # Summing both sides settles which, and no per-profile tooling
                                         # is needed to read it.
                                         try:
                                             _cons = {}
@@ -14042,12 +14042,12 @@ def render():
                                                             "with no row in its group is either a "
                                                             "MID that genuinely has no fraud of "
                                                             "that AGE (STRUCTURAL) or one the aged "
-                                                            "frame never carries for that cell at "
+                                                            "frame never carries for that profile at "
                                                             "ALL (ABSENT). \u03a3_pshare cannot "
                                                             "tell those apart; this can:")
                                                         log(f"      [vterms]   tested at the "
                                                             f"REDISTRIBUTION GROUP "
-                                                            f"(cell,period,t): "
+                                                            f"(profile,period,t): "
                                                             f"{_pw.get('live_groups', 0):,} live "
                                                             f"group(s) short by "
                                                             f"{_pw.get('shortfall', 0.0):,.1f} "
@@ -14062,7 +14062,7 @@ def render():
                                                             f"({_pw.get('structural_pct', 0.0):.2f}%) "
                                                             f"over {_pw.get('structural_rows', 0):,} "
                                                             "recipient-row(s) \u2014 the MID is in "
-                                                            "the frame for that cell, just not at "
+                                                            "the frame for that profile, just not at "
                                                             "that age")
                                                         log(f"      [vterms]   ABSENT     "
                                                             f"{_pw.get('absent_share', 0.0):>10,.1f} "
@@ -14072,7 +14072,7 @@ def render():
                                                             f"over {_pw.get('absent_rows', 0):,} "
                                                             "recipient-row(s) \u2014 the MID never "
                                                             "appears in the aged frame for that "
-                                                            "cell")
+                                                            "profile")
                                                         for _pw_lbl, _pw_k in (("STRUCTURAL",
                                                                                 "structural_top"),
                                                                                ("ABSENT",
@@ -14122,7 +14122,7 @@ def render():
                                                             log(f"      [vterms]   \u21d2 "
                                                                 f"{_pw_a:.1f}% of the intended share "
                                                                 "belongs to MIDs the aged frame "
-                                                                "NEVER carries for their cell. That "
+                                                                "NEVER carries for their profile. That "
                                                                 "part is NOT a rounding repair: the "
                                                                 "renormalise is reassigning their "
                                                                 "slice to whoever is left, and BOTH "
@@ -14174,18 +14174,18 @@ def render():
                                                 if _pfrac > 0.05:
                                                     log(f"      [rung] ⚠ steps 2 and 4 are NOT separately "
                                                         f"attributable this run. {100.0 * _pfrac:.1f}% of "
-                                                        "proposed mass sits in (cell, MID) pairs that are "
-                                                        "ABSENT from some of their sub-cells (see SUB-CELL "
+                                                        "proposed mass sits in (profile, MID) pairs that are "
+                                                        "ABSENT from some of their profiles (see PROFILE "
                                                         "PRESENCE). Delivery normalises WITHIN each "
-                                                        "(pmp, Country) sub-cell — a MID absent there gets 0 "
+                                                        "(pmp, Country) profile — a MID absent there gets 0 "
                                                         "and the rest split 100%. The in-search prop-key is "
-                                                        "CELL grain, so it hands that MID its cell share in "
-                                                        "EVERY sub-cell. Absence is not representable at "
+                                                        "PROFILE grain, so it hands that MID its profile share in "
+                                                        "EVERY profile. Absence is not representable at "
                                                         "4-part grain, so collapsing the delivered items onto "
                                                         "it is lossy and steps 2/4 absorb that loss in equal "
                                                         "and opposite amounts. No divisor fixes this.")
                                                     log("      [rung] ⇒ THE REMAINING CANDIDATE IS PROP-KEY "
-                                                        "GRAIN. Run at SUB-CELL optimisation grain: the "
+                                                        "GRAIN. Run at PROFILE optimisation grain: the "
                                                         "prop-key becomes 6-part (cur|bin|rpgt|pmp|ctry|mid), "
                                                         "both sides normalise at the SAME grain, this rung "
                                                         "becomes exact (divisor 1), and if the residual "
@@ -14256,7 +14256,7 @@ def render():
                                                             "MATH = identical shares, two different M5 models. "
                                                             "Pair this with the [rung2] GRAIN DISPERSION line: "
                                                             "a big ENFORCEMENT term with high dispersion is a "
-                                                            "GRAIN problem (run at sub-cell), not a code bug.")
+                                                            "GRAIN problem (run at profile), not a code bug.")
                                                 if not _enf_by_midl:
                                                     log("      [rung] SPLIT = the GA scored a split it does not "
                                                         "ship (fix _fm_deliv vs _restrict — scoring only). "
@@ -14278,7 +14278,7 @@ def render():
                                         # they need DIFFERENT fixes:
                                         #   (1) BASELINE gap — the sides start from a different "pre"
                                         #       volume. In-search reads its baseline off the SCAFFOLD
-                                        #       (_T0: kept cells only, plus the injected zero-baseline
+                                        #       (_T0: kept profiles only, plus the injected zero-baseline
                                         #       door-cover rows, and `ctot` computed on that frame),
                                         #       while delivered reads the FULL pro-rata export. If these
                                         #       differ, no amount of routing work can ever reconcile.
@@ -14286,10 +14286,10 @@ def render():
                                         #       disagree on how much volume the split MOVES.
                                         # In-search baseline = the projector with prop_raw ALL ZERO:
                                         # psum == 0 ⇒ act False ⇒ pshare falls back to `base` and mv = 0,
-                                        # so every cell is held at baseline. This deliberately BYPASSES
+                                        # so every profile is held at baseline. This deliberately BYPASSES
                                         # _fm_s2pr: the backup-blend fold-in injects the catch-all into
-                                        # cells with no specific share, which on an all-zero prop would
-                                        # be EVERY cell — that is not a baseline.
+                                        # profiles with no specific share, which on an all-zero prop would
+                                        # be EVERY profile — that is not a baseline.
                                         try:
                                             _bsl_k = len(_eb.projector.prop_keys)
                                             _bsl_rep = _eb.report(np.zeros((1, _bsl_k), dtype=float))
@@ -14330,7 +14330,7 @@ def render():
                                                 log(f"      [baseline-split] {_mt3.upper():4} verdict: {_dom}"
                                                     "-dominated ⇒ "
                                                     + ("the two sides do NOT agree on the PRE volume. Fix the "
-                                                       "scaffold's baseline (kept-cell filter / injected "
+                                                       "scaffold's baseline (kept-profile filter / injected "
                                                        "zero-baseline rows / ctot frame) — the routing path is "
                                                        "not the problem."
                                                        if _dom == "BASELINE" else
@@ -14533,11 +14533,11 @@ def render():
                                 "volume": summ["volume"],
                             })
 
-                    # --- GRANULAR PROFILE SAMPLES: dump a handful of representative engine
+                    # --- GRANULAR CELL SAMPLES: dump a handful of representative engine
                     #     cells (currency × bank × rpgt) end-to-end — each gateway's baseline vs
                     #     proposed share, forecast volume, VAMP risk and vampMid — so every run
-                    #     shows concrete profile-level decisions, not just aggregate counts.
-                    #     Samples the biggest cells + the biggest reallocations. Best-effort. ---
+                    #     shows concrete cell-level decisions, not just aggregate counts.
+                    #     Samples the biggest profiles + the biggest reallocations. Best-effort. ---
                     try:
                         _samp_v = min(variations, key=lambda v: v["weight"]) if variations else None
                         _sdf = _samp_v["split"].copy() if _samp_v is not None else pd.DataFrame()
@@ -14558,8 +14558,8 @@ def render():
                                 if len(_pick) >= 6:
                                     break
                             _grp = _sdf.groupby(_ckeys)
-                            log(f"   ── GRANULAR PROFILE SAMPLES · dial {int(round(_samp_v['weight'] * 100))} · "
-                                f"{len(_pick)} of {len(_cv):,} cells (currency × bank × rpgt) ──")
+                            log(f"   ── GRANULAR CELL SAMPLES · dial {int(round(_samp_v['weight'] * 100))} · "
+                                f"{len(_pick)} of {len(_cv):,} profiles (currency × bank × rpgt) ──")
                             log("      each row: gateway · baseline% → proposed% (Δpp) · fc volume · VAMP risk · vampMid")
                             for _kk in _pick:
                                 _rows = _grp.get_group(_kk if len(_kk) > 1 else _kk[0]).copy()
@@ -14569,8 +14569,8 @@ def render():
                                 log(f"      • {_lbl}  ·  cell_vol={float(_rows['_vol'].sum()):,.0f}  ·  {len(_rows)} active gateway(s)")
                                 for _, _r in _rows.iterrows():
                                     _gw = str(_r.get("gateway", "?"))
-                                    # sub-cell grain: one row per (gateway, pmp, Country) — label the
-                                    # sub-cell so the otherwise-identical gateway rows are distinct.
+                                    # profile grain: one row per (gateway, pmp, Country) — label the
+                                    # profile so the otherwise-identical gateway rows are distinct.
                                     _pmpv = str(_r.get("pmp", "") or "").strip().lower()
                                     _ctryv = str(_r.get("ctry", "") or "").strip().lower()
                                     if _pmpv and _pmpv not in ("_all_", "nan", ""):
@@ -14582,7 +14582,7 @@ def render():
                                     log(f"          {_gw:<30s} {_b:5.1f}% → {_p:5.1f}% ({_p - _b:+5.1f}pp) · "
                                         f"vol {float(_r['_vol']):>8,.0f} · risk {_rks:>7s}" + (f" · {_vm}" if _vm else ""))
                     except Exception as _e:  # noqa: BLE001
-                        _diag(f"   [granular profile samples failed: {_e}]")
+                        _diag(f"   [granular cell samples failed: {_e}]")
 
                     granular_sr = gateway_success_rates(orig_adf, shrink_strength=float(shrink), time_decay_half_life_days=(float(decay_half) if apply_decay else None), prior_scope=("rpgt", "currency", "bin"), empirical_bayes=use_eb)
                     granular_problems = build_cell_problems(orig_forecast, granular_sr)
@@ -14673,8 +14673,8 @@ def render():
                                     else:
                                         log(f"   [Warning] auto-block: {_bs_m:,} row(s) matched and "
                                             f"{_bs_a:,} sit ABOVE the floor, but none was capped — "
-                                            f"{_bs_nr:,} of those are in a cell with NO unblocked "
-                                            "gateway to receive the freed share, so the cell is left "
+                                            f"{_bs_nr:,} of those are in a profile with NO unblocked "
+                                            "gateway to receive the freed share, so the profile is left "
                                             "untouched by design. If that does not account for all "
                                             f"{_bs_a:,}, the redistribution grain "
                                             f"({_vgk}) is the next thing to look at.")

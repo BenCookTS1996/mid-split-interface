@@ -762,7 +762,7 @@ def render():
                         log(f"• Using cached pipeline baseline: {cached_inputs_path}")
                     else:
                         log("• No pipeline output — baseline will not be built here; "
-                            "tab 3 will fetch success data and build routing cells.")
+                            "tab 3 will fetch success data and build routing profiles.")
 
                 finally:
                     root_logger.removeHandler(handler)
@@ -800,7 +800,7 @@ def render():
                     state="complete", expanded=False)
 
             # Clear downstream artifacts so old runs don't linger. Tab 3 owns success
-            # rates and routing cells now, so we clear them too — the user runs tab 3
+            # rates and routing profiles now, so we clear them too — the user runs tab 3
             # to pull attempts data, pre-process (Bayesian smoothing + time decay),
             # and generate split variations.
             for k in ("problems", "sr", "forecast", "variations",

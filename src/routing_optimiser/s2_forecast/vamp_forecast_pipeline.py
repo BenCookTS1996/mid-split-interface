@@ -356,7 +356,7 @@ def _hier_vamp_shrink(d: pd.DataFrame, fallback_kappa: float = 50.0, kmax: float
     est = _np.full(n, (tot_v / tot_q) if tot_q > 0 else 0.0)       # coarsest level = global rate
     _t = d[["gateway", "rpgt", "bin", "currency"]].copy()
     _t["_v"] = v; _t["_q"] = q
-    # coarse → fine; the final key set is the full cell grain, so its shrink is the cell itself
+    # coarse → fine; the final key set is the full profile grain, so its shrink is the profile itself
     chain = [["gateway"], ["rpgt"], ["bin"], ["bin", "rpgt"],
              ["bin", "rpgt", "currency"], ["bin", "rpgt", "currency", "gateway"]]
     levels_log = []
@@ -438,8 +438,8 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
            .agg(volume=("volume", "sum"), _vamps=("_vamps", "sum")))
 
     # RISK RATE: hierarchical empirical-Bayes shrinkage (default on; ROUTING_VAMP_SHRINK=0
-    # disables → raw ratio). Fixes noisy thin-cell rates (e.g. 0.74 VAMP on 1.2 txns → raw
-    # 61.55%) by pulling them toward the stable BANK-level rate; high-volume cells stay put.
+    # disables → raw ratio). Fixes noisy thin-profile rates (e.g. 0.74 VAMP on 1.2 txns → raw
+    # 61.55%) by pulling them toward the stable BANK-level rate; high-volume profiles stay put.
     _raw_rr = (d["_vamps"] / d["volume"].replace(0, pd.NA)).fillna(0.0)
     global _LAST_VAMP_SHRINK
     if os.environ.get("ROUTING_VAMP_SHRINK", "1") != "0" and len(d) >= 2:
@@ -607,7 +607,7 @@ def load_pre_forecast(path: str) -> pd.DataFrame:
                 # against ("25,315 of 51,434 forecast row(s)"), so a reader comparing the two
                 # needs it named here.
                 logger.info(
-                    "      - baseline from %s: %s row(s) in the file → %s routing cell-row(s) "
+                    "      - baseline from %s: %s row(s) in the file → %s routing profile-row(s) "
                     "after collapsing to (bank · currency · gateway).",
                     fname, f"{len(_raw_pre):,}", f"{len(out):,}")
                 if len(out):
@@ -620,7 +620,7 @@ def load_pre_forecast(path: str) -> pd.DataFrame:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Pipeline 'pre' output not found at {path}.")
     out = _normalise_pre(_prorata_to_pre(pd.read_csv(path)))
-    logger.info(f"      - baseline from {os.path.basename(path)}: {len(out):,} cell-rows")
+    logger.info(f"      - baseline from {os.path.basename(path)}: {len(out):,} profile-rows")
     return out
 
 

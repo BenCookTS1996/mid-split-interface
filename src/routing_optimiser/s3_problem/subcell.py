@@ -24,7 +24,7 @@ import pandas as pd
 
 __build__ = "2026-08-16-subcell-volume-glue"
 
-_ALL = "_all_"   # sentinel sub-cell label when the export has no pmp/Country split for a cell
+_ALL = "_all_"   # sentinel profile label when the export has no pmp/Country split for a profile
 
 
 # [FN-SC01]
@@ -58,11 +58,11 @@ def subcell_vi_fractions(prorata: pd.DataFrame,
     g = g[g["t"] == 0]
     sub = g.groupby(["cur", "bin", "rpgt", "pmp", "ctry"], as_index=False)["vi"].sum()
     cell_tot = sub.groupby(["cur", "bin", "rpgt"])["vi"].transform("sum")
-    # Cells with positive VI: fraction = sub-cell VI / cell VI.
+    # Profiles with positive VI: fraction = profile VI / profile VI.
     pos = cell_tot > 0
     sub["vi_frac"] = np.where(pos, sub["vi"] / cell_tot.where(pos, 1.0), np.nan)
 
-    # Cells with zero VI (or absent from the export): one '_all_' sub-cell, frac 1.0.
+    # Profiles with zero VI (or absent from the export): one '_all_' profile, frac 1.0.
     zero_cells = (sub.loc[~pos, ["cur", "bin", "rpgt"]].drop_duplicates())
     if len(zero_cells):
         zero_cells = zero_cells.assign(pmp=_ALL, ctry=_ALL, vi=0.0, vi_frac=1.0)
@@ -93,7 +93,7 @@ def expand_forecast_to_subcells(forecast: pd.DataFrame, fractions: pd.DataFrame,
         columns={"cur": "_cur", "bin": "_bin", "rpgt": "_rpgt"})
     merged = f.merge(fr, on=["_cur", "_bin", "_rpgt"], how="left")
 
-    # Cells absent from `fractions` → single '_all_' sub-cell, frac 1.0 (behaves like cell grain).
+    # Profiles absent from `fractions` → single '_all_' profile, frac 1.0 (behaves like profile grain).
     miss = merged["vi_frac"].isna()
     merged.loc[miss, "pmp"] = _ALL
     merged.loc[miss, "ctry"] = _ALL

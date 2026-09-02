@@ -146,7 +146,7 @@ def _row_banned(gw: str, vmid: str, profile: dict, rules: list[dict]) -> bool:
 # The ban mask depends only on the per-row PROFILE (gateway, vampMid, rpgt/currency/
 # bank/bin/country) and the rules — NOT on the split shares. The enforcement runs this
 # for every pass/dial on the same rows, so we memoise the mask on a content hash of the
-# profile columns + a signature of the rules. Bit-identical: on a hit we return the SAME
+# cell columns + a signature of the rules. Bit-identical: on a hit we return the SAME
 # boolean array the loop would have produced; on any content change the hash differs and
 # it recomputes. Only the last result is kept (calls alternate over the same one split).
 _BAN_MASK_CACHE: dict = {}
@@ -201,8 +201,8 @@ def _renorm(df: pd.DataFrame, group_keys: list[str], col: str) -> pd.Series:
 
 
 # [FN-062]
-# Sub-cell purity. The blend's `frac` is "how much of this cell is wallet / Non-USA traffic".
-# At sub-cell grain that is not a proportion at all — the cell IS one or the other, so the
+# Profile purity. The blend's `frac` is "how much of this profile is wallet / Non-USA traffic".
+# At profile grain that is not a proportion at all — the profile IS one or the other, so the
 # answer is 0 or 1. Same test as the scaffold's _T0_emask_a, so one rule holds everywhere.
 _WALLET_PMP = frozenset({"googlepay", "applepay"})
 _USA_CTRY = frozenset({"usa", "us"})
@@ -274,8 +274,8 @@ def _capability_blend(df: pd.DataFrame, group_cols: list[str], incapable, frac_m
             cur_bank_key = (str(group_rows["currency"].iloc[0]).strip().lower(),
                             str(group_rows["bin"].iloc[0]).strip().lower())
             reroute_frac = float(frac_map.get(cur_bank_key, default))
-        # EXACT at sub-cell grain: when the group is pure (one pmp / one Country), the
-        # fraction is not an estimate — it is 0 or 1. `_sc_col` is None at cell grain, so
+        # EXACT at profile grain: when the group is pure (one pmp / one Country), the
+        # fraction is not an estimate — it is 0 or 1. `_sc_col` is None at profile grain, so
         # the fraction map is used exactly as before.
         if _sc_col is not None:
             _ex = (_exact_wallet_frac(group_rows[_sc_col].iloc[0]) if kind == "wallet"
@@ -342,8 +342,8 @@ def apply_restrictions(split: pd.DataFrame, rules: list[dict], fid2vamp: dict,
             df["share"] = _renorm(df, gk, "share")
 
     # 3. Country capability — blend: USA-only gateways keep only their USA share; the
-    #    Non-USA portion of each cell is redistributed to the other gateways. Same
-    #    mechanism as wallet, with frac = the cell's Non-USA traffic fraction.
+    #    Non-USA portion of each profile is redistributed to the other gateways. Same
+    #    mechanism as wallet, with frac = the profile's Non-USA traffic fraction.
     if usa_only:
         df["share"] = _capability_blend(df, gk, usa_only, nonusa_frac or {}, nonusa_default,
                                         kind="nonusa")
@@ -357,13 +357,13 @@ def apply_restrictions(split: pd.DataFrame, rules: list[dict], fid2vamp: dict,
 
 # ---------------------------------------------------------------------------
 # POPULATION OPERATOR — the SAME eligibility maths as `apply_restrictions`, but
-# precomputed ONCE for a fixed (cell, gateway) layout and then applied to a whole
+# precomputed ONCE for a fixed (profile, gateway) layout and then applied to a whole
 # population of share vectors with pure numpy (no per-candidate DataFrame / groupby).
 #
 # Purpose: let a search (e.g. the genetic engine) SCORE the actually-routable shares —
 # bans zeroed + renormalised, wallet / USA-only capability blended — inside its hot loop,
 # so it optimises what will really be routed instead of a split that eligibility later
-# perturbs. It is a fixed piecewise-linear transform of the share vector (masks + per-cell
+# perturbs. It is a fixed piecewise-linear transform of the share vector (masks + per-profile
 # fractions are static), so it needs no projection and costs ~two segment-sums per stage.
 #
 # `build_elig_operator` returns the static arrays; `apply_elig_pop(X, op)` applies them.
@@ -387,7 +387,7 @@ def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, 
     _gw = df["gateway"].astype(str).str.strip().str.lower().to_numpy()
     _vm = pd.Series(_gw).map(fid2vamp).fillna(pd.Series(_gw)).to_numpy()
     _cell = df["cell"].astype(str).to_numpy()
-    # contiguous cell segments (bit-for-bit the reduceat layout the caller's decode uses)
+    # contiguous profile segments (bit-for-bit the reduceat layout the caller's decode uses)
     starts = [0] + [i for i in range(1, n) if _cell[i] != _cell[i - 1]]
     cell_starts = np.asarray(starts, dtype=np.intp)
     cell_counts = np.diff(np.append(cell_starts, n)).astype(np.intp)
@@ -421,9 +421,9 @@ def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, 
         return np.fromiter(((_gw[i] in _inc) for i in range(n)),
                            dtype=bool, count=n)
 
-    # Sub-cell identity, when the caller supplies it. Without these the operator applies the
-    # GLOBAL wallet / Non-USA fraction to every row — correct at cell grain, plainly wrong at
-    # sub-cell grain where each cell is purely wallet or purely card, purely USA or purely not.
+    # Profile identity, when the caller supplies it. Without these the operator applies the
+    # GLOBAL wallet / Non-USA fraction to every row — correct at profile grain, plainly wrong at
+    # profile grain where each profile is purely wallet or purely card, purely USA or purely not.
     _pmp_a = (df["pmp"].astype(str).str.strip().str.lower().to_numpy()
               if "pmp" in df.columns else None)
     _cty_a = None
@@ -459,7 +459,7 @@ def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, 
         "u_incap": _incap_mask(usa_only),
         "u_wf": _wf(nonusa_frac, nonusa_default, kind="nonusa"),
         "has_u": bool(usa_only),
-        # how many rows got the EXACT 0/1 factor instead of the global fraction (0 = cell grain)
+        # how many rows got the EXACT 0/1 factor instead of the global fraction (0 = profile grain)
         "n_rows": int(n), "w_exact": int(_n_exact["wallet"]), "u_exact": int(_n_exact["nonusa"]),
     }
 
@@ -630,12 +630,12 @@ def _blend_pop(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
     seg_c = np.add.reduceat(capX, cs, axis=1)
     pos_cell = seg_c > 0
     sd = np.repeat(np.where(pos_cell, seg_c, 1.0), cc, axis=1)
-    # 19bq: THE SELECT IS USUALLY UNREACHABLE. `posc` is False only in a cell where NO gateway is
-    # capable, and [elig-nocap] measured that on the live population: 0 of 23,791 cells for wallet
-    # AND 0 for USA-only, carrying 0 rows. Where every cell is positive, np.where(True, a, b) == a
+    # 19bq: THE SELECT IS USUALLY UNREACHABLE. `posc` is False only in a profile where NO gateway is
+    # capable, and [elig-nocap] measured that on the live population: 0 of 23,791 profiles for wallet
+    # AND 0 for USA-only, carrying 0 rows. Where every profile is positive, np.where(True, a, b) == a
     # elementwise EXACTLY, so the select and the bool repeat are both pure cost — ~69 ms + ~3 ms,
-    # twice per delivery. The guard is at CELL grain (23,791 booleans), not row grain, so it is free;
-    # when any cell IS non-positive it falls through to the identical select and nothing changes.
+    # twice per delivery. The guard is at PROFILE grain (23,791 booleans), not row grain, so it is free;
+    # when any profile IS non-positive it falls through to the identical select and nothing changes.
     if pos_cell.all():
         _NC_STAT["skip"] += 1
         cshare = capX / sd
@@ -654,30 +654,30 @@ def _blend_pop(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
 # run, ahead of the band projector. The in-place twin (19bk) turned out to be 1.05x at the live
 # shape, so this takes the other route: do less work rather than allocate less.
 #
-# A cell whose every row has wf == 0.0 cannot be changed by a blend:
+# A profile whose every row has wf == 0.0 cannot be changed by a blend:
 #     blended = 0.0 * cshare + 1.0 * base = 0.0 + base = base   (exact, except base == -0.0)
 # and the `base_sum > 0` select returns `base` either way. So the twelve full-width operations of
 # `_blend_pop` reproduce their input there, exactly. Compute them only where wf > 0.
 #
 # The trailing `_renorm_pop` is deliberately NOT restricted: its input does not sum to exactly 1.0,
-# so dividing by the cell sum changes bits even in an untouched cell.
+# so dividing by the profile sum changes bits even in an untouched cell.
 # TWO SWITCHES, because these are two independent ideas and one of them is much better than the
 # other. ROUTING_ELIG_FAST=0 reverts to the untouched reference helpers entirely (the
-# cell-grain rewrite AND the restriction). ROUTING_ELIG_RESTRICT=0 keeps the cell-grain
-# rewrite — the unconditional ~1.7x — and only switches off the hit-cell restriction.
+# profile-grain rewrite AND the restriction). ROUTING_ELIG_RESTRICT=0 keeps the profile-grain
+# rewrite — the unconditional ~1.7x — and only switches off the hit-profile restriction.
 _FAST_ON = _os.environ.get("ROUTING_ELIG_FAST", "1") != "0"
 _RX_ON = _os.environ.get("ROUTING_ELIG_RESTRICT", "1") != "0"
 # MEASURED CUT-OFF, not a guess. Gathering the changeable columns costs ~57 ms at 40% of a
 # 35 x 242,670 array, which is the price of a whole full-width operation, and the scatter back costs
 # again. Sweeping the hit fraction at the live shape:
 #     5% -> 1.83x    21% -> 1.53x    40% -> 0.87x    60% -> 0.92x    80% -> 0.77x
-# so above roughly a quarter the restriction LOSES. Ship it only below the crossover; the cell-grain
+# so above roughly a quarter the restriction LOSES. Ship it only below the crossover; the profile-grain
 # rewrite above is the unconditional win and does not care about the hit fraction.
 _RX_MAXHIT = float(_os.environ.get("ROUTING_ELIG_RESTRICT_MAXHIT", "0.25") or 0.25)
 _RX_OK = {"checked": False, "use": _FAST_ON, "msg": "", "note": ""}
 
 # 19bq: how often the no-capable-gateway select was SKIPPED as unreachable vs actually needed.
-# [elig-nocap] measured 0 such cells on 2026-08-23, but that was one population — if `select` ever
+# [elig-nocap] measured 0 such profiles on 2026-08-23, but that was one population — if `select` ever
 # climbs, the guard has stopped paying and the log will say so instead of leaving it to be assumed.
 _NC_STAT = {"skip": 0, "select": 0}
 
@@ -721,7 +721,7 @@ def _rx_build(op):
     n = int(cc.sum())
     rx = {"n_rows": n, "n_cell": int(cs.size), "stages": {}, "why": [],
           # 19bs: built ONCE per layout, here, and passed down. Never cached under a (N, ncell)
-          # key — two sub-layouts can share that pair, and a mis-keyed cell map is a silent wrong
+          # key — two sub-layouts can share that pair, and a mis-keyed profile map is a silent wrong
           # answer, not a slow one.
           "co": _co_build(cc) if _FU_OK["use"] else None}
     if not _RX_ON:
@@ -771,7 +771,7 @@ def _blend_pop_rx(X, incap, wf, cs, cc, st, co=None):
     if st.get("co") is not None and _FU_OK["use"]:
         # 19bs: the same fusion on the gathered sub-array. `base_sum` is not needed — see the note
         # in `_blend_pop`: the trailing `where(base_sum > 0, blended, sub)` is a no-op because a
-        # cell with base_sum <= 0 is all zeros, so blended == sub in both branches.
+        # profile with base_sum <= 0 is all zeros, so blended == sub in both branches.
         _co = st["co"]
         _capX = _fu_mask(sub, np.asarray(inc, bool), np.empty_like(sub))
         _seg = np.add.reduceat(_capX, scs, axis=1)
@@ -786,9 +786,9 @@ def _blend_pop_rx(X, incap, wf, cs, cc, st, co=None):
     _sub_seg = np.add.reduceat(capX, scs, axis=1)
     _sub_pos = _sub_seg > 0
     s_cap = np.repeat(np.where(_sub_pos, _sub_seg, 1.0), scc, axis=1)
-    # 19bq: the same unreachable select as `_blend_pop`, guarded the same way at cell grain.
+    # 19bq: the same unreachable select as `_blend_pop`, guarded the same way at profile grain.
     # NOTE the denominator moved from `np.where(s_cap > 0, s_cap, 1.0)` on the REPEATED array to the
-    # same select on the CELL-grain array before the repeat. That is elementwise identical because
+    # same select on the PROFILE-grain array before the repeat. That is elementwise identical because
     # np.repeat is a gather: repeat(f(seg)) == f(repeat(seg)).
     if _sub_pos.all():
         _NC_STAT["skip"] += 1
@@ -853,7 +853,7 @@ def _rx_verdict(ref, got, rx, P, N):
 # needed because numpy offers no `out=` for either primitive:
 #   np.repeat(seg, cc, axis=1)  ->  np.take(seg, cell_of, axis=1, out=buf)   (a gather; no maths)
 #   np.where(m, a, b)           ->  copyto(buf, b); copyto(buf, a, where=m)  (a select; no maths)
-# Measured 4.10x and np.array_equal on a 35 x 221,649 / 23,418-cell fixture.
+# Measured 4.10x and np.array_equal on a 35 x 221,649 / 23,418-profile fixture.
 #
 # Note np.take(out=) is SLOWER than np.repeat alone (50.8 vs 23.3 ms) — the entire win is in not
 # allocating. The same trick bought `_segment_softmax` 1.01x, because five temporaries are
@@ -952,13 +952,13 @@ def _apply_elig_pop_alloc(Xa, op, cs, cc):
     return Xa
 
 
-# DEFAULT OFF as of 19bl. The 4.10x I measured came from a fixture with far fewer cells than the
-# live layout. Re-measured at the REAL shape (35 x 242,670 over 23,418 cells) it is 1.05x —
+# DEFAULT OFF as of 19bl. The 4.10x I measured came from a fixture with far fewer profiles than the
+# live layout. Re-measured at the REAL shape (35 x 242,670 over 23,418 profiles) it is 1.05x —
 # 1043 -> 997 ms — which matches Ben's live 840 -> 879 ms, i.e. a wash. `np.take(out=)` is
 # genuinely slower than `np.repeat` (50.8 vs 23.3 ms per call) and there are ~7 of them per
-# call; with 23,418 cells that penalty eats the whole allocation saving. So this stays as code
+# call; with 23,418 profiles that penalty eats the whole allocation saving. So this stays as code
 # behind a switch (ROUTING_ELIG_INPLACE=1) rather than shipping ~150 lines of new risk for 5%.
-# The real prize is elsewhere: restrict each blend to the cells that can actually change, the
+# The real prize is elsewhere: restrict each blend to the profiles that can actually change, the
 # same argument that took blocked-caps from 312 to 21.5 ms.
 _EP_INPLACE = _os.environ.get("ROUTING_ELIG_INPLACE", "0") != "0"
 # `msg` is read by tab_2_routing_engine and put in the RUN LOG. 19bk only print()ed it, so the single

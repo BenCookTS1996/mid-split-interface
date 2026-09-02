@@ -19,10 +19,10 @@ from ..legacy_engines.portfolio import PortfolioEngine
 from ..legacy_engines.softmax import SoftmaxEngine
 from ..legacy_engines.thompson import ThompsonEngine
 
-# NOTE: the "genetic" option in the UI is served by the CROSS-CELL tilt GA
+# NOTE: the "genetic" option in the UI is served by the CROSS-PROFILE tilt GA
 # (routing_optimiser.legacy_engines.midtilt_cmaes.run_midtilt_ga, RETIRED 19gd and no longer
 # reachable), which the app dispatched
-# directly — it is NOT a registry engine. The old per-cell GeneticEngine was
+# directly — it is NOT a registry engine. The old per-profile GeneticEngine was
 # removed; the dropdown injects the "genetic" option itself (see streamlit_app).
 ENGINES: dict[str, type[BaseEngine]] = {
     e.key: e for e in [

@@ -42,27 +42,27 @@ class CellProblem:
     gateways: list[str]                 # eligible gateway/MID names
     success_rates: np.ndarray           # expected auth rate per gateway, 0-1
     risk_rates: np.ndarray              # expected chargeback/VAMP rate per gateway, 0-1
-    volume: float                       # forecast attempts for this cell
+    volume: float                       # forecast attempts for this profile
     baseline_shares: np.ndarray         # current ("pre") split, sums to 1
     # Optional evidence for Bayesian engines: successes / attempts observed
     obs_success: np.ndarray | None = None
     obs_attempts: np.ndarray | None = None
     # Optional Empirical-Bayes prior for Bayesian engines: the pooled prior rate
     # the shrinkage uses, and its strength kappa (pseudo-attempts), per gateway.
-    # Thompson builds its Beta prior from these so thin cells borrow strength.
+    # Thompson builds its Beta prior from these so thin profiles borrow strength.
     prior_rate: np.ndarray | None = None
     kappa: np.ndarray | None = None
     # Optional sample size of the RISK rate per gateway (the transaction/sales count
     # the VAMP rate is measured over). Portfolio uses this for the risk-rate standard
     # error instead of auth attempts (a different dataset). None → falls back to attempts.
     risk_n: np.ndarray | None = None
-    # Optional per-cell softmax temperature (confidence-scaled). When None the
+    # Optional per-profile softmax temperature (confidence-scaled). When None the
     # engine falls back to its global `temperature` param.
     temperature: float | None = None
-    # Sub-cell identity (payment-method × Country) for sub-cell-grain optimisation. Default
-    # "_all_" = CELL grain (unchanged behaviour), so every existing CellProblem construction and
-    # consumer is unaffected; only the sub-cell assembler (`build_subcell_problems`) sets these.
-    # `bank` stays the raw BIN so the band projector's sub-cell scaffold still aligns on bin/pmp/ctry.
+    # Profile identity (payment-method × Country) for profile-grain optimisation. Default
+    # "_all_" = PROFILE grain (unchanged behaviour), so every existing CellProblem construction and
+    # consumer is unaffected; only the profile assembler (`build_subcell_problems`) sets these.
+    # `bank` stays the raw BIN so the band projector's profile scaffold still aligns on bin/pmp/ctry.
     pmp: str = "_all_"
     ctry: str = "_all_"
 
@@ -158,7 +158,7 @@ class BaseEngine:
             if gateway in self.hard.forced_gateways:
                 lower[i] = min(0.01, upper[i])
 
-        # If the per-gateway caps make sum(upper) < 1 the cell can't be filled to
+        # If the per-gateway caps make sum(upper) < 1 the profile can't be filled to
         # 100% — the problem is infeasible, so relax the caps just enough to reach 1.
         if upper.sum() < 1.0:
             upper = np.minimum(1.0, upper + (1.0 - upper.sum()) / max(1, (upper > 0).sum()))
@@ -332,7 +332,7 @@ class BaseEngine:
         if not eligible.any():
             return np.full(gateway_count, 1.0 / gateway_count)
 
-        # Per-cell temperature (confidence-scaled) wins over the global dial.
+        # Per-profile temperature (confidence-scaled) wins over the global dial.
         temperature = getattr(p, "temperature", None)
         if temperature is None:
             temperature = self.params.get("temperature", 0.05)
@@ -393,7 +393,7 @@ class BaseEngine:
             self._t(f"STAGE B3  applied exploration floor={floor:g} to {eligible_count} eligible, renormalised")
 
         # (Auto-explore share cap removed: untested-but-eligible gateways are scored like proven ones —
-        # their risk is the cell's real per-BIN rate, their conversion is the empirical-Bayes prior until
+        # their risk is the profile's real per-BIN rate, their conversion is the empirical-Bayes prior until
         # they earn attempts. No reference cap is applied.)
         self._t("STAGE B4  REFERENCE split: "
                 + ", ".join(f"{gateway}={share:.3f}" for gateway, share in zip(p.gateways, weights)))
@@ -448,11 +448,11 @@ class BaseEngine:
     def _is_feasible(self, p: CellProblem, shares: np.ndarray) -> bool:
         """True only if `shares` satisfies EVERY hard constraint for this cell."""
         # A FAILED reference solve (e.g. Portfolio's SLSQP falling back to a return-weighted
-        # split) taints the whole cell — flag it infeasible so a solver failure can never
+        # split) taints the whole profile — flag it infeasible so a solver failure can never
         # masquerade as a healthy split downstream.
         if getattr(p, "_ref_infeasible", False):
             return False
-        # A cell with only one eligible gateway must send it 100% — the max-share cap is
+        # A profile with only one eligible gateway must send it 100% — the max-share cap is
         # physically unsatisfiable there, so it doesn't count as a violation.
         _, upper = self._bounds(p)
         eligible_count = int((upper > 0).sum())

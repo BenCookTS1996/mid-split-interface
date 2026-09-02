@@ -138,9 +138,9 @@ def blend_cell_shares(specific: Dict[str, float], catchall: Dict[str, float]) ->
     spec = {g: float(v) for g, v in (specific or {}).items() if float(v) > 0}
     _stot = sum(spec.values())
     if _stot > 0:
-        # Defined profile → catch-all does NOT fire; just renormalise the specific shares to sum 1.
+        # Defined cell → catch-all does NOT fire; just renormalise the specific shares to sum 1.
         return {g: v / _stot for g, v in spec.items()}
-    # No specific share in the cell → undefined profile → fall back to the catch-all alone.
+    # No specific share in the profile → undefined cell → fall back to the catch-all alone.
     inj = {g: (float(v) / _PCT_SCALE) for g, v in (catchall or {}).items() if float(v) > 0}
     t = sum(inj.values())
     return {g: v / t for g, v in inj.items()} if t > 0 else dict(spec)
@@ -197,8 +197,8 @@ def blend_prop_items(prop_items, catchall, fid2vamp, by_rpgt=None):
         return {g: v / cnt for g, v in acc.items()} if cnt else {}
 
     from collections import defaultdict
-    cells = defaultdict(dict)          # cell-key -> {vampMid: prop_raw}
-    order = []                         # preserve first-seen cell order
+    cells = defaultdict(dict)          # profile-key -> {vampMid: prop_raw}
+    order = []                         # preserve first-seen profile order
     for t in _pi:
         if _n >= 7:
             cur, b, rp, pmp, ctry, vm, s = t[0], t[1], t[2], t[3], t[4], t[5], t[6]
@@ -274,8 +274,8 @@ def parse_rules_to_split(rules_dir: str) -> pd.DataFrame:
         for _, r in df.iterrows():
             rp, cur = str(r[rp_c]).strip(), str(r[cur_c]).strip()
             # BIN join-key normalisation: pandas float-infers a BIN column that has any
-            # blank/NaN cells, so "400022" stringifies as "400022.0" and never matches the
-            # attempts side ("400022") — every cell misses the impact join and the 30D cards
+            # blank/NaN profiles, so "400022" stringifies as "400022.0" and never matches the
+            # attempts side ("400022") — every profile misses the impact join and the 30D cards
             # collapse. Strip a trailing ".0" ONLY when the value is otherwise all digits
             # (leaves genuine non-numeric bank labels untouched).
             bnk = str(r[bin_c]).strip()

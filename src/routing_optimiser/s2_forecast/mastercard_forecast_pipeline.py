@@ -353,7 +353,7 @@ def load_mc_pre_forecast(path: str) -> pd.DataFrame:
                 # the bin_rpgt and effective_rate paths are byte-for-byte what they were.
                 _raw = _mc_prorata_to_pre(pd.read_csv(fpath))
                 out = _normalise_pre(_raw)
-                logger.info(f"      - MC baseline from {fname}: {len(out):,} cell-rows")
+                logger.info(f"      - MC baseline from {fname}: {len(out):,} profile-rows")
                 if len(out):
                     if fname == "mc_cb_t_period_prorata_export.csv":
                         _reconcile_mc_pre_against_bin_rpgt(_raw, path)
@@ -364,5 +364,5 @@ def load_mc_pre_forecast(path: str) -> pd.DataFrame:
     if not os.path.exists(path):
         raise FileNotFoundError(f"Mastercard pipeline 'pre' output not found at {path}.")
     out = _normalise_pre(_mc_prorata_to_pre(pd.read_csv(path)))
-    logger.info(f"      - MC baseline from {os.path.basename(path)}: {len(out):,} cell-rows")
+    logger.info(f"      - MC baseline from {os.path.basename(path)}: {len(out):,} profile-rows")
     return out

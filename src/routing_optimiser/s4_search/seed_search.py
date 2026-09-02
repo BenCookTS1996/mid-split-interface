@@ -209,9 +209,9 @@ def _obj_viol(shares, ctx):
     if _floor > 0.0 and ctx.get("cell_starts") is not None:
         _cs = np.asarray(ctx["cell_starts"]); _cc = np.asarray(ctx["cell_counts"])
         _el = np.asarray(ctx["elig"], float)
-        _nec = np.repeat(np.add.reduceat(_el, _cs), _cc)         # eligible gateways per cell
+        _nec = np.repeat(np.add.reduceat(_el, _cs), _cc)         # eligible gateways per profile
         _fl = np.minimum(_floor, np.where(_nec > 0, 1.0 / np.maximum(_nec, 1.0), 0.0))
-        _mask = (_el > 0.5) & (_nec >= 2)                        # single-gateway cells can't be floored
+        _mask = (_el > 0.5) & (_nec >= 2)                        # single-gateway profiles can't be floored
         viol += _pen(np.maximum(_fl[None, :] - shares, 0.0) * _mask[None, :]
                      / max(_floor, 1e-9)).sum(axis=1)
     # RISK-MINIMISATION secondary objective (safe compliant endpoint only). Among equally
@@ -262,15 +262,15 @@ def _project_capped_simplex_cells(s, cell_starts, cell_counts, elig, cap, total=
     y_min = np.minimum.reduceat(np.where(e, s, 1e18), starts)
     lo = y_min - cap
     hi = np.where(n_elig > 0, y_max, 0.0)
-    for _ in range(int(iters)):                      # per-cell bisection, fully vectorised
+    for _ in range(int(iters)):                      # per-profile bisection, fully vectorised
         tau = 0.5 * (lo + hi)
         seg = np.add.reduceat(np.clip(y - np.repeat(tau, counts), 0.0, cap), starts)
         over = seg > total
         lo = np.where(over, tau, lo)
         hi = np.where(over, hi, tau)
     x = np.clip(y - np.repeat(0.5 * (lo + hi), counts), 0.0, cap)
-    # ---- fallbacks for cells the bisection can't satisfy ----
-    seg_sum = np.add.reduceat(np.where(e, s, 0.0), starts)          # eligible mass per cell
+    # ---- fallbacks for profiles the bisection can't satisfy ----
+    seg_sum = np.add.reduceat(np.where(e, s, 0.0), starts)          # eligible mass per profile
     infeas = (cap * n_elig <= total + 1e-12)                        # cap too tight to reach total
     if infeas.any():
         seg_row = np.repeat(np.where(seg_sum > 1e-12, seg_sum, 1.0), counts)
@@ -279,7 +279,7 @@ def _project_capped_simplex_cells(s, cell_starts, cell_counts, elig, cap, total=
         has_mass = np.repeat(seg_sum > 1e-12, counts)
         fb = np.where(has_mass, prop, uni_e)                        # uniform-over-eligible if no mass
         x = np.where(np.repeat(infeas, counts), fb, x)
-    # degenerate all-ineligible cell → uniform over ALL rows (matches the scalar reference)
+    # degenerate all-ineligible profile → uniform over ALL rows (matches the scalar reference)
     none_e = n_elig <= 0
     if none_e.any():
         uni_all = np.repeat(total / np.maximum(counts.astype(float), 1.0), counts)
@@ -402,8 +402,8 @@ def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mi
         for k, rows in enumerate(mid_rows):
             if len(rows) and abs(mult[k] - 1.0) > 1e-12:
                 s[rows] = s[rows] * mult[k]
-        # Per-cell constrained projection (the small QP): back onto {0 ≤ x ≤ cap, Σ=1} over the
-        # eligible rows, vectorised across ALL cells at once. Ineligible rows are pinned at 0.
+        # Per-profile constrained projection (the small QP): back onto {0 ≤ x ≤ cap, Σ=1} over the
+        # eligible rows, vectorised across ALL profiles at once. Ineligible rows are pinned at 0.
         s = _project_capped_simplex_cells(s, starts, counts, elig, _cap, 1.0)
     # best_key is (priority-weighted unmet-band count, total relative breach) of the returned split.
     return (best_s, (best_key if best_key is not None else (0.0, 0.0))) if return_key else best_s
@@ -460,7 +460,7 @@ def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_ro
     rng = np.random.default_rng(int(rng_seed))
     _inputs = [base]
     for _i in range(1, _n):
-        # jitter the base multiplicatively (log-normal), then project onto each cell's capped simplex so
+        # jitter the base multiplicatively (log-normal), then project onto each profile's capped simplex so
         # every start is a VALID split before the greedy runs.
         _pert = base * np.exp(rng.normal(0.0, float(jitter), size=base.shape))
         _inputs.append(_project_capped_simplex_cells(_pert, _pstarts, _counts, _elig, _cap, 1.0))

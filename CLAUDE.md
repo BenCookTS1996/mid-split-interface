@@ -29,12 +29,15 @@ Identifiers and many log strings use `cell` for the 5-part group and `prop-key` 
 the 6-part row — the opposite of the table above. That inversion is why the run log reads
 confusingly, and it is being corrected outward-in:
 
-* **run-log prose** — being migrated to the table above (19hg onward)
-* **comments** — follow the prose
-* **identifiers** (`gcode`, `cell_start`, `n_cells`, `CellProblem`, `by_subcell`, …) — NOT yet
+* ✅ **run-log prose** — migrated in 19hk (297 log strings across 9 files)
+* ✅ **comments** — migrated in 19hk (793 comments across 26 files)
+* ⬜ **identifiers** (`gcode`, `cell_start`, `n_cells`, `CellProblem`, `by_subcell`, …) — NOT yet
   renamed: ~3,000 occurrences across `app/` and `src/`, including numba kernel parameters and
   dataclass fields. A half-finished identifier rename is worse than none, so it is a dedicated
   mechanical pass, not something to do opportunistically.
+
+**Until the identifier pass lands, the run log and the code read in OPPOSITE vocabularies.**
+That is deliberate and temporary: the log is what people read, so it went first.
 
 **When reading code, translate:** an identifier saying `cell` almost always means this
 document's PROFILE; a `prop_key` / `propidx` almost always means this document's CELL.

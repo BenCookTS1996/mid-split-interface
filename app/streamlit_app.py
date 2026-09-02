@@ -413,7 +413,7 @@ os.chdir(PROJECT_ROOT)  # Ensures the app always operates out of the project roo
 
 
 # Per-step helpers used to live here (step_attempts / step_success_rates /
-# step_forecast) for tab 1's routing-cell build. Tab 3 now owns the routing
+# step_forecast) for tab 1's routing-profile build. Tab 3 now owns the routing
 # flow and calls the backend directly, so those helpers were removed.
 
 

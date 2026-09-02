@@ -52,20 +52,20 @@ __build__ = "19gd-split-from-seed_search"
 
 
 # ---------------------------------------------------------------------------
-# CROSS-CELL per-MID tilt search (the efficient one that can actually beat greedy).
+# CROSS-PROFILE per-MID tilt search (the efficient one that can actually beat greedy).
 #
-# The per-cell tilt above reweights WITHIN a cell, so it can't move a vampMid's
-# CROSS-cell aggregate VAMP rate — which is exactly the constraint. This version
-# searches ONE parameter per vampMid: a cross-cell tilt θ_m that shifts that MID's
-# volume from its HIGH-risk cells toward its LOW-risk cells:
+# The per-profile tilt above reweights WITHIN a profile, so it can't move a vampMid's
+# CROSS-profile aggregate VAMP rate — which is exactly the constraint. This version
+# searches ONE parameter per vampMid: a cross-profile tilt θ_m that shifts that MID's
+# volume from its HIGH-risk profiles toward its LOW-risk profiles:
 #
 #     share_g ∝ ref_g · exp(−θ_{mid(g)} · z_g)   (z_g = risk standardised WITHIN the MID)
 #
 # Raising θ_m pulls MID m out of its riskiest cells (dropping its aggregate rate)
-# and the freed share redistributes per cell in proportion to the revenue reference
+# and the freed share redistributes per profile in proportion to the revenue reference
 # (revenue-efficient recipients — unlike greedy, which dumps onto the lowest-rate
 # gateway). Genome = n_mid (~20) dims, so the search is tiny and fast, AND it targets
-# the real per-MID cross-cell constraint, so it can retain more revenue at compliance
+# the real per-MID cross-profile constraint, so it can retain more revenue at compliance
 # than the greedy shave on MIDs whose risk varies across cells.
 # ---------------------------------------------------------------------------
 # [FN-106]
@@ -94,7 +94,7 @@ def _cap_floor_shares(X, cell_starts, cell_counts, elig, cap, floor):
     elig_row = elig[None, :] > 0.5
     n_elig_cell = np.repeat(np.add.reduceat(elig.astype(float), cell_starts), cell_counts)  # (N,)
     if floor > 0.0:
-        # Per-cell floor clamped to 1/n_elig so n_elig×floor <= 1 stays feasible. Lift any
+        # Per-profile floor clamped to 1/n_elig so n_elig×floor <= 1 stays feasible. Lift any
         # below-floor eligible gateway to the floor, and take the deficit from ABOVE-floor
         # eligible gateways in proportion to their room above the floor (water-fill DOWN) — so
         # the sum stays 1 and the floored values are NOT shrunk back under by a global renorm.
@@ -112,7 +112,7 @@ def _cap_floor_shares(X, cell_starts, cell_counts, elig, cap, floor):
             with np.errstate(divide="ignore", invalid="ignore"):
                 X = X - np.where(give_cell > 1e-12, give * deficit_cell / give_cell, 0.0)
     if cap < 1.0:
-        capN = np.where(n_elig_cell >= 2, cap, 1.0)[None, :]     # single-gateway cells uncapped
+        capN = np.where(n_elig_cell >= 2, cap, 1.0)[None, :]     # single-gateway profiles uncapped
         for _ in range(50):
             over = X > capN + 1e-12
             if not over.any():
@@ -177,7 +177,7 @@ def _mid_over(shares, ctx, include_floor_shortfall=True):
                                           np.maximum(1.0 - _proj / max(float(_floor), 1e-9), 0.0))
     return over
 # ===========================================================================
-# CMA-ES cross-cell per-vampMid tilt search  (live engine as of 2026-07-25).
+# CMA-ES cross-profile per-vampMid tilt search  (live engine as of 2026-07-25).
 #
 # Replaces the hand-rolled GA above. Eight upgrades, all always-on:
 #   1. CMA-ES  — a covariance-adapting evolution strategy searches the tilt
@@ -195,8 +195,8 @@ def _mid_over(shares, ctx, include_floor_shortfall=True):
 #      The returned best is always judged STRICTLY feasible (ε=0).
 #   4. Smooth 'wall' — the constraint measure is the CONTINUOUS relative overage
 #      (0 exactly at the cap), so the search sees a smooth gradient toward compliance.
-#   5. Second tilt axis — each MID has θr (toward LOW-risk cells), θq (toward
-#      HIGH-revenue cells) and g (overall presence):
+#   5. Second tilt axis — each MID has θr (toward LOW-risk profiles), θq (toward
+#      HIGH-revenue profiles) and g (overall presence):
 #          share_g ∝ ref_g · exp(−θr·zr_g + θq·zq_g + g_mid)     genome = 3·n_mid.
 #   6. Freed-volume redistribution — the reference base is leaned low-risk (see 8),
 #      so shed volume lands on LOW-risk recipients.
@@ -215,7 +215,7 @@ def _mid_over(shares, ctx, include_floor_shortfall=True):
 # Speed (numerically identical to ~1e-15): a precomputed sparse MID incidence matrix
 # for the hot per-MID sums; the incumbent's score reused from the last generation (no
 # re-evaluation); C^{-1/2} precomputed once per eigen-update; the decode's exp computed
-# only on eligible columns; per-cell cap/floor constants precomputed once; ctx arrays
+# only on eligible columns; per-profile cap/floor constants precomputed once; ctx arrays
 # forced float64-contiguous once.
 #
 # Deterministic given `seed`. Same (best_shares, info) contract as before, so the tab-3
@@ -311,10 +311,10 @@ def _risk_z_per_cell(risk, cell_starts, cell_counts, N):
     sd_row = np.repeat(sd, cell_counts)
     # Divide by a SAFE denominator (1.0 where sd≈0) so the masked-out branch of np.where doesn't
     # trigger a spurious "invalid value in divide" RuntimeWarning — single-gateway / zero-variance
-    # cells have no meaningful z, and are zeroed anyway.
+    # profiles have no meaningful z, and are zeroed anyway.
     _sd_safe = np.where(sd_row > 1e-12, sd_row, 1.0)
     z = np.where(sd_row > 1e-12, (risk - mean_row) / _sd_safe, 0.0)
-    return z, sd            # sd (per-cell) also used to pick the fine-tilt cells
+    return z, sd            # sd (per-profile) also used to pick the fine-tilt profiles
 # [FN-114]
 def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
                      cap=1.0, floor=0.0, *, eidx=None, prep=None,
@@ -352,21 +352,21 @@ def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, cell_starts, cell_counts, e
     _cols = eidx if (eidx is not None and eidx.shape[0] < N) else np.arange(N)
     mi = mid_id[_cols]
     a = -tr[:, mi] * zr[None, _cols] + tq[:, mi] * zq[None, _cols] + gg[:, mi]
-    if int(n_fine) and fine_idx is not None:                 # per-cell fine tilt on selected cells
+    if int(n_fine) and fine_idx is not None:                 # per-profile fine tilt on selected profiles
         _fi = fine_idx[_cols]
         _fm = _fi >= 0
         if _fm.any():
             _cth = genome[:, 3 * M:3 * M + int(n_fine)]      # (P, K)
             a[:, _fm] = a[:, _fm] - _cth[:, _fi[_fm]] * zr_cell[None, _cols][:, _fm]
     w = np.zeros((P, N), dtype=float)
-    # Numerical stability: subtract each cell's MAX `a` (over its ELIGIBLE columns) before exp.
-    # A ref-weighted softmax is shift-invariant per cell (the per-cell constant cancels between
+    # Numerical stability: subtract each profile's MAX `a` (over its ELIGIBLE columns) before exp.
+    # A ref-weighted softmax is shift-invariant per cell (the per-profile constant cancels between
     # numerator and denominator), so the result is identical to float64 rounding — but exp can no
     # longer overflow to +inf, which is what produced inf/inf = NaN for a large tilt·z product.
     _A = np.full((P, N), -np.inf)
     _A[:, _cols] = np.where(elig[None, _cols] > 0.5, a, -np.inf)
     _cmax = np.maximum.reduceat(_A, cell_starts, axis=1)                 # (P, C)
-    _cmax = np.where(np.isfinite(_cmax), _cmax, 0.0)                     # all-ineligible cell → 0
+    _cmax = np.where(np.isfinite(_cmax), _cmax, 0.0)                     # all-ineligible profile → 0
     _shift = np.repeat(_cmax, cell_counts, axis=1)[:, _cols]
     # ineligible cols → exp(-inf)=0 (avoids inf·0 = NaN); eligible cols have a-shift ≤ 0 ⇒ no overflow
     _expo = np.where(elig[None, _cols] > 0.5, a - _shift, -np.inf)
@@ -476,14 +476,14 @@ def _violation_breakdown(shares, ctx, top_k=20):
         ov = np.maximum(x - _cap, 0.0) / max(_cap, 1e-9)
         cap_total = float(_pen(ov).sum()); cap_rows = int((ov > 0).sum())
         # WHICH rows are over the cap, and WHY: the decode can only leave a row over-cap when its
-        # cell has <2 ELIGIBLE gateways (a lone usable gateway must be ~100%). Capture each over-cap
-        # cell's eligible/present gateway counts + volume + vampMid so the log can confirm the cause.
+        # profile has <2 ELIGIBLE gateways (a lone usable gateway must be ~100%). Capture each over-cap
+        # profile's eligible/present gateway counts + volume + vampMid so the log can confirm the cause.
         _ovi = np.where(ov > 0)[0]
         if _ovi.size and ctx.get("cell_starts") is not None:
             _cs2 = np.asarray(ctx["cell_starts"]); _cc2 = np.asarray(ctx["cell_counts"])
             _el2 = np.asarray(ctx["elig"], float)
-            _nec_by_cell = np.add.reduceat(_el2, _cs2)               # eligible gateways per cell
-            _row2cell = np.repeat(np.arange(len(_cs2)), _cc2)        # row index -> its cell index
+            _nec_by_cell = np.add.reduceat(_el2, _cs2)               # eligible gateways per profile
+            _row2cell = np.repeat(np.arange(len(_cs2)), _cc2)        # row index -> its profile index
             _cvv = ctx.get("cell_vol"); _mid_id = ctx.get("mid_id")
             for _ri in _ovi[:20]:
                 _ci = int(_row2cell[_ri])
@@ -749,14 +749,14 @@ def run_midtilt_ga(ctx, *, pop_size=40, generations=80, seed=42,
     _base_v = ctx.get("mid_base_vol")
     _vcap = ctx.get("vamp_cap"); _volcap = ctx.get("mid_vol_cap")
 
-    # #4 richer genome: give the TOP-K risk-heavy cells (high volume × within-cell risk spread)
-    # their own fine tilt so the search can move share WITHIN a cell toward low-risk gateways —
+    # #4 richer genome: give the TOP-K risk-heavy cells (high volume × within-profile risk spread)
+    # their own fine tilt so the search can move share WITHIN a profile toward low-risk gateways —
     # reach the coarse per-MID tilt lacks. n_fine=0 keeps the exact 3M-genome behaviour.
     _K = int(max(0, min(int(n_fine), len(cs))))
     _fine_idx = None; _zr_cell = None
     if _K > 0 and M > 0:
         _zr_cell, _cell_sd = _risk_z_per_cell(risk, cs, cc, N)
-        _cell_vol = cv[cs]                                   # per-cell volume (rows share it)
+        _cell_vol = cv[cs]                                   # per-profile volume (rows share it)
         _score = _cell_vol * _cell_sd                        # worth-tilting = big & risk-spread
         _fine_cells = np.argsort(-_score, kind="stable")[:_K]
         _fine_idx = np.full(N, -1, dtype=np.intp)
@@ -853,7 +853,7 @@ def run_midtilt_ga(ctx, *, pop_size=40, generations=80, seed=42,
         return ao > bo if af else av < bv
 
     # [FN-133]
-    def _cellrep(v):                                         # (N,) -> per-cell sum, repeated (N,)
+    def _cellrep(v):                                         # (N,) -> per-profile sum, repeated (N,)
         return np.repeat(np.add.reduceat(v, cs), cc)
 
     # [FN-134]
