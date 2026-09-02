@@ -389,16 +389,16 @@ class ExactBandModel:
 
 # --------------------------------------------------------------------------- solver
 # [FN-388]
-def _project_capped_simplex_cells(s, cell_starts, cell_counts, elig, cap, budget):
+def _project_capped_simplex_profiles(s, profile_starts, profile_counts, elig, cap, budget):
     """Euclidean projection of each cell onto {0 ≤ x ≤ cap over eligible rows, Σ = budget[c]}.
     Reused from the heuristic's closed-form bisection (kept local to avoid a hard import cycle)."""
-    from routing_optimiser.s4_search.seed_search import _project_capped_simplex_cells as _p
-    return _p(s, cell_starts, cell_counts, elig, cap, budget)
+    from routing_optimiser.s4_search.seed_search import _project_capped_simplex_profiles as _p
+    return _p(s, profile_starts, profile_counts, elig, cap, budget)
 
 
 # [FN-389]
 # [FN-393b]
-def floor_catchall_shares(shares, floor_mask, share_floor, cell_starts, cell_counts):
+def floor_catchall_shares(shares, floor_mask, share_floor, profile_starts, profile_counts):
     """DEPLOY-TRUTHFUL floor: bump every masked gateway sitting below ``share_floor`` UP to it, and
     take the added mass proportionally from the cell's NON-masked gateways, so each cell still sums to
     its original total.
@@ -420,23 +420,23 @@ def floor_catchall_shares(shares, floor_mask, share_floor, cell_starts, cell_cou
     if not m.any():
         return s
     eps = float(share_floor)
-    cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
+    cs = np.asarray(profile_starts, np.intp); cc = np.asarray(profile_counts, np.intp)
     bump = m & (s < eps)
     if not bump.any():
         return s
     add = np.where(bump, eps - s, 0.0)                                  # mass to add per bumped row
-    cell_add = np.repeat(np.add.reduceat(add, cs), cc)                  # per-profile added mass (broadcast)
+    profile_add = np.repeat(np.add.reduceat(add, cs), cc)                  # per-profile added mass (broadcast)
     donor = ~m                                                          # only non-catch-all rows donate
     donor_mass = np.repeat(np.add.reduceat(np.where(donor, s, 0.0), cs), cc)
-    ok = donor_mass > cell_add + 1e-15                                  # profile-constant: enough to give?
-    scale = np.where(donor_mass > 0, (donor_mass - cell_add) / np.where(donor_mass > 0, donor_mass, 1.0), 1.0)
+    ok = donor_mass > profile_add + 1e-15                                  # profile-constant: enough to give?
+    scale = np.where(donor_mass > 0, (donor_mass - profile_add) / np.where(donor_mass > 0, donor_mass, 1.0), 1.0)
     out = np.where(bump, eps, s)                                        # bumped rows → floor
     out = np.where(donor, s * scale, out)                              # donors scaled down
     out = np.where(ok, out, s)                                         # infeasible profile → revert wholesale
     return out
 
 
-def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_counts, elig,
+def solve_least_breach(exact_bands, incidence, base_shares, profile_starts, profile_counts, elig,
                        *, max_share=1.0, max_outer=40, tol=1e-7, tr_init=0.25, tr_min=1e-4,
                        weighted=False, verbose=False, log_fn=None,
                        floor_mask=None, share_floor=0.0, stall=None, deliver_fn=None):
@@ -478,7 +478,7 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
     try:
         s = np.asarray(base_shares, float).copy()
         N = s.shape[0]
-        cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
+        cs = np.asarray(profile_starts, np.intp); cc = np.asarray(profile_counts, np.intp)
         elig = np.asarray(elig, float)
         cap = float(max_share) if (max_share and float(max_share) > 0) else 1.0
         # Catch-all ε-floor: pin catch-all gateways at ≥ share_floor so the solver can't choose the
@@ -517,7 +517,7 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
             return s, info
 
         # per-profile fixed budget for the free rows (total minus the pinned reference of non-free rows)
-        cell_of = np.repeat(np.arange(len(cs)), cc)
+        profile_of = np.repeat(np.arange(len(cs)), cc)
         best_s = s.copy(); best_b = b0
         tr = float(tr_init)
         # ── 19ck: STEP LEDGER (always) + STALL STOP (opt-in) ──────────────────────────────────
@@ -597,10 +597,10 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
             A_ub = _sparse.csr_matrix(np.asarray(rows, float)) if rows else None
             b_ub = np.asarray(rhs, float)
             # equality: Σ_free Δs = 0 per cell (keep each profile sum fixed)
-            n_cell = len(cs)
-            Aeq = _sparse.coo_matrix((np.ones(fidx.size), (cell_of[fidx], fidx)),
-                                     shape=(n_cell, nvar)).tocsr()
-            beq = np.zeros(n_cell)
+            n_profile = len(cs)
+            Aeq = _sparse.coo_matrix((np.ones(fidx.size), (profile_of[fidx], fidx)),
+                                     shape=(n_profile, nvar)).tocsr()
+            beq = np.zeros(n_profile)
             # bounds: Δs box (trust region ∩ feasible-share box) for free vars, 0 for non-free; slack ≥ 0
             lb = np.zeros(nvar); ub = np.zeros(nvar)
             lb[fidx] = np.maximum(-tr, 0.0 - best_s[fidx])
@@ -622,7 +622,7 @@ def solve_least_breach(exact_bands, incidence, base_shares, cell_starts, cell_co
                 continue
             ds = res.x[:N]
             cand = best_s + ds
-            cand = _project_capped_simplex_cells(cand, cs, cc, elig, cap, budget=1.0)
+            cand = _project_capped_simplex_profiles(cand, cs, cc, elig, cap, budget=1.0)
             cand = floor_catchall_shares(cand, _fmask, share_floor, cs, cc)  # keep catch-all ≥ floor
             bc = _brc(cand)
             if bc < best_b - max(1e-12, 1e-4 * best_b):
@@ -750,9 +750,9 @@ def _lp_report(info, log_fn, *, tr_min, max_outer):
 
 
 # [FN-391]
-def colocation_report(split, exact_bands, incidence, *, mid_id, cell_starts, cell_counts,
-                      risk, cell_vol, elig, mid_names,
-                      cell_cur=None, cell_bank=None, cell_rpgt=None, top_cells=8):
+def colocation_report(split, exact_bands, incidence, *, mid_id, profile_starts, profile_counts,
+                      risk, profile_vol, elig, mid_names,
+                      profile_cur=None, profile_bank=None, profile_rpgt=None, top_profiles=8):
     """READ-ONLY diagnostic: for every breached CEILING MID, is a headroom SIBLING co-located?
 
     At the engine's cell grain (one cell = one contiguous [cell_starts[c], +cell_counts[c]) block of
@@ -782,17 +782,17 @@ def colocation_report(split, exact_bands, incidence, *, mid_id, cell_starts, cel
 
         mid_id = np.asarray(mid_id, int)
         risk = np.asarray(risk, float)
-        vol = np.asarray(cell_vol, float)
+        vol = np.asarray(profile_vol, float)
         el = np.asarray(elig, float) > 0.5
-        cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
-        cell_of = np.repeat(np.arange(len(cs)), cc)
+        cs = np.asarray(profile_starts, np.intp); cc = np.asarray(profile_counts, np.intp)
+        profile_of = np.repeat(np.arange(len(cs)), cc)
         nm = [str(m).strip().lower() for m in mid_names]
         name2i = {n: i for i, n in enumerate(nm)}
         nrow = mid_id.shape[0]
 
         def _col(a):
             return (np.asarray(a).astype(str) if a is not None else np.array([""] * nrow))
-        cur, bank, rpgt = _col(cell_cur), _col(cell_bank), _col(cell_rpgt)
+        cur, bank, rpgt = _col(profile_cur), _col(profile_bank), _col(profile_rpgt)
 
         def _room(sib, metric):
             return ceil_map.get((sib, metric), (float("inf"), None, None))[0]
@@ -810,11 +810,11 @@ def colocation_report(split, exact_bands, incidence, *, mid_id, cell_starts, cel
                 continue
             contrib = {}
             for r in rows:
-                c = int(cell_of[r])
+                c = int(profile_of[r])
                 contrib[c] = contrib.get(c, 0.0) + s[r] * vol[r] * (risk[r] if me == "vamp" else 1.0)
-            cells = np.unique(cell_of[rows])
+            profiles = np.unique(profile_of[rows])
             nwith = 0; lines = []
-            for c in sorted(cells, key=lambda x: -contrib.get(int(x), 0.0)):
+            for c in sorted(profiles, key=lambda x: -contrib.get(int(x), 0.0)):
                 lo = int(cs[c]); hi = lo + int(cc[c])
                 sibs = []
                 for r in range(lo, hi):
@@ -827,7 +827,7 @@ def colocation_report(split, exact_bands, incidence, *, mid_id, cell_starts, cel
                         sibs.append((sn, room, float(risk[r])))
                 if sibs:
                     nwith += 1
-                if len(lines) < int(top_cells):
+                if len(lines) < int(top_profiles):
                     lbl = f"{cur[lo]}|{bank[lo]}|{rpgt[lo]}"
                     if sibs:
                         sibs.sort(key=lambda x: (x[2], -x[1]))
@@ -948,7 +948,7 @@ def held_movable_report(split, exact_bands, incidence, *, max_list=15):
 
 
 # [FN-394]
-def floor_min_report(split, exact_bands, incidence, *, mid_id, cell_starts, cell_counts, elig,
+def floor_min_report(split, exact_bands, incidence, *, mid_id, profile_starts, profile_counts, elig,
                      mid_names, whatif_floor=0.0, max_list=15):
     """READ-ONLY: the TRUE reachable minimum M5 each breached ceiling MID can reach.
 
@@ -971,8 +971,8 @@ def floor_min_report(split, exact_bands, incidence, *, mid_id, cell_starts, cell
         specs = model.specs
         mid_id = np.asarray(mid_id, int)
         el = np.asarray(elig, float) > 0.5
-        cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
-        ncell = len(cs); cell_id = np.repeat(np.arange(ncell), cc)
+        cs = np.asarray(profile_starts, np.intp); cc = np.asarray(profile_counts, np.intp)
+        nprofile = len(cs); profile_id = np.repeat(np.arange(nprofile), cc)
         nm = [str(m).strip().lower() for m in mid_names]
         name2i = {n: i for i, n in enumerate(nm)}
 
@@ -981,21 +981,21 @@ def floor_min_report(split, exact_bands, incidence, *, mid_id, cell_starts, cell
             return (its projected M5, #irreducible-cells)."""
             is_m = (mid_id == mi) & el
             is_o = (mid_id != mi) & el
-            m_cnt = np.bincount(cell_id[is_m], minlength=ncell)
-            o_cnt = np.bincount(cell_id[is_o], minlength=ncell)
-            osum = np.bincount(cell_id[is_o], weights=s[is_o], minlength=ncell)
+            m_cnt = np.bincount(profile_id[is_m], minlength=nprofile)
+            o_cnt = np.bincount(profile_id[is_o], minlength=nprofile)
+            osum = np.bincount(profile_id[is_o], weights=s[is_o], minlength=nprofile)
             mfloor = m_cnt * float(fl)
             act = (m_cnt > 0) & (o_cnt > 0) & (mfloor < 1.0 - 1e-9)
-            act_row = act[cell_id]
+            act_row = act[profile_id]
             s_m = s.copy()
             s_m[is_m & act_row] = float(fl)
             rem = 1.0 - mfloor
             scale = np.where(osum > 1e-12, rem / np.where(osum > 1e-12, osum, 1.0), 0.0)
             eq = np.where(o_cnt > 0, rem / np.where(o_cnt > 0, o_cnt, 1.0), 0.0)
             o_act = is_o & act_row
-            use_scale = osum[cell_id] > 1e-12
-            s_m[o_act] = np.where(use_scale[o_act], s[o_act] * scale[cell_id[o_act]],
-                                  eq[cell_id[o_act]])
+            use_scale = osum[profile_id] > 1e-12
+            s_m[o_act] = np.where(use_scale[o_act], s[o_act] * scale[profile_id[o_act]],
+                                  eq[profile_id[o_act]])
             val = model.spec_values(_s2pr(s_m[None, :], incidence)[0])[mi_spec_row]
             n_irr = int(((m_cnt > 0) & (o_cnt == 0)).sum())
             return val, n_irr
@@ -1067,8 +1067,8 @@ def vamp_sibling_report(split, exact_bands, incidence, *, max_list=15):
         row_mid = prop_mid[model.propidx] if model.propidx.size else np.array([], dtype=object)
         gc = model.gcode
         vpos = (model.vcpos > 0.5) & (~model.mask)            # VAMP-positive & live reduced rows
-        ncell = model.ngc
-        vpos_per_cell = np.bincount(gc[vpos], minlength=ncell) if vpos.any() else np.zeros(ncell, int)
+        nprofile = model.ngc
+        vpos_per_profile = np.bincount(gc[vpos], minlength=nprofile) if vpos.any() else np.zeros(nprofile, int)
         out = ["   ── VAMP-POSITIVE SIBLING check (a breached VAMP MID's share only lowers its VAMP "
                "where a co-located VAMP-positive gateway exists; vshare self-normalises otherwise) ──"]
         shown = 0
@@ -1085,10 +1085,10 @@ def vamp_sibling_report(split, exact_bands, incidence, *, max_list=15):
                            "VAMP-positive rows for this MID (its VAMP is entirely aged/pool) — n/a")
                 shown += 1
                 continue
-            cells_m = np.unique(gc[rows_m])
-            m_per_cell = np.bincount(gc[rows_m], minlength=ncell)
-            has_sib = (vpos_per_cell - m_per_cell) > 0            # another VAMP-positive row in the profile
-            n_with = int(has_sib[cells_m].sum()); n_tot = int(cells_m.size)
+            profiles_m = np.unique(gc[rows_m])
+            m_per_profile = np.bincount(gc[rows_m], minlength=nprofile)
+            has_sib = (vpos_per_profile - m_per_profile) > 0            # another VAMP-positive row in the profile
+            n_with = int(has_sib[profiles_m].sum()); n_tot = int(profiles_m.size)
             tag = ("reducible by routing" if n_with == n_tot else
                    "SOLE VAMP gateway in ALL its cells → VAMP immovable by share" if n_with == 0 else
                    f"immovable in {n_tot - n_with} of {n_tot} cells (sole VAMP gateway there)")
@@ -1262,7 +1262,7 @@ def vpsum_report(split, exact_bands, incidence, *, near_zero=1e-6, max_list=15):
         pr = _s2pr(np.asarray(split, float)[None, :], incidence)[0]
         base_vals = model.spec_values(pr)
         _v, _t, inter = model._forward_pr(pr)
-        vpsum_cell = np.zeros(model.ngc); vpsum_cell[model.gcode] = inter["vpsum"]
+        vpsum_profile = np.zeros(model.ngc); vpsum_profile[model.gcode] = inter["vpsum"]
         pk = list(getattr(model.pj, "prop_keys", []))
         prop_mid = np.array([str(pk[j]).split("|")[-1].strip().lower() if j < len(pk) else ""
                              for j in range(max(len(pk), 1))])
@@ -1280,8 +1280,8 @@ def vpsum_report(split, exact_bands, incidence, *, near_zero=1e-6, max_list=15):
             rows_m = np.where((row_mid == m) & vpos)[0] if row_mid.size else np.array([], int)
             if rows_m.size == 0:
                 continue
-            cells_m = np.unique(model.gcode[rows_m])
-            vp = vpsum_cell[cells_m]
+            profiles_m = np.unique(model.gcode[rows_m])
+            vp = vpsum_profile[profiles_m]
             n_nz = int((vp < float(near_zero)).sum())
             out.append(f"      • {sp.label} [vamp]: {cells_m.size:,} cells · vpsum min {vp.min():.3g} "
                        f"p50 {np.median(vp):.3g} max {vp.max():.3g} · {n_nz:,} below {near_zero:g} "
@@ -1323,7 +1323,7 @@ def usable_recipient_report(split, exact_bands, incidence, *, max_list=15):
         vpos = (model.vcpos > 0.5) & (~model.mask)
         sib_ok = np.array([_ok(x) for x in row_mid]) if row_mid.size else np.array([], bool)
         usable = vpos & sib_ok                            # VAMP-positive + live + headroom-ok row
-        ncell = model.ngc
+        nprofile = model.ngc
         out = ["   ── USABLE RECIPIENT (co-located + VAMP-positive + eligible + headroom — the only "
                "cells with a LEGAL VAMP move) ──"]
         shown = 0
@@ -1337,12 +1337,12 @@ def usable_recipient_report(split, exact_bands, incidence, *, max_list=15):
             rows_m = np.where((row_mid == m) & vpos)[0] if row_mid.size else np.array([], int)
             if rows_m.size == 0:
                 continue
-            cells_m = np.unique(model.gcode[rows_m])
+            profiles_m = np.unique(model.gcode[rows_m])
             # usable recipients of a DIFFERENT MID (the breached MID itself is not usable)
             other_usable = usable & (row_mid != m)
-            ouc = (np.bincount(model.gcode[other_usable], minlength=ncell)
-                   if other_usable.any() else np.zeros(ncell, int))
-            has = ouc[cells_m] > 0
+            ouc = (np.bincount(model.gcode[other_usable], minlength=nprofile)
+                   if other_usable.any() else np.zeros(nprofile, int))
+            has = ouc[profiles_m] > 0
             n_with = int(has.sum())
             out.append(f"      • {sp.label} [vamp]: {n_with:,}/{cells_m.size:,} of its VAMP cells have a "
                        f"USABLE recipient (VAMP-positive + eligible + headroom)"
@@ -1385,7 +1385,7 @@ def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mi
         o = model.pc_org; ok = o >= 0; oi = np.where(ok, o, 0)
         move = np.where(ok, mv[oi], 0.0); psh = np.where(ok, vshare[oi], 0.0)
         vp = model.pc_vc * (1.0 - move) + model.pc_pool * psh
-        ocell = np.where(ok, model.gcode[oi], -1)
+        oprofile = np.where(ok, model.gcode[oi], -1)
         pk = list(getattr(model.pj, "prop_keys", []))
 
         def _lab(orow):
@@ -1407,7 +1407,7 @@ def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mi
             h = head.get(n); return (h is None) or (h > 1e-6)
         sib_ok = np.array([_ok(x) for x in row_mid]) if row_mid.size else np.array([], bool)
         usable = vpos & sib_ok
-        ncell = model.ngc
+        nprofile = model.ngc
         out = ["   ── BREACH CONCENTRATION (which cells produce the breach VAMP, and do THOSE cells have "
                "a usable recipient?) ──"]
         shown = 0
@@ -1421,8 +1421,8 @@ def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mi
             in_band = np.isin(model.pc_bandcol, sp.cols) if model.pc_bandcol.size else np.zeros(0, bool)
             if not in_band.any():
                 continue
-            vpm = vp[in_band]; cm = ocell[in_band]; om = oi[in_band]
-            cells, inv = np.unique(cm, return_inverse=True)
+            vpm = vp[in_band]; cm = oprofile[in_band]; om = oi[in_band]
+            profiles, inv = np.unique(cm, return_inverse=True)
             contrib = np.bincount(inv, weights=vpm)
             order = np.argsort(-contrib)
             tot = float(contrib.sum()); over = float(base_vals[i] - float(cl))
@@ -1432,14 +1432,14 @@ def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mi
                 if ic not in lab:
                     lab[ic] = "no-origin (irreducible)" if ic < 0 else _lab(_or)
             other_usable = usable & (row_mid != m)
-            ouc = (np.bincount(model.gcode[other_usable], minlength=ncell)
-                   if other_usable.any() else np.zeros(ncell, int))
+            ouc = (np.bincount(model.gcode[other_usable], minlength=nprofile)
+                   if other_usable.any() else np.zeros(nprofile, int))
             # greedily take highest-VAMP profiles until cumulative ≥ overshoot
             cum = 0.0; n_need = 0; n_need_usable = 0
             for k in order:
                 if cum >= over:
                     break
-                c = int(cells[k]); cum += float(contrib[k]); n_need += 1
+                c = int(profiles[k]); cum += float(contrib[k]); n_need += 1
                 if c >= 0 and ouc[c] > 0:
                     n_need_usable += 1
             # concentration: #profiles holding 90% of VAMP
@@ -1452,7 +1452,7 @@ def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mi
                        f"{over:,.0f}; 90% of VAMP in {n90} of {cells.size:,} cells; to shed the overshoot "
                        f"need ~{n_need} top cell(s), {n_need_usable}/{n_need} have a usable recipient")
             for k in order[:int(top)]:
-                c = int(cells[k]); has = (c >= 0 and ouc[c] > 0)
+                c = int(profiles[k]); has = (c >= 0 and ouc[c] > 0)
                 out.append(f"          cell {c} [{lab.get(c, '')}] VAMP {float(contrib[k]):,.1f}"
                            + ("  · usable recipient ✓" if has else "  · NO usable recipient here"))
             shown += 1
@@ -1505,7 +1505,7 @@ def scoped_frozen_report(split, exact_bands, incidence, *, scoped_rpgts, max_mid
             return ["   ── SCOPED vs FROZEN VAMP ── skipped: projector is not at by-RPGT grain "
                     f"(prop-key has {_nf} fields, need cur|bin|rpgt|mid) — RPGT split unavailable."]
         # RPGT is field index 2 in BOTH cur|bin|rpgt|mid (by_rpgt) and cur|bin|rpgt|pmp|ctry|mid
-        # (by_subcell); using [-2] wrongly grabbed Country at profile grain.
+        # (by_profile); using [-2] wrongly grabbed Country at profile grain.
         prop_rpgt = np.array([str(pk[j]).split("|")[2].strip().lower()
                               if (j < len(pk) and len(str(pk[j]).split("|")) >= 4) else ""
                               for j in range(max(len(pk), 1))])
@@ -1585,7 +1585,7 @@ def insearch_rpgt_breakdown(split, exact_bands, incidence, *, max_mids=8):
             out.append("      (projector not at by-RPGT grain — per-RPGT split unavailable)")
             return out
         # RPGT is field index 2 in BOTH cur|bin|rpgt|mid (by_rpgt) and cur|bin|rpgt|pmp|ctry|mid
-        # (by_subcell); using [-2] wrongly grabbed Country at profile grain.
+        # (by_profile); using [-2] wrongly grabbed Country at profile grain.
         prop_rpgt = np.array([str(pk[j]).split("|")[2].strip().lower()
                               if (j < len(pk) and len(str(pk[j]).split("|")) >= 4) else ""
                               for j in range(max(len(pk), 1))])
@@ -1621,7 +1621,7 @@ def insearch_rpgt_breakdown(split, exact_bands, incidence, *, max_mids=8):
 
 
 # [FN-390]
-def solve_global_linear_lp(exact_bands, incidence, base_shares, cell_starts, cell_counts, elig,
+def solve_global_linear_lp(exact_bands, incidence, base_shares, profile_starts, profile_counts, elig,
                            *, max_share=1.0, weighted=True, log_fn=None,
                            floor_mask=None, share_floor=0.0):
     """ONE global MINIMAL-MOVE feasibility projection → a warm-start SEED candidate for the GA.
@@ -1655,7 +1655,7 @@ def solve_global_linear_lp(exact_bands, incidence, base_shares, cell_starts, cel
     try:
         s0 = np.asarray(base_shares, float).copy()
         N = s0.shape[0]
-        cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
+        cs = np.asarray(profile_starts, np.intp); cc = np.asarray(profile_counts, np.intp)
         elig = np.asarray(elig, float)
         cap = float(max_share) if (max_share and float(max_share) > 0) else 1.0
         # Catch-all ε-floor (see solve_least_breach / floor_catchall_shares): pin catch-all gateways
@@ -1707,10 +1707,10 @@ def solve_global_linear_lp(exact_bands, incidence, base_shares, cell_starts, cel
         # (At a corner seed a band-feeder's OWN gradient can vanish — ∂/∂s = 0 when a sibling sits
         # at 0 — so a nonzero-gradient-only free set can miss the feeder entirely.) Profiles with no
         # band involvement stay fixed (Δs = 0), keeping the step minimal.
-        cell_id = np.repeat(np.arange(len(cs)), cc)
+        profile_id = np.repeat(np.arange(len(cs)), cc)
         feed = np.abs(J).sum(axis=0) > 0
-        feed_cells = np.unique(cell_id[feed]) if feed.any() else np.zeros(0, np.int64)
-        free = np.isin(cell_id, feed_cells) & (elig > 0.5)
+        feed_profiles = np.unique(profile_id[feed]) if feed.any() else np.zeros(0, np.int64)
+        free = np.isin(profile_id, feed_profiles) & (elig > 0.5)
         info["n_free"] = int(free.sum())
         if not free.any():
             info.update(reason="no band-feeding gateways are eligible/movable", breach_true=b0)
@@ -1782,10 +1782,10 @@ def solve_global_linear_lp(exact_bands, incidence, base_shares, cell_starts, cel
                              nan=0.0, posinf=0.0, neginf=0.0)
         c_obj = np.nan_to_num(c_obj, nan=1.0, posinf=0.0, neginf=0.0)
         # equality: Σ_free Δs = 0 per cell (each profile stays summed to its reference total)
-        n_cell = len(cs)
-        Aeq = _sparse.coo_matrix((np.ones(F), (cell_id[fidx], fidx)),
-                                 shape=(n_cell, nvar)).tocsr()
-        beq = np.zeros(n_cell)
+        n_profile = len(cs)
+        Aeq = _sparse.coo_matrix((np.ones(F), (profile_id[fidx], fidx)),
+                                 shape=(n_profile, nvar)).tocsr()
+        beq = np.zeros(n_profile)
         # bounds: Δs box for free (0 for pinned rows); slack ≥ 0; t ≥ 0. Guard lb ≤ ub & finiteness.
         lb = np.zeros(nvar); ub = np.zeros(nvar)
         lb[fidx] = -s0[fidx]
@@ -1810,7 +1810,7 @@ def solve_global_linear_lp(exact_bands, incidence, base_shares, cell_starts, cel
             return s0, info
         ds = res.x[:N]
         info["moved"] = float(np.abs(ds).sum())
-        cand = _project_capped_simplex_cells(s0 + ds, cs, cc, elig, cap, budget=1.0)
+        cand = _project_capped_simplex_profiles(s0 + ds, cs, cc, elig, cap, budget=1.0)
         cand = floor_catchall_shares(cand, _fmask, share_floor, cs, cc)  # keep catch-all ≥ floor
         bt = model.breach(cand, weighted=False)
         info.update(ok=True, breach_true=bt)
@@ -1875,8 +1875,8 @@ def _tmove_cost(cost, secs, log_fn, *, fastls):
 
 
 # [FN-396]
-def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_counts, elig,
-                         *, mid_id, risk, cell_vol, mid_names, max_share=1.0,
+def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, profile_counts, elig,
+                         *, mid_id, risk, profile_vol, mid_names, max_share=1.0,
                          movable_frac=0.8, log_fn=None, deliver_fn=None):
     """TARGETED move operator → a WARM-START SEED that directly clears breached CEILINGS.
 
@@ -1932,10 +1932,10 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
     try:
         from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         s = np.asarray(base_shares, float).copy()
-        cs = np.asarray(cell_starts, np.intp); cc = np.asarray(cell_counts, np.intp)
+        cs = np.asarray(profile_starts, np.intp); cc = np.asarray(profile_counts, np.intp)
         elig = np.asarray(elig, float); mid_id = np.asarray(mid_id)
-        risk = np.asarray(risk, float); cell_vol = np.asarray(cell_vol, float)
-        cell_of = np.repeat(np.arange(len(cs)), cc)
+        risk = np.asarray(risk, float); profile_vol = np.asarray(profile_vol, float)
+        profile_of = np.repeat(np.arange(len(cs)), cc)
         n_mid = len(mid_names)
         name2idx = {str(n).strip().lower(): i for i, n in enumerate(mid_names)}
 
@@ -2127,14 +2127,14 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                 # for a MID breaching a TRANSACTION ceiling — there the contribution is s×vol and
                 # a low-risk high-volume profile is the one to move.
                 _mj = int(np.argmax(_rel_over(m_idx)))
-                contrib = s[m_rows] * np.maximum(cell_vol[cell_of[m_rows]], 0.0)
+                contrib = s[m_rows] * np.maximum(profile_vol[profile_of[m_rows]], 0.0)
                 if _mj == _MET_COL["vamp"]:
                     contrib = contrib * np.maximum(risk[m_rows], 1e-9)
                 m_rows = m_rows[np.argsort(-contrib)]
                 delta = np.zeros_like(s)
                 hbud = headroom.copy()      # running per-(MID, metric) budget for recipients
                 for r in m_rows:
-                    c = int(cell_of[r]); a = int(cs[c]); n = int(cc[c])
+                    c = int(profile_of[r]); a = int(cs[c]); n = int(cc[c])
                     seg = np.arange(a, a + n)
                     smid = mid_id[seg]
                     # 19be: a recipient qualifies only if EVERY ceiling it holds still has room.
@@ -2147,7 +2147,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                     # before its tightest ceiling stops it, min_j(hbud_j / dens_j). The old key was
                     # the raw headroom number, which is not comparable across metrics — it ranked a
                     # MID with 24,000 transactions of nominal room above one with 300 of VAMP.
-                    _dt_all = float(cell_vol[c]) * float(movable_frac)          # TXN per unit share
+                    _dt_all = float(profile_vol[c]) * float(movable_frac)          # TXN per unit share
                     _dv_all = _dt_all * np.maximum(risk[sib], 1e-9)            # VAMP per unit share
                     _hb = hbud[mid_id[sib]]
                     _capv = np.where(np.isfinite(_hb[:, 0]),
@@ -2169,7 +2169,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, cell_starts, cell_
                         # respect BOTH budgets. TXN per unit share is cell_vol × movable_frac;
                         # VAMP is that times the row's risk. Debiting a txn ceiling by a VAMP
                         # increment (risk ~1e-2) was reading ~100x the room that existed.
-                        _dt = float(cell_vol[c]) * float(movable_frac)
+                        _dt = float(profile_vol[c]) * float(movable_frac)
                         _dv = _dt * max(float(risk[b_]), 1e-9)
                         take = min(mv, room)
                         for _j, _d in ((_MET_COL["vamp"], _dv), (_MET_COL["txn"], _dt)):

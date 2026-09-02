@@ -46,7 +46,7 @@ WHAT WE KEEP FROM OURS
     (`_enforce_endpoint`) on the returned split. Do NOT ship the raw output.
 
 Pure numpy on purpose: correctness first, verifiable offline. A Numba fusion of
-`_segment_softmax` / `_vwsr` / `_violation` is a later stage (see module TODO).
+`_segment_softmax` / `_success_rate` / `_violation` is a later stage (see module TODO).
 """
 from __future__ import annotations
 
@@ -106,7 +106,7 @@ class FullMatrixProblem:
     Arrays are all length R (number of eligible rows) unless noted.
     """
 
-    cell_id: np.ndarray      # int (R,)  contiguous group id per row
+    profile_id: np.ndarray      # int (R,)  contiguous group id per row
     gw_id: np.ndarray        # int (R,)  gateway id (for building the output table)
     mid_id: np.ndarray       # int (R,)  vampMid id per row (spans profiles)
     vol: np.ndarray          # float (R,) profile volume (same for every row of a profile)
@@ -133,14 +133,14 @@ class FullMatrixProblem:
     global_vamp_cap: float = np.inf
 
     # derived (filled by build)
-    cell_start: np.ndarray = field(default=None)   # int (n_cells,) segment starts
-    cell_len: np.ndarray = field(default=None)      # int (n_cells,) segment lengths
-    n_cells: int = 0
+    profile_start: np.ndarray = field(default=None)   # int (n_cells,) segment starts
+    profile_len: np.ndarray = field(default=None)      # int (n_cells,) segment lengths
+    n_profiles: int = 0
     n_mids: int = 0
     order: np.ndarray = field(default=None)         # int (R,) orig->sorted perm
 
     @classmethod
-    def build(cls, cell_id, gw_id, mid_id, vol, succ, risk,
+    def build(cls, profile_id, gw_id, mid_id, vol, succ, risk,
               max_share, floor, mid_hard_cap, mid_soft_cap,
               mid_band_metric=None, mid_band_lo=None, mid_band_hi=None,
               global_vamp_cap=np.inf):
@@ -149,12 +149,12 @@ class FullMatrixProblem:
         Returns a ready-to-optimise FullMatrixProblem. `order` records the
         original row order so the caller can map the returned split back.
         """
-        cell_id = np.asarray(cell_id)
+        profile_id = np.asarray(profile_id)
         # stable sort by profile so groups are contiguous but within-profile order kept
-        order = np.argsort(cell_id, kind="stable")
+        order = np.argsort(profile_id, kind="stable")
         def _o(a):
             return np.asarray(a, dtype=float)[order]
-        cid = cell_id[order]
+        cid = profile_id[order]
         # segment boundaries of the sorted profile ids
         uniq, starts, lens = _segments(cid)
         # remap profile ids to dense 0..n_cells-1 in sorted order
@@ -169,7 +169,7 @@ class FullMatrixProblem:
         _bhi = (np.full(n_mids, np.inf) if mid_band_hi is None
                 else np.asarray(mid_band_hi, dtype=float))
         p = cls(
-            cell_id=dense,
+            profile_id=dense,
             gw_id=np.asarray(gw_id)[order].astype(int),
             mid_id=mid,
             vol=_o(vol), succ=_o(succ), risk=_o(risk),
@@ -178,13 +178,13 @@ class FullMatrixProblem:
             mid_soft_cap=np.asarray(mid_soft_cap, dtype=float),
             mid_band_metric=_bm, mid_band_lo=_blo, mid_band_hi=_bhi,
             global_vamp_cap=float(global_vamp_cap),
-            cell_start=starts, cell_len=lens,
-            n_cells=len(uniq), n_mids=n_mids, order=order,
+            profile_start=starts, profile_len=lens,
+            n_profiles=len(uniq), n_mids=n_mids, order=order,
         )
         return p
 
 
-def build_fullmatrix_problem(cell_problems, hard, *, mid_caps=None,
+def build_fullmatrix_problem(profile_problems, hard, *, mid_caps=None,
                              exploration_floor=None):
     """Turn the app's existing ``CellProblem`` list into a FullMatrixProblem.
 
@@ -193,7 +193,7 @@ def build_fullmatrix_problem(cell_problems, hard, *, mid_caps=None,
     the rates already attached to each cell:
 
       * ``cell.success_rates`` are ALREADY empirical-Bayes shrunk (built upstream
-        by ``success_rates.gateway_success_rates`` inside ``build_cell_problems``),
+        by ``success_rates.gateway_success_rates`` inside ``build_profile_problems``),
         so feeding them straight in is the "EB-shrunk bin rates" requirement — no
         re-shrinking needed, no pooled->broadcast gap.
       * ``cell.risk_rates`` are the per-gateway VAMP rates (from
@@ -222,7 +222,7 @@ def build_fullmatrix_problem(cell_problems, hard, *, mid_caps=None,
     # global MID (== gateway name) index
     mid_names: list[str] = []
     name2mid: dict[str, int] = {}
-    for cp in cell_problems:
+    for cp in profile_problems:
         for g in cp.gateways:
             if g not in name2mid:
                 name2mid[g] = len(mid_names)
@@ -247,15 +247,15 @@ def build_fullmatrix_problem(cell_problems, hard, *, mid_caps=None,
                 mid_hard[j] = float(hc)
                 mid_soft[j] = max(float(sc), float(hc))
 
-    cell_id, gw_id, mid_id = [], [], []
+    profile_id, gw_id, mid_id = [], [], []
     vol, succ, risk, base = [], [], [], []
-    for ci, cp in enumerate(cell_problems):
+    for ci, cp in enumerate(profile_problems):
         n = cp.n()
         bshares = (np.asarray(cp.baseline_shares, dtype=float)
                    if cp.baseline_shares is not None
                    else np.full(n, 1.0 / n))
         for i, g in enumerate(cp.gateways):
-            cell_id.append(ci)
+            profile_id.append(ci)
             gw_id.append(name2mid[g])          # global gateway/MID index
             mid_id.append(name2mid[g])
             vol.append(float(cp.volume))
@@ -263,11 +263,11 @@ def build_fullmatrix_problem(cell_problems, hard, *, mid_caps=None,
             risk.append(float(cp.risk_rates[i]))
             base.append(float(bshares[i]))
 
-    R = len(cell_id)
+    R = len(profile_id)
     max_share = np.full(R, max_gw)
     floor = np.full(R, floor_v)
     problem = FullMatrixProblem.build(
-        cell_id=np.array(cell_id), gw_id=np.array(gw_id), mid_id=np.array(mid_id),
+        profile_id=np.array(profile_id), gw_id=np.array(gw_id), mid_id=np.array(mid_id),
         vol=np.array(vol), succ=np.array(succ), risk=np.array(risk),
         max_share=max_share, floor=floor,
         mid_hard_cap=mid_hard, mid_soft_cap=mid_soft,
@@ -308,22 +308,22 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
     """
     n_row = int(ctx["n_row"])
     n_mid = int(ctx["n_mid"])
-    starts = np.asarray(ctx["cell_starts"], dtype=int)
-    counts = np.asarray(ctx["cell_counts"], dtype=int)
+    starts = np.asarray(ctx["profile_starts"], dtype=int)
+    counts = np.asarray(ctx["profile_counts"], dtype=int)
 
-    cell_id_full = np.empty(n_row, dtype=int)
+    profile_id_full = np.empty(n_row, dtype=int)
     for ci, (s, c) in enumerate(zip(starts, counts)):
-        cell_id_full[s:s + c] = ci
+        profile_id_full[s:s + c] = ci
 
     mid_id_full = np.asarray(ctx["mid_id"], dtype=int)
-    vol_full = np.asarray(ctx["cell_vol"], dtype=float)
+    vol_full = np.asarray(ctx["profile_vol"], dtype=float)
     succ_full = np.asarray(ctx["sr"], dtype=float)
     risk_full = np.asarray(ctx["risk"], dtype=float)
     elig = np.asarray(ctx.get("elig", np.ones(n_row)), dtype=float) > 0.5
 
     # ── 19eh [prune-inert] ────────────────────────────────────────────────────────────────
     # Drop whole profiles that carry NO forecast volume. Every term the GA scores is
-    # volume-weighted - vwsr is Sigma vol*share*succ / Sigma vol*share, band metric 1 is
+    # volume-weighted - success rate is Sigma vol*share*succ / Sigma vol*share, band metric 1 is
     # Sigma vol*share, metric 2 is Sigma vol*share*risk, metric 3 is their ratio - so a row with
     # vol == 0 contributes exactly 0.0 to all four for every candidate. Removing it cannot move
     # the objective. That is arithmetic, not a measurement.
@@ -342,16 +342,16 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
     #
     # DEFAULT OFF, and the first reason is the one that matters:
     #
-    # 1. IT IS NOT BIT-IDENTICAL ON vwsr, and no amount of better code fixes that. Measured on
+    # 1. IT IS NOT BIT-IDENTICAL ON success rate, and no amount of better code fixes that. Measured on
     #    the fixture: full 0.60064871358661553 vs pruned 0.60064871358661565, delta 1.11e-16
     #    (1.85e-16 relative). The three BAND metrics ARE bit-identical, because they go through
     #    np.bincount, which accumulates sequentially - adding 0.0 to a running sum is exact, so
-    #    dropping zero rows cannot move them. vwsr is a GLOBAL .sum(), and numpy sums float64
+    #    dropping zero rows cannot move them. success rate is a GLOBAL .sum(), and numpy sums float64
     #    PAIRWISE: the accumulation tree is a function of the array LENGTH, so removing 40% of the
     #    elements rebuilds the tree and reorders the additions of the NON-ZERO terms.
     #    Mathematically identical; not bit-identical. And it mattered for the max-share repair
     #    deliberately drives every candidate to an exact 0.0 on the engineering key so the ranking
-    #    FALLS THROUGH to vwsr, and [never-worse] compares vwsr too. A last-bit shift can select a
+    #    FALLS THROUGH to success rate, and [never-worse] compares success rate too. A last-bit shift can select a
     #    different candidate and ship a different split. Same objective, different answer.
     #
     # 2. [deliv-fuse] SELF-DISABLES. tab_2_routing_engine gates it on `len(_fm_colmap) == _fm_nrow` - the
@@ -369,10 +369,10 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
     _inert_row = np.zeros(n_row, dtype=bool)
     _prune_note = ""            # this module has no logger; tab_2_routing_engine emits meta['prune_note']
     if _os_gf.environ.get("ROUTING_PRUNE_INERT", "0") != "0":
-        _cell_vol_by_cell = vol_full[starts] if starts.size else np.zeros(0)
-        _inert_cell = _cell_vol_by_cell <= 0.0
-        if _inert_cell.any():
-            _inert_row = _inert_cell[cell_id_full]
+        _profile_vol_by_profile = vol_full[starts] if starts.size else np.zeros(0)
+        _inert_profile = _profile_vol_by_profile <= 0.0
+        if _inert_profile.any():
+            _inert_row = _inert_profile[profile_id_full]
             # Never prune the whole genome - if every profile reads volume-less the volume column is
             # wrong, not the book, and running on an empty problem would hide that.
             if bool(_inert_row.all()):
@@ -426,7 +426,7 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
                 _bhi[int(j)] = float(hi)
 
     problem = FullMatrixProblem.build(
-        cell_id=cell_id_full[keep_idx], gw_id=keep_idx.copy(),
+        profile_id=profile_id_full[keep_idx], gw_id=keep_idx.copy(),
         mid_id=mid_id_full[keep_idx], vol=vol_full[keep_idx],
         succ=succ_full[keep_idx], risk=risk_full[keep_idx],
         max_share=np.full(keep_idx.size, max_gw),
@@ -436,9 +436,9 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
         global_vamp_cap=global_cap,
     )
     # renormalise the kept reference within each (kept) profile so it is a valid seed
-    kept_cell = cell_id_full[keep_idx]
-    for cid in np.unique(kept_cell):
-        m = kept_cell == cid
+    kept_profile = profile_id_full[keep_idx]
+    for cid in np.unique(kept_profile):
+        m = kept_profile == cid
         s = ref_kept[m].sum()
         ref_kept[m] = (ref_kept[m] / s) if s > 1e-12 else (1.0 / m.sum())
 
@@ -452,13 +452,13 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
             "restore_idx": _restore_idx,
             "restore_val": _base_full[_restore_idx].copy() if _restore_idx.size else None}
     if _restore_idx.size:
-        _n_cell_pruned = int(np.unique(cell_id_full[_restore_idx]).size)
+        _n_profile_pruned = int(np.unique(profile_id_full[_restore_idx]).size)
         _prune_note = (
             f"[prune-inert] {_n_cell_pruned:,} of {starts.size:,} cell(s) "
             f"({100.0 * _n_cell_pruned / max(starts.size, 1):.1f}%) carry NO forecast volume and "
             f"are OUT of the genome, taking {_restore_idx.size:,} of {n_row:,} row(s) "
             f"({100.0 * _restore_idx.size / max(n_row, 1):.1f}%) with them. Every term the search "
-            f"scores is volume-weighted, so a zero-volume row contributes exactly 0.0 to vwsr and "
+            f"scores is volume-weighted, so a zero-volume row contributes exactly 0.0 to success_rate and "
             f"to all three band metrics for every candidate - this cannot move the objective. "
             f"Those cells ship their BASELINE share, not the search's drift. Genome is now "
             f"{keep_idx.size:,} row(s) over {problem.n_cells:,} cell(s). Expect ~6% off a "
@@ -522,16 +522,16 @@ _FX_OK = {"use": _CH_FUSE, "checked": False, "msg": ""}
 _FX_LAYOUT = {}
 
 
-def _fx_layout(cell_start, cell_len):
-    _k = id(cell_len)
+def _fx_layout(profile_start, profile_len):
+    _k = id(profile_len)
     _e = _FX_LAYOUT.get(_k)
-    if _e is not None and _e[0] is cell_len:
+    if _e is not None and _e[0] is profile_len:
         return _e[1], _e[2], _e[3]
-    _cl = np.asarray(cell_len, np.int64)
+    _cl = np.asarray(profile_len, np.int64)
     _co = np.repeat(np.arange(_cl.size, dtype=np.int32), _cl)
-    _cs32 = np.ascontiguousarray(np.asarray(cell_start, np.int32))
-    _cc32 = np.ascontiguousarray(np.asarray(cell_len, np.int32))
-    _FX_LAYOUT[_k] = (cell_len, _co, _cs32, _cc32)
+    _cs32 = np.ascontiguousarray(np.asarray(profile_start, np.int32))
+    _cc32 = np.ascontiguousarray(np.asarray(profile_len, np.int32))
+    _FX_LAYOUT[_k] = (profile_len, _co, _cs32, _cc32)
     return _co, _cs32, _cc32
 
 
@@ -602,50 +602,50 @@ def _fx_mut(a, hit, noise, strength, cstart, ccnt, out):
     return out
 
 
-def _segment_softmax_fast(logits, cell_start, cell_len):
+def _segment_softmax_fast(logits, profile_start, profile_len):
     """`_segment_softmax_serial`, with the elementwise steps fused. Bit-identical.
 
     Measured 206.6 -> 126.9 ms at P=35 x 245,409 on the live machine, 7/7 paired rounds. np.exp
     stays in numpy on purpose: numba's exp is slower AND differs in the last bit."""
     _lg = np.atleast_2d(logits)
-    _co, _, _ = _fx_layout(cell_start, cell_len)
-    _sm = np.maximum.reduceat(_lg, cell_start, axis=1)
+    _co, _, _ = _fx_layout(profile_start, profile_len)
+    _sm = np.maximum.reduceat(_lg, profile_start, axis=1)
     _t = _fx_sub(_lg, _sm, _co, np.empty_like(_lg))
     _ex = np.exp(_t, out=_t)                       # numpy's exp, in place: no extra full array
-    _ss = np.add.reduceat(_ex, cell_start, axis=1)
+    _ss = np.add.reduceat(_ex, profile_start, axis=1)
     return _fx_div(_ex, _ss, _co, np.empty_like(_lg))
 
 
-def _mutate_fused(logits, rate, strength, cell_start, cell_len, rng, cell_w=None):
+def _mutate_fused(logits, rate, strength, profile_start, profile_len, rng, profile_w=None):
     """`_mutate_fast` in one pass. IDENTICAL draws: random(n_cells), then standard_normal(n_hit)."""
-    _n = len(cell_start)
-    _thr = rate if cell_w is None else np.minimum(np.asarray(cell_w, float) * rate, 1.0)
+    _n = len(profile_start)
+    _thr = rate if profile_w is None else np.minimum(np.asarray(profile_w, float) * rate, 1.0)
     _hit = rng.random(_n) < _thr
     if not _hit.any():
         return logits.copy()
-    _rh = np.repeat(_hit, cell_len)
+    _rh = np.repeat(_hit, profile_len)
     _nh = int(_rh.sum())
     _nz = rng.standard_normal(_nh)
-    _, _cs32, _cc32 = _fx_layout(cell_start, cell_len)
+    _, _cs32, _cc32 = _fx_layout(profile_start, profile_len)
     return _fx_mut(logits, _hit, _nz, float(strength), _cs32, _cc32, np.empty_like(logits))
 
 
-def _child_fused(a, b, rate, strength, cell_start, cell_len, rng, cell_w=None):
+def _child_fused(a, b, rate, strength, profile_start, profile_len, rng, profile_w=None):
     """`_crossover` then `_mutate_fast` in one pass. IDENTICAL draws, in the same order."""
-    _n = len(cell_start)
+    _n = len(profile_start)
     _pk = rng.random(_n) < 0.5
-    _thr = rate if cell_w is None else np.minimum(np.asarray(cell_w, float) * rate, 1.0)
+    _thr = rate if profile_w is None else np.minimum(np.asarray(profile_w, float) * rate, 1.0)
     _hit = rng.random(_n) < _thr
     if not _hit.any():
-        return np.where(np.repeat(_pk, cell_len), a, b)
-    _rh = np.repeat(_hit, cell_len)
+        return np.where(np.repeat(_pk, profile_len), a, b)
+    _rh = np.repeat(_hit, profile_len)
     _nh = int(_rh.sum())
     _nz = rng.standard_normal(_nh)
-    _, _cs32, _cc32 = _fx_layout(cell_start, cell_len)
+    _, _cs32, _cc32 = _fx_layout(profile_start, profile_len)
     return _fx_child(a, b, _pk, _hit, _nz, float(strength), _cs32, _cc32, np.empty_like(a))
 
 
-def _fx_selfcheck(a, b, rate, strength, cell_start, cell_len, rng, cell_w, refine):
+def _fx_selfcheck(a, b, rate, strength, profile_start, profile_len, rng, profile_w, refine):
     """Run BOTH paths from the same generator state and compare the arrays AND the end state.
 
     The end-state comparison is the part that matters: it proves the fused wrapper consumed the
@@ -654,16 +654,16 @@ def _fx_selfcheck(a, b, rate, strength, cell_start, cell_len, rng, cell_w, refin
     reference result is returned, so what ships is the known-good child."""
     _st0 = rng.bit_generator.state
     if refine:
-        _got = _mutate_fused(a, rate, strength, cell_start, cell_len, rng, cell_w=cell_w)
+        _got = _mutate_fused(a, rate, strength, profile_start, profile_len, rng, profile_w=profile_w)
     else:
-        _got = _child_fused(a, b, rate, strength, cell_start, cell_len, rng, cell_w=cell_w)
+        _got = _child_fused(a, b, rate, strength, profile_start, profile_len, rng, profile_w=profile_w)
     _st_new = rng.bit_generator.state
     rng.bit_generator.state = _st0
     if refine:
-        _ref = _mutate_fast(a, rate, strength, cell_start, cell_len, rng, cell_w=cell_w)
+        _ref = _mutate_fast(a, rate, strength, profile_start, profile_len, rng, profile_w=profile_w)
     else:
-        _ref = _mutate_fast(_crossover(a, b, cell_start, cell_len, rng),
-                            rate, strength, cell_start, cell_len, rng, cell_w=cell_w)
+        _ref = _mutate_fast(_crossover(a, b, profile_start, profile_len, rng),
+                            rate, strength, profile_start, profile_len, rng, profile_w=profile_w)
     _st_ref = rng.bit_generator.state
     _same_v = _fx_same(_ref, _got)
     _same_s = (repr(_st_new) == repr(_st_ref))
@@ -726,7 +726,7 @@ _DC_EPS = 1e-12
 _DC_BACKOFF = 1.0 - 1e-9        # target back-off: the engineering key needs an exact 0.0
 
 
-def _cap_shares_ref(sh, cell_start, cell_len, max_share):
+def _cap_shares_ref(sh, profile_start, profile_len, max_share):
     """(P,R) shares -> (P,R) shares with no row above `max_share`. THE REFERENCE.
 
     A row whose cap is not live (>= 1, <= 0, non-finite) is uncapped: its target is +inf, so it
@@ -746,20 +746,20 @@ def _cap_shares_ref(sh, cell_start, cell_len, max_share):
     _o = _s > _tgt
     if not _o.any():
         return _s
-    _exc = np.add.reduceat(np.where(_o, _s - _tgt, 0.0), cell_start, axis=1)
+    _exc = np.add.reduceat(np.where(_o, _s - _tgt, 0.0), profile_start, axis=1)
     _ceil = np.minimum(_tgt, 1.0)
     _room = np.where(~_o & (_s > _DC_EPS) & (_s < _ceil), _ceil - _s, 0.0)
-    _pool = np.add.reduceat(_room, cell_start, axis=1)
+    _pool = np.add.reduceat(_room, profile_start, axis=1)
     _ok = (_exc > 0.0) & (_pool > _DC_EPS)
     if not _ok.any():
         return _s
-    _okr = np.repeat(_ok, cell_len, axis=1)
+    _okr = np.repeat(_ok, profile_len, axis=1)
     _f = np.repeat(np.where(_ok, _exc / np.where(_pool > _DC_EPS, _pool, 1.0), 0.0),
-                   cell_len, axis=1)
+                   profile_len, axis=1)
     return np.where(_okr & _o, _tgt, np.where(_okr, _s + _room * _f, _s))
 
 
-def _segment_softmax_serial(logits, cell_start, cell_len):
+def _segment_softmax_serial(logits, profile_start, profile_len):
     """Per-cell softmax over contiguous row segments. THE REFERENCE.
 
     logits: (P, R). Returns shares (P, R) where each cell's rows sum to 1.
@@ -770,15 +770,15 @@ def _segment_softmax_serial(logits, cell_start, cell_len):
     """
     logits = np.atleast_2d(logits)
     # per-segment max, expanded back to row grain
-    seg_max = np.maximum.reduceat(logits, cell_start, axis=1)          # (P, n_cells)
-    row_max = np.repeat(seg_max, cell_len, axis=1)                      # (P, R)
+    seg_max = np.maximum.reduceat(logits, profile_start, axis=1)          # (P, n_cells)
+    row_max = np.repeat(seg_max, profile_len, axis=1)                      # (P, R)
     ex = np.exp(logits - row_max)
-    seg_sum = np.add.reduceat(ex, cell_start, axis=1)                  # (P, n_cells)
-    row_sum = np.repeat(seg_sum, cell_len, axis=1)                      # (P, R)
+    seg_sum = np.add.reduceat(ex, profile_start, axis=1)                  # (P, n_cells)
+    row_sum = np.repeat(seg_sum, profile_len, axis=1)                      # (P, R)
     return ex / row_sum
 
 
-def _segment_softmax(logits, cell_start, cell_len, max_share=None):
+def _segment_softmax(logits, profile_start, profile_len, max_share=None):
     """Row-parallel wrapper (2026-08-19bn).
 
     19gu: `max_share` makes the CAP PART OF THE DECODE — see [decode-cap] above. Passing None
@@ -793,8 +793,8 @@ def _segment_softmax(logits, cell_start, cell_len, max_share=None):
     # against, and ROUTING_SOFTMAX_FUSE=0 puts it back in the hot path.
     if _SM_OK["use"] and not _SM_OK["checked"]:
         _SM_OK["checked"] = True
-        _r = _segment_softmax_serial(_lg, cell_start, cell_len)
-        _f = _segment_softmax_fast(_lg, cell_start, cell_len)
+        _r = _segment_softmax_serial(_lg, profile_start, profile_len)
+        _f = _segment_softmax_fast(_lg, profile_start, profile_len)
         if _fx_same(_r, _f):
             _SM_OK["msg"] = (
                 "[fullmatrix-ga] \u2713 fused softmax SELF-CHECK PASSED on the live population: "
@@ -812,16 +812,16 @@ def _segment_softmax(logits, cell_start, cell_len, max_share=None):
         print(_SM_OK["msg"])
     _fn = _segment_softmax_fast if _SM_OK["use"] else _segment_softmax_serial
     if max_share is None or not _DECODE_CAP:
-        return _rowpar(lambda _sub: _fn(_sub, cell_start, cell_len), _lg, "softmax")
+        return _rowpar(lambda _sub: _fn(_sub, profile_start, profile_len), _lg, "softmax")
     # The cap is applied INSIDE the threaded body, not after it: row p of the capped output still
     # depends only on row p of the input (the water-fill is per (candidate, profile)), so rowpar's
     # candidate-independence premise holds and its bit-identity check still means what it says.
-    return _rowpar(lambda _sub: _cap_shares_ref(_fn(_sub, cell_start, cell_len),
-                                                cell_start, cell_len, max_share),
+    return _rowpar(lambda _sub: _cap_shares_ref(_fn(_sub, profile_start, profile_len),
+                                                profile_start, profile_len, max_share),
                    _lg, "softmax")
 
 
-def _vwsr(shares, vol, succ, total_vol):
+def _success_rate(shares, vol, succ, total_vol):
     """Success rate per individual, over the routed volume. shares: (P, R) -> (P,).
 
     VWSR = sum(vol*share*succ) / sum(cell volume). The denominator is fixed
@@ -927,7 +927,7 @@ def _adaptive_tol(vamp_viol, tol_lo=0.0, tol_hi=0.01, knee=2.0):
     return tol_lo + (tol_hi - tol_lo) * frac
 
 
-def _rank(vwsr, viol, band=None):
+def _rank(success_rate, viol, band=None):
     """STRICT LEXICOGRAPHIC ranking, best -> worst.
 
     When `band` (per-candidate EXACT per-MID M5 band breach) is supplied it is the strict PRIMARY
@@ -941,40 +941,40 @@ def _rank(vwsr, viol, band=None):
     M5 breaches at/under `_FEAS_EPS` snap equal (compliant) so float noise doesn't churn the order.
     When `band is None` (legacy callers) it degrades to feasibility-first on `viol` then VWSR.
     """
-    vwsr = np.asarray(vwsr, dtype=float)
+    success_rate = np.asarray(success_rate, dtype=float)
     viol = np.asarray(viol, dtype=float)
     band = np.zeros_like(viol) if band is None else np.asarray(band, dtype=float)
     band_eff = np.where(band <= _FEAS_EPS, 0.0, band)
     # np.lexsort: the LAST key is primary. Want primary=band asc, then viol asc, then VWSR desc.
-    return np.lexsort((-vwsr, viol, band_eff))
+    return np.lexsort((-success_rate, viol, band_eff))
 
 
-def _best_index(vwsr, viol, band=None):
-    return _rank(vwsr, viol, band)[0]
+def _best_index(success_rate, viol, band=None):
+    return _rank(success_rate, viol, band)[0]
 
 
-def _key_of(vwsr, viol, band=0.0):
+def _key_of(success_rate, viol, band=0.0):
     """Comparable STRICT LEXICOGRAPHIC key for ONE candidate (higher tuple == better).
 
-    Tuple `(-band, -viol, vwsr)` so, compared with `>`: smaller M5 band breach wins first, then
+    Tuple `(-band, -viol, success_rate)` so, compared with `>`: smaller M5 band breach wins first, then
     smaller engineering violation, then higher VWSR — matching `_rank`. M5 breaches ≤ `_FEAS_EPS`
     snap to 0 (compliant) so a compliant split always outranks any breaching one."""
     b = 0.0 if float(band) <= _FEAS_EPS else float(band)
-    return (-b, -float(viol), float(vwsr))
+    return (-b, -float(viol), float(success_rate))
 
 
 # ---------------------------------------------------------------------------
 # Stage 4: fused evaluator (segment-softmax + VWSR + violation in ONE pass)
 # ---------------------------------------------------------------------------
-def _fused_eval_kernel(logits, cell_starts, cell_counts, vol, succ, risk,
+def _fused_eval_kernel(logits, profile_starts, profile_counts, vol, succ, risk,
                        mid_id, max_share, mid_hard, mid_soft, total_vol, n_mid,
                        mid_band_metric, mid_band_lo, mid_band_hi, global_vamp_cap,
                        decode_cap, cap_backoff, cap_eps, buf_len):
     """One-pass VWSR + violation for a whole population. Numba-compatible: only
     scalar loops + preallocated arrays (no reduceat / np.add.at / fancy index).
 
-    Returns (vwsr[P], viol[P]) — bit-for-bit the same quantities as
-    ``_vwsr(_segment_softmax(...))`` and ``_violation(_segment_softmax(...))``.
+    Returns (success_rate[P], viol[P]) — bit-for-bit the same quantities as
+    ``_success_rate(_segment_softmax(...))`` and ``_violation(_segment_softmax(...))``.
 
     19gu [decode-cap]: with `decode_cap` the per-cell shares are WATER-FILLED before they are
     accumulated, so this kernel decodes the same capped shares `_segment_softmax(..., max_share)`
@@ -991,11 +991,11 @@ def _fused_eval_kernel(logits, cell_starts, cell_counts, vol, succ, risk,
     the thing that says so.
     """
     P = logits.shape[0]
-    n_cells = cell_starts.shape[0]
-    vwsr = np.zeros(P)
+    n_profiles = profile_starts.shape[0]
+    success_rate = np.zeros(P)
     viol = np.zeros(P)
     # Each candidate i is fully independent (own local accumulators, writes only
-    # vwsr[i]/viol[i] — no cross-candidate reduction), so _prange parallelises across
+    # success rate[i]/viol[i] — no cross-candidate reduction), so _prange parallelises across
     # cores WITHOUT reordering any float sum. Bit-identical to serial; the verify-gate
     # confirms it. (numba absent -> _prange is range, runs serially.)
     for i in _prange(P):
@@ -1004,9 +1004,9 @@ def _fused_eval_kernel(logits, cell_starts, cell_counts, vol, succ, risk,
         mnum = np.zeros(n_mid)
         mden = np.zeros(n_mid)
         buf = np.zeros(buf_len)          # per-candidate scratch, widest cell (19gu)
-        for c in range(n_cells):
-            s = cell_starts[c]
-            n = cell_counts[c]
+        for c in range(n_profiles):
+            s = profile_starts[c]
+            n = profile_counts[c]
             # per-profile softmax (stable): max, exp-sum, then shares
             m = logits[i, s]
             for j in range(1, n):
@@ -1064,7 +1064,7 @@ def _fused_eval_kernel(logits, cell_starts, cell_counts, vol, succ, risk,
                     ov = sh / ms - 1.0
                     if ov > 0.0:
                         share_over += ov
-        vwsr[i] = num_v / total_vol
+        success_rate[i] = num_v / total_vol
         vv = 0.0
         g_num = 0.0                 # global aggregate vamp count / txn total
         g_den = 0.0
@@ -1105,7 +1105,7 @@ def _fused_eval_kernel(logits, cell_starts, cell_counts, vol, succ, risk,
             if g_rate > global_vamp_cap:
                 vv += g_rate / global_vamp_cap - 1.0
         viol[i] = vv + share_over
-    return vwsr, viol
+    return success_rate, viol
 
 
 if _HAS_NUMBA:                                       # pragma: no cover - env dependent
@@ -1127,7 +1127,7 @@ if _HAS_NUMBA:                                       # pragma: no cover - env de
 # pays. Scored on DELIVERED shares (post eligibility + blocked-caps) so it rewards what
 # actually ships. Kernel is Numba-fused (verify-gated vs the numpy twin); the periodic
 # codebook refit is numpy/sklearn (cheap relative to per-generation evaluation).
-def _compress_distortion_kernel(shares, cell_starts, cell_counts, mid_id, vol,
+def _compress_distortion_kernel(shares, profile_starts, profile_counts, mid_id, vol,
                                 assign, cent, cconst, n_mid, total_vol):
     """Volume-weighted VQ distortion of a population vs a FIXED codebook.
 
@@ -1138,14 +1138,14 @@ def _compress_distortion_kernel(shares, cell_starts, cell_counts, mid_id, vol,
     bit-identical to serial — the verify-gate confirms it. Returns distortion[P].
     """
     P = shares.shape[0]
-    n_cells = cell_starts.shape[0]
+    n_profiles = profile_starts.shape[0]
     out = np.zeros(P)
     for i in _prange(P):
         buf = np.zeros(n_mid)
         acc = 0.0
-        for c in range(n_cells):
-            s = cell_starts[c]
-            n = cell_counts[c]
+        for c in range(n_profiles):
+            s = profile_starts[c]
+            n = profile_counts[c]
             k = assign[c]
             for j in range(n):               # accumulate this profile's per-mid shape
                 buf[mid_id[s + j]] += shares[i, s + j]
@@ -1167,19 +1167,19 @@ if _HAS_NUMBA:                                       # pragma: no cover - env de
     _compress_distortion_kernel = _njit(cache=True, parallel=True)(_compress_distortion_kernel)
 
 
-def _compress_distortion_numpy(shares, cell_start, cell_len, mid_id, vol,
+def _compress_distortion_numpy(shares, profile_start, profile_len, mid_id, vol,
                                assign, cent, cconst, n_mid, total_vol):
     """Vectorised twin of ``_compress_distortion_kernel`` (the verify-gate reference).
     ``cconst`` is accepted for signature parity but unused (the full diff is formed)."""
     sh = np.atleast_2d(np.asarray(shares, float))
     P = sh.shape[0]
-    n_cells = cell_start.shape[0]
-    cm = np.zeros((P, n_cells, n_mid))
+    n_profiles = profile_start.shape[0]
+    cm = np.zeros((P, n_profiles, n_mid))
     for m in range(n_mid):
-        cm[:, :, m] = np.add.reduceat(sh * (mid_id == m), cell_start, axis=1)
+        cm[:, :, m] = np.add.reduceat(sh * (mid_id == m), profile_start, axis=1)
     diff = cm - cent[assign][None, :, :]                     # (P, n_cells, n_mid)
     d2 = (diff * diff).sum(axis=2)                           # (P, n_cells)
-    cvol = vol[cell_start]                                   # (n_cells,) profile volume
+    cvol = vol[profile_start]                                   # (n_cells,) profile volume
     return (d2 * cvol[None, :]).sum(axis=1) / (float(total_vol) or 1.0)
 
 
@@ -1223,8 +1223,8 @@ def _fit_codebook(shape_mat, cvol, pools, seed):
     n_cells). Returns (assign[intp] (n_cells,), cent (K,n_mid), cconst (K,) = ‖cent‖²)."""
     X = np.ascontiguousarray(shape_mat, float)
     w = np.maximum(np.asarray(cvol, float), 1e-12)
-    n_cells = X.shape[0]
-    K = int(max(1, min(int(pools), n_cells)))
+    n_profiles = X.shape[0]
+    K = int(max(1, min(int(pools), n_profiles)))
     try:                                             # sklearn matches tab-3's KMeans
         from sklearn.cluster import KMeans          # lazy: engine stays numpy-only if absent
         km = KMeans(n_clusters=K, n_init=2, max_iter=50, random_state=int(seed))
@@ -1238,13 +1238,13 @@ def _fit_codebook(shape_mat, cvol, pools, seed):
     return assign, cent, cconst
 
 
-def _cell_shape_matrix(shares_row, cell_start, mid_id, n_mid):
+def _profile_shape_matrix(shares_row, profile_start, mid_id, n_mid):
     """Per-cell per-vampMid shape matrix for ONE split: (n_cells, n_mid)."""
     sh = np.asarray(shares_row, float)[None, :]
-    n_cells = cell_start.shape[0]
-    cm = np.zeros((n_cells, n_mid))
+    n_profiles = profile_start.shape[0]
+    cm = np.zeros((n_profiles, n_mid))
     for m in range(n_mid):
-        cm[:, m] = np.add.reduceat(sh[0] * (mid_id == m), cell_start)
+        cm[:, m] = np.add.reduceat(sh[0] * (mid_id == m), profile_start)
     return cm
 
 
@@ -1253,12 +1253,12 @@ def make_distortion(problem, *, use_numba=False, verify=True, rng=None):
     numpy by default; the njit kernel is verified bit-exact vs numpy on a random codebook
     (any mismatch/error → numpy), so the codebook may change each refresh without re-verify."""
     p = problem
-    cs = np.ascontiguousarray(p.cell_start, np.intp)
-    cc = np.ascontiguousarray(p.cell_len, np.intp)
+    cs = np.ascontiguousarray(p.profile_start, np.intp)
+    cc = np.ascontiguousarray(p.profile_len, np.intp)
     mid = np.ascontiguousarray(p.mid_id, np.intp)
     vol = np.ascontiguousarray(p.vol, float)
     nmid = int(p.n_mids)
-    tv = float(_cell_volume_total(p)) or 1.0
+    tv = float(_profile_volume_total(p)) or 1.0
 
     def _np(shares, assign, cent, cconst):
         return _compress_distortion_numpy(shares, cs, cc, mid, vol,
@@ -1268,11 +1268,11 @@ def make_distortion(problem, *, use_numba=False, verify=True, rng=None):
     if use_numba and _HAS_NUMBA:
         try:                                         # pragma: no cover - env dependent
             _rng = rng or np.random.default_rng(0)
-            K = int(max(1, min(8, p.n_cells)))
-            a = _rng.integers(0, K, size=p.n_cells).astype(np.intp)
+            K = int(max(1, min(8, p.n_profiles)))
+            a = _rng.integers(0, K, size=p.n_profiles).astype(np.intp)
             ct = np.ascontiguousarray(_rng.random((K, nmid)), float)
             kc = np.ascontiguousarray((ct * ct).sum(axis=1), float)
-            _R = int(p.cell_id.shape[0])
+            _R = int(p.profile_id.shape[0])
             sh = np.ascontiguousarray(
                 _segment_softmax(_rng.standard_normal((3, _R)), cs, cc), float)
             ref = _np(sh, a, ct, kc)
@@ -1291,18 +1291,18 @@ def make_distortion(problem, *, use_numba=False, verify=True, rng=None):
 
 
 def make_fused_eval(problem, *, use_numba=False, verify=True, rng=None):
-    """Return (eval_pop, info). eval_pop(logits_pop) -> (vwsr, viol).
+    """Return (eval_pop, info). eval_pop(logits_pop) -> (success_rate, viol).
 
     numpy by default. With ``use_numba`` and Numba present, the fused njit kernel
     is VERIFIED against the numpy path on a random sample (allclose); any mismatch
     or error falls back to numpy — so the kernel can never change results.
     """
     p = problem
-    total_vol = _cell_volume_total(p)
+    total_vol = _profile_volume_total(p)
 
     def _numpy_eval(logits):
-        shares = _segment_softmax(logits, p.cell_start, p.cell_len, p.max_share)
-        return (_vwsr(shares, p.vol, p.succ, total_vol), _violation(shares, p))
+        shares = _segment_softmax(logits, p.profile_start, p.profile_len, p.max_share)
+        return (_success_rate(shares, p.vol, p.succ, total_vol), _violation(shares, p))
 
     if not use_numba or not _HAS_NUMBA:
         return _numpy_eval, {"backend": "numpy",
@@ -1313,8 +1313,8 @@ def make_fused_eval(problem, *, use_numba=False, verify=True, rng=None):
     # exact, so the float accumulation is unchanged). Float arrays -> contiguous
     # float64 (arithmetic and its order untouched). This only changes cache/SIMD
     # behaviour, never a single floating-point op.
-    _k_cs = np.ascontiguousarray(p.cell_start, dtype=np.int32)
-    _k_cc = np.ascontiguousarray(p.cell_len, dtype=np.int32)
+    _k_cs = np.ascontiguousarray(p.profile_start, dtype=np.int32)
+    _k_cc = np.ascontiguousarray(p.profile_len, dtype=np.int32)
     _k_mid = np.ascontiguousarray(p.mid_id, dtype=np.int32)
     _k_vol = np.ascontiguousarray(p.vol, dtype=np.float64)
     _k_succ = np.ascontiguousarray(p.succ, dtype=np.float64)
@@ -1342,7 +1342,7 @@ def make_fused_eval(problem, *, use_numba=False, verify=True, rng=None):
     _k_dc = bool(_DECODE_CAP)
     _k_bo = float(_DC_BACKOFF)
     _k_ce = float(_DC_EPS)
-    _k_bl = int(max(1, int(np.asarray(p.cell_len).max()) if len(p.cell_len) else 1))
+    _k_bl = int(max(1, int(np.asarray(p.profile_len).max()) if len(p.profile_len) else 1))
 
     def _numba_eval(logits):
         return _fused_eval_kernel(
@@ -1352,7 +1352,7 @@ def make_fused_eval(problem, *, use_numba=False, verify=True, rng=None):
 
     if verify:
         rng = rng or np.random.default_rng(0)
-        samp = rng.standard_normal((8, p.cell_id.shape[0]))
+        samp = rng.standard_normal((8, p.profile_id.shape[0]))
         v1, x1 = _numpy_eval(samp)
         try:
             v2, x2 = _numba_eval(samp)
@@ -1376,8 +1376,8 @@ def make_fused_eval(problem, *, use_numba=False, verify=True, rng=None):
 # ---------------------------------------------------------------------------
 # GA operators (act on the logit genome)
 # ---------------------------------------------------------------------------
-def _shares_to_logits(shares, eps=1e-6, hard_zero=False, cell_start=None,
-                      cell_len=None, info=None):
+def _shares_to_logits(shares, eps=1e-6, hard_zero=False, profile_start=None,
+                      profile_len=None, info=None):
     """Shares -> the logit genome. `hard_zero` (19cm) encodes an exact zero as -inf.
 
     WHY -inf AND NOT A SMALLER eps. The damage this repairs is the vshare cliff, and vshare
@@ -1404,16 +1404,16 @@ def _shares_to_logits(shares, eps=1e-6, hard_zero=False, cell_start=None,
     if not hard_zero:
         return _out
     _z = (_sh <= 0.0)
-    if cell_start is not None and cell_len is not None and _z.any():
+    if profile_start is not None and profile_len is not None and _z.any():
         # never empty a profile: that is the only input that turns the stable softmax into nan
-        _cs = np.asarray(cell_start, np.intp)
-        _cl = np.asarray(cell_len, np.intp)
+        _cs = np.asarray(profile_start, np.intp)
+        _cl = np.asarray(profile_len, np.intp)
         _live = np.add.reduceat((~_z).astype(np.int64), _cs) if _cs.size else np.zeros(0, np.int64)
         _dead = np.repeat(_live <= 0, _cl)
         _skipped = int((_z & _dead).sum())
         _z = _z & (~_dead)
         if isinstance(info, dict):
-            info["cells_all_zero"] = int((_live <= 0).sum())
+            info["profiles_all_zero"] = int((_live <= 0).sum())
             info["rows_unmasked_to_avoid_nan"] = _skipped
     _out = np.where(_z, -np.inf, _out)
     if isinstance(info, dict):
@@ -1425,19 +1425,19 @@ def _greedy_reference(p: "FullMatrixProblem"):
     """Fallback seed if the caller gives no reference: per-cell softmax over
     success (a conversion-greedy split). Returns shares (R,)."""
     logits = p.succ * 6.0   # mild temperature; only a SEED, GA refines from here
-    return _segment_softmax(logits[None, :], p.cell_start, p.cell_len, p.max_share)[0]
+    return _segment_softmax(logits[None, :], p.profile_start, p.profile_len, p.max_share)[0]
 
 
-def _crossover(a, b, cell_start, cell_len, rng):
+def _crossover(a, b, profile_start, profile_len, rng):
     """Uniform per-CELL crossover: each cell's whole logit segment comes from one
     parent (keeps within-cell simplex structure intact)."""
-    n_cells = len(cell_start)
-    pick = rng.random(n_cells) < 0.5
-    row_pick = np.repeat(pick, cell_len)
+    n_profiles = len(profile_start)
+    pick = rng.random(n_profiles) < 0.5
+    row_pick = np.repeat(pick, profile_len)
     return np.where(row_pick, a, b)
 
 
-def _mutate(logits, rate, strength, cell_start, cell_len, rng, cell_w=None):
+def _mutate(logits, rate, strength, profile_start, profile_len, rng, profile_w=None):
     """Gaussian perturbation of a fraction of CELLS' logit segments.
 
     `cell_w`: optional (n_cells,) multiplier on each cell's SELECTION PROBABILITY (not on the
@@ -1453,10 +1453,10 @@ def _mutate(logits, rate, strength, cell_start, cell_len, rng, cell_w=None):
 
     Probabilities are clipped to 1.0: a boosted rate above 1 would otherwise be a silent no-op
     (every draw already below it), making a large boost indistinguishable from a moderate one."""
-    n_cells = len(cell_start)
-    _thr = rate if cell_w is None else np.minimum(np.asarray(cell_w, float) * rate, 1.0)
-    hit = rng.random(n_cells) < _thr
-    row_hit = np.repeat(hit, cell_len)
+    n_profiles = len(profile_start)
+    _thr = rate if profile_w is None else np.minimum(np.asarray(profile_w, float) * rate, 1.0)
+    hit = rng.random(n_profiles) < _thr
+    row_hit = np.repeat(hit, profile_len)
     noise = rng.standard_normal(logits.shape) * strength
     return logits + np.where(row_hit, noise, 0.0)
 
@@ -1480,17 +1480,17 @@ def _mutate(logits, rate, strength, cell_start, cell_len, rng, cell_w=None):
 #
 # The SHAPE of the perturbation is identical: the same per-profile selection at the same probability,
 # the same Gaussian scale, applied to the same whole-profile segments.
-def _mutate_fast(logits, rate, strength, cell_start, cell_len, rng, cell_w=None):
+def _mutate_fast(logits, rate, strength, profile_start, profile_len, rng, profile_w=None):
     """`_mutate`'s twin, drawing Gaussians only for the rows it perturbs.
 
     NOT bit-identical to `_mutate` and not intended to be — see the note above. Same distribution,
     same per-cell selection rule, a fraction of the draws."""
-    n_cells = len(cell_start)
-    _thr = rate if cell_w is None else np.minimum(np.asarray(cell_w, float) * rate, 1.0)
-    hit = rng.random(n_cells) < _thr
+    n_profiles = len(profile_start)
+    _thr = rate if profile_w is None else np.minimum(np.asarray(profile_w, float) * rate, 1.0)
+    hit = rng.random(n_profiles) < _thr
     if not hit.any():
         return logits.copy()
-    row_hit = np.repeat(hit, cell_len)
+    row_hit = np.repeat(hit, profile_len)
     n_hit = int(row_hit.sum())
     out = logits.copy()
     # `out[row_hit] += noise` — a masked add over the selected rows only. The non-selected rows are
@@ -1541,8 +1541,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # Gaussians it uses, from one independent stream per child. Different answer, same search.
     _MUT_FAST = os.environ.get("ROUTING_MUT_FAST", "1") != "0"
     rng = np.random.default_rng(seed)
-    R = p.cell_id.shape[0]
-    total_vol = _cell_volume_total(p)
+    R = p.profile_id.shape[0]
+    total_vol = _profile_volume_total(p)
 
     log = log_fn or (lambda *_a, **_k: None)
     log(f"[fullmatrix-ga] build={__build__} R={R} profiles={p.n_cells} mids={p.n_mids}")
@@ -1608,7 +1608,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
 
     if _compress_on:
         _nmid = int(p.n_mids)
-        _cvol = np.asarray(p.vol[p.cell_start], float)            # (n_cells,) profile volume
+        _cvol = np.asarray(p.vol[p.profile_start], float)            # (n_cells,) profile volume
         _dist_fn, _dist_backend = make_distortion(p, use_numba=numba)
 
         def _refresh_codebook(logits_row):
@@ -1619,8 +1619,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             at the per-vampMid grain — so the regularizer's target IS the split tab-3
             would ship. On any failure we fall back to the internal volume-weighted
             k-means codebook (logged, never silent), so the search never stalls."""
-            _s = _segment_softmax(np.asarray(logits_row, float)[None, :], p.cell_start,
-                                  p.cell_len, p.max_share)
+            _s = _segment_softmax(np.asarray(logits_row, float)[None, :], p.profile_start,
+                                  p.profile_len, p.max_share)
             _fd = _deliver_full(_s)
             _sd = _deliver_kept(_s, _fd)                          # (1, R) delivered shares
             if callable(codebook_fn):
@@ -1634,7 +1634,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 except Exception as _cbe:                          # noqa: BLE001
                     log(f"[fullmatrix-ga] codebook_fn failed ({type(_cbe).__name__}: {_cbe}) — "
                         "falling back to the internal volume-weighted k-means codebook this refresh.")
-            _shape = _cell_shape_matrix(_sd[0], p.cell_start, p.mid_id, _nmid)
+            _shape = _profile_shape_matrix(_sd[0], p.profile_start, p.mid_id, _nmid)
             _a, _ct, _kc = _fit_codebook(_shape, _cvol, compress_pools, int(seed))
             _cb["assign"], _cb["cent"], _cb["cconst"], _cb["src"] = _a, _ct, _kc, "kmeans"
 
@@ -1655,7 +1655,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     _ev = {"pop": 0.0, "decode": 0.0, "deliver": 0.0, "band": 0.0, "comp": 0.0, "n": 0}
 
     def _eval_with_bands(logits):
-        # Returns (vwsr, other_viol, band_breach) as THREE separate arrays so the ranking can treat
+        # Returns (success rate, other_viol, band_breach) as THREE separate arrays so the ranking can treat
         # the EXACT M5 band breach as the strict primary key (see _rank). `other_viol` is the
         # engineering violation (global VAMP cap + max-share) from eval_pop; `band_breach` is the
         # exact per-MID M5 penalty. They are NO LONGER summed — the ranking orders on band first.
@@ -1669,7 +1669,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         if not (_need_band or _need_comp):
             return v, x, _band
         _t = time.perf_counter()
-        _sh = _segment_softmax(logits, p.cell_start, p.cell_len, p.max_share)
+        _sh = _segment_softmax(logits, p.profile_start, p.profile_len, p.max_share)
         _ev["decode"] += time.perf_counter() - _t
         _t = time.perf_counter()
         _fd = _deliver_full(_sh)                                  # shared delivery — computed ONCE
@@ -1687,13 +1687,13 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         return v, x, _band
 
     def _rescore_compress(logits, keep_other, keep_band):
-        """Re-score ONLY the compress term of vwsr under the CURRENT codebook, keeping the supplied
+        """Re-score ONLY the compress term of success_rate under the CURRENT codebook, keeping the supplied
         engineering violation AND band breach unchanged (both are codebook-independent, so they are
         NOT recomputed — this is what lets a codebook refresh skip the whole-population band
-        projection). Returns (vwsr, keep_other, keep_band)."""
+        projection). Returns (success_rate, keep_other, keep_band)."""
         _bv, _ = eval_pop(logits)
         if _compress_on and _cb["cent"] is not None:
-            _sh = _segment_softmax(logits, p.cell_start, p.cell_len, p.max_share)
+            _sh = _segment_softmax(logits, p.profile_start, p.profile_len, p.max_share)
             _fd = _deliver_full(_sh)
             _sd = _deliver_kept(_sh, _fd)
             _bv = _bv - _clam * np.asarray(
@@ -1718,7 +1718,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     _hz_info = {}
     _hz_on = bool(_hz_want and not _compress_on)
     seed_logits = _shares_to_logits(
-        seed_shares, hard_zero=_hz_on, cell_start=p.cell_start, cell_len=p.cell_len,
+        seed_shares, hard_zero=_hz_on, profile_start=p.profile_start, profile_len=p.profile_len,
         info=_hz_info)
     if _hz_want and _compress_on:
         log("[fullmatrix-ga] \u26a0 ROUTING_SEED_ZEROS=1 REFUSED this run: the compressibility "
@@ -1739,9 +1739,9 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     if _DECODE_CAP:
         try:
             _dc_lg = np.asarray(seed_logits, float)[None, :]
-            _dc_raw = _segment_softmax(_dc_lg, p.cell_start, p.cell_len)
-            _dc_got = _segment_softmax(_dc_lg, p.cell_start, p.cell_len, p.max_share)
-            _dc_ref = _cap_shares_ref(_dc_raw, p.cell_start, p.cell_len, p.max_share)
+            _dc_raw = _segment_softmax(_dc_lg, p.profile_start, p.profile_len)
+            _dc_got = _segment_softmax(_dc_lg, p.profile_start, p.profile_len, p.max_share)
+            _dc_ref = _cap_shares_ref(_dc_raw, p.profile_start, p.profile_len, p.max_share)
             _dc_cap = np.asarray(p.max_share, float)
             _dc_liv = np.isfinite(_dc_cap) & (_dc_cap > 0.0) & (_dc_cap < 1.0)
             _dc_over_before = int(((_dc_raw[0] > _dc_cap) & _dc_liv).sum())
@@ -1749,7 +1749,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             _dc_moved = float(np.abs(_dc_got - _dc_raw).sum())
             _dc_same = _fx_same(_dc_ref, _dc_got)
             _dc_sums = float(np.abs(
-                np.add.reduceat(_dc_got[0], np.asarray(p.cell_start, np.intp)) - 1.0).max())
+                np.add.reduceat(_dc_got[0], np.asarray(p.profile_start, np.intp)) - 1.0).max())
             if _dc_over_after == 0 and _dc_same:
                 log(f"[fullmatrix-ga] [decode-cap] ✓ SELF-CHECK PASSED on the live seed: the "
                     f"uncapped decode held {_dc_over_before:,} row(s) above the cap, the capped "
@@ -1773,8 +1773,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 "but this run has no live proof the cap holds.")
 
     # remember the elite seed's key for the never-worse guarantee (bands included)
-    s0 = _segment_softmax(seed_logits[None, :], p.cell_start, p.cell_len, p.max_share)
-    seed_vwsr = _vwsr(s0, p.vol, p.succ, total_vol)[0]
+    s0 = _segment_softmax(seed_logits[None, :], p.profile_start, p.profile_len, p.max_share)
+    seed_success_rate = _success_rate(s0, p.vol, p.succ, total_vol)[0]
     seed_other = _violation(s0, p)[0]           # engineering viol (global cap + max-share) — secondary
     seed_band = 0.0                              # exact M5 band breach — strict primary key
     _fd0 = _deliver_full(s0) if (band_penalty_fn is not None or _compress_on) else None
@@ -1785,7 +1785,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _refresh_codebook(seed_logits)                            # learn the initial codebook from the seed
         _k0 = 0 if _cb["cent"] is None else _cb["cent"].shape[0]
         _sd0 = _deliver_kept(s0, _fd0)
-        seed_vwsr = seed_vwsr - _clam * float(np.asarray(
+        seed_success_rate = seed_success_rate - _clam * float(np.asarray(
             _dist_fn(_sd0, _cb["assign"], _cb["cent"], _cb["cconst"])).reshape(-1)[0])
         _cb_src = ("EXACT tab-3 ward/knapsack allocator" if _cb.get("src") == "callback"
                    else "internal volume-weighted k-means")
@@ -1809,7 +1809,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _dl_res = _dl_z & (_dl_dec[0] > 0.0)
         _dl_nres = int(_dl_res.sum())
         _dl_mass = float(_dl_dec[0][_dl_res].sum())
-        _dl_vw = float(_vwsr(_dl_seed, p.vol, p.succ, total_vol)[0])
+        _dl_vw = float(_success_rate(_dl_seed, p.vol, p.succ, total_vol)[0])
         _dl_bd = None
         if band_penalty_fn is not None:
             _dl_fd = _deliver_full(_dl_seed) if (_have_full or _compress_on) else None
@@ -1832,8 +1832,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     "GENERATION RAN. Whatever the search gains has to cover this first. This is "
                     "why [never-worse] can ship the SEED after a full search: the seed it "
                     "re-scores at the end is the TRUE one, not the decoded copy the GA optimised.")
-        log(f"[fullmatrix-ga]    success rate: seed {_dl_vw:.6f} \u2192 decoded {seed_vwsr:.6f} "
-            f"({seed_vwsr - _dl_vw:+.6f}).")
+        log(f"[fullmatrix-ga]    success rate: seed {_dl_vw:.6f} \u2192 decoded {seed_success_rate:.6f} "
+            f"({seed_success_rate - _dl_vw:+.6f}).")
         # WHERE THE INVENTED SHARE WENT. This one IS measurable here, and it identifies the
         # mechanism exactly: if the per-row figure comes out at the clip floor, every resurrected
         # row was pinned at eps and then normalised, which is the encoding and nothing else.
@@ -1863,8 +1863,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     "block above \u2014 read the count there.")
             else:
                 _dl_cnt = np.add.reduceat(_dl_pos.astype(np.int64),
-                                          np.asarray(p.cell_start, np.intp))
-                _dl_sole = np.repeat(_dl_cnt <= 1, np.asarray(p.cell_len, np.intp)) & _dl_pos
+                                          np.asarray(p.profile_start, np.intp))
+                _dl_sole = np.repeat(_dl_cnt <= 1, np.asarray(p.profile_len, np.intp)) & _dl_pos
                 log(f"[fullmatrix-ga]    OF THOSE, {int((_dl_res & _dl_sole).sum()):,} sit in a "
                     "profile where they are the ONLY VAMP-positive gateway. vshare self-normalises, "
                     "so there a resurrected share of ANY size returns the WHOLE profile's VAMP "
@@ -1895,10 +1895,10 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         log(f"[fullmatrix-ga]    [decode-loss] skipped ({type(_dl_e).__name__}: {_dl_e}). The "
             "search itself is unaffected.")
 
-    seed_key = _key_of(seed_vwsr, seed_other, seed_band)
+    seed_key = _key_of(seed_success_rate, seed_other, seed_band)
     best_logits = seed_logits.copy()
     best_key = seed_key
-    best_vwsr, best_other, best_band = seed_vwsr, seed_other, seed_band
+    best_success_rate, best_other, best_band = seed_success_rate, seed_other, seed_band
 
     # ── [ga-census] 19eb + 19ed ───────────────────────────────────────────────────────
     # Counts, per generation, WHY each child failed to displace the incumbent, and (19ed)
@@ -1906,7 +1906,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # added computation is a single-candidate decomposition once per generation.
     # [ga-census] PROBE REMOVED (2026-08-31): read-only, permanently off. It counted how many
     # children outranked the incumbent and printed a counterfactual over five tolerances that
-    # returned the SAME vwsr at every one (0.594275 vs 0.594275 across 1e-12..1e-1 on the
+    # returned the SAME success rate at every one (0.594275 vs 0.594275 across 1e-12..1e-1 on the
     # 16:00 run) - i.e. it re-answered a settled question every generation. It also contradicted
     # itself on that run, reporting "displaced the incumbent: 1,056" and then "1,056 child(ren)
     # outranked the incumbent and it did not move ... an UPDATE fault". Both cannot be true; the
@@ -1928,11 +1928,11 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
 
     # [FN-ga-census]
     def _cen_add(dst, cb, cv, co, bv, bo, keep=False):
-        """Tally one batch against the incumbent (bv=best vwsr, bo=best engineering viol).
+        """Tally one batch against the incumbent (bv=best success_rate, bo=best engineering viol).
 
-        THE WINNER TEST IS THE RANKING'S OWN. `_rank` lexsorts on (band_eff, viol, -vwsr)
+        THE WINNER TEST IS THE RANKING'S OWN. `_rank` lexsorts on (band_eff, viol, -success_rate)
         with NO tolerance on viol, so a child displaces the incumbent iff its band snaps to
-        0 and either its viol is STRICTLY smaller, or exactly equal and its vwsr higher.
+        0 and either its viol is STRICTLY smaller, or exactly equal and its success_rate higher.
         19eb asked `co <= bo + 1e-12` against a bo of 2.38e-14 and manufactured 20 phantom
         winners, which the verdict then read as an update fault."""
         _f = cb <= _FEAS_EPS
@@ -1945,7 +1945,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         dst["feas_vbet"] += int((_f & _v).sum())
         dst["blocked_other"] += int(_blk.sum())
         dst["won"] += int((_win & _v).sum())
-        dst["won_eng"] += int((_win & ~_v).sum())      # displaces on viol alone, worse vwsr
+        dst["won_eng"] += int((_win & ~_v).sum())      # displaces on viol alone, worse success rate
         if cb.size:
             dst["minband"] = min(dst["minband"], float(cb.min()))
         if _f.any():
@@ -1979,7 +1979,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         """(parts, extras) for one logit row, or None if anything is unavailable."""
         _fn = _segment_softmax_fast if _SM_OK["use"] else _segment_softmax_serial
         sh = np.asarray(_fn(np.asarray(lg1, float)[None, :],
-                            p.cell_start, p.cell_len)[0], float)
+                            p.profile_start, p.profile_len)[0], float)
         w = sh * p.vol
         _nm = int(p.n_mids)
         num = np.bincount(p.mid_id, weights=w * p.risk, minlength=_nm)
@@ -2065,7 +2065,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # input and tab2 does not pass mutation_rate). Default 0.01 = the value the old three-term
     # expression always produced, so the default run is unchanged.
     _MUT_RATE = float(_os_gf.environ.get("ROUTING_MUT_RATE", "") or 0.01)
-    _eff_cells = _MUT_RATE * int(p.n_cells)
+    _eff_profiles = _MUT_RATE * int(p.n_profiles)
     log(f"[fullmatrix-ga] mutation rate {min(float(mutation_rate), _MUT_RATE):.4f} per profile over "
         f"{int(p.n_cells):,} profiles ⇒ ~{min(float(mutation_rate), _MUT_RATE) * int(p.n_cells):,.0f} "
         f"profile(s) perturbed per exploration child (~"
@@ -2077,7 +2077,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # max(0.01, 60/n_cells), which bound only below 6,000 profiles — so at the live grain nothing
     # moved, but at a coarser grain it did, and a silent halving of the mutation is exactly the
     # kind of thing that gets mistaken for the engine getting worse.
-    _old_rate = min(float(mutation_rate), max(0.01, 60.0 / max(int(p.n_cells), 1)))
+    _old_rate = min(float(mutation_rate), max(0.01, 60.0 / max(int(p.n_profiles), 1)))
     if abs(_old_rate - min(float(mutation_rate), _MUT_RATE)) > 1e-12:
         log(f"[fullmatrix-ga] ⚠ MUTATION RATE CHANGED BY BUILD 2026-08-19ac AT THIS GRAIN: the "
             f"deleted `max(0.01, 60/n_cells)` term would have given {_old_rate:.5f} "
@@ -2125,7 +2125,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             # population cannot decode above the cap, so there is nothing to legalise. The
             # timing slot is kept at 0 so [gen-gap]'s init split still sums.
             _gg_i2 = time.perf_counter()
-            vwsr, other, band = _eval_with_bands(pop)
+            success_rate, other, band = _eval_with_bands(pop)
             _gg_i3 = time.perf_counter()
             # 19fn: the three parts of `init`, timed separately. `i_rest` is picked up at the
             # end of the block as (total - these three), so it cannot silently absorb anything.
@@ -2140,8 +2140,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             _cen_init = (0, 0.0)
             if _cen_on:
                 _cen_init = _cen_add(dict(_cen0), np.asarray(band, float),
-                                     np.asarray(vwsr, float), np.asarray(other, float),
-                                     float(best_vwsr), float(best_other))
+                                     np.asarray(success_rate, float), np.asarray(other, float),
+                                     float(best_success_rate), float(best_other))
             _cen_g0 = None                          # (compliant, mean breach) of generation 0
             _cen_gl = None                          # ... and of the last generation run
             _gg_i9 = time.perf_counter()
@@ -2155,33 +2155,33 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 # Periodic codebook refit: re-learn the ≈pool-target centroid shapes from the
                 # current global best (its delivered shape), then RE-SCORE the live pop + best
                 # under the new codebook so the moving objective stays self-consistent. Only the
-                # compress term of vwsr depends on the codebook — the band violation does NOT — so
+                # compress term of success rate depends on the codebook — the band violation does NOT — so
                 # `_rescore_compress` keeps the existing `viol` and skips the whole-population band
                 # projection (the expensive part). Bit-identical to a full re-eval.
                 if (_compress_on and int(compress_refresh) > 0 and gen > 0
                         and gen % int(compress_refresh) == 0):
                     _refresh_codebook(best_logits)
-                    vwsr, other, band = _rescore_compress(pop, other, band)
-                    best_vwsr = float(_rescore_compress(
+                    success_rate, other, band = _rescore_compress(pop, other, band)
+                    best_success_rate = float(_rescore_compress(
                         best_logits[None, :], np.asarray([best_other]), np.asarray([best_band]))[0][0])
-                    best_key = _key_of(best_vwsr, best_other, best_band)
+                    best_key = _key_of(best_success_rate, best_other, best_band)
                 _gg_t1 = time.perf_counter()
-                order = _rank(vwsr, other, band)
+                order = _rank(success_rate, other, band)
                 _gg_t2 = time.perf_counter()
                 top = order[0]
-                top_key = _key_of(vwsr[top], other[top], band[top])
+                top_key = _key_of(success_rate[top], other[top], band[top])
                 if top_key > best_key:
                     best_key = top_key
                     best_logits = pop[top].copy()
-                    best_vwsr, best_other, best_band = vwsr[top], other[top], band[top]
+                    best_success_rate, best_other, best_band = success_rate[top], other[top], band[top]
                     stale = 0
                 else:
                     stale += 1
                 # History x-axis = cumulative generation index across seeds/restarts;
                 # `cands` = cumulative candidates (matches the tab-3 chart layout). The `viol` slot
                 # carries band breach + engineering viol so the chart still reflects total infeasibility.
-                history.append((len(history), float(best_vwsr), float(vwsr[top]),
-                                float(vwsr.mean()), None, float(best_band + best_other), None,
+                history.append((len(history), float(best_success_rate), float(success_rate[top]),
+                                float(success_rate.mean()), None, float(best_band + best_other), None,
                                 int(evaluated)))
                 # LIVE PROGRESS: throttled per-generation heartbeat so a long BIN-grain search isn't
                 # silent for ~an hour (the tilt engine streams via its poller; this engine didn't).
@@ -2196,8 +2196,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     _mid_extra = ""
                     if band_report_fn is not None:
                         try:
-                            _bsh = _segment_softmax(best_logits[None, :], p.cell_start,
-                                                    p.cell_len, p.max_share)
+                            _bsh = _segment_softmax(best_logits[None, :], p.profile_start,
+                                                    p.profile_len, p.max_share)
                             _rep = band_report_fn(_deliver_full(_bsh) if _have_full else _bsh)
                             # band_report_fn may return (count, penalty) or (count, penalty, [names]).
                             _n_unmet, _mid_pen = _rep[0], _rep[1]
@@ -2213,12 +2213,12 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                                 _mid_extra += f" [{_shown}]"
                         except Exception:  # noqa: BLE001 - never let the heartbeat break the search
                             _mid_extra = ""
-                    # NB: best_key is the lexicographic tuple (feasible?, vwsr-or-−viol) from _key_of —
-                    # it must NOT be format-specced ('{:,.0f}' on a tuple raises). vwsr + viol below
+                    # NB: best_key is the lexicographic tuple (feasible?, success rate-or-−viol) from _key_of —
+                    # it must NOT be format-specced ('{:,.0f}' on a tuple raises). success rate + viol below
                     # already convey the score/feasibility, so it isn't printed.
                     log(f"[fullmatrix-ga] progress: ~{evaluated:,} splits · gen {gen} "
                         f"(seed {_s + 1}/{n_seeds} restart {_r + 1}/{restarts}) · "
-                        f"best success rate {best_vwsr:.5f} · viol {best_band + best_other:,.4f}"
+                        f"best success rate {best_success_rate:.5f} · viol {best_band + best_other:,.4f}"
                         f"{_mid_extra} · {'feasible' if best_band <= _FEAS_EPS else 'infeasible'} "
                         f"· {_rate:,.0f}/s")
                 _gg["beat"] += time.perf_counter() - _gg_b0
@@ -2237,7 +2237,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     break
                 # elitism + local refinement + exploration
                 elites = pop[order[:_el]].copy()
-                elite_vwsr = vwsr[order[:_el]].copy()
+                elite_success_rate = success_rate[order[:_el]].copy()
                 elite_other = other[order[:_el]].copy()
                 elite_band = band[order[:_el]].copy()
                 children = np.empty((_pn - _el, R))
@@ -2277,7 +2277,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                         _cw = mut_weight_fn()
                         if _cw is not None:
                             _cw = np.asarray(_cw, float)
-                            if _cw.shape != (p.n_cells,):
+                            if _cw.shape != (p.n_profiles,):
                                 # Wrong shape would silently broadcast or throw deep inside
                                 # _mutate; refuse it here and say so once.
                                 if not _mw_warned:
@@ -2313,30 +2313,30 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                         base = pop[order[_crng.integers(0, max(1, _el))]]
                         if _fuse:
                             child = (_fx_selfcheck(base, None, _base_rate * 0.25,
-                                                   mutation_strength * 0.6, p.cell_start,
-                                                   p.cell_len, _crng, _cw, True)
+                                                   mutation_strength * 0.6, p.profile_start,
+                                                   p.profile_len, _crng, _cw, True)
                                      if not _FX_OK["checked"] else
                                      _mutate_fused(base, _base_rate * 0.25,
-                                                   mutation_strength * 0.6, p.cell_start,
-                                                   p.cell_len, _crng, cell_w=_cw))
+                                                   mutation_strength * 0.6, p.profile_start,
+                                                   p.profile_len, _crng, profile_w=_cw))
                             _fuse = bool(_FX_OK["use"])
                         else:
                             child = _mut(base, _base_rate * 0.25, mutation_strength * 0.6,
-                                         p.cell_start, p.cell_len, _crng, cell_w=_cw)
+                                         p.profile_start, p.profile_len, _crng, profile_w=_cw)
                     else:
                         pa = pop[_crng.choice(pool)]
                         pb = pop[_crng.choice(pool)]
                         if _fuse:
                             child = (_fx_selfcheck(pa, pb, _base_rate, mutation_strength,
-                                                   p.cell_start, p.cell_len, _crng, _cw, False)
+                                                   p.profile_start, p.profile_len, _crng, _cw, False)
                                      if not _FX_OK["checked"] else
                                      _child_fused(pa, pb, _base_rate, mutation_strength,
-                                                  p.cell_start, p.cell_len, _crng, cell_w=_cw))
+                                                  p.profile_start, p.profile_len, _crng, profile_w=_cw))
                             _fuse = bool(_FX_OK["use"])
                         else:
-                            child = _crossover(pa, pb, p.cell_start, p.cell_len, _crng)
+                            child = _crossover(pa, pb, p.profile_start, p.profile_len, _crng)
                             child = _mut(child, _base_rate, mutation_strength,
-                                         p.cell_start, p.cell_len, _crng, cell_w=_cw)
+                                         p.profile_start, p.profile_len, _crng, profile_w=_cw)
                     children[c] = child
                 # 19bx: the two self-check verdicts belong in the RUN LOG, not the terminal. Each
                 # says whether the fused path is bit-identical on THIS run's population; a verdict
@@ -2349,16 +2349,16 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 # 2026-09-01 22:09 search. Deleted — the decode caps, so what is scored is what
                 # the genome decodes to and what ships, with no second pass to make it true.
                 _gg_t3 = time.perf_counter()
-                child_vwsr, child_other, child_band = _eval_with_bands(children)
+                child_success_rate, child_other, child_band = _eval_with_bands(children)
                 # [ga-census] against the incumbent AS OF THIS GENERATION (best_* was updated at the
                 # top of the loop). Comparison on arrays that already exist; the run total is the copy
                 # that keeps the magnitudes, so nothing is double-counted.
                 if _cen_on:
                     _cbA = np.asarray(child_band, float)
-                    _cvA = np.asarray(child_vwsr, float)
+                    _cvA = np.asarray(child_success_rate, float)
                     _coA = np.asarray(child_other, float)
-                    _cg = _cen_add(_cen_r, _cbA, _cvA, _coA, float(best_vwsr), float(best_other))
-                    _cen_add(_cen, _cbA, _cvA, _coA, float(best_vwsr), float(best_other), keep=True)
+                    _cg = _cen_add(_cen_r, _cbA, _cvA, _coA, float(best_success_rate), float(best_other))
+                    _cen_add(_cen, _cbA, _cvA, _coA, float(best_success_rate), float(best_other), keep=True)
                     if _cen_g0 is None:
                         _cen_g0 = _cg
                     _cen_gl = _cg
@@ -2367,7 +2367,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     # more, and something in key 2 threw it away. Taking the WORST offender apart would
                     # answer a different question.
                     if _cen_dec_on:
-                        _blkI = np.where((_cbA <= _FEAS_EPS) & (_cvA > float(best_vwsr))
+                        _blkI = np.where((_cbA <= _FEAS_EPS) & (_cvA > float(best_success_rate))
                                          & (_coA > float(best_other)))[0]
                         if _blkI.size:
                             _pick = int(_blkI[int(np.argmax(_cvA[_blkI]))])
@@ -2386,7 +2386,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 _gg_t4 = time.perf_counter()
                 evaluated += children.shape[0]
                 pop = np.vstack([elites, children])
-                vwsr = np.concatenate([elite_vwsr, child_vwsr])
+                success_rate = np.concatenate([elite_success_rate, child_success_rate])
                 other = np.concatenate([elite_other, child_other])
                 band = np.concatenate([elite_band, child_band])
                 _gg_t5 = time.perf_counter()
@@ -2412,8 +2412,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                        f"gen {gen} compliant {_cen_gl[0]} (mean breach {_cen_gl[1]:.3g}). "
                        if (_cen_g0 and _cen_gl) else "")
                     + f"smallest breach seen {_cb_min:.3g}; "
-                    + (f"best compliant child success rate {_cb_bf:.6f} vs incumbent {best_vwsr:.6f} "
-                       f"(\u0394 {_cb_bf - best_vwsr:+.3g})."
+                    + (f"best compliant child success rate {_cb_bf:.6f} vs incumbent {best_success_rate:.6f} "
+                       f"(\u0394 {_cb_bf - best_success_rate:+.3g})."
                        if _cb_bf > float('-inf') else "NO child was ever compliant."))
 
     # ── [decode-cap] 19gu: the cap, now that it is part of the decode ────────────────────
@@ -2446,13 +2446,13 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             "to any more, and no switch pretending there is.")
 
     # ── [ga-census] RUN VERDICT ──────────────────────────────────────────────────────────
-    # Four candidate explanations for a flat vwsr, told apart by counts; 19ed then asks the
+    # Four candidate explanations for a flat success rate, told apart by counts; 19ed then asks the
     # question the counts cannot answer — whether the blocking violations are REAL.
     if _cen_on and _cen["kids"]:
         _K = _cen["kids"]
         log("")
         log(f"[ga-census] {_K:,} children over the whole budget. Incumbent: success rate "
-            f"{best_vwsr:.6f}, M5 band breach {best_band:.3g}, engineering violation "
+            f"{best_success_rate:.6f}, M5 band breach {best_band:.3g}, engineering violation "
             f"{best_other:.3g}.")
         log(f"[ga-census]    compliant (band \u2264 {_FEAS_EPS:g}): {_cen['feas']:,} "
             f"({100.0 * _cen['feas'] / _K:.2f}%) \u00b7 beat the incumbent on success rate: "
@@ -2492,8 +2492,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         for _e in _CEN_CUTS:
             _r = _cen_eps[_e]
             log(f"[ga-census]       eps {_e:>7.0e}: {_r['n']:,} child(ren)"
-                + (f" \u00b7 best success rate {_r['best']:.6f} vs {best_vwsr:.6f} "
-                   f"(\u0394 {_r['best'] - best_vwsr:+.3g})" if _r["n"] else " \u2014 nothing"))
+                + (f" \u00b7 best success rate {_r['best']:.6f} vs {best_success_rate:.6f} "
+                   f"(\u0394 {_r['best'] - best_success_rate:+.3g})" if _r["n"] else " \u2014 nothing"))
         log("[ga-census]       (counted, NOT applied \u2014 this run ranked exactly as before.)")
         # ── 19ed C. WHAT IS THE VIOLATION MADE OF? ───────────────────────────────────────
         if _dec["n"]:
@@ -2542,12 +2542,12 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         else:
             log(f"[ga-census]    VERDICT: {_cen['feas']:,} compliant child(ren) were produced "
                 f"and the best scored {_cen['bestfeas']:.6f} against the incumbent's "
-                f"{best_vwsr:.6f}. Compliant splits ARE reachable; none converts better. A "
+                f"{best_success_rate:.6f}. Compliant splits ARE reachable; none converts better. A "
                 "genuine local optimum at this mutation scale.")
         log("[ga-census]    Read-only measurement; nothing above changed what the search did. "
             "ROUTING_GA_CENSUS=0 removes it, ROUTING_GA_CENSUS_DECOMP=0 just the decomposition.")
 
-    best_shares_sorted = _segment_softmax(best_logits[None, :], p.cell_start, p.cell_len,
+    best_shares_sorted = _segment_softmax(best_logits[None, :], p.profile_start, p.profile_len,
                                           p.max_share)[0]
     # restore original row order
     inv = np.empty_like(p.order)
@@ -2556,12 +2556,12 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
 
     info = {
         "__build__": __build__,
-        "vwsr": float(best_vwsr),
+        "success_rate": float(best_success_rate),
         "violation": float(best_band + best_other),
         "band_breach": float(best_band),
         "other_violation": float(best_other),
         "feasible": bool(best_band <= _FEAS_EPS),
-        "seed_vwsr": float(seed_vwsr),
+        "seed_success_rate": float(seed_success_rate),
         "seed_violation": float(seed_band + seed_other),
         "seed_band_breach": float(seed_band),
         "improved_over_seed": bool(best_key > seed_key),
@@ -2684,15 +2684,15 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     log(f"[fullmatrix-ga] evaluated {evaluated:,} candidate splits over "
         f"{len(history)} generations ({n_seeds} seed(s) × {restarts} restart(s), "
         f"pop {pop_size}) in {info['seconds']:.1f}s = {info['splits_per_s']:,.0f} splits/s")
-    log(f"[fullmatrix-ga] done success rate {best_vwsr:.6f} M5-breach={best_band:.3e} "
+    log(f"[fullmatrix-ga] done success rate {best_success_rate:.6f} M5-breach={best_band:.3e} "
         f"eng-viol={best_other:.3e} feasible={info['feasible']} improved={info['improved_over_seed']}")
     return best_shares, info
 
 
-def _cell_volume_total(p: "FullMatrixProblem"):
+def _profile_volume_total(p: "FullMatrixProblem"):
     """Total volume across cells (each cell's volume counted once)."""
     # vol is repeated per row; take the first row of each profile segment.
-    return float(p.vol[p.cell_start].sum())
+    return float(p.vol[p.profile_start].sum())
 
 
 # STATUS (was the stage-2 TODO — now largely delivered):

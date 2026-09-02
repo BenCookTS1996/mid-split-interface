@@ -37,7 +37,7 @@ from functools import lru_cache
 
 import numpy as np
 
-from ..engines.base import CellProblem
+from ..engines.base import ProfileProblem
 from .softmax import SoftmaxEngine
 
 __build__ = "2026-08-03-thompson-leggauss-hoist+batched-quadrature"
@@ -67,7 +67,7 @@ class ThompsonEngine(SoftmaxEngine):
                    "never go blind. No dials — prior and precision are automatic.")
 
     # [FN-420]
-    def _ref_param_key(self, p: CellProblem):
+    def _ref_param_key(self, p: ProfileProblem):
         # Thompson's reference depends on its Beta prior and — via the γ tilt — temperature and
         # ref_risk_aversion (it allocates from its own posterior). The prior params are ADDED so a
         # prior change can't return a stale reference.
@@ -81,7 +81,7 @@ class ThompsonEngine(SoftmaxEngine):
                 round(float(temperature or 0.05), 9))
 
     # [FN-421]
-    def _beta_params(self, p: CellProblem):
+    def _beta_params(self, p: ProfileProblem):
         """Beta(alpha, beta) per gateway — a SELF-CONTAINED posterior from the
         (time-decayed) observed successes/attempts with a weak uniform prior (+1/+1).
 
@@ -118,7 +118,7 @@ class ThompsonEngine(SoftmaxEngine):
         return alpha, beta
 
     # [FN-422]
-    def _reference_split_impl(self, p: CellProblem) -> np.ndarray:
+    def _reference_split_impl(self, p: ProfileProblem) -> np.ndarray:
         """slider=100 reference: analytic probability-of-being-best over SUCCESS.
         Same contract as ``SoftmaxEngine._reference_split_impl``. Wrapped by the
         base-class reference cache (computed once per cell, reused across dials)."""

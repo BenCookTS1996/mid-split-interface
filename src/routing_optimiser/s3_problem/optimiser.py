@@ -13,9 +13,9 @@ import numpy as np
 import pandas as pd
 
 from routing_optimiser.s3_problem.constraints import OptimiserSettings
-from routing_optimiser.engines import CellProblem, get_engine
+from routing_optimiser.engines import ProfileProblem, get_engine
 
-__build__ = "2026-07-29-vamp-lp-singlegw-fixed-cell-revival+2026-09-02-19gz-max-revenue-split-reference+2026-09-02-19he-floor-carried-into-projector+2026-09-02-19hh-emask-pair-grain+2026-09-02-19hi-log-simplification+2026-09-02-19hk-cell-profile-prose"
+__build__ = "2026-07-29-vamp-lp-singlegw-fixed-cell-revival+2026-09-02-19gz-max-revenue-split-reference+2026-09-02-19he-floor-carried-into-projector+2026-09-02-19hh-emask-pair-grain+2026-09-02-19hi-log-simplification+2026-09-02-19hk-cell-profile-prose+2026-09-02-19hl-cell-profile-identifiers"
 
 
 # [FN-191]
@@ -52,12 +52,12 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
     d = df.reset_index(drop=True)
     ref = d["share"].to_numpy(float)
     rate = d["rate"].to_numpy(float)
-    vol = d["cell_vol"].to_numpy(float)
+    vol = d["profile_vol"].to_numpy(float)
     n = len(d)
     if n == 0:
         return None
-    cell_lbl = d["cell"].astype(str).to_numpy()
-    cell_rows = _group_indices(cell_lbl)
+    profile_lbl = d["profile"].astype(str).to_numpy()
+    profile_rows = _group_indices(profile_lbl)
     mid_rows = _group_indices(d["vampMid"].astype(str).to_numpy())
     # Only MIDs that CAN breach (some profile rate above the cap) need a constraint.
     over_mids = [m for m, r in mid_rows.items() if float(rate[r].max()) > cap + 1e-12]
@@ -73,24 +73,24 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
     # the per-MID (and aggregate) right-hand sides, so the LP still accounts for their true,
     # unmovable risk. With no single-gateway profiles `fixed` is all-False and every expression below
     # collapses to the original (RHS constants = 0), so the build is byte-identical in that case.
-    _cell_n = {c: len(idx) for c, idx in cell_rows.items()}
-    fixed = np.fromiter((_cell_n[cell_lbl[i]] < 2 for i in range(n)), dtype=bool, count=n)
+    _profile_n = {c: len(idx) for c, idx in profile_rows.items()}
+    fixed = np.fromiter((_profile_n[profile_lbl[i]] < 2 for i in range(n)), dtype=bool, count=n)
 
     # Which rows actually enter the LP. Full MOVABLE set unless the reduction applies.
     if agg_cap is None and _reduce:
-        _keep_cells = set()
+        _keep_profiles = set()
         for _m in over_mids:                 # every profile holding a MOVABLE over-cap MID row is binding
             for _i in mid_rows[_m]:
                 if not fixed[_i]:
-                    _keep_cells.add(cell_lbl[_i])
-        for _c, _idx in cell_rows.items():    # + any MULTI-gw profile whose reference isn't already feasible
-            if _c in _keep_cells or fixed[_idx[0]]:
+                    _keep_profiles.add(profile_lbl[_i])
+        for _c, _idx in profile_rows.items():    # + any MULTI-gw profile whose reference isn't already feasible
+            if _c in _keep_profiles or fixed[_idx[0]]:
                 continue
             _rf = ref[_idx]
             if (np.any(_rf < floor - 1e-9) or np.any(_rf > max_share + 1e-9)
                     or abs(float(_rf.sum()) - 1.0) > 1e-9):
-                _keep_cells.add(_c)
-        keep = np.fromiter(((not fixed[i]) and (cell_lbl[i] in _keep_cells)
+                _keep_profiles.add(_c)
+        keep = np.fromiter(((not fixed[i]) and (profile_lbl[i] in _keep_profiles)
                             for i in range(n)), dtype=bool, count=n)
     else:
         keep = ~fixed                        # agg_cap / full path: every MOVABLE row enters
@@ -128,7 +128,7 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
         b_ub.append(-_const); _r += 1
     A_ub = sp.coo_matrix((data, (rows, cols)), shape=(_r, 2 * nk)).tocsr()
     erows, ecols, edata, b_eq, _e = [], [], [], [], 0
-    for _c, idx in cell_rows.items():        # each KEPT profile's shares sum to 1 (dropped cells = ref)
+    for _c, idx in profile_rows.items():        # each KEPT profile's shares sum to 1 (dropped cells = ref)
         _kept = [int(i) for i in idx if keep[i]]
         if not _kept:
             continue
@@ -147,7 +147,7 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
         return None
     x = ref.copy()                           # dropped (non-binding, feasible) profiles stay at reference
     x[kidx] = np.clip(np.asarray(res.x[:nk], dtype=float), 0.0, max_share)
-    for _c, idx in cell_rows.items():        # exact renormalise (guard tiny LP residuals)
+    for _c, idx in profile_rows.items():        # exact renormalise (guard tiny LP residuals)
         s = float(x[idx].sum())
         if s > 1e-9:
             x[idx] = x[idx] / s
@@ -197,7 +197,7 @@ def _group_indices(labels: np.ndarray) -> dict:
 
 
 # [FN-194]
-def _cell_recip_order(cell_rows: dict, rate: np.ndarray) -> dict:
+def _profile_recip_order(profile_rows: dict, rate: np.ndarray) -> dict:
     """Per-cell row positions sorted by rate ASCENDING, ties broken by ascending row index.
 
     This is BIT-IDENTICAL to the inline ``sorted(gen, key=lambda j: rate[j])`` used per move,
@@ -206,7 +206,7 @@ def _cell_recip_order(cell_rows: dict, rate: np.ndarray) -> dict:
     become a filter over this fixed order instead of re-sorting the cell every iteration — the
     move sequence, and therefore the result, is unchanged. Rates are constant, so the order is too.
     """
-    return {c: rows[np.argsort(rate[rows], kind="stable")] for c, rows in cell_rows.items()}
+    return {c: rows[np.argsort(rate[rows], kind="stable")] for c, rows in profile_rows.items()}
 
 
 # [FN-195]
@@ -246,20 +246,20 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
     d = df.reset_index(drop=True).copy()
     share = d["share"].to_numpy(float).copy()
     rate = d["rate"].to_numpy(float)
-    cell_vol = d["cell_vol"].to_numpy(float)
+    profile_vol = d["profile_vol"].to_numpy(float)
     mid = d["vampMid"].astype(str).to_numpy(object)
-    cell = d["cell"].astype(str).to_numpy(object)
+    profile = d["profile"].astype(str).to_numpy(object)
 
     mids = list(pd.unique(mid))
     mid_rows = _group_indices(mid)
-    cell_rows = _group_indices(cell)
-    _corder = _cell_recip_order(cell_rows, rate)   # per-profile rows by ascending rate (bit-identical)
+    profile_rows = _group_indices(profile)
+    _corder = _profile_recip_order(profile_rows, rate)   # per-profile rows by ascending rate (bit-identical)
     retired: set = set()
 
     # [FN-196]
     def _mid_rate(m):
         rows = mid_rows[m]
-        vol = cell_vol[rows] * share[rows]
+        vol = profile_vol[rows] * share[rows]
         tot = vol.sum()
         return float((vol * rate[rows]).sum() / tot) if tot > 1e-12 else 0.0
 
@@ -274,7 +274,7 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
     _num, _den = {}, {}
     for m in mids:
         _rows = mid_rows[m]
-        _v = cell_vol[_rows] * share[_rows]
+        _v = profile_vol[_rows] * share[_rows]
         _den[m] = float(_v.sum())
         _num[m] = float((_v * rate[_rows]).sum())
 
@@ -317,7 +317,7 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
             if share[i] <= eff_floor + 1e-9:
                 _k += 1
                 continue
-            recs = [j for j in _corder[cell[i]]
+            recs = [j for j in _corder[profile[i]]
                     if mid[j] != m and share[j] < max_share - 1e-9]
             if not recs:
                 _k += 1
@@ -330,8 +330,8 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
             share[i] -= delta
             share[j] += delta
             _mj = mid[j]
-            _num[m] -= cell_vol[i] * delta * rate[i]; _den[m] -= cell_vol[i] * delta
-            _num[_mj] += cell_vol[j] * delta * rate[j]; _den[_mj] += cell_vol[j] * delta
+            _num[m] -= profile_vol[i] * delta * rate[i]; _den[m] -= profile_vol[i] * delta
+            _num[_mj] += profile_vol[j] * delta * rate[j]; _den[_mj] += profile_vol[j] * delta
             rate_cache[m] = _rt(m)
             rate_cache[_mj] = _rt(_mj)
             if pos[j] < pstart[_mj]:
@@ -347,14 +347,14 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
                 freed = share[i]
                 if freed <= 1e-12:
                     continue
-                for j in (k for k in _corder[cell[i]]
+                for j in (k for k in _corder[profile[i]]
                           if mid[k] != m and share[k] < max_share - 1e-9):
                     take = min(max_share - share[j], freed)
                     share[j] += take
                     share[i] -= take
                     _mj = mid[j]
-                    _num[m] -= cell_vol[i] * take * rate[i]; _den[m] -= cell_vol[i] * take
-                    _num[_mj] += cell_vol[j] * take * rate[j]; _den[_mj] += cell_vol[j] * take
+                    _num[m] -= profile_vol[i] * take * rate[i]; _den[m] -= profile_vol[i] * take
+                    _num[_mj] += profile_vol[j] * take * rate[j]; _den[_mj] += profile_vol[j] * take
                     if pos[j] < pstart[_mj]:
                         pstart[_mj] = int(pos[j])
                     _touched.add(_mj)
@@ -366,7 +366,7 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
                 rate_cache[_tm] = _rt(_tm)
 
     # Renormalise each profile to sum 1 (safety against rounding).
-    for c, rows in cell_rows.items():
+    for c, rows in profile_rows.items():
         s = share[rows].sum()
         if s > 0:
             share[rows] = share[rows] / s
@@ -399,15 +399,15 @@ def enforce_mid_volume_caps(df: pd.DataFrame, a_max_by_mid: dict,
     d = df.reset_index(drop=True).copy()
     share = d["share"].to_numpy(float).copy()
     bshare = d["baseline_share"].to_numpy(float)
-    cell_vol = d["cell_vol"].to_numpy(float)
+    profile_vol = d["profile_vol"].to_numpy(float)
     rate = d["rate"].to_numpy(float) if "rate" in d.columns else np.zeros(len(d))
     mid = d["vampMid"].astype(str).to_numpy(object)
-    cell = d["cell"].astype(str).to_numpy(object)
+    profile = d["profile"].astype(str).to_numpy(object)
 
     mids = list(pd.unique(mid))
     mid_rows = _group_indices(mid)
-    cell_rows = _group_indices(cell)
-    _corder = _cell_recip_order(cell_rows, rate)   # per-profile rows by ascending rate (bit-identical)
+    profile_rows = _group_indices(profile)
+    _corder = _profile_recip_order(profile_rows, rate)   # per-profile rows by ascending rate (bit-identical)
     constrained: set = set()
 
     for m in mids:
@@ -415,8 +415,8 @@ def enforce_mid_volume_caps(df: pd.DataFrame, a_max_by_mid: dict,
             continue
         a_max = max(float(a_max_by_mid[m]), 0.0)
         rows = mid_rows[m]
-        bvol = float((cell_vol[rows] * bshare[rows]).sum())
-        cvol = float((cell_vol[rows] * share[rows]).sum())
+        bvol = float((profile_vol[rows] * bshare[rows]).sum())
+        cvol = float((profile_vol[rows] * share[rows]).sum())
         if bvol <= 1e-12:
             continue
         if cvol <= a_max * bvol + 1e-9:
@@ -428,7 +428,7 @@ def enforce_mid_volume_caps(df: pd.DataFrame, a_max_by_mid: dict,
             share[i] *= f
             if freed <= 1e-12:
                 continue
-            for j in (k for k in _corder[cell[i]]
+            for j in (k for k in _corder[profile[i]]
                       if mid[k] != m and share[k] < max_share - 1e-9):
                 take = min(max_share - share[j], freed)
                 share[j] += take
@@ -436,7 +436,7 @@ def enforce_mid_volume_caps(df: pd.DataFrame, a_max_by_mid: dict,
                 if freed <= 1e-12:
                     break
 
-    for c, rows in cell_rows.items():
+    for c, rows in profile_rows.items():
         s = share[rows].sum()
         if s > 0:
             share[rows] = share[rows] / s
@@ -446,7 +446,7 @@ def enforce_mid_volume_caps(df: pd.DataFrame, a_max_by_mid: dict,
 
 
 # [FN-199]
-def optimise_split(problems: list[CellProblem],
+def optimise_split(problems: list[ProfileProblem],
                    settings: OptimiserSettings) -> pd.DataFrame:
     """Solve every cell with the selected engine and assemble the long split table.
 
@@ -493,11 +493,11 @@ def optimise_split(problems: list[CellProblem],
         "gateway": _c_gw,
         "share": _c_share,
         "volume": _c_vol,
-        "cell_volume": _c_cvol,
+        "profile_volume": _c_cvol,
         "gateway_success_rate": _c_gsr,
         "gateway_risk_rate": _c_grr,
-        "cell_expected_success": _c_ces,
-        "cell_expected_risk": _c_cer,
+        "profile_expected_success": _c_ces,
+        "profile_expected_risk": _c_cer,
         "baseline_share": _c_bshare,
         "feasible": _c_feas,
         "note": _c_note,
@@ -514,23 +514,23 @@ def portfolio_summary(split: pd.DataFrame) -> dict:
     """
     if split.empty:
         return {"volume": 0.0, "expected_success_rate": 0.0,
-                "expected_risk_rate": 0.0, "infeasible_cells": 0}
+                "expected_risk_rate": 0.0, "infeasible_profiles": 0}
     volumes = split["volume"].to_numpy()
     _tot_vol = volumes.sum()
     total_volume = max(_tot_vol, 1)
     expected_success = (volumes * split["gateway_success_rate"]).sum() / total_volume
     expected_risk = (volumes * split["gateway_risk_rate"]).sum() / total_volume
-    infeasible_cells = split.loc[~split["feasible"], ["rpgt", "currency", "bin"]].drop_duplicates()
+    infeasible_profiles = split.loc[~split["feasible"], ["rpgt", "currency", "bin"]].drop_duplicates()
     return {
         "volume": float(_tot_vol),
         "expected_success_rate": float(expected_success),
         "expected_risk_rate": float(expected_risk),
-        "infeasible_cells": int(len(infeasible_cells)),
+        "infeasible_profiles": int(len(infeasible_profiles)),
     }
 
 
 # [FN-201]
-def sweep_slider(problems: list[CellProblem], settings: OptimiserSettings,
+def sweep_slider(problems: list[ProfileProblem], settings: OptimiserSettings,
                  weights=None) -> pd.DataFrame:
     """Produce split *variations* across the conversion↔risk slider.
 

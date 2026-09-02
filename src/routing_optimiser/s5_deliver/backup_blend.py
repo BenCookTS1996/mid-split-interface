@@ -116,7 +116,7 @@ def parse_backup_catchall(backup_dir: str, rpgt_filter: str | None = None) -> Di
 
 
 # [FN-003]
-def blend_cell_shares(specific: Dict[str, float], catchall: Dict[str, float]) -> Dict[str, float]:
+def blend_profile_shares(specific: Dict[str, float], catchall: Dict[str, float]) -> Dict[str, float]:
     """Reproduce the pipeline's effective per-cell routing shares.
 
     ``specific``  : the optimiser/exported split for ONE cell {gatewayFid: share} (any
@@ -147,11 +147,11 @@ def blend_cell_shares(specific: Dict[str, float], catchall: Dict[str, float]) ->
 
 
 # [FN-004]
-def _catchall_by_vampmid(catchall_cell: Dict[str, float], fid2vamp: Dict[str, str]) -> Dict[str, float]:
+def _catchall_by_vampmid(catchall_profile: Dict[str, float], fid2vamp: Dict[str, str]) -> Dict[str, float]:
     """Map a cell's catch-all {gatewayFid: pct} onto {vampMid: pct} (summing fids that
     share a vampMid), using fid2vamp (lower-cased keys). Fids with no vampMid are dropped."""
     out: Dict[str, float] = {}
-    for fid, pct in (catchall_cell or {}).items():
+    for fid, pct in (catchall_profile or {}).items():
         vm = fid2vamp.get(str(fid).strip().lower())
         if vm is None:
             continue
@@ -197,7 +197,7 @@ def blend_prop_items(prop_items, catchall, fid2vamp, by_rpgt=None):
         return {g: v / cnt for g, v in acc.items()} if cnt else {}
 
     from collections import defaultdict
-    cells = defaultdict(dict)          # profile-key -> {vampMid: prop_raw}
+    profiles = defaultdict(dict)          # profile-key -> {vampMid: prop_raw}
     order = []                         # preserve first-seen profile order
     for t in _pi:
         if _n >= 7:
@@ -210,13 +210,13 @@ def blend_prop_items(prop_items, catchall, fid2vamp, by_rpgt=None):
             cur, b, vm, s = t
             rp = None
             ck = (cur, b)
-        if ck not in cells:
+        if ck not in profiles:
             order.append(ck)
-        cells[ck][str(vm)] = cells[ck].get(str(vm), 0.0) + float(s)
+        profiles[ck][str(vm)] = profiles[ck].get(str(vm), 0.0) + float(s)
 
     out = []
     for ck in order:
-        spec = cells[ck]
+        spec = profiles[ck]
         if _n >= 7:
             cur, b, rp, pmp, ctry = ck
             ca = _catchall_by_vampmid(catchall.get((cur, str(rp).strip().lower(),
@@ -228,7 +228,7 @@ def blend_prop_items(prop_items, catchall, fid2vamp, by_rpgt=None):
         else:
             cur, b = ck
             ca = _catchall_by_vampmid(_pooled(cur, None), f2v)
-        eff = blend_cell_shares(spec, ca)
+        eff = blend_profile_shares(spec, ca)
         for vm, s in eff.items():
             if _n >= 7:
                 out.append((cur, b, rp, pmp, ctry, vm, s))

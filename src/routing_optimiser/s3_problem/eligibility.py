@@ -228,7 +228,7 @@ def _exact_nonusa_frac(ctry):
 
 
 # [FN-062c]
-def _subcell_col(df, kind):
+def _profile_col(df, kind):
     """The column carrying this restriction's sub-cell identity, or None at cell grain."""
     if kind == "wallet":
         return "pmp" if "pmp" in df.columns else None
@@ -262,7 +262,7 @@ def _capability_blend(df: pd.DataFrame, group_cols: list[str], incapable, frac_m
     if not (group_cols and incapable_mask.any()):
         return result_share
     has_cur_bank = ("currency" in df.columns and "bin" in df.columns)
-    _sc_col = _subcell_col(df, kind) if kind else None
+    _sc_col = _profile_col(df, kind) if kind else None
     _pos_of = {lbl: p for p, lbl in enumerate(df.index)}   # label -> positional (unique index)
     for _grp_key, row_idx in df.groupby(group_cols, dropna=False).groups.items():
         group_rows = df.loc[row_idx]
@@ -283,9 +283,9 @@ def _capability_blend(df: pd.DataFrame, group_cols: list[str], incapable, frac_m
             if _ex is not None:
                 reroute_frac = _ex
         reroute_frac = 0.0 if (reroute_frac != reroute_frac) else min(max(reroute_frac, 0.0), 1.0)
-        incap_in_cell = incapable_mask[[_pos_of[i] for i in row_idx]]
+        incap_in_profile = incapable_mask[[_pos_of[i] for i in row_idx]]
         capable_share = base.copy()
-        capable_share[incap_in_cell] = 0.0
+        capable_share[incap_in_profile] = 0.0
         capable_total = capable_share.sum()
         # if only incapable gateways exist, no reroute is possible → keep the baseline
         capable_share = capable_share / capable_total if capable_total > 0 else base
@@ -350,8 +350,8 @@ def apply_restrictions(split: pd.DataFrame, rules: list[dict], fid2vamp: dict,
         if gk:
             df["share"] = _renorm(df, gk, "share")
 
-    if "cell_volume" in df.columns:
-        df["volume"] = df["cell_volume"] * df["share"]
+    if "profile_volume" in df.columns:
+        df["volume"] = df["profile_volume"] * df["share"]
     return df.drop(columns=[c for c in ["_gw", "_vm"] if c in df.columns])
 
 
@@ -370,7 +370,7 @@ def apply_restrictions(split: pd.DataFrame, rules: list[dict], fid2vamp: dict,
 # Proven row-for-row identical to `apply_restrictions` (see the backend equivalence test).
 # ---------------------------------------------------------------------------
 # [FN-064]
-def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, *,
+def build_elig_operator(profiles: pd.DataFrame, rules: list[dict], fid2vamp: dict, *,
                         wallet_incapable=frozenset(), wallet_frac: dict | None = None,
                         wallet_default: float = 0.0,
                         usa_only=frozenset(), nonusa_frac: dict | None = None,
@@ -382,15 +382,15 @@ def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, 
     country, used only for ban matching). The cell segments this derives must equal the
     (rpgt, currency, bank) groups `apply_restrictions` renormalises within, so make `cell`
     that composite key. Returns a dict consumed by `apply_elig_pop`."""
-    df = cells.reset_index(drop=True)
+    df = profiles.reset_index(drop=True)
     n = len(df)
     _gw = df["gateway"].astype(str).str.strip().str.lower().to_numpy()
     _vm = pd.Series(_gw).map(fid2vamp).fillna(pd.Series(_gw)).to_numpy()
-    _cell = df["cell"].astype(str).to_numpy()
+    _profile = df["profile"].astype(str).to_numpy()
     # contiguous profile segments (bit-for-bit the reduceat layout the caller's decode uses)
-    starts = [0] + [i for i in range(1, n) if _cell[i] != _cell[i - 1]]
-    cell_starts = np.asarray(starts, dtype=np.intp)
-    cell_counts = np.diff(np.append(cell_starts, n)).astype(np.intp)
+    starts = [0] + [i for i in range(1, n) if _profile[i] != _profile[i - 1]]
+    profile_starts = np.asarray(starts, dtype=np.intp)
+    profile_counts = np.diff(np.append(profile_starts, n)).astype(np.intp)
 
     prof_cols = [c for c in ("rpgt", "currency", "bin", "bin", "country") if c in df.columns]
     if rules:
@@ -451,7 +451,7 @@ def build_elig_operator(cells: pd.DataFrame, rules: list[dict], fid2vamp: dict, 
         return wf
 
     return {
-        "cell_starts": cell_starts, "cell_counts": cell_counts,
+        "profile_starts": profile_starts, "profile_counts": profile_counts,
         "ban": ban, "has_ban": bool(rules) and bool(ban.any()),
         "w_incap": _incap_mask(wallet_incapable),
         "w_wf": _wf(wallet_frac, wallet_default, kind="wallet"),
@@ -628,20 +628,20 @@ def _blend_pop(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
         return _fu_renorm(blended, seg, co, np.empty_like(X))
     capX = base * (~incap)[None, :]
     seg_c = np.add.reduceat(capX, cs, axis=1)
-    pos_cell = seg_c > 0
-    sd = np.repeat(np.where(pos_cell, seg_c, 1.0), cc, axis=1)
+    pos_profile = seg_c > 0
+    sd = np.repeat(np.where(pos_profile, seg_c, 1.0), cc, axis=1)
     # 19bq: THE SELECT IS USUALLY UNREACHABLE. `posc` is False only in a profile where NO gateway is
     # capable, and [elig-nocap] measured that on the live population: 0 of 23,791 profiles for wallet
     # AND 0 for USA-only, carrying 0 rows. Where every profile is positive, np.where(True, a, b) == a
     # elementwise EXACTLY, so the select and the bool repeat are both pure cost — ~69 ms + ~3 ms,
     # twice per delivery. The guard is at PROFILE grain (23,791 booleans), not row grain, so it is free;
     # when any profile IS non-positive it falls through to the identical select and nothing changes.
-    if pos_cell.all():
+    if pos_profile.all():
         _NC_STAT["skip"] += 1
         cshare = capX / sd
     else:
         _NC_STAT["select"] += 1
-        posc = np.repeat(pos_cell, cc, axis=1)
+        posc = np.repeat(pos_profile, cc, axis=1)
         cshare = np.where(posc, capX / sd, base)
     wfb = wf[None, :]
     blended = wfb * cshare + (1.0 - wfb) * base
@@ -716,10 +716,10 @@ def _rx_rows(cs, cc, hit):
 
 def _rx_build(op):
     """Per-stage restriction index. Cached on the operator, which is built once per layout."""
-    cs = np.asarray(op["cell_starts"], np.intp)
-    cc = np.asarray(op["cell_counts"], np.intp)
+    cs = np.asarray(op["profile_starts"], np.intp)
+    cc = np.asarray(op["profile_counts"], np.intp)
     n = int(cc.sum())
-    rx = {"n_rows": n, "n_cell": int(cs.size), "stages": {}, "why": [],
+    rx = {"n_rows": n, "n_profile": int(cs.size), "stages": {}, "why": [],
           # 19bs: built ONCE per layout, here, and passed down. Never cached under a (N, ncell)
           # key — two sub-layouts can share that pair, and a mis-keyed profile map is a silent wrong
           # answer, not a slow one.
@@ -741,7 +741,7 @@ def _rx_build(op):
         if rows.size == 0:
             # the whole stage is the identity up to the trailing renorm
             rx["stages"][_k] = {"rows": rows, "scs": scs, "scc": scc, "co": None,
-                                "cells": 0, "frac": 0.0}
+                                "profiles": 0, "frac": 0.0}
             rx["why"].append(f"{_k}: NO cell can change (every wf == 0) — 0 of {n:,} rows")
         elif frac > _RX_MAXHIT:
             rx["why"].append(f"{_k}: {frac:.1%} of rows are in changeable cells, above the "
@@ -749,7 +749,7 @@ def _rx_build(op):
         else:
             rx["stages"][_k] = {"rows": rows, "scs": scs, "scc": scc,
                                 "co": _co_build(scc) if _FU_OK["use"] else None,
-                                "cells": int(hit.sum()), "frac": frac}
+                                "profiles": int(hit.sum()), "frac": frac}
             rx["why"].append(f"{_k}: {int(hit.sum()):,} of {cs.size:,} cells "
                              f"({hit.mean():.2%}) carrying {rows.size:,} of {n:,} rows "
                              f"({frac:.2%}) can change — the rest is copied through")
@@ -866,10 +866,10 @@ class _EpBuf:
     """Scratch for one (N, ncell) shape, grown in P. Slices of one contiguous (Pmax, N) block, so
     calls at P=1 / 35 / 40 share a single allocation instead of three."""
 
-    __slots__ = ("N", "cell_of", "P", "f", "m")
+    __slots__ = ("N", "profile_of", "P", "f", "m")
 
-    def __init__(self, N, cell_of):
-        self.N, self.cell_of, self.P = N, cell_of, 0
+    def __init__(self, N, profile_of):
+        self.N, self.profile_of, self.P = N, profile_of, 0
         self.f, self.m = [], []
 
     def grow(self, P):
@@ -896,15 +896,15 @@ def _ep_buf(cs, cc, N):
     return b
 
 
-def _seg_bcast(X, cs, buf, cell_of, out):
+def _seg_bcast(X, cs, buf, profile_of, out):
     """Per-cell sum broadcast back to row grain — np.repeat's result, gathered instead."""
-    np.take(np.add.reduceat(X, cs, axis=1), cell_of, axis=1, out=out)
+    np.take(np.add.reduceat(X, cs, axis=1), profile_of, axis=1, out=out)
     return out
 
 
 def _renorm_ip(X, cs, b, P, out):
     """_renorm_pop_ref, in place. Same ufuncs, same order (19bk; default off)."""
-    s = _seg_bcast(X, cs, b, b.cell_of, b.take(P, 3))
+    s = _seg_bcast(X, cs, b, b.profile_of, b.take(P, 3))
     pos = np.greater(s, 0.0, out=b.mask(P, 0))
     sd = b.take(P, 4)
     sd.fill(1.0)
@@ -916,11 +916,11 @@ def _renorm_ip(X, cs, b, P, out):
 
 def _blend_ip(X, incap, wf, cs, b, P, out):
     """_blend_pop_ref, in place. Same ufuncs, same order (19bk; default off)."""
-    bs = _seg_bcast(X, cs, b, b.cell_of, b.take(P, 0))
+    bs = _seg_bcast(X, cs, b, b.profile_of, b.take(P, 0))
     posb = np.greater(bs, 0.0, out=b.mask(P, 1))
     cx = b.take(P, 1)
     np.multiply(X, (~incap)[None, :], out=cx)
-    s_cap = _seg_bcast(cx, cs, b, b.cell_of, b.take(P, 2))
+    s_cap = _seg_bcast(cx, cs, b, b.profile_of, b.take(P, 2))
     posc = s_cap > 0.0
     sd = b.take(P, 3)
     sd.fill(1.0)
@@ -980,7 +980,7 @@ def apply_elig_pop(X: np.ndarray, op: dict) -> np.ndarray:
     single = Xa.ndim == 1
     if single:
         Xa = Xa[None, :]
-    cs, cc = op["cell_starts"], op["cell_counts"]
+    cs, cc = op["profile_starts"], op["profile_counts"]
     # RE-ENTRANCY: the scratch is shared, so a nested or concurrent call would corrupt it. Both
     # callers are single-threaded here, but the guard costs a boolean and removes the question.
     if not _EP_OK["use"] or _EP_BUSY[0]:

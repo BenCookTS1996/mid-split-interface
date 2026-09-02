@@ -83,7 +83,7 @@ def _z_per_mid(vals, mid_rows, n_mid, N):
         z[r] = (rr - rr.mean()) / sd if sd > 1e-12 else 0.0
     return z
 # [FN-107]
-def _cap_floor_shares(X, cell_starts, cell_counts, elig, cap, floor):
+def _cap_floor_shares(X, profile_starts, profile_counts, elig, cap, floor):
     """HARD per-cell max-share cap + exploration floor on shares X (P, N), vectorised.
     Cells are contiguous segments (cell_starts / cell_counts). Applies the floor first
     (lift eligible gateways to a per-cell-clamped floor, renormalise), then WATER-FILLS
@@ -92,39 +92,39 @@ def _cap_floor_shares(X, cell_starts, cell_counts, elig, cap, floor):
     (a single gateway must be 1.0), matching the export's _cap_shares. Guarantees the GA
     only ever evaluates deployable splits (no search/output mismatch)."""
     elig_row = elig[None, :] > 0.5
-    n_elig_cell = np.repeat(np.add.reduceat(elig.astype(float), cell_starts), cell_counts)  # (N,)
+    n_elig_profile = np.repeat(np.add.reduceat(elig.astype(float), profile_starts), profile_counts)  # (N,)
     if floor > 0.0:
         # Per-profile floor clamped to 1/n_elig so n_elig×floor <= 1 stays feasible. Lift any
         # below-floor eligible gateway to the floor, and take the deficit from ABOVE-floor
         # eligible gateways in proportion to their room above the floor (water-fill DOWN) — so
         # the sum stays 1 and the floored values are NOT shrunk back under by a global renorm.
-        fl = np.minimum(floor, np.where(n_elig_cell > 0, 1.0 / np.maximum(n_elig_cell, 1.0),
+        fl = np.minimum(floor, np.where(n_elig_profile > 0, 1.0 / np.maximum(n_elig_profile, 1.0),
                                         0.0))[None, :]
         for _ in range(50):
             under = elig_row & (X < fl - 1e-12)
             if not under.any():
                 break
-            deficit_cell = np.repeat(np.add.reduceat(np.where(under, fl - X, 0.0), cell_starts,
-                                                     axis=1), cell_counts, axis=1)
+            deficit_profile = np.repeat(np.add.reduceat(np.where(under, fl - X, 0.0), profile_starts,
+                                                     axis=1), profile_counts, axis=1)
             X = np.where(under, fl, X)
             give = np.where(elig_row & (~under) & (X > fl + 1e-12), X - fl, 0.0)
-            give_cell = np.repeat(np.add.reduceat(give, cell_starts, axis=1), cell_counts, axis=1)
+            give_profile = np.repeat(np.add.reduceat(give, profile_starts, axis=1), profile_counts, axis=1)
             with np.errstate(divide="ignore", invalid="ignore"):
-                X = X - np.where(give_cell > 1e-12, give * deficit_cell / give_cell, 0.0)
+                X = X - np.where(give_profile > 1e-12, give * deficit_profile / give_profile, 0.0)
     if cap < 1.0:
-        capN = np.where(n_elig_cell >= 2, cap, 1.0)[None, :]     # single-gateway profiles uncapped
+        capN = np.where(n_elig_profile >= 2, cap, 1.0)[None, :]     # single-gateway profiles uncapped
         for _ in range(50):
             over = X > capN + 1e-12
             if not over.any():
                 break
             excess_col = np.where(over, X - capN, 0.0)
-            excess_cell = np.repeat(np.add.reduceat(excess_col, cell_starts, axis=1),
-                                    cell_counts, axis=1)
+            excess_profile = np.repeat(np.add.reduceat(excess_col, profile_starts, axis=1),
+                                    profile_counts, axis=1)
             X = np.where(over, capN, X)
             room = np.where(elig_row & (~over) & (X < capN - 1e-12), capN - X, 0.0)
-            room_cell = np.repeat(np.add.reduceat(room, cell_starts, axis=1), cell_counts, axis=1)
+            room_profile = np.repeat(np.add.reduceat(room, profile_starts, axis=1), profile_counts, axis=1)
             with np.errstate(divide="ignore", invalid="ignore"):
-                X = X + np.where(room_cell > 1e-12, room * excess_cell / room_cell, 0.0)
+                X = X + np.where(room_profile > 1e-12, room * excess_profile / room_profile, 0.0)
     return X
 # [FN-108]
 def _mid_over(shares, ctx, include_floor_shortfall=True):
@@ -148,7 +148,7 @@ def _mid_over(shares, ctx, include_floor_shortfall=True):
     over = np.zeros((P, M), dtype=float)
     if M == 0:
         return over
-    cv, risk = ctx["cell_vol"], ctx["risk"]
+    cv, risk = ctx["profile_vol"], ctx["risk"]
     _S = ctx.get("_mid_S")                                    # fast per-MID sums when available
     vol = shares * cv[None, :]
     midv = _mid_sums(vol, mid_rows, M, S=_S)
@@ -225,7 +225,7 @@ def _mid_over(shares, ctx, include_floor_shortfall=True):
 
 
 # [FN-110]
-def _leaned_ref(ref, risk, elig, cell_starts, cell_counts, gamma):
+def _leaned_ref(ref, risk, elig, profile_starts, profile_counts, gamma):
     """Lean the revenue reference gently toward LOWER global risk (γ ≥ 0): the θ=0
     base — and therefore where freed volume redistributes — starts a little compliant
     (improvements #6 and #8). γ is dimensionless (risk standardised across eligible
@@ -243,11 +243,11 @@ def _leaned_ref(ref, risk, elig, cell_starts, cell_counts, gamma):
     if sd > 1e-12:
         zg[e] = (risk[e] - rr.mean()) / sd
     w = ref * np.exp(-gamma * zg)
-    seg = np.add.reduceat(w, cell_starts)
+    seg = np.add.reduceat(w, profile_starts)
     seg = np.where(seg > 1e-12, seg, 1.0)
-    return w / np.repeat(seg, cell_counts)
+    return w / np.repeat(seg, profile_counts)
 # [FN-111]
-def _cap_floor_prep(cell_starts, cell_counts, elig, cap, floor):
+def _cap_floor_prep(profile_starts, profile_counts, elig, cap, floor):
     """Precompute the per-cell CONSTANTS the max-share/floor water-fill needs, so they
     are built ONCE per problem instead of on every decode (bit-identical, pure saving).
     Returns None when neither cap nor floor binds. `elig_row`, `capN`, `fl`, `n_elig_cell`
@@ -257,58 +257,58 @@ def _cap_floor_prep(cell_starts, cell_counts, elig, cap, floor):
         return None
     elig = np.asarray(elig, float)
     elig_row = elig[None, :] > 0.5
-    n_elig_cell = np.repeat(np.add.reduceat(elig, cell_starts), cell_counts)      # (N,)
+    n_elig_profile = np.repeat(np.add.reduceat(elig, profile_starts), profile_counts)      # (N,)
     fl = None
     if floor > 0.0:
-        fl = np.minimum(floor, np.where(n_elig_cell > 0, 1.0 / np.maximum(n_elig_cell, 1.0),
+        fl = np.minimum(floor, np.where(n_elig_profile > 0, 1.0 / np.maximum(n_elig_profile, 1.0),
                                         0.0))[None, :]
-    capN = np.where(n_elig_cell >= 2, cap, 1.0)[None, :] if cap < 1.0 else None
-    return {"elig_row": elig_row, "n_elig_cell": n_elig_cell, "fl": fl, "capN": capN,
+    capN = np.where(n_elig_profile >= 2, cap, 1.0)[None, :] if cap < 1.0 else None
+    return {"elig_row": elig_row, "n_elig_profile": n_elig_profile, "fl": fl, "capN": capN,
             "cap": cap, "floor": floor,
-            "cell_starts": np.asarray(cell_starts), "cell_counts": np.asarray(cell_counts)}
+            "profile_starts": np.asarray(profile_starts), "profile_counts": np.asarray(profile_counts)}
 # [FN-112]
 def _cap_floor_apply(X, prep):
     """HARD per-cell floor-then-cap water-fill using PRECOMPUTED constants (`prep` from
     `_cap_floor_prep`). Byte-identical to `_cap_floor_shares` — same order of operations,
     only the per-cell constants are reused rather than rebuilt each call."""
-    cs, ccnt = prep["cell_starts"], prep["cell_counts"]
+    cs, ccnt = prep["profile_starts"], prep["profile_counts"]
     elig_row, fl, capN = prep["elig_row"], prep["fl"], prep["capN"]
     if fl is not None:
         for _ in range(50):
             under = elig_row & (X < fl - 1e-12)
             if not under.any():
                 break
-            deficit_cell = np.repeat(np.add.reduceat(np.where(under, fl - X, 0.0), cs,
+            deficit_profile = np.repeat(np.add.reduceat(np.where(under, fl - X, 0.0), cs,
                                                      axis=1), ccnt, axis=1)
             X = np.where(under, fl, X)
             give = np.where(elig_row & (~under) & (X > fl + 1e-12), X - fl, 0.0)
-            give_cell = np.repeat(np.add.reduceat(give, cs, axis=1), ccnt, axis=1)
+            give_profile = np.repeat(np.add.reduceat(give, cs, axis=1), ccnt, axis=1)
             with np.errstate(divide="ignore", invalid="ignore"):
-                X = X - np.where(give_cell > 1e-12, give * deficit_cell / give_cell, 0.0)
+                X = X - np.where(give_profile > 1e-12, give * deficit_profile / give_profile, 0.0)
     if capN is not None:
         for _ in range(50):
             over = X > capN + 1e-12
             if not over.any():
                 break
             excess_col = np.where(over, X - capN, 0.0)
-            excess_cell = np.repeat(np.add.reduceat(excess_col, cs, axis=1), ccnt, axis=1)
+            excess_profile = np.repeat(np.add.reduceat(excess_col, cs, axis=1), ccnt, axis=1)
             X = np.where(over, capN, X)
             room = np.where(elig_row & (~over) & (X < capN - 1e-12), capN - X, 0.0)
-            room_cell = np.repeat(np.add.reduceat(room, cs, axis=1), ccnt, axis=1)
+            room_profile = np.repeat(np.add.reduceat(room, cs, axis=1), ccnt, axis=1)
             with np.errstate(divide="ignore", invalid="ignore"):
-                X = X + np.where(room_cell > 1e-12, room * excess_cell / room_cell, 0.0)
+                X = X + np.where(room_profile > 1e-12, room * excess_profile / room_profile, 0.0)
     return X
 # [FN-113]
-def _risk_z_per_cell(risk, cell_starts, cell_counts, N):
+def _risk_z_per_profile(risk, profile_starts, profile_counts, N):
     """Standardise each CELL's per-gateway risk across ITS rows (mirror of `_z_per_mid`
     but per cell), so a per-cell fine tilt can shift share within one cell toward its
     lower-risk gateways. Vectorised via reduceat (no Python loop over cells)."""
-    cnt = np.maximum(cell_counts.astype(float), 1.0)
-    smean = np.add.reduceat(risk, cell_starts) / cnt
-    var = np.add.reduceat(risk * risk, cell_starts) / cnt - smean * smean
+    cnt = np.maximum(profile_counts.astype(float), 1.0)
+    smean = np.add.reduceat(risk, profile_starts) / cnt
+    var = np.add.reduceat(risk * risk, profile_starts) / cnt - smean * smean
     sd = np.sqrt(np.maximum(var, 0.0))
-    mean_row = np.repeat(smean, cell_counts)
-    sd_row = np.repeat(sd, cell_counts)
+    mean_row = np.repeat(smean, profile_counts)
+    sd_row = np.repeat(sd, profile_counts)
     # Divide by a SAFE denominator (1.0 where sd≈0) so the masked-out branch of np.where doesn't
     # trigger a spurious "invalid value in divide" RuntimeWarning — single-gateway / zero-variance
     # profiles have no meaningful z, and are zeroed anyway.
@@ -316,9 +316,9 @@ def _risk_z_per_cell(risk, cell_starts, cell_counts, N):
     z = np.where(sd_row > 1e-12, (risk - mean_row) / _sd_safe, 0.0)
     return z, sd            # sd (per-profile) also used to pick the fine-tilt profiles
 # [FN-114]
-def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
+def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, profile_starts, profile_counts, elig,
                      cap=1.0, floor=0.0, *, eidx=None, prep=None,
-                     fine_idx=None, zr_cell=None, n_fine=0):
+                     fine_idx=None, zr_profile=None, n_fine=0):
     """genome (P, 3M[+K]) = [θr (risk-tilt) | θq (return-tilt) | g (gain) | cellθ (K fine)] -> (P, N).
 
         share_g ∝ ref_g · exp(−θr·zr_g + θq·zq_g + g_mid − cellθ_cell·zr_cell_g) · elig
@@ -339,13 +339,13 @@ def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, cell_starts, cell_counts, e
     eligible columns; `prep` reuses precomputed cap/floor constants."""
     if M == 0:
         w = ref[None, :] * elig[None, :]
-        seg = np.add.reduceat(w, cell_starts, axis=1)
+        seg = np.add.reduceat(w, profile_starts, axis=1)
         seg = np.where(seg > 1e-12, seg, 1.0)
-        X = w / np.repeat(seg, cell_counts, axis=1)
+        X = w / np.repeat(seg, profile_counts, axis=1)
         if prep is not None:                                 # enforce the HARD cap/floor here too
             X = _cap_floor_apply(X, prep)
         elif cap < 1.0 or floor > 0.0:
-            X = _cap_floor_shares(X, cell_starts, cell_counts, elig, float(cap), float(floor))
+            X = _cap_floor_shares(X, profile_starts, profile_counts, elig, float(cap), float(floor))
         return X
     P = genome.shape[0]; N = mid_id.shape[0]
     tr = genome[:, :M]; tq = genome[:, M:2 * M]; gg = genome[:, 2 * M:3 * M]
@@ -357,7 +357,7 @@ def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, cell_starts, cell_counts, e
         _fm = _fi >= 0
         if _fm.any():
             _cth = genome[:, 3 * M:3 * M + int(n_fine)]      # (P, K)
-            a[:, _fm] = a[:, _fm] - _cth[:, _fi[_fm]] * zr_cell[None, _cols][:, _fm]
+            a[:, _fm] = a[:, _fm] - _cth[:, _fi[_fm]] * zr_profile[None, _cols][:, _fm]
     w = np.zeros((P, N), dtype=float)
     # Numerical stability: subtract each profile's MAX `a` (over its ELIGIBLE columns) before exp.
     # A ref-weighted softmax is shift-invariant per cell (the per-profile constant cancels between
@@ -365,19 +365,19 @@ def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, cell_starts, cell_counts, e
     # longer overflow to +inf, which is what produced inf/inf = NaN for a large tilt·z product.
     _A = np.full((P, N), -np.inf)
     _A[:, _cols] = np.where(elig[None, _cols] > 0.5, a, -np.inf)
-    _cmax = np.maximum.reduceat(_A, cell_starts, axis=1)                 # (P, C)
+    _cmax = np.maximum.reduceat(_A, profile_starts, axis=1)                 # (P, C)
     _cmax = np.where(np.isfinite(_cmax), _cmax, 0.0)                     # all-ineligible profile → 0
-    _shift = np.repeat(_cmax, cell_counts, axis=1)[:, _cols]
+    _shift = np.repeat(_cmax, profile_counts, axis=1)[:, _cols]
     # ineligible cols → exp(-inf)=0 (avoids inf·0 = NaN); eligible cols have a-shift ≤ 0 ⇒ no overflow
     _expo = np.where(elig[None, _cols] > 0.5, a - _shift, -np.inf)
     w[:, _cols] = ref[None, _cols] * np.exp(_expo) * elig[None, _cols]
-    seg = np.add.reduceat(w, cell_starts, axis=1)
+    seg = np.add.reduceat(w, profile_starts, axis=1)
     seg = np.where(seg > 1e-12, seg, 1.0)
-    X = w / np.repeat(seg, cell_counts, axis=1)
+    X = w / np.repeat(seg, profile_counts, axis=1)
     if prep is not None:
         X = _cap_floor_apply(X, prep)
     elif cap < 1.0 or floor > 0.0:
-        X = _cap_floor_shares(X, cell_starts, cell_counts, elig, float(cap), float(floor))
+        X = _cap_floor_shares(X, profile_starts, profile_counts, elig, float(cap), float(floor))
     return X
 # [FN-118]
 def _violation_breakdown(shares, ctx, top_k=20):
@@ -406,7 +406,7 @@ def _violation_breakdown(shares, ctx, top_k=20):
         shares = apply_elig_pop(shares, _eop)                # SAME masking _obj_viol scores through
         out["elig_l1"] = float(np.abs(shares - pre).sum())
         out["elig_zeroed"] = int(((pre > 1e-9) & (shares <= 1e-12)).sum())
-    cv, risk = ctx["cell_vol"], ctx["risk"]
+    cv, risk = ctx["profile_vol"], ctx["risk"]
     mid_rows, M = ctx["mid_rows"], int(ctx["n_mid"])
     _S = ctx.get("_mid_S")
     _bfix = float(ctx.get("breach_fixed", 0.0) or 0.0)
@@ -479,34 +479,34 @@ def _violation_breakdown(shares, ctx, top_k=20):
         # profile has <2 ELIGIBLE gateways (a lone usable gateway must be ~100%). Capture each over-cap
         # profile's eligible/present gateway counts + volume + vampMid so the log can confirm the cause.
         _ovi = np.where(ov > 0)[0]
-        if _ovi.size and ctx.get("cell_starts") is not None:
-            _cs2 = np.asarray(ctx["cell_starts"]); _cc2 = np.asarray(ctx["cell_counts"])
+        if _ovi.size and ctx.get("profile_starts") is not None:
+            _cs2 = np.asarray(ctx["profile_starts"]); _cc2 = np.asarray(ctx["profile_counts"])
             _el2 = np.asarray(ctx["elig"], float)
-            _nec_by_cell = np.add.reduceat(_el2, _cs2)               # eligible gateways per profile
-            _row2cell = np.repeat(np.arange(len(_cs2)), _cc2)        # row index -> its profile index
-            _cvv = ctx.get("cell_vol"); _mid_id = ctx.get("mid_id")
+            _nec_by_profile = np.add.reduceat(_el2, _cs2)               # eligible gateways per profile
+            _row2profile = np.repeat(np.arange(len(_cs2)), _cc2)        # row index -> its profile index
+            _cvv = ctx.get("profile_vol"); _mid_id = ctx.get("mid_id")
             for _ri in _ovi[:20]:
-                _ci = int(_row2cell[_ri])
+                _ci = int(_row2profile[_ri])
                 cap_offenders.append({
                     "share": float(x[_ri]),
-                    "cell_eligible": int(round(float(_nec_by_cell[_ci]))),
-                    "cell_present": int(_cc2[_ci]),
-                    "cell_vol": (float(_cvv[_ri]) if _cvv is not None else None),
+                    "profile_eligible": int(round(float(_nec_by_profile[_ci]))),
+                    "profile_present": int(_cc2[_ci]),
+                    "profile_vol": (float(_cvv[_ri]) if _cvv is not None else None),
                     "mid": (int(_mid_id[_ri]) if _mid_id is not None else -1),
                 })
     # --- structural exploration floor ---
     _floor = float(ctx.get("floor", 0.0) or 0.0)
-    floor_total = 0.0; floor_rows = 0; floor_infeasible_cells = 0
-    if _floor > 0.0 and ctx.get("cell_starts") is not None:
-        _cs = np.asarray(ctx["cell_starts"]); _cc = np.asarray(ctx["cell_counts"])
+    floor_total = 0.0; floor_rows = 0; floor_infeasible_profiles = 0
+    if _floor > 0.0 and ctx.get("profile_starts") is not None:
+        _cs = np.asarray(ctx["profile_starts"]); _cc = np.asarray(ctx["profile_counts"])
         _el = np.asarray(ctx["elig"], float)
         _nec = np.repeat(np.add.reduceat(_el, _cs), _cc)
         _fl = np.minimum(_floor, np.where(_nec > 0, 1.0 / np.maximum(_nec, 1.0), 0.0))
         _mask = (_el > 0.5) & (_nec >= 2)
         short = np.maximum(_fl - x, 0.0) * _mask / max(_floor, 1e-9)
         floor_total = float(_pen(short).sum()); floor_rows = int((short > 0).sum())
-        _nec_cell = np.add.reduceat(_el, _cs)
-        floor_infeasible_cells = int((_nec_cell * _floor > 1.0 + 1e-9).sum())
+        _nec_profile = np.add.reduceat(_el, _cs)
+        floor_infeasible_profiles = int((_nec_profile * _floor > 1.0 + 1e-9).sum())
     out.update({
         "total": float(vamp_total + bands_total + cap_total + floor_total),
         "vamp_cap": {"total": vamp_total, "mids_over": vamp_over},
@@ -515,7 +515,7 @@ def _violation_breakdown(shares, ctx, top_k=20):
         "max_share": {"total": cap_total, "rows_over": cap_rows, "cap": _cap,
                       "offenders": cap_offenders},
         "floor": {"total": floor_total, "rows_under": floor_rows,
-                  "infeasible_cells": floor_infeasible_cells, "floor": _floor},
+                  "infeasible_profiles": floor_infeasible_profiles, "floor": _floor},
         "bfix": _bfix, "qwt": _qwt,
     })
     return out
@@ -721,13 +721,13 @@ def run_midtilt_ga(ctx, *, pop_size=40, generations=80, seed=42,
     N = ctx["n_row"]; M = int(ctx["n_mid"])
     # Force float64-contiguous ONCE so the hot per-generation ops get zero-copy views.
     _cont = lambda a, dt=float: np.ascontiguousarray(a, dtype=dt)
-    cs = _cont(ctx["cell_starts"], np.intp); cc = _cont(ctx["cell_counts"], np.intp)
+    cs = _cont(ctx["profile_starts"], np.intp); cc = _cont(ctx["profile_counts"], np.intp)
     elig = _cont(ctx["elig"])
     ref0 = _cont(ctx["ref_share"])
     mid_id = _cont(ctx["mid_id"], np.intp)
     risk = _cont(ctx["risk"])
     rc = _cont(ctx["rev_coef"])
-    cv = _cont(ctx["cell_vol"])
+    cv = _cont(ctx["profile_vol"])
     zr = _cont(_z_per_mid(risk, ctx["mid_rows"], M, N))
     zq = _cont(_z_per_mid(rc, ctx["mid_rows"], M, N))
     _cap = float(ctx.get("max_share", 1.0) or 1.0)
@@ -753,29 +753,29 @@ def run_midtilt_ga(ctx, *, pop_size=40, generations=80, seed=42,
     # their own fine tilt so the search can move share WITHIN a profile toward low-risk gateways —
     # reach the coarse per-MID tilt lacks. n_fine=0 keeps the exact 3M-genome behaviour.
     _K = int(max(0, min(int(n_fine), len(cs))))
-    _fine_idx = None; _zr_cell = None
+    _fine_idx = None; _zr_profile = None
     if _K > 0 and M > 0:
-        _zr_cell, _cell_sd = _risk_z_per_cell(risk, cs, cc, N)
-        _cell_vol = cv[cs]                                   # per-profile volume (rows share it)
-        _score = _cell_vol * _cell_sd                        # worth-tilting = big & risk-spread
-        _fine_cells = np.argsort(-_score, kind="stable")[:_K]
+        _zr_profile, _profile_sd = _risk_z_per_profile(risk, cs, cc, N)
+        _profile_vol = cv[cs]                                   # per-profile volume (rows share it)
+        _score = _profile_vol * _profile_sd                        # worth-tilting = big & risk-spread
+        _fine_profiles = np.argsort(-_score, kind="stable")[:_K]
         _fine_idx = np.full(N, -1, dtype=np.intp)
-        for _j, _ci in enumerate(_fine_cells):
+        for _j, _ci in enumerate(_fine_profiles):
             _s0 = int(cs[_ci]); _s1 = _s0 + int(cc[_ci])
             _fine_idx[_s0:_s1] = _j
-        _zr_cell = _cont(_zr_cell)
+        _zr_profile = _cont(_zr_profile)
 
     # [FN-124]
     def _decode(G):
         return _decode_midtilt3(G, M, ref, zr, zq, mid_id, cs, cc, elig, _cap, _floor,
                                 eidx=_eidx, prep=_prep,
-                                fine_idx=_fine_idx, zr_cell=_zr_cell, n_fine=_K)
+                                fine_idx=_fine_idx, zr_profile=_zr_profile, n_fine=_K)
 
     # [FN-125]
     def _decode_precap(G):                                   # softmax shares w/o cap/floor (grads)
         return _decode_midtilt3(G, M, ref, zr, zq, mid_id, cs, cc, elig, 1.0, 0.0,
                                 eidx=_eidx, prep=None,
-                                fine_idx=_fine_idx, zr_cell=_zr_cell, n_fine=_K)
+                                fine_idx=_fine_idx, zr_profile=_zr_profile, n_fine=_K)
 
     # --- degenerate: no per-MID levers -> the (leaned) reference is the answer ---
     if M == 0:
@@ -853,7 +853,7 @@ def run_midtilt_ga(ctx, *, pop_size=40, generations=80, seed=42,
         return ao > bo if af else av < bv
 
     # [FN-133]
-    def _cellrep(v):                                         # (N,) -> per-profile sum, repeated (N,)
+    def _profilerep(v):                                         # (N,) -> per-profile sum, repeated (N,)
         return np.repeat(np.add.reduceat(v, cs), cc)
 
     # [FN-134]
@@ -898,7 +898,7 @@ def run_midtilt_ga(ctx, *, pop_size=40, generations=80, seed=42,
                 f"or select a non-numba engine.\n  [{_nb_ctx}]")
         try:
             _nb_eval_actual = _nbk.make_numba_eval(M, ref, zr, zq, mid_id, cs, cc, elig,
-                                                   _cap, _floor, _fine_idx, _zr_cell, _K,
+                                                   _cap, _floor, _fine_idx, _zr_profile, _K,
                                                    cv, risk, rc, ctx)
         except Exception as _e:
             raise RuntimeError(
@@ -988,13 +988,13 @@ def run_midtilt_ga(ctx, *, pop_size=40, generations=80, seed=42,
         if _K <= 0 or _fine_idx is None:
             return np.zeros(0)
         _m = _fine_idx >= 0
-        return -np.bincount(_fine_idx[_m], weights=(_zr_cell * vec)[_m], minlength=_K)
+        return -np.bincount(_fine_idx[_m], weights=(_zr_profile * vec)[_m], minlength=_K)
 
     # [FN-138]
     def _grads(gu):
         G = _to_actual(np.clip(gu, 0.0, 1.0)[None, :])
         X = _decode_precap(G)[0]                             # (N,)
-        RbarC = _cellrep(rc * X)
+        RbarC = _profilerep(rc * X)
         d = X * (rc - RbarC)
         gR = np.concatenate([-_midsum1(zr * d), _midsum1(zq * d), _midsum1(d), _fine_grad(d)]) * span
         R = float((X * rc).sum())
@@ -1035,7 +1035,7 @@ def run_midtilt_ga(ctx, *, pop_size=40, generations=80, seed=42,
                         V += _un
                         gB[_mi] += -(float(_bval) / _bden) / max(float(_flr), 1e-9)
         p = cv * (gA[mid_id] * risk + gB[mid_id])
-        e = X * (p - _cellrep(p * X))
+        e = X * (p - _profilerep(p * X))
         gV = np.concatenate([-_midsum1(zr * e), _midsum1(zq * e), _midsum1(e), _fine_grad(e)]) * span
         return R, gR, V, gV
 

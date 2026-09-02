@@ -144,7 +144,7 @@ def _obj_viol(shares, ctx):
     if _eop is not None:                                     # score the ACTUALLY-ROUTABLE shares —
         from routing_optimiser.s3_problem.eligibility import apply_elig_pop              # bans + wallet/USA capability folded in
         shares = apply_elig_pop(shares, _eop)                # so the search optimises what will route
-    cv, risk, rc = ctx["cell_vol"], ctx["risk"], ctx["rev_coef"]
+    cv, risk, rc = ctx["profile_vol"], ctx["risk"], ctx["rev_coef"]
     mid_rows, M = ctx["mid_rows"], int(ctx["n_mid"])
     _S = ctx.get("_mid_S")                                   # precomputed incidence (fast path)
     P = shares.shape[0]
@@ -206,8 +206,8 @@ def _obj_viol(shares, ctx):
     if _cap < 1.0:
         viol += _pen(np.maximum(shares - _cap, 0.0) / max(_cap, 1e-9)).sum(axis=1)
     _floor = float(ctx.get("floor", 0.0) or 0.0)
-    if _floor > 0.0 and ctx.get("cell_starts") is not None:
-        _cs = np.asarray(ctx["cell_starts"]); _cc = np.asarray(ctx["cell_counts"])
+    if _floor > 0.0 and ctx.get("profile_starts") is not None:
+        _cs = np.asarray(ctx["profile_starts"]); _cc = np.asarray(ctx["profile_counts"])
         _el = np.asarray(ctx["elig"], float)
         _nec = np.repeat(np.add.reduceat(_el, _cs), _cc)         # eligible gateways per profile
         _fl = np.minimum(_floor, np.where(_nec > 0, 1.0 / np.maximum(_nec, 1.0), 0.0))
@@ -243,7 +243,7 @@ def _obj_viol(shares, ctx):
 
 
 # [FN-122c]
-def _project_capped_simplex_cells(s, cell_starts, cell_counts, elig, cap, total=1.0, iters=60):
+def _project_capped_simplex_profiles(s, profile_starts, profile_counts, elig, cap, total=1.0, iters=60):
     """VECTORISED `_project_capped_simplex` over ALL cells at once (no Python per-cell loop).
 
     Projects each cell's ELIGIBLE entries onto {0 ≤ x ≤ cap, Σ = total}; ineligible rows → 0.
@@ -252,8 +252,8 @@ def _project_capped_simplex_cells(s, cell_starts, cell_counts, elig, cap, total=
     to a proportional renormalise for cells the cap can't fill (e.g. a lone eligible gateway), and
     to a uniform split for a (degenerate) all-ineligible cell."""
     s = np.asarray(s, float)
-    starts = np.asarray(cell_starts, np.intp)
-    counts = np.asarray(cell_counts, np.intp)
+    starts = np.asarray(profile_starts, np.intp)
+    counts = np.asarray(profile_counts, np.intp)
     e = np.asarray(elig, float) > 0.5
     cap = float(cap) if (cap and float(cap) > 0) else 1.0
     y = np.where(e, s, -1e18)                       # ineligible → clip(y-τ,0,cap)=0 for any τ
@@ -290,7 +290,7 @@ def _project_capped_simplex_cells(s, cell_starts, cell_counts, elig, cap, total=
 
 
 # [FN-122b]
-def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mid_labels,
+def band_greedy_shares(base_shares, profile_starts, profile_counts, elig, mid_rows, mid_labels,
                        exact_bands, incidence, *, max_share=1.0, damping=0.5,
                        tol=1e-6, patience=4, return_key=False, deliver_fn=None):
     """Band-AWARE compliant split via a small CONSTRAINED PROJECTION per pass: a warm-start seed
@@ -327,8 +327,8 @@ def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mi
     from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw
     s = np.asarray(base_shares, float).copy()
     elig = np.asarray(elig, float)
-    starts = np.asarray(cell_starts, np.intp)
-    counts = np.asarray(cell_counts, np.intp)
+    starts = np.asarray(profile_starts, np.intp)
+    counts = np.asarray(profile_counts, np.intp)
     _cap = float(max_share) if (max_share and float(max_share) > 0) else 1.0
     label_to_k = {}
     for k, lbl in enumerate(mid_labels):
@@ -404,13 +404,13 @@ def band_greedy_shares(base_shares, cell_starts, cell_counts, elig, mid_rows, mi
                 s[rows] = s[rows] * mult[k]
         # Per-profile constrained projection (the small QP): back onto {0 ≤ x ≤ cap, Σ=1} over the
         # eligible rows, vectorised across ALL profiles at once. Ineligible rows are pinned at 0.
-        s = _project_capped_simplex_cells(s, starts, counts, elig, _cap, 1.0)
+        s = _project_capped_simplex_profiles(s, starts, counts, elig, _cap, 1.0)
     # best_key is (priority-weighted unmet-band count, total relative breach) of the returned split.
     return (best_s, (best_key if best_key is not None else (0.0, 0.0))) if return_key else best_s
 
 
 # [FN-122b]
-def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_rows, mid_labels,
+def band_greedy_shares_multi(base_shares, profile_starts, profile_counts, elig, mid_rows, mid_labels,
                              exact_bands, incidence, *, max_share=1.0, damping=0.5, tol=1e-6,
                              patience=4, n_starts=1, rng_seed=0, jitter=0.5, keys_out=None,
                              par_info=None, deliver_fn=None):
@@ -443,7 +443,7 @@ def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_ro
 
     def _greedy(_x):
         return band_greedy_shares(
-            _x, cell_starts, cell_counts, elig, mid_rows, mid_labels, exact_bands, incidence,
+            _x, profile_starts, profile_counts, elig, mid_rows, mid_labels, exact_bands, incidence,
             return_key=True, **_kw)
 
     if _n <= 1:
@@ -452,8 +452,8 @@ def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_ro
             keys_out.append((0, float(best_key[0]), float(best_key[1])))
         return best_s, best_key
 
-    _pstarts = np.asarray(cell_starts, np.intp)
-    _counts = np.asarray(cell_counts, np.intp)
+    _pstarts = np.asarray(profile_starts, np.intp)
+    _counts = np.asarray(profile_counts, np.intp)
     _cap = float(max_share) if (max_share and float(max_share) > 0) else 1.0
     _elig = np.asarray(elig, float)
     # ── the draws, SEQUENTIALLY, in the pre-19ck order ────────────────────────────────────────
@@ -463,7 +463,7 @@ def band_greedy_shares_multi(base_shares, cell_starts, cell_counts, elig, mid_ro
         # jitter the base multiplicatively (log-normal), then project onto each profile's capped simplex so
         # every start is a VALID split before the greedy runs.
         _pert = base * np.exp(rng.normal(0.0, float(jitter), size=base.shape))
-        _inputs.append(_project_capped_simplex_cells(_pert, _pstarts, _counts, _elig, _cap, 1.0))
+        _inputs.append(_project_capped_simplex_profiles(_pert, _pstarts, _counts, _elig, _cap, 1.0))
 
     # FIXED OFF (2026-08-31). Was ROUTING_FEAS_PAR, set to 0 in routing.env on every run.
     # Also unreachable in practice now: the only caller fixes n_starts=1, which returns from the

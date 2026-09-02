@@ -217,7 +217,7 @@ def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mid
     t0 = (tp[tp["t"] == 0]
           .groupby(["Currency", "BIN", "vampMid", "period"], as_index=False)
           .agg(pre_txn=("VI_Txn_Pre", "sum")))
-    ct = t0.groupby(["Currency", "BIN", "period"], as_index=False).agg(cell_tot=("pre_txn", "sum"))
+    ct = t0.groupby(["Currency", "BIN", "period"], as_index=False).agg(profile_tot=("pre_txn", "sum"))
     t0 = t0.merge(ct, on=["Currency", "BIN", "period"]).merge(prop, on=["Currency", "BIN", "vampMid"], how="left")
     t0["f"] = t0["period"].map(frac)
     # vampMids switched off via gateway_volume_overrides are removed from BOTH the
@@ -233,7 +233,7 @@ def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mid
     t0["prop_eff"] = np.where(_have, t0["prop"].fillna(0.0) * t0["_keep"], 0.0)
     t0["_prop_sum"] = t0.groupby(["Currency", "BIN", "period"])["prop_eff"].transform("sum")
     t0["prop_eff"] = np.where(t0["_prop_sum"] > 0, t0["prop_eff"] / t0["_prop_sum"], t0["base_share"])
-    t0["post_txn"] = t0["cell_tot"] * ((1 - t0["f"]) * t0["base_share"] + t0["f"] * t0["prop_eff"])
+    t0["post_txn"] = t0["profile_tot"] * ((1 - t0["f"]) * t0["base_share"] + t0["f"] * t0["prop_eff"])
     t0["r"] = np.where(t0["pre_txn"] > 0, t0["post_txn"] / t0["pre_txn"], 1.0)
 
     # VAMP conserved & redistributed by the volume share (pipeline-faithful). This legacy
@@ -248,11 +248,11 @@ def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mid
     tp["orig_m"] = tp["period"] - tp["t"]
     _mv = t0[["Currency", "BIN", "vampMid", "period", "_move", "_vshare"]].rename(
         columns={"period": "orig_m", "_vshare": "_pshare"})
-    tp["_cell_vamp"] = tp.groupby(["Currency", "BIN", "period", "t"])["VAMP_Pre"].transform("sum")
+    tp["_profile_vamp"] = tp.groupby(["Currency", "BIN", "period", "t"])["VAMP_Pre"].transform("sum")
     tp = tp.merge(_mv, on=["Currency", "BIN", "vampMid", "orig_m"], how="left")
     tp["_move"] = tp["_move"].fillna(0.0)
     tp["_pshare"] = tp["_pshare"].fillna(0.0)
-    tp["VAMP_Post_c"] = tp["VAMP_Pre"] * (1.0 - tp["_move"]) + tp["_cell_vamp"] * tp["_move"] * tp["_pshare"]
+    tp["VAMP_Post_c"] = tp["VAMP_Pre"] * (1.0 - tp["_move"]) + tp["_profile_vamp"] * tp["_move"] * tp["_pshare"]
 
     vamp_pre = tp.groupby(["vampMid", "period"])["VAMP_Pre"].sum().unstack(fill_value=0.0)
     vamp_post = tp.groupby(["vampMid", "period"])["VAMP_Post_c"].sum().unstack(fill_value=0.0)
@@ -397,7 +397,7 @@ def _vamp_post_core(pp, prop_items, excluded_mids=frozenset(), kill_eff=(), mont
     # Group the profile keys ONCE and reuse for all three per-profile sums (the 5-col key is
     # otherwise re-factorised per groupby). Bit-identical to grouping separately.
     _g = t0.groupby(grp)
-    t0["cell_tot"] = _g["VI_Txn_Count"].transform("sum")
+    t0["profile_tot"] = _g["VI_Txn_Count"].transform("sum")
     t0["_active_tot"] = _g["_active_vi"].transform("sum")
     t0["base_share"] = np.where(t0["_active_tot"] > 0, t0["_active_vi"] / t0["_active_tot"], 0.0)
     # Renormalise proposed shares over the gateways present in each profile so the
@@ -428,7 +428,7 @@ def _vamp_post_core(pp, prop_items, excluded_mids=frozenset(), kill_eff=(), mont
     # the proposed share. Per-MID move captures that FCP2+/retry-heavy MIDs move less.
     t0["_bm"] = t0["base_share"] * t0["_move"]
     t0["_moved_tot"] = t0.groupby(grp)["_bm"].transform("sum")
-    t0["post_txn"] = t0["cell_tot"] * (t0["base_share"] * (1 - t0["_move"])
+    t0["post_txn"] = t0["profile_tot"] * (t0["base_share"] * (1 - t0["_move"])
                                        + t0["_moved_tot"] * t0["prop_share"])
 
     _mv = t0[["Currency", "BIN", "RPGT", "vampMid", "period", "_move", "_vshare"]].rename(
@@ -465,7 +465,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
         import datetime as _dt
         _dir = _os.path.dirname(_os.path.abspath(pp_path))
         _cols = [c for c in ["vampMid", "RPGT", "BIN", "Currency", "_pmp", "_ctry", "period",
-                             "vampCount", "VI_Txn_Count", "cell_tot", "_at", "base_share",
+                             "vampCount", "VI_Txn_Count", "profile_tot", "_at", "base_share",
                              "fcp1_frac", "pro_rata", "prop_raw", "prop_sum", "prop_share",
                              "_move", "_bm", "_moved_tot", "_vshare", "post_txn", "_keep",
                              "_psum_pre", "_prop_from_coarse", "_bf_inj"] if c in t0.columns]
@@ -497,7 +497,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
             _spec = _os.environ.get("ROUTING_PROJ_TRACE", "usd|400022|addon sale")
             _tl = []
             _tl.append(f"CELL TRACE  {_dt.datetime.now():%Y-%m-%d %H:%M:%S}   spec='{_spec}'")
-            _tcols = [c for c in ["period", "_pmp", "_ctry", "vampMid", "VI_Txn_Count", "cell_tot",
+            _tcols = [c for c in ["period", "_pmp", "_ctry", "vampMid", "VI_Txn_Count", "profile_tot",
                                   "base_share", "fcp1_frac", "pro_rata", "prop_raw", "_psum_pre",
                                   "prop_sum", "prop_share", "_move", "_moved_tot", "post_txn",
                                   "_prop_from_coarse", "_bf_inj"] if c in t0.columns]
@@ -552,13 +552,13 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                 _sl.append(f"\n(no rows for mid~'{_smid}' rpgt='{_srpgt}' — check spelling / that the split routes it)")
             else:
                 _w["_delta"] = _w["post_txn"].fillna(0.0) - _w["VI_Txn_Count"].fillna(0.0)
-                _cellinc = (_w.groupby(["Currency", "BIN"], as_index=False)["_delta"].sum())
-                _cellinc = _cellinc[_cellinc["_delta"] > 1e-6].sort_values("_delta", ascending=False).head(_sn)
+                _profileinc = (_w.groupby(["Currency", "BIN"], as_index=False)["_delta"].sum())
+                _profileinc = _profileinc[_profileinc["_delta"] > 1e-6].sort_values("_delta", ascending=False).head(_sn)
                 _sl.append(f"\n{len(_cellinc)} increasing cell(s) selected (of "
                            f"{int((_w.groupby(['Currency','BIN'])['_delta'].sum() > 1e-6).sum())} increasing total):")
-                for _, cr in _cellinc.iterrows():
+                for _, cr in _profileinc.iterrows():
                     _sl.append(f"  {cr['Currency']}/{cr['BIN']}  net +{cr['_delta']:,.0f} VI")
-                for _, cr in _cellinc.iterrows():
+                for _, cr in _profileinc.iterrows():
                     _cur, _bin = cr["Currency"], cr["BIN"]
                     _cw = _w[(_w["Currency"] == _cur) & (_w["BIN"] == _bin)]
                     _sl.append("")
@@ -754,11 +754,11 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                             _e3["_cur"] = _kv(_e3["Currency"]); _e3["_bn"] = _e3["BIN"].astype(str).str.strip()
                             _e3["_pm"] = _kv(_e3["pmp"]); _e3["_ct"] = _kv(_e3["Country"])
                             _e3["prop_raw"] = pd.to_numeric(_e3["prop_raw"], errors="coerce").fillna(0.0)
-                            _cellk = ["_rp", "_cur", "_bn", "_pm", "_ct"]
-                            _csum = _e3.groupby(_cellk, observed=True)["prop_raw"].transform("sum")
+                            _profilek = ["_rp", "_cur", "_bn", "_pm", "_ct"]
+                            _csum = _e3.groupby(_profilek, observed=True)["prop_raw"].transform("sum")
                             _e3["t3_pct"] = np.where(_csum > 0, _e3["prop_raw"] * 100.0 / _csum, 0.0)
-                            _e3s = _e3.groupby(["_vml"] + _cellk, observed=True)["t3_pct"].sum().reset_index()
-                            _sp = _e3s.merge(_rules_share, on=["_vml"] + _cellk, how="outer").fillna(0.0)
+                            _e3s = _e3.groupby(["_vml"] + _profilek, observed=True)["t3_pct"].sum().reset_index()
+                            _sp = _e3s.merge(_rules_share, on=["_vml"] + _profilek, how="outer").fillna(0.0)
                             _sp["dpct"] = _sp["t3_pct"] - _sp["rules_pct"]
                             _mx = float(_sp["dpct"].abs().max()) if len(_sp) else 0.0
                             _cl.append("")
@@ -789,7 +789,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                                    f"{_rules_dir} (PoolTargeted_Rules_*.xlsx); skipped ===")
 
                     # focus cell = the focus MID's single biggest-|Δ| OUTPUT cell (for sections 2-5).
-                    _fcell = None
+                    _fprofile = None
                     _fc = _cmp[_cmp["_vml"].str.contains(_cmid, na=False)]
                     # Prefer a profile where the focus MID has a real baseline (base>0) so the finer-grain
                     # / provenance sections (4/5) actually have mapping rows for it.
@@ -797,16 +797,16 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                     _pick = _fcb if len(_fcb) else _fc
                     if len(_pick):
                         _fr = _pick.reindex(_pick["d"].abs().sort_values(ascending=False).index).iloc[0]
-                        _fcell = (_fr["_cur"], _fr["_bn"], _fr["_rp"], _fr["_pm"], _fr["_ct"])
+                        _fprofile = (_fr["_cur"], _fr["_bn"], _fr["_rp"], _fr["_pm"], _fr["_ct"])
 
                     # ---- (2) FULL-PROFILE side-by-side (ALL gateways) for the top-divergent cells. ----
                     _cl.append("")
                     _cl.append("=== (2) FULL-CELL side-by-side (all gateways) — top 6 divergent cells (P1) ===")
                     _c1 = _cmp[_cmp["period"] == (1 if 1 in _pers else _pers[0])]
-                    _cellcols = ["_cur", "_bn", "_rp", "_pm", "_ct"]
-                    _cellmag = (_c1.groupby(_cellcols)["d"].agg(lambda s: float(s.abs().sum()))
+                    _profilecols = ["_cur", "_bn", "_rp", "_pm", "_ct"]
+                    _profilemag = (_c1.groupby(_profilecols)["d"].agg(lambda s: float(s.abs().sum()))
                                 .reset_index().sort_values("d", ascending=False).head(6))
-                    for _, cr in _cellmag.iterrows():
+                    for _, cr in _profilemag.iterrows():
                         _sel = ((_c1["_cur"] == cr["_cur"]) & (_c1["_bn"] == cr["_bn"]) & (_c1["_rp"] == cr["_rp"])
                                 & (_c1["_pm"] == cr["_pm"]) & (_c1["_ct"] == cr["_ct"]))
                         _cc2 = _c1[_sel]
@@ -827,9 +827,9 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                     if len(_tf):
                         _mvf = (pd.to_numeric(_tf.get("pro_rata", 1.0), errors="coerce").fillna(1.0)
                                 * pd.to_numeric(_tf.get("fcp1_frac", 1.0), errors="coerce").fillna(1.0))
-                        _tf["_held3"] = pd.to_numeric(_tf["cell_tot"], errors="coerce").fillna(0.0) * \
+                        _tf["_held3"] = pd.to_numeric(_tf["profile_tot"], errors="coerce").fillna(0.0) * \
                             pd.to_numeric(_tf.get("base_share", 0.0), errors="coerce").fillna(0.0) * (1.0 - _mvf)
-                        _tf["_movein3"] = pd.to_numeric(_tf["cell_tot"], errors="coerce").fillna(0.0) * \
+                        _tf["_movein3"] = pd.to_numeric(_tf["profile_tot"], errors="coerce").fillna(0.0) * \
                             pd.to_numeric(_tf.get("_moved_tot", 0.0), errors="coerce").fillna(0.0) * \
                             pd.to_numeric(_tf.get("prop_share", 0.0), errors="coerce").fillna(0.0)
                         _tf["_mv"] = _mvf
@@ -875,7 +875,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
 
                     # ---- (4) FINER GRAIN (renewal × fcp × attempt) + (5) fcp1_frac provenance,
                     # for the focus profile, straight from mapping_pct_export. ----
-                    if (_fcell is not None and _os.path.exists(_map_path)
+                    if (_fprofile is not None and _os.path.exists(_map_path)
                             and _os.environ.get("ROUTING_PROJ_FINEGRAIN", "1") != "0"):
                         try:
                             _um = {"rpgt", "Currency", "BIN", "paymentMethodProvider", "Country",
@@ -887,7 +887,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                                 _m.columns = [c.strip() for c in _m.columns]
                                 return _m
                             _mp, _msrc = _cached_df(_os.path.join(_dir, "_cache_mapping.pkl"), [_map_path], _build_map)
-                            _fcur, _fbin, _frp, _fpm, _fct = _fcell
+                            _fcur, _fbin, _frp, _fpm, _fct = _fprofile
                             _msel = ((_kv(_mp["Currency"]) == _fcur) & (_mp["BIN"].astype(str).str.strip() == _fbin)
                                      & (_kv(_mp["rpgt"]) == _frp) & (_kv(_mp["paymentMethodProvider"]) == _fpm)
                                      & (_kv(_mp["Country"]) == _fct))
@@ -933,7 +933,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
             pass
 
         _cc = [c for c in ["Currency", "BIN", "RPGT", "_pmp", "_ctry", "period"] if c in t0.columns]
-        _cells = t0.drop_duplicates(_cc)
+        _profiles = t0.drop_duplicates(_cc)
         L = []
         L.append(f"PROJECTION DIAGNOSTICS  {_dt.datetime.now():%Y-%m-%d %H:%M:%S}")
         L.append(f"pp_path: {pp_path}")
@@ -943,13 +943,13 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
         # prop_raw is on a PERCENT scale (0-100), so a healthy profile sums to ~100. The projection
         # is renormalised to 100 (prop_sum≈100 everywhere post-fix); the interesting signal is how
         # far the sum was OFF 100 BEFORE renorm (_psum_pre) — that's the coarse-fill / _keep shift.
-        _post = _cells["prop_sum"]; _posta = _post[_post > 1e-9]
+        _post = _profiles["prop_sum"]; _posta = _post[_post > 1e-9]
         L.append("=== prop_sum PER CELL — PERCENT scale, healthy ≈ 100 (post-renorm) ===")
         if len(_posta):
             L.append(f"  active cells={len(_posta):,}  min={_posta.min():.2f}  max={_posta.max():.2f}  "
                      f"mean={_posta.mean():.2f}  median={_posta.median():.2f}  (all should be ~100 after renorm)")
-        if "_psum_pre" in _cells.columns:
-            _pre = _cells["_psum_pre"]; _prea = _pre[_pre > 1e-9]
+        if "_psum_pre" in _profiles.columns:
+            _pre = _profiles["_psum_pre"]; _prea = _pre[_pre > 1e-9]
             if len(_prea):
                 _dev = ((_prea - 100.0).abs() / 100.0)
                 L.append(f"  PRE-renorm sum: min={_prea.min():.2f} max={_prea.max():.2f} "
@@ -966,7 +966,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
         L.append("=== PER-vampMid (all t0 sub-cells summed): base vs post VI, Σprop, avg share ===")
         _agg = {"base_vi": ("VI_Txn_Count", "sum"), "post_vi": ("post_txn", "sum"),
                 "sum_prop_raw": ("prop_raw", "sum"), "avg_prop_share": ("prop_share", "mean"),
-                "n_cells": ("cell_tot", "size")}
+                "n_profiles": ("profile_tot", "size")}
         if "_bf_inj" in t0.columns:
             _agg["backfill_rows"] = ("_bf_inj", "sum")
         if "_prop_from_coarse" in t0.columns:
@@ -990,7 +990,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
             _mt = _d.get("_moved_tot", pd.Series(0.0, index=_d.index)).fillna(0.0)
             _bs = _d.get("base_share", pd.Series(0.0, index=_d.index)).fillna(0.0)
             _psh = _d.get("prop_share", pd.Series(0.0, index=_d.index)).fillna(0.0)
-            _ct = _d["cell_tot"].fillna(0.0)
+            _ct = _d["profile_tot"].fillna(0.0)
             _d["_held"] = _ct * _bs * (1.0 - _mv)
             _d["_movedout"] = _ct * _bs * _mv
             _d["_movedin"] = _ct * _mt * _psh
@@ -999,7 +999,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
             _rd = _d.groupby("vampMid", as_index=False).agg(
                 held=("_held", "sum"), moved_out=("_movedout", "sum"),
                 moved_in=("_movedin", "sum"), reach=("_reach", "sum"),
-                recip_cells=("_is_recip", "sum")).sort_values("moved_in", ascending=False)
+                recip_profiles=("_is_recip", "sum")).sort_values("moved_in", ascending=False)
             L.append("=== REROUTE DECOMPOSITION per vampMid (post = held + moved_in; reach = pool it")
             L.append("    can draw from in its recipient cells; fill% = moved_in/reach) ===")
             for _, r in _rd.iterrows():
@@ -1037,11 +1037,11 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
             if _pi and len(_pi[0]) == 7:
                 _pdf = pd.DataFrame(_pi, columns=["Currency", "BIN", "RPGT", "pmp", "ctry", "vampMid", "prop_raw"])
                 _pc = _pdf.groupby("vampMid").agg(
-                    subcells=("prop_raw", "size"), total_prop=("prop_raw", "sum"),
+                    profiles=("prop_raw", "size"), total_prop=("prop_raw", "sum"),
                     distinct_bins=("BIN", "nunique")).sort_values("total_prop", ascending=False)
                 L.append("=== ENFORCED-PROP COVERAGE per vampMid (from the split feeding this projection) ===")
                 for _mid, r in _pc.iterrows():
-                    L.append(f"  {str(_mid)[:30]:30s} subcells={int(r['subcells']):>7}  "
+                    L.append(f"  {str(_mid)[:30]:30s} cells={int(r['cells']):>7}  "
                              f"distinct_BINs={int(r['distinct_bins']):>6}  Σprop%={r['total_prop']:>12,.0f}")
                 L.append("")
         except Exception as _e4:  # noqa: BLE001
@@ -1319,7 +1319,7 @@ def build_capability(mid_list_path=None, restrictions=None, brand=None):
     return capable
 
 
-def inject_capable_rows(pp, capable, cell_cols, mid_col="vampMid",
+def inject_capable_rows(pp, capable, profile_cols, mid_col="vampMid",
                         period_col="period", t_col="t"):
     """Complete every MOVABLE (t <= period) group of `pp` with a zero-VAMP row per absent capable
     MID. Returns (frame, n_added). VECTORISED — a per-group Python loop over the live export's
@@ -1331,7 +1331,7 @@ def inject_capable_rows(pp, capable, cell_cols, mid_col="vampMid",
     NOTHING to the pool and changes no held term; its only effect is to give the layer a recipient
     the split can route to.
     """
-    _need = list(cell_cols) + [mid_col, period_col, t_col]
+    _need = list(profile_cols) + [mid_col, period_col, t_col]
     for _c in _need:
         if _c not in pp.columns:
             raise KeyError(f"inject_capable_rows: frame has no column {_c!r}")
@@ -1350,25 +1350,25 @@ def inject_capable_rows(pp, capable, cell_cols, mid_col="vampMid",
     _vc = pd.to_numeric(pp.get("vampCount"), errors="coerce").fillna(0.0)
     _fc = pd.to_numeric(pp.get("fcp1_frac"), errors="coerce").fillna(0.0)
     _prr = pd.to_numeric(pp.get("pro_rata"), errors="coerce").fillna(0.0)
-    _gkc = list(cell_cols) + [period_col, t_col]
+    _gkc = list(profile_cols) + [period_col, t_col]
     _poolg = (pp.assign(_mvbl=_vc * _fc * _prr)
               .groupby(_gkc, observed=True)["_mvbl"].transform("sum"))
     _mov = pp[(_poolg > 0) & _per.notna() & _t.notna()]
     if not len(_mov):
         return pp, 0
 
-    _gk = list(cell_cols) + [period_col, t_col]
+    _gk = list(profile_cols) + [period_col, t_col]
     _layer = _mov.groupby(_gk, as_index=False, observed=True).agg(
         pro_rata=("pro_rata", "first"), fcp1_frac=("fcp1_frac", "first"))
 
-    _cells = _mov[list(cell_cols)].drop_duplicates()
-    _cells["_cap"] = [sorted(capable(*[str(v).strip().lower() if i != 1 else str(v).strip()
+    _profiles = _mov[list(profile_cols)].drop_duplicates()
+    _profiles["_cap"] = [sorted(capable(*[str(v).strip().lower() if i != 1 else str(v).strip()
                                        for i, v in enumerate(row)]))
-                      for row in _cells.itertuples(index=False, name=None)]
-    _cellcap = _cells.explode("_cap").rename(columns={"_cap": mid_col})
-    _cellcap = _cellcap[_cellcap[mid_col].notna()]
+                      for row in _profiles.itertuples(index=False, name=None)]
+    _profilecap = _profiles.explode("_cap").rename(columns={"_cap": mid_col})
+    _profilecap = _profilecap[_profilecap[mid_col].notna()]
 
-    _full = _layer.merge(_cellcap, on=list(cell_cols), how="inner")
+    _full = _layer.merge(_profilecap, on=list(profile_cols), how="inner")
     # The anti-join key MUST include the MID. Keyed on the group alone every candidate row finds
     # a match, `_seen` is never NaN and the function silently injects nothing — which looks exactly
     # like "the frame was already complete" and would have shipped as a no-op.
@@ -1483,10 +1483,10 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # is the SAME callable the search is given, so both sides project the identical frame; passing
     # None leaves the frame untouched (every pre-19da caller).
     if capability is not None:
-        _cellk = [c for c in ("Currency", "BIN", "RPGT", "paymentMethodProvider", "Country")
+        _profilek = [c for c in ("Currency", "BIN", "RPGT", "paymentMethodProvider", "Country")
                   if c in pp.columns]
-        if len(_cellk) >= 3:
-            pp, _n_inj = inject_capable_rows(pp, capability, _cellk)
+        if len(_profilek) >= 3:
+            pp, _n_inj = inject_capable_rows(pp, capability, _profilek)
             if _n_inj:
                 globals()["_LAST_INJECTED"] = int(_n_inj)
     _cv_mark("inject_capable_rows (zero rows for capable doors)")
@@ -1652,7 +1652,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         t0["prop_raw"] = np.where(_emask, 0.0, t0["prop_raw"])
     t0["_av"] = t0["VI_Txn_Count"] * t0["_keep"]
     _g = t0.groupby(grp)   # group profile keys ONCE, reuse for all three sums (bit-identical)
-    t0["cell_tot"] = _g["VI_Txn_Count"].transform("sum")
+    t0["profile_tot"] = _g["VI_Txn_Count"].transform("sum")
     t0["_at"] = _g["_av"].transform("sum")
     t0["base_share"] = np.where(t0["_at"] > 0, t0["_av"] / t0["_at"], 0.0)
     # Renormalise each profile's proposed shares back to a clean 100 budget after the coarse
@@ -1687,7 +1687,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         t0["prop_share"] = np.where(_do_renorm, t0["prop_share"] / _psh_sum, t0["prop_share"])
     # Movable fraction = go-live pro-rata × fcp1 cohort fraction (see _vamp_post_core).
     _p = t0["pro_rata"] * t0["fcp1_frac"]
-    t0["post_txn"] = t0["cell_tot"] * ((1 - _p) * t0["base_share"] + _p * t0["prop_share"])
+    t0["post_txn"] = t0["profile_tot"] * ((1 - _p) * t0["base_share"] + _p * t0["prop_share"])
     # PER-MID movable fraction + VAMP-follows-the-volume redistribution share (see _vamp_post_core).
     t0["_move"] = np.where(t0["prop_sum"] > 0, t0["pro_rata"] * t0["fcp1_frac"], 0.0)
     # 19cv — VAMP-ELIGIBILITY. `apply_to:"vamp"` (target 0) IS honoured by the baseline pipeline
@@ -1767,7 +1767,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # TWO-COHORT volume (per-MID held on own gateway; pooled movable slice redistributed).
     t0["_bm"] = t0["base_share"] * t0["_move"]
     t0["_moved_tot"] = t0.groupby(grp)["_bm"].transform("sum")
-    t0["post_txn"] = t0["cell_tot"] * (t0["base_share"] * (1 - t0["_move"])
+    t0["post_txn"] = t0["profile_tot"] * (t0["base_share"] * (1 - t0["_move"])
                                        + t0["_moved_tot"] * t0["prop_share"])
 
     # ── TXN TERM STASH (read-only) ────────────────────────────────────────────────
@@ -1776,7 +1776,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # with the in-search projector. Stash the per-(vampMid, period) sums here — nothing is
     # modified and nothing downstream reads this global.
     try:
-        _tt_ct = pd.to_numeric(t0["cell_tot"], errors="coerce").fillna(0.0)
+        _tt_ct = pd.to_numeric(t0["profile_tot"], errors="coerce").fillna(0.0)
         _tt_bs = pd.to_numeric(t0["base_share"], errors="coerce").fillna(0.0)
         _tt_mv = pd.to_numeric(t0["_move"], errors="coerce").fillna(0.0)
         _tt_mt = pd.to_numeric(t0["_moved_tot"], errors="coerce").fillna(0.0)
@@ -2631,9 +2631,9 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     # grain GA run), the rows ARE the profiles — build the template DIRECTLY from them instead of
     # expanding each profile into country×pmp. Profile-grain splits (no pmp/ctry, or all "_all_") take the
     # existing expansion path byte-for-byte. Map the split's pmp/ctry to the template's format.
-    _has_subcell = ("pmp" in df.columns and "ctry" in df.columns
+    _has_profile = ("pmp" in df.columns and "ctry" in df.columns
                     and not df["pmp"].astype(str).str.strip().str.lower().isin(["_all_", "", "nan"]).all())
-    if _has_subcell:
+    if _has_profile:
         _pmpmap = {"googlepay": "GOOGLEPAY", "applepay": "APPLEPAY", "non_gp_ap": "non_gp_ap"}
         df["_PMP"] = (df["pmp"].astype(str).str.strip().str.lower().map(_pmpmap).fillna("non_gp_ap"))
         df["_CTRY"] = np.where(df["ctry"].astype(str).str.strip().str.lower().isin(["usa", "us"]),
@@ -2706,7 +2706,7 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
               "paymentMethodProvider", "STICKY", "Country", "Check"] + gateways + ["DUP CHECK"])
     out = {}
     for rpgt, g_rpgt in df.groupby("RPGT"):
-        if _has_subcell:
+        if _has_profile:
             # rows ARE the profiles: base per (Currency, BIN, pmp, Country), no expansion.
             base = (g_rpgt.groupby(["Currency", "BIN", "_PMP", "_CTRY", "gateway"])["share"].sum()
                     .unstack("gateway").reindex(columns=gateways).fillna(0.0))
@@ -2724,11 +2724,11 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
             base = (g_rpgt.groupby(["Currency", "BIN", "gateway"])["share"].sum()
                     .unstack("gateway").reindex(columns=gateways).fillna(0.0))
             base = base.div(base.sum(1).replace(0, np.nan), axis=0).fillna(0.0)
-            cells = list(base.index)
+            profiles = list(base.index)
             Bm = base.to_numpy(float)
             # expand rows in the SAME order as before: profile → country → pmp
             _idx, _cur, _bin, _ctry, _pmp = [], [], [], [], []
-            for _ci, (cur, bin_) in enumerate(cells):
+            for _ci, (cur, bin_) in enumerate(profiles):
                 for country in _countries_for(cur, bin_):
                     for pmp in _pmps:
                         _idx.append(_ci); _cur.append(cur); _bin.append(bin_)
@@ -3000,14 +3000,14 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
     # log is the artefact that actually gets read, so a guard that only prints is not a guard.
     # tab_2_routing_engine re-emits this through log() as [ca-zerocell], including the unscoped-RPGT check.
     try:
-        globals()["_LAST_CA_ZEROCELL"] = {
+        globals()["_LAST_CA_ZEROPROFILE"] = {
             "n": int(_ph_n),
             "by_rpgt": ({str(_k): int(_v) for _k, _v in
                          _ph.groupby("RPGT").size().items()}
                         if _ph_n and "RPGT" in getattr(_ph, "columns", []) else {}),
         }
     except Exception:  # noqa: BLE001
-        globals()["_LAST_CA_ZEROCELL"] = {"n": int(_ph_n), "by_rpgt": {}}
+        globals()["_LAST_CA_ZEROPROFILE"] = {"n": int(_ph_n), "by_rpgt": {}}
     allm = _pos
     agg = allm.groupby(["Currency", "BIN", "RPGT", "_pmp", "_ctry", "vampMid"],
                        as_index=False)["prop_raw"].sum()
@@ -3110,8 +3110,8 @@ def pool_targeted_core(split_ideal, *, target_pools, wallet_ctx, brand_name, bra
     from routing_optimiser.s5_deliver.kmeans_compress import compress_to_pool_budget
     wc = wallet_ctx or {}
     _si = split_ideal.copy()
-    if "cell_volume" not in _si.columns:
-        _si["cell_volume"] = (_si.groupby(["rpgt", "currency", "bin"])["volume"].transform("sum")
+    if "profile_volume" not in _si.columns:
+        _si["profile_volume"] = (_si.groupby(["rpgt", "currency", "bin"])["volume"].transform("sum")
                               if "volume" in _si.columns else 1.0)
 
     # PICKLABLE count function (functools.partial of a MODULE-LEVEL fn) so the pool-budget
@@ -3142,7 +3142,7 @@ def _pool_disk_key(split_ideal, *, target_pools, wallet_ctx, brand_name, brand_k
     import json as _json
     wc = wallet_ctx or {}
     _cols = [c for c in ["rpgt", "currency", "bin", "gateway", "share", "volume",
-                         "cell_volume", "baseline_share", "rate"] if c in split_ideal.columns]
+                         "profile_volume", "baseline_share", "rate"] if c in split_ideal.columns]
     try:
         _h = pd.util.hash_pandas_object(split_ideal[_cols], index=False)
         _split_hash = _hl.sha256(np.ascontiguousarray(_h.to_numpy()).tobytes()).hexdigest()[:16]
@@ -3251,29 +3251,29 @@ def pool_targeted_compression(ss, split_ideal, *, target_pools, sig, wallet_ctx,
 
 
 # [FN-280]
-def rpgt_avg_ticket(cell_agg):
+def rpgt_avg_ticket(profile_agg):
     """RPGT-level average ticket from the 30D actuals (the window ending just before
     Month 0): Σ succ_amount / Σ successes per RPGT. Returns {rpgt_lower: ticket}.
     Kept as the FALLBACK for (rpgt, currency) combos with no per-currency actuals."""
-    if cell_agg is None or getattr(cell_agg, "empty", True):
+    if profile_agg is None or getattr(profile_agg, "empty", True):
         return {}
-    g = cell_agg.groupby("rpgt_join").agg(rev=("cell_rev", "sum"), succ=("cell_succ", "sum"))
+    g = profile_agg.groupby("rpgt_join").agg(rev=("profile_rev", "sum"), succ=("profile_succ", "sum"))
     return {str(rp).strip().lower(): (float(r["rev"]) / float(r["succ"]) if float(r["succ"]) > 0 else 0.0)
             for rp, r in g.iterrows()}
 
 
-def rpgt_currency_avg_ticket(cell_agg):
+def rpgt_currency_avg_ticket(profile_agg):
     """RPGT × Currency average ticket from the 30D actuals: Σ succ_amount / Σ successes
     per (rpgt, currency). Returns {(rpgt_lower, currency_lower): ticket}. Finer grain
     than ``rpgt_avg_ticket`` so a given RPGT no longer shares one blended ticket across
     currencies. Combos with no actuals are simply absent (caller falls back to the
     RPGT-level ticket)."""
-    if cell_agg is None or getattr(cell_agg, "empty", True):
+    if profile_agg is None or getattr(profile_agg, "empty", True):
         return {}
-    if "currency_join" not in getattr(cell_agg, "columns", []):
+    if "currency_join" not in getattr(profile_agg, "columns", []):
         return {}
-    g = cell_agg.groupby(["rpgt_join", "currency_join"]).agg(
-        rev=("cell_rev", "sum"), succ=("cell_succ", "sum"))
+    g = profile_agg.groupby(["rpgt_join", "currency_join"]).agg(
+        rev=("profile_rev", "sum"), succ=("profile_succ", "sum"))
     return {(str(rp).strip().lower(), str(cur).strip().lower()):
             (float(r["rev"]) / float(r["succ"]) if float(r["succ"]) > 0 else 0.0)
             for (rp, cur), r in g.iterrows()}

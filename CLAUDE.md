@@ -31,13 +31,24 @@ confusingly, and it is being corrected outward-in:
 
 * ✅ **run-log prose** — migrated in 19hk (297 log strings across 9 files)
 * ✅ **comments** — migrated in 19hk (793 comments across 26 files)
-* ⬜ **identifiers** (`gcode`, `cell_start`, `n_cells`, `CellProblem`, `by_subcell`, …) — NOT yet
-  renamed: ~3,000 occurrences across `app/` and `src/`, including numba kernel parameters and
-  dataclass fields. A half-finished identifier rename is worse than none, so it is a dedicated
-  mechanical pass, not something to do opportunistically.
+* ✅ **identifiers** — migrated in 19hl. 1,346 occurrences across 27 files:
+  `cell_start` → `profile_start`, `n_cells` → `n_profiles`, `CellProblem` → `ProfileProblem`,
+  `CellSolution` → `ProfileSolution`, `by_subcell` → `by_profile`, `_opt_subcell` →
+  `_opt_profile`, the numba kernel parameters, and the module
+  `s3_problem/subcell.py` → `s3_problem/profile.py`.
 
-**Until the identifier pass lands, the run log and the code read in OPPOSITE vocabularies.**
-That is deliberate and temporary: the log is what people read, so it went first.
+### The four things deliberately NOT renamed
+
+| kept as-is | why |
+|---|---|
+| `ROUTING_PROJ_CELLBLOCK`, `ROUTING_CA_ZEROCELL`, `ROUTING_DOOR_COVER_CELLS`, `ROUTING_ROW_PARALLEL_MIN_CELLS` | kill-switch names are a **user contract** — they are typed by hand and written down elsewhere |
+| `_PK_SPEC_CELL` (was `_PK_SPEC_SUBCELL`) | the 6-part prop-key spec genuinely **is** a CELL in this vocabulary, so it moved the other way |
+| `schema.py`'s `CELL_KEYS` / `PROFILE_KEYS` | `PROFILE_KEYS` already means this document's profile; `CELL_KEYS` is a **coarser 3-part** grouping that would collide if renamed. Needs a new name, not a sweep. |
+| `app/tab_1_3_config_validation.py`, `render_profile_lookup`, `render_config_profile_charts`, `_profile_of` | "profile" there means a **gateway-pool** profile (which currencies/BINs a pool covers) — an unrelated sense of the word |
+| `src/build_baseline/**` | a separate subsystem (the tab-1 baseline builder) with its own vocabulary; out of scope for this pass |
+
+The 6-part row is still called `prop_key` / `propidx` / `prop_raw` in the code. That is a
+mechanism name rather than a grain name, so it was left alone.
 
 **When reading code, translate:** an identifier saying `cell` almost always means this
 document's PROFILE; a `prop_key` / `propidx` almost always means this document's CELL.

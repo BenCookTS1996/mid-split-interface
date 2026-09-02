@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.optimize import minimize
 
-from ..engines.base import BaseEngine, CellProblem, CellSolution
+from ..engines.base import BaseEngine, ProfileProblem, ProfileSolution
 
 
 class EntropyEngine(BaseEngine):
@@ -22,7 +22,7 @@ class EntropyEngine(BaseEngine):
                    "cap and gateway caps. Recommended default.")
 
     # [FN-428]
-    def _solve(self, p: CellProblem) -> CellSolution:
+    def _solve(self, p: ProfileProblem) -> ProfileSolution:
         n = p.n()
         lam = float(self.params.get("entropy_lambda", 0.02))
         lo, hi = self._bounds(p)

@@ -282,26 +282,26 @@ def render():
 
                 def _is_num(s):
                     return _lc(s).str.replace(".", "", 1, regex=False).str.isdigit()
-                _keep = ["rpgt", "currency", "bin", "gateway", "share", "baseline_share", "cell_volume"]
+                _keep = ["rpgt", "currency", "bin", "gateway", "share", "baseline_share", "profile_volume"]
 
                 # BIN-specific override rows: proposed share vs observed per-BIN baseline.
                 _spec = _split_v[_is_num(_split_v["bin"]).to_numpy()].copy()
                 if not _spec.empty:
-                    _cagg = _cache_v["cell_agg"]
+                    _cagg = _cache_v["profile_agg"]
                     _gagg = _cache_v["gw_agg"]
                     _spec["rpgt_join"] = _lc(_spec["rpgt"])
                     _spec["currency_join"] = _lc(_spec["currency"])
                     _spec["bin_join"] = _lc(_spec["bin"])
                     _spec["gateway_join"] = _lc(_spec["gateway"])
-                    _spec = _spec.merge(_cagg[["rpgt_join", "currency_join", "bin_join", "cell_att"]],
+                    _spec = _spec.merge(_cagg[["rpgt_join", "currency_join", "bin_join", "profile_att"]],
                                         on=["rpgt_join", "currency_join", "bin_join"], how="left")
                     _spec = _spec.merge(_gagg[["rpgt_join", "currency_join", "bin_join", "gateway_join", "gw_att"]],
                                         on=["rpgt_join", "currency_join", "bin_join", "gateway_join"], how="left")
-                    _cv = pd.to_numeric(_spec["cell_att"], errors="coerce").to_numpy(dtype="float64", na_value=np.nan)
+                    _cv = pd.to_numeric(_spec["profile_att"], errors="coerce").to_numpy(dtype="float64", na_value=np.nan)
                     _gv = pd.to_numeric(_spec["gw_att"], errors="coerce").to_numpy(dtype="float64", na_value=np.nan)
                     _cv = np.where(np.isnan(_cv), 0.0, _cv)
                     _gv = np.where(np.isnan(_gv), 0.0, _gv)
-                    _spec["cell_volume"] = _cv
+                    _spec["profile_volume"] = _cv
                     with np.errstate(divide="ignore", invalid="ignore"):
                         _spec["baseline_share"] = np.where(_cv > 0, _gv / _cv, 0.0)
                     _spec["share"] = pd.to_numeric(_spec["share"], errors="coerce").fillna(0.0).astype("float64")
@@ -320,7 +320,7 @@ def render():
                         _osh = np.where(_ct > 0, _av / _ct, 0.0)
                     _obs["share"] = _osh
                     _obs["baseline_share"] = _osh
-                    _obs["cell_volume"] = _ct
+                    _obs["profile_volume"] = _ct
                     _obs = _obs[_keep]
                 else:
                     _obs = pd.DataFrame(columns=_keep)
@@ -397,14 +397,14 @@ def render():
         _ensure_base_30d_metrics()
         cache = ss["cached_base_30d_metrics"]
         base_att, base_succ, base_rev = cache["base_att"], cache["base_succ"], cache["base_rev"]
-        cell_agg, gw_agg, adf_30d = cache["cell_agg"], cache["gw_agg"], cache["adf_30d_raw"]
+        profile_agg, gw_agg, adf_30d = cache["profile_agg"], cache["gw_agg"], cache["adf_30d_raw"]
         date_col = cache["date_col"]
         base_sr = base_succ / base_att if base_att > 0 else 0
         # Baseline revenue on the SAME basis as the new impact calc: value baseline
         # successes at the Bank×Currency avg ticket (not the raw actual amount), so
         # the card's change matches the Pre/Post Revenue columns below.
-        base_rev_adj = float((pd.to_numeric(cell_agg.get("avg_ticket", 0), errors="coerce").fillna(0)
-                              * pd.to_numeric(cell_agg.get("cell_succ", 0), errors="coerce").fillna(0)).sum())
+        base_rev_adj = float((pd.to_numeric(profile_agg.get("avg_ticket", 0), errors="coerce").fillna(0)
+                              * pd.to_numeric(profile_agg.get("profile_succ", 0), errors="coerce").fillna(0)).sum())
 
 
 # -------------- Slider Selection ---------------------------
@@ -464,10 +464,10 @@ def render():
                 _brand_key_e, _brand_name_e = "tav", _company_e0
             _mid_list_e = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
             _csrc = split_ideal.copy()
-            if "cell_volume" not in _csrc.columns:
-                _csrc["cell_volume"] = (_csrc.groupby(["rpgt", "currency", "bin"])["volume"].transform("sum")
+            if "profile_volume" not in _csrc.columns:
+                _csrc["profile_volume"] = (_csrc.groupby(["rpgt", "currency", "bin"])["volume"].transform("sum")
                                         if "volume" in _csrc.columns else 1.0)
-            _raw_cells = int(_csrc.groupby(["rpgt", "currency", "bin"]).ngroups)
+            _raw_profiles = int(_csrc.groupby(["rpgt", "currency", "bin"]).ngroups)
             # Signature of everything the pool-targeted result depends on (tab 4 uses the
             # default 'sales' mode for its cards/export; tab 6 keys its own mode separately).
             _pool_sig = (float(picked_w), _maxN, ss.get("variations_engine"), _brand_key_e,
@@ -524,7 +524,7 @@ def render():
                         _cl = _cl.drop(columns=["baseline_share"])
                     _cl = _cl.merge(_bl, on=["rpgt", "currency", "bin", "gateway"], how="left")
                     _cl["baseline_share"] = _cl["baseline_share"].fillna(0.0)
-                _cl["volume"] = _cl["cell_volume"] * _cl["share"]
+                _cl["volume"] = _cl["profile_volume"] * _cl["share"]
                 _impact_split = _cl
             elif _basis_compressed and _comp_long is None:
                 _basis_compressed = False   # compression unavailable/failed → uncompressed view
@@ -560,7 +560,7 @@ def render():
                 _bc = ss.get("backup_catchall") or {}
                 if _bc and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
                     from collections import defaultdict as _dd
-                    from routing_optimiser.s5_deliver.backup_blend import blend_cell_shares as _bcs
+                    from routing_optimiser.s5_deliver.backup_blend import blend_profile_shares as _bcs
                     _acc, _cnt = _dd(lambda: _dd(float)), _dd(int)
                     for (_cur, _rp, _pmp, _ct), _gw in _bc.items():
                         _cnt[(_cur, _rp)] += 1
@@ -588,15 +588,15 @@ def render():
                 # (The ideal split has `cell_volume`; the enforced split from build_split_exports does
                 # NOT — without this, _impact_eval_frame's cell_volume/volume would be missing.)
                 _cvsrc = None
-                if "cell_volume" in _spl.columns:
-                    _cvsrc = _spl.groupby(["rpgt", "currency", "bin"], as_index=False)["cell_volume"].first()
+                if "profile_volume" in _spl.columns:
+                    _cvsrc = _spl.groupby(["rpgt", "currency", "bin"], as_index=False)["profile_volume"].first()
                 elif "volume" in _spl.columns:
                     _cvsrc = (_spl.groupby(["rpgt", "currency", "bin"], as_index=False)["volume"].sum()
-                              .rename(columns={"volume": "cell_volume"}))
+                              .rename(columns={"volume": "profile_volume"}))
                 if _cvsrc is not None:
                     _enf = _enf.merge(_cvsrc, on=["rpgt", "currency", "bin"], how="left")
-                    _enf["cell_volume"] = pd.to_numeric(_enf["cell_volume"], errors="coerce").fillna(0.0)
-                    _enf["volume"] = _enf["cell_volume"] * _enf["share"]
+                    _enf["profile_volume"] = pd.to_numeric(_enf["profile_volume"], errors="coerce").fillna(0.0)
+                    _enf["volume"] = _enf["profile_volume"] * _enf["share"]
                 # Belt-and-suspenders: drop switched-off gateways (target=0, trx/both) from the eval
                 # split and renormalise each profile's post-share, so a turned-off gateway can NEVER show
                 # routed share in the revenue view regardless of how it entered (engine candidate,
@@ -614,8 +614,8 @@ def render():
                         _enf = _enf[~_gc.isin(_off_e)].copy()
                         if "share" in _enf.columns:
                             _renorm_share(_enf, ["rpgt", "currency", "bin"])
-                            if "cell_volume" in _enf.columns:
-                                _enf["volume"] = _enf["cell_volume"] * _enf["share"]
+                            if "profile_volume" in _enf.columns:
+                                _enf["volume"] = _enf["profile_volume"] * _enf["share"]
                 except Exception as _e:  # noqa: BLE001
                     st.caption(f"Switched-off renormalisation skipped ({type(_e).__name__}: {_e}).")
                 return _enf
@@ -900,19 +900,19 @@ def render():
                 if _sc is None or getattr(_sc, "empty", True):
                     return
                 # Profile key = (rpgt, currency, bank); cell_volume is the profile total on every row.
-                _sc["_cellk"] = (_sc["rpgt_join"].astype(str) + "|"
+                _sc["_profilek"] = (_sc["rpgt_join"].astype(str) + "|"
                                  + _sc["currency_join"].astype(str) + "|"
                                  + _sc["bin_join"].astype(str))
-                _sc["cell_volume"] = pd.to_numeric(_sc.get("cell_volume", 0), errors="coerce").fillna(0.0)
+                _sc["profile_volume"] = pd.to_numeric(_sc.get("profile_volume", 0), errors="coerce").fillna(0.0)
                 _sc["gw_sr"] = pd.to_numeric(_sc.get("gw_sr", 0), errors="coerce").fillna(0.0)
                 # Max-approval hypothetical: the single highest-gw_sr eligible gateway per profile takes
                 # the whole profile's volume (ignores VAMP / share caps; eligibility already implied by
                 # the candidate set present in the frame).
                 _sc["_maxwin"] = 0.0
-                _valid = _sc[_sc["cell_volume"] > 0]
+                _valid = _sc[_sc["profile_volume"] > 0]
                 if not _valid.empty:
-                    _win = _valid.groupby("_cellk")["gw_sr"].idxmax()
-                    _sc.loc[_win, "_maxwin"] = _sc.loc[_win, "cell_volume"]
+                    _win = _valid.groupby("_profilek")["gw_sr"].idxmax()
+                    _sc.loc[_win, "_maxwin"] = _sc.loc[_win, "profile_volume"]
                 _g = _sc.groupby("_vmid", as_index=False).agg(
                     cur=("pre_vol", "sum"), prop=("post_vol", "sum"), maxa=("_maxwin", "sum"))
                 _tot = float(_g[["cur", "prop", "maxa"]].to_numpy().sum() / 3.0) or 1.0
@@ -1176,18 +1176,18 @@ def render():
                     _rpgt_sel_bk = _rpf1.selectbox("RPGT", _rpgt_opts_bk, index=0, key="bank_rpgt_filter")
                     _sort_by = _fcol1.selectbox("Sort by", _sort_opts, index=0, key="bank_sort_by")
                     _sort_dir = _fcol2.selectbox("Order", ["Descending", "Ascending"], index=0, key="bank_sort_dir")
-                    _eval_bk, _cellagg_bk = eval_df, cell_agg
+                    _eval_bk, _profileagg_bk = eval_df, profile_agg
                     if _rpgt_sel_bk != "(All)":
                         _kbk = str(_rpgt_sel_bk).strip().lower()
                         if "rpgt_join" in eval_df.columns:
                             _eval_bk = eval_df[eval_df["rpgt_join"].astype(str).str.strip().str.lower() == _kbk]
-                        if "rpgt_join" in cell_agg.columns:
-                            _cellagg_bk = cell_agg[cell_agg["rpgt_join"].astype(str).str.strip().str.lower() == _kbk]
-                    cell_impact = _eval_bk.groupby(["rpgt_join", "currency_join", "bin_join"]).agg(exp_succ=("exp_succ", "sum"), exp_rev=("exp_rev", "sum"), pre_rev=("pre_rev", "sum")).reset_index()
-                    cell_full = _cellagg_bk.merge(cell_impact, on=["rpgt_join", "currency_join", "bin_join"], how="left").fillna(0)
+                        if "rpgt_join" in profile_agg.columns:
+                            _profileagg_bk = profile_agg[profile_agg["rpgt_join"].astype(str).str.strip().str.lower() == _kbk]
+                    profile_impact = _eval_bk.groupby(["rpgt_join", "currency_join", "bin_join"]).agg(exp_succ=("exp_succ", "sum"), exp_rev=("exp_rev", "sum"), pre_rev=("pre_rev", "sum")).reset_index()
+                    profile_full = _profileagg_bk.merge(profile_impact, on=["rpgt_join", "currency_join", "bin_join"], how="left").fillna(0)
                     bank_display_map = eval_df[["bin_join", "bin"]].drop_duplicates().set_index("bin_join")["bin"].to_dict()
 
-                    bank_table = cell_full.groupby(["bin_join", "currency_join"]).agg(old_att=("cell_att", "sum"), old_succ=("cell_succ", "sum"), old_rev=("cell_rev", "sum"), old_rev_pre=("pre_rev", "sum"), new_succ=("exp_succ", "sum"), new_rev=("exp_rev", "sum"), avg_ticket=("avg_ticket", "first")).reset_index()
+                    bank_table = profile_full.groupby(["bin_join", "currency_join"]).agg(old_att=("profile_att", "sum"), old_succ=("profile_succ", "sum"), old_rev=("profile_rev", "sum"), old_rev_pre=("pre_rev", "sum"), new_succ=("exp_succ", "sum"), new_rev=("exp_rev", "sum"), avg_ticket=("avg_ticket", "first")).reset_index()
                     # Baseline revenue on the MODELLED pre_rev basis (same basis as the Expected
                     # Revenue card and every other bridge, so all revenue bridges reconcile).
                     bank_table["old_rev"] = bank_table["old_rev_pre"]
@@ -1216,7 +1216,7 @@ def render():
                              "Old Success Rate", "New Success Rate", "30D $ Impact"]
 
                     # [FN-359]
-                    def _fmt_cell(col, v):
+                    def _fmt_profile(col, v):
                         if col == "Bank":
                             _s = str(v)
                             return (_s[:30] + "…") if len(_s) > 30 else _s
@@ -1244,16 +1244,16 @@ def render():
                     # [FN-361]
                     def _bank_row_html(r, is_total=False):
                         _tb = "border-top:2px solid var(--tav-line);" if is_total else ""
-                        _cells = []
+                        _profiles = []
                         for _c in _cols:
                             _al = "left" if _c == "Bank" else "right"
                             _fw = "800" if is_total else ("600" if _c == "Bank" else "normal")
                             _clr = "var(--tav-ink)"
                             if _c == "30D $ Impact" and not is_total:
                                 _clr = "#22C36B" if float(r[_c]) >= 0 else "#e63748"
-                            _cells.append(f'<td style="{_bcw(_c)} text-align:{_al}; color:{_clr}; '
+                            _profiles.append(f'<td style="{_bcw(_c)} text-align:{_al}; color:{_clr}; '
                                           f'font-weight:{_fw}; {_tb} white-space:nowrap;">{_fmt_cell(_c, r[_c])}</td>')
-                        return "<tr>" + "".join(_cells) + "</tr>"
+                        return "<tr>" + "".join(_profiles) + "</tr>"
 
                     for _, _r in bank_view.iterrows():
                         _h.append(_bank_row_html(_r))
@@ -1397,8 +1397,8 @@ def render():
                         # delivered VAMP is. `_wc_rr` hands the identical value to
                         # enforced_prop_items at :1308.
                         max_share=float(_wc_r.get("max_share", 0.97)))
-                    _tick_r = rpgt_avg_ticket(cache.get("cell_agg"))                 # RPGT fallback
-                    _rc_tick_r = rpgt_currency_avg_ticket(cache.get("cell_agg"))     # RPGT × Currency
+                    _tick_r = rpgt_avg_ticket(cache.get("profile_agg"))                 # RPGT fallback
+                    _rc_tick_r = rpgt_currency_avg_ticket(cache.get("profile_agg"))     # RPGT × Currency
                     # VALIDATE MODE ONLY: source transactions from the pipeline's granular
                     # bin_rpgt_impact_export.csv so they tie EXACTLY to the Validate Split table, while
                     # KEEPING the RPGT×Currency avg-ticket → revenue = pipeline transactions ×
@@ -1740,7 +1740,7 @@ def render():
                                                   .map(_f2v_sr).fillna(_bb["gateway"].astype(str)))
                             _bb["_g"] = ((_bb["gateway"] if "gateway" in _bb.columns else _bb["gateway_join"])
                                          .astype(str).str.strip().str.lower())
-                            _bb["_w"] = (pd.to_numeric(_bb.get("cell_att", 1.0), errors="coerce").fillna(0.0)
+                            _bb["_w"] = (pd.to_numeric(_bb.get("profile_att", 1.0), errors="coerce").fillna(0.0)
                                          * pd.to_numeric(_bb.get("share", 1.0), errors="coerce").fillna(0.0))
                             for _gname, _d in _bb.groupby("_g"):
                                 _wsum = float(_d["_w"].sum())
@@ -1774,12 +1774,12 @@ def render():
                         # showing the engine's proposed split, separated by a dark
                         # grey dotted line (like the T-months divider on tab 2).
                         prop_bar = pd.DataFrame(columns=["xlab", "gateway", "share"])
-                        if not b_df.empty and {"gateway", "cell_att", "share"}.issubset(b_df.columns):
+                        if not b_df.empty and {"gateway", "profile_att", "share"}.issubset(b_df.columns):
                             _pb = b_df.copy()
                             if _f2v_sr:   # vampMid-level proposed bar
                                 _pb["gateway"] = (_pb["gateway"].astype(str).str.strip().str.lower()
                                                   .map(_f2v_sr).fillna(_pb["gateway"].astype(str)))
-                            _pb["_pv"] = _pb["cell_att"] * _pb["share"]
+                            _pb["_pv"] = _pb["profile_att"] * _pb["share"]
                             _pb = _pb.groupby("gateway", as_index=False)["_pv"].sum()
                             _tot = _pb["_pv"].sum()
                             _pb["share"] = np.where(_tot > 0, _pb["_pv"] / _tot, 0.0)
@@ -1823,9 +1823,9 @@ def render():
 
                         # Revenue waterfall by gatewayFid: total current -> per-gateway
                         # delta -> total proposed (30D revenue).
-                        if not b_df.empty and {"cell_att", "baseline_share", "gw_sr", "avg_ticket", "exp_rev", "gateway"}.issubset(b_df.columns):
+                        if not b_df.empty and {"profile_att", "baseline_share", "gw_sr", "avg_ticket", "exp_rev", "gateway"}.issubset(b_df.columns):
                             _wf = b_df.copy()
-                            _wf["pre_rev"] = _wf["cell_att"] * _wf["baseline_share"] * _wf["gw_sr"] * _wf["avg_ticket"]
+                            _wf["pre_rev"] = _wf["profile_att"] * _wf["baseline_share"] * _wf["gw_sr"] * _wf["avg_ticket"]
                             _wg = _wf.groupby("gateway", as_index=False).agg(pre=("pre_rev", "sum"), post=("exp_rev", "sum"))
                             _wg["delta"] = _wg["post"] - _wg["pre"]
                             _wg = _wg[(_wg["pre"].abs() + _wg["post"].abs()) > 0].sort_values("delta", ascending=False)
@@ -1866,12 +1866,12 @@ def render():
 
                     # --- Current vs Proposed Share Table ---
                     if b_df.empty:
-                        b_df = pd.DataFrame(columns=["gateway_join", "gateway", "cell_att", "baseline_share", "share", "gw_sr", "avg_ticket", "exp_succ", "exp_rev"])
+                        b_df = pd.DataFrame(columns=["gateway_join", "gateway", "profile_att", "baseline_share", "share", "gw_sr", "avg_ticket", "exp_succ", "exp_rev"])
                         b_df["curr_vol"] = 0.0; b_df["prop_vol"] = 0.0
                     else:
-                        if "cell_att" in b_df.columns and "baseline_share" in b_df.columns: b_df["curr_vol"] = b_df["cell_att"] * b_df["baseline_share"]
+                        if "profile_att" in b_df.columns and "baseline_share" in b_df.columns: b_df["curr_vol"] = b_df["profile_att"] * b_df["baseline_share"]
                         else: b_df["curr_vol"] = 0.0
-                        if "cell_att" in b_df.columns and "share" in b_df.columns: b_df["prop_vol"] = b_df["cell_att"] * b_df["share"]
+                        if "profile_att" in b_df.columns and "share" in b_df.columns: b_df["prop_vol"] = b_df["profile_att"] * b_df["share"]
                         else: b_df["prop_vol"] = 0.0
                 
                     if b_df.empty:
@@ -3043,7 +3043,7 @@ def render():
                     # per-(bank,cur,RPGT,gateway) frame (_raw_rpgt) is reused by the per-RPGT breakdown.
                     _raw_rpgt = None
                     try:
-                        _ca_t = cache.get("cell_agg") if isinstance(cache, dict) else None
+                        _ca_t = cache.get("profile_agg") if isinstance(cache, dict) else None
                         if (_ca_t is not None and not plot_adf_sel.empty
                                 and {"rpgt", "currency", "bin", "gateway", "success"}.issubset(plot_adf_sel.columns)
                                 and {"rpgt_join", "currency_join", "bin_join", "rpgt_ticket"}.issubset(_ca_t.columns)):
@@ -3131,13 +3131,13 @@ def render():
                     # proposed share = weighting / total weighting in the profile.
                     _temp = ss.get("softmax_temperature")
                     _tmethod = ss.get("temp_method", "Manual")
-                    _celltemp = ss.get("cell_temperature", {}) or {}
-                    _show_softmax = ss.get("variations_engine") == "softmax" and (bool(_temp) or bool(_celltemp))
+                    _profiletemp = ss.get("profile_temperature", {}) or {}
+                    _show_softmax = ss.get("variations_engine") == "softmax" and (bool(_temp) or bool(_profiletemp))
                     if _show_softmax:
-                        if _celltemp:
+                        if _profiletemp:
                             _fb = float(_temp) if _temp else 0.17
                             workings_full["Temperature (cell)"] = [
-                                _celltemp.get(f"{c}|{b}", _fb) for c, b in
+                                _profiletemp.get(f"{c}|{b}", _fb) for c, b in
                                 zip(workings_full["currency_join"], workings_full["bin_join"])]
                             _k = workings_full["Temperature (cell)"].astype(float) * 100.0   # per-profile multiplier
                         else:
@@ -4548,13 +4548,13 @@ def render():
                             _fh.append('</tr>')
                             # highest priority-NUMBER first (lowest priority) — cheapest to relax first.
                             for _fr in sorted(_feas_rows, key=lambda r: -int(r.get("prio", 1))):
-                                _cells = [("vampMid", "left", _fr["mid"]), ("Scope", "left", _fr["scope"]),
+                                _profiles = [("vampMid", "left", _fr["mid"]), ("Scope", "left", _fr["scope"]),
                                           ("Metric", "left", _fr["metric"]), ("Type", "left", _fr["type"]),
                                           ("Prio", "right", str(_fr.get("prio", 1))),
                                           ("Target", "right", _fr["target"]), ("Now", "right", _fr["now"]),
                                           ("Miss", "left", _fr["dirn"]), ("Minimal relaxation", "left", _fr["need"])]
                                 _fh.append('<tr>')
-                                for _c, _al, _val in _cells:
+                                for _c, _al, _val in _profiles:
                                     _fh.append(f'<td style="padding:2px 5px; text-align:{_al}; color:#000; '
                                                f'white-space:nowrap;">{_val}</td>')
                                 _fh.append('</tr>')

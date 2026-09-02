@@ -132,7 +132,7 @@ def _empirical_bayes_kappa(grp: pd.DataFrame, scope: list[str],
     # bias kappa. So `bank` is always part of the per-profile grouping (added here if
     # it isn't already in `scope`); we measure the spread WITHIN each
     # (scope, bank) profile, then attempt-weight-pool those profiles up to `scope`.
-    cell_extra = [] if "bin" in scope else ["bin"]
+    profile_extra = [] if "bin" in scope else ["bin"]
     for key, g in grp.groupby(scope):
         key = key if isinstance(key, tuple) else (key,)
         n_all = g["attempts"].to_numpy(float)
@@ -144,8 +144,8 @@ def _empirical_bayes_kappa(grp: pd.DataFrame, scope: list[str],
         mu = x_all[m_all].sum() / n_all[m_all].sum()               # pooled scope mean
         # Accumulate the attempt-weighted within-bank observed & sampling variances.
         num_obs = num_samp = wsum = 0.0
-        cells = [g] if not cell_extra else [gb for _, gb in g.groupby(cell_extra)]
-        for gb in cells:
+        profiles = [g] if not profile_extra else [gb for _, gb in g.groupby(profile_extra)]
+        for gb in profiles:
             n = gb["attempts"].to_numpy(float)
             x = gb["success"].to_numpy(float)
             m = n > 0
@@ -323,22 +323,22 @@ def rpgt_gateway_sensitivity(sr_df, avg_ticket: float = 1.0, min_attempts: float
     d["attempts"] = pd.to_numeric(d["attempts"], errors="coerce")
     d["success_rate"] = pd.to_numeric(d["success_rate"], errors="coerce")
     d = d[(d["attempts"] >= float(min_attempts)) & d["success_rate"].notna()]
-    cols = ["rpgt", "volume", "sensitivity_pp", "dollars_at_stake", "cells"]
+    cols = ["rpgt", "volume", "sensitivity_pp", "dollars_at_stake", "profiles"]
     if d.empty:
         return pd.DataFrame(columns=cols)
-    cell = d.groupby(["rpgt", "currency", "bin"], as_index=False).agg(
+    profile = d.groupby(["rpgt", "currency", "bin"], as_index=False).agg(
         vol=("attempts", "sum"), rmax=("success_rate", "max"),
         rmin=("success_rate", "min"), ngw=("gateway", "nunique"))
     # Only profiles with ≥2 eligible gateways are reroutable; single-gateway profiles
     # contribute NOTHING — not to the gap, and not to the volume/profiles denominators
     # either — so they can't dilute sensitivity_pp or dollars_at_stake.
-    routable = cell["ngw"] >= 2
-    cell["gap"] = np.where(routable, (cell["rmax"] - cell["rmin"]).clip(lower=0.0), 0.0)
-    cell["rvol"] = np.where(routable, cell["vol"], 0.0)      # routable volume only
-    cell["gapvol"] = cell["gap"] * cell["rvol"]
-    cell["rcell"] = routable.astype(int)                    # routable-profile counter
-    rp = cell.groupby("rpgt", as_index=False).agg(
-        volume=("rvol", "sum"), gapvol=("gapvol", "sum"), cells=("rcell", "sum"))
+    routable = profile["ngw"] >= 2
+    profile["gap"] = np.where(routable, (profile["rmax"] - profile["rmin"]).clip(lower=0.0), 0.0)
+    profile["rvol"] = np.where(routable, profile["vol"], 0.0)      # routable volume only
+    profile["gapvol"] = profile["gap"] * profile["rvol"]
+    profile["rprofile"] = routable.astype(int)                    # routable-profile counter
+    rp = profile.groupby("rpgt", as_index=False).agg(
+        volume=("rvol", "sum"), gapvol=("gapvol", "sum"), profiles=("rprofile", "sum"))
     rp["sensitivity_pp"] = np.where(rp["volume"] > 0, rp["gapvol"] / rp["volume"] * 100.0, 0.0)
     rp["dollars_at_stake"] = rp["gapvol"] * float(avg_ticket)
     return (rp[cols].sort_values("dollars_at_stake", ascending=False)

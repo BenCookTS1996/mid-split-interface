@@ -28,7 +28,7 @@ _ALL = "_all_"   # sentinel profile label when the export has no pmp/Country spl
 
 
 # [FN-SC01]
-def subcell_vi_fractions(prorata: pd.DataFrame,
+def profile_vi_fractions(prorata: pd.DataFrame,
                          *, currency="Currency", bin_="BIN", rpgt="RPGT",
                          pmp="paymentMethodProvider", country="Country",
                          vi="VI_Txn_Count", t="t") -> pd.DataFrame:
@@ -57,27 +57,27 @@ def subcell_vi_fractions(prorata: pd.DataFrame,
                       "vi": viv, "t": tt})
     g = g[g["t"] == 0]
     sub = g.groupby(["cur", "bin", "rpgt", "pmp", "ctry"], as_index=False)["vi"].sum()
-    cell_tot = sub.groupby(["cur", "bin", "rpgt"])["vi"].transform("sum")
+    profile_tot = sub.groupby(["cur", "bin", "rpgt"])["vi"].transform("sum")
     # Profiles with positive VI: fraction = profile VI / profile VI.
-    pos = cell_tot > 0
-    sub["vi_frac"] = np.where(pos, sub["vi"] / cell_tot.where(pos, 1.0), np.nan)
+    pos = profile_tot > 0
+    sub["vi_frac"] = np.where(pos, sub["vi"] / profile_tot.where(pos, 1.0), np.nan)
 
     # Profiles with zero VI (or absent from the export): one '_all_' profile, frac 1.0.
-    zero_cells = (sub.loc[~pos, ["cur", "bin", "rpgt"]].drop_duplicates())
-    if len(zero_cells):
-        zero_cells = zero_cells.assign(pmp=_ALL, ctry=_ALL, vi=0.0, vi_frac=1.0)
-        sub = pd.concat([sub[pos], zero_cells], ignore_index=True)
+    zero_profiles = (sub.loc[~pos, ["cur", "bin", "rpgt"]].drop_duplicates())
+    if len(zero_profiles):
+        zero_profiles = zero_profiles.assign(pmp=_ALL, ctry=_ALL, vi=0.0, vi_frac=1.0)
+        sub = pd.concat([sub[pos], zero_profiles], ignore_index=True)
     return sub[["cur", "bin", "rpgt", "pmp", "ctry", "vi", "vi_frac"]].reset_index(drop=True)
 
 
 # [FN-SC02]
-def expand_forecast_to_subcells(forecast: pd.DataFrame, fractions: pd.DataFrame,
+def expand_forecast_to_profiles(forecast: pd.DataFrame, fractions: pd.DataFrame,
                                 *, currency="currency", bin_="bin", rpgt="rpgt",
                                 volume="volume") -> pd.DataFrame:
     """Replicate each cell's rows across its (pmp, Country) sub-cells, apportioning the cell's
-    forecast VOLUME by `fractions` (from :func:`subcell_vi_fractions`). Every other column
+    forecast VOLUME by `fractions` (from :func:`profile_vi_fractions`). Every other column
     (gateway, baseline_share, success/risk rates, …) is BROADCAST unchanged — scoring stays at
-    cell grain. Adds `pmp` and `ctry` columns and a `subcell` key.
+    cell grain. Adds `pmp` and `ctry` columns and a `profile` key.
 
     Volume conservation: the sum of `volume` over a cell's sub-cell rows equals the original cell
     volume (fractions sum to 1 per cell). Rows whose cell has no entry in `fractions` are kept as a
@@ -100,6 +100,6 @@ def expand_forecast_to_subcells(forecast: pd.DataFrame, fractions: pd.DataFrame,
     merged.loc[miss, "vi_frac"] = 1.0
 
     merged[volume] = pd.to_numeric(merged[volume], errors="coerce").fillna(0.0) * merged["vi_frac"]
-    merged["subcell"] = (merged["_cur"] + "|" + merged["_bin"] + "|" + merged["_rpgt"]
+    merged["profile"] = (merged["_cur"] + "|" + merged["_bin"] + "|" + merged["_rpgt"]
                          + "|" + merged["pmp"].astype(str) + "|" + merged["ctry"].astype(str))
     return merged.drop(columns=["_cur", "_bin", "_rpgt", "vi_frac"]).reset_index(drop=True)

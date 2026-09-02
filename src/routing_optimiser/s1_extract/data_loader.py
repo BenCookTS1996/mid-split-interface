@@ -22,7 +22,7 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-from routing_optimiser.engines import CellProblem
+from routing_optimiser.engines import ProfileProblem
 from routing_optimiser.s1_extract.success_rates import gateway_success_rates, load_success_data
 
 
@@ -72,11 +72,11 @@ def load_forecast(path: str | None, success_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # [FN-050]
-def build_cell_problems(
+def build_profile_problems(
     forecast: pd.DataFrame,
     success_rates: pd.DataFrame,
     default_risk: float = 0.006,
-) -> list[CellProblem]:
+) -> list[ProfileProblem]:
     """Join forecast volume + baseline split with success/risk rates per cell.
 
     ANALOGY: assembling each cell's "briefing pack". For every RPGT×Currency×Bank cell we pull
@@ -114,13 +114,13 @@ def build_cell_problems(
         _global_rate = 0.85
     _has_prior = "prior_rate" in sr.columns
     _has_kappa = "kappa" in sr.columns
-    problems: list[CellProblem] = []
+    problems: list[ProfileProblem] = []
     _n_gw = _n_pool = 0
 
-    for (rpgt, currency, bin_), cell in forecast.groupby(["rpgt", "currency", "bin"]):
-        gateways = list(cell["gateway"])
-        vol = float(cell["volume"].sum())
-        base = cell["baseline_share"].to_numpy(float)
+    for (rpgt, currency, bin_), profile in forecast.groupby(["rpgt", "currency", "bin"]):
+        gateways = list(profile["gateway"])
+        vol = float(profile["volume"].sum())
+        base = profile["baseline_share"].to_numpy(float)
         base = base / base.sum() if base.sum() > 0 else np.full(len(gateways), 1 / len(gateways))
 
         succ, obs_s, obs_a, is_pool = [], [], [], []
@@ -148,22 +148,22 @@ def build_cell_problems(
                 kap.append(0.0)
                 is_pool.append(True)
 
-        if "risk_rate" in cell.columns:
-            risk = cell["risk_rate"].to_numpy(float)
+        if "risk_rate" in profile.columns:
+            risk = profile["risk_rate"].to_numpy(float)
         else:
             risk = np.full(len(gateways), default_risk)
 
         # Risk-rate sample size = the transaction/sales count the VAMP rate was
         # measured over. Prefer an explicit 'risk_n' column; else fall back to the
         # profile's routing volume (which, on the granular path, IS the Txn count).
-        if "risk_n" in cell.columns:
-            risk_n = pd.to_numeric(cell["risk_n"], errors="coerce").fillna(0.0).to_numpy(float)
-        elif "volume" in cell.columns:
-            risk_n = pd.to_numeric(cell["volume"], errors="coerce").fillna(0.0).to_numpy(float)
+        if "risk_n" in profile.columns:
+            risk_n = pd.to_numeric(profile["risk_n"], errors="coerce").fillna(0.0).to_numpy(float)
+        elif "volume" in profile.columns:
+            risk_n = pd.to_numeric(profile["volume"], errors="coerce").fillna(0.0).to_numpy(float)
         else:
             risk_n = None
 
-        problem = CellProblem(
+        problem = ProfileProblem(
             rpgt=str(rpgt), currency=str(currency), bin=str(bin_),
             gateways=gateways,
             success_rates=np.array(succ, float),
@@ -184,8 +184,8 @@ def build_cell_problems(
         # individually) so unproven gateways can't dilute proven volume; Thompson
         # ignores the flag (its wide posterior self-limits). Same attach-not-schema
         # pattern as pooled_fallback so nothing downstream needs to change.
-        if "is_explore" in cell.columns:
-            _expl = cell["is_explore"].fillna(False).to_numpy(bool)
+        if "is_explore" in profile.columns:
+            _expl = profile["is_explore"].fillna(False).to_numpy(bool)
         else:
             _expl = np.zeros(len(gateways), bool)
         problem.is_explore = _expl  # type: ignore[attr-defined]
@@ -199,7 +199,7 @@ def build_cell_problems(
         if _matched == 0:
             # NOTHING joined → the two sides key on genuinely different values: a real bug.
             warnings.warn(
-                f"build_cell_problems: 0/{_n_gw} gateways matched a per-cell success rate — the "
+                f"build_profile_problems: 0/{_n_gw} gateways matched a per-cell success rate — the "
                 f"forecast and success-rate join keys don't line up AT ALL (likely a BIN-vs-bankName "
                 f"mismatch on 'bin'); every rate is the pooled prior.", stacklevel=2)
         else:
@@ -207,30 +207,30 @@ def build_cell_problems(
             # BIN-level forecast, where most BIN×gateway combos have no direct attempts and
             # correctly inherit the pooled prior. Informational, not a key mismatch.
             logger.info(
-                f"   build_cell_problems: {_n_pool}/{_n_gw} ({_pct:.0f}%) gateway-profiles on the pooled "
+                f"   build_profile_problems: {_n_pool}/{_n_gw} ({_pct:.0f}%) gateway-profiles on the pooled "
                 f"prior (sparse per-profile attempts); {_matched} matched, so the join keys ARE aligned — "
                 f"expected at BIN grain, not a mismatch.")
     return problems
 
 
 # [FN-050b]
-def build_subcell_problems(
+def build_profile_problems(
     forecast: pd.DataFrame,
     success_rates: pd.DataFrame,
     default_risk: float = 0.006,
-) -> list[CellProblem]:
-    """SUB-CELL variant of :func:`build_cell_problems` — one CellProblem per
+) -> list[ProfileProblem]:
+    """SUB-CELL variant of :func:`build_profile_problems` — one CellProblem per
     (rpgt × currency × bin × pmp × Country) sub-cell.
 
     Design (locked): the DECISION grain is the sub-cell, but the SCORING (success-rate) grain
     stays at CELL — so success rates are joined on the CELL key (rpgt,currency,bin,gateway) and
     BROADCAST onto each sub-cell (no pmp/Country split of the thin conversion data). `forecast`
     must already carry `pmp` and `ctry` columns with the volume apportioned to sub-cells (see
-    `routing_optimiser.s3_problem.subcell.expand_forecast_to_subcells`). `bin` is the raw BIN and
+    `routing_optimiser.s3_problem.profile.expand_forecast_to_profiles`). `bin` is the raw BIN and
     the sub-cell identity is carried on `CellProblem.pmp` / `.ctry`, so the band projector's
     sub-cell scaffold (keyed bin/pmp/ctry) still aligns.
 
-    `build_cell_problems` is left byte-identical; this is a separate, gated path.
+    `build_profile_problems` is left byte-identical; this is a separate, gated path.
     """
     def _nk(x):
         return str(x).strip().casefold()
@@ -257,13 +257,13 @@ def build_subcell_problems(
     if "ctry" not in _fc.columns:
         _fc["ctry"] = "_all_"
 
-    problems: list[CellProblem] = []
+    problems: list[ProfileProblem] = []
     _n_gw = _n_pool = 0
-    for (rpgt, currency, bin_, pmp, ctry), cell in _fc.groupby(
+    for (rpgt, currency, bin_, pmp, ctry), profile in _fc.groupby(
             ["rpgt", "currency", "bin", "pmp", "ctry"]):
-        gateways = list(cell["gateway"])
-        vol = float(cell["volume"].sum())
-        base = cell["baseline_share"].to_numpy(float)
+        gateways = list(profile["gateway"])
+        vol = float(profile["volume"].sum())
+        base = profile["baseline_share"].to_numpy(float)
         base = base / base.sum() if base.sum() > 0 else np.full(len(gateways), 1 / len(gateways))
 
         succ, obs_s, obs_a, is_pool, prior_r, kap = [], [], [], [], [], []
@@ -282,16 +282,16 @@ def build_subcell_problems(
                 succ.append(_global_rate); obs_s.append(0.0); obs_a.append(0.0)
                 prior_r.append(_global_rate); kap.append(0.0); is_pool.append(True)
 
-        risk = (cell["risk_rate"].to_numpy(float) if "risk_rate" in cell.columns
+        risk = (profile["risk_rate"].to_numpy(float) if "risk_rate" in profile.columns
                 else np.full(len(gateways), default_risk))
-        if "risk_n" in cell.columns:
-            risk_n = pd.to_numeric(cell["risk_n"], errors="coerce").fillna(0.0).to_numpy(float)
-        elif "volume" in cell.columns:
-            risk_n = pd.to_numeric(cell["volume"], errors="coerce").fillna(0.0).to_numpy(float)
+        if "risk_n" in profile.columns:
+            risk_n = pd.to_numeric(profile["risk_n"], errors="coerce").fillna(0.0).to_numpy(float)
+        elif "volume" in profile.columns:
+            risk_n = pd.to_numeric(profile["volume"], errors="coerce").fillna(0.0).to_numpy(float)
         else:
             risk_n = None
 
-        problem = CellProblem(
+        problem = ProfileProblem(
             rpgt=str(rpgt), currency=str(currency), bin=str(bin_),
             gateways=gateways, success_rates=np.array(succ, float),
             risk_rates=np.array(risk, float), volume=vol, baseline_shares=base,
@@ -299,8 +299,8 @@ def build_subcell_problems(
             prior_rate=np.array(prior_r, float), kappa=np.array(kap, float), risk_n=risk_n,
             pmp=str(pmp), ctry=str(ctry))
         problem.pooled_fallback = np.array(is_pool, bool)  # type: ignore[attr-defined]
-        _expl = (cell["is_explore"].fillna(False).to_numpy(bool)
-                 if "is_explore" in cell.columns else np.zeros(len(gateways), bool))
+        _expl = (profile["is_explore"].fillna(False).to_numpy(bool)
+                 if "is_explore" in profile.columns else np.zeros(len(gateways), bool))
         problem.is_explore = _expl  # type: ignore[attr-defined]
         problems.append(problem)
     return problems
@@ -316,5 +316,5 @@ def prepare_inputs(success_source, forecast_path: str | None = None,
     sdf = load_success_data(success_source)
     sr = gateway_success_rates(sdf, shrink_strength=shrink_strength)
     forecast = load_forecast(forecast_path, sdf)
-    problems = build_cell_problems(forecast, sr)
+    problems = build_profile_problems(forecast, sr)
     return problems, sr, forecast

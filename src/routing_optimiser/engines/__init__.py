@@ -1,7 +1,7 @@
 """Engine registry. The UI dropdown is built straight from ENGINES."""
 from __future__ import annotations
 
-from .base import BaseEngine, CellProblem, CellSolution
+from .base import BaseEngine, ProfileProblem, ProfileSolution
 from .genetic_ref import GeneticRefEngine
 
 # RETIRED FROM THE UI (2026-08-31), still imported on purpose. These four moved to
@@ -47,5 +47,5 @@ def engine_choices() -> list[tuple[str, str]]:
 
 __all__ = [
     "ENGINES", "get_engine", "engine_choices",
-    "BaseEngine", "CellProblem", "CellSolution",
+    "BaseEngine", "ProfileProblem", "ProfileSolution",
 ]

@@ -85,7 +85,7 @@ except Exception:                               # noqa: BLE001 - no numba -> ide
 # --------------------------------------------------------------------------- fused kernel
 # [FN-186]
 @njit
-def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fine,
+def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_profile, n_fine,
                 nec_col, fl_col, capN_col, has_floor, has_cap,
                 cv, risk, rc,
                 has_vcap, vcap,
@@ -136,7 +136,7 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                 m = mid_id[g]
                 a = -G[p, m] * zr[g] + G[p, M + m] * zq[g] + G[p, 2 * M + m]
                 if n_fine > 0 and fine_idx[g] >= 0:
-                    a -= G[p, 3 * M + fine_idx[g]] * zr_cell[g]
+                    a -= G[p, 3 * M + fine_idx[g]] * zr_profile[g]
                 aa[g] = a
             else:
                 aa[g] = 0.0
@@ -173,20 +173,20 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                     s0 = cs[c]
                     s1 = s0 + cc[c]
                     deficit = 0.0
-                    give_cell = 0.0
+                    give_profile = 0.0
                     for g in range(s0, s1):
                         if elig[g] > 0.5 and X[g] < fl_col[g] - 1e-12:
                             deficit += fl_col[g] - X[g]
                             any_under = True
                         elif elig[g] > 0.5 and X[g] > fl_col[g] + 1e-12:
-                            give_cell += X[g] - fl_col[g]
+                            give_profile += X[g] - fl_col[g]
                     if deficit > 0.0:
                         for g in range(s0, s1):
                             if elig[g] > 0.5 and X[g] < fl_col[g] - 1e-12:
                                 X[g] = fl_col[g]
                             elif (elig[g] > 0.5 and X[g] > fl_col[g] + 1e-12
-                                  and give_cell > 1e-12):
-                                X[g] = X[g] - (X[g] - fl_col[g]) * deficit / give_cell
+                                  and give_profile > 1e-12):
+                                X[g] = X[g] - (X[g] - fl_col[g]) * deficit / give_profile
                 if not any_under:
                     break
         # ---- HARD max-share cap water-fill (shed-then-fill, up to 50 sweeps) ---------
@@ -199,20 +199,20 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
                     s0 = cs[c]
                     s1 = s0 + cc[c]
                     excess = 0.0
-                    room_cell = 0.0
+                    room_profile = 0.0
                     for g in range(s0, s1):
                         if X[g] > capN_col[g] + 1e-12:
                             excess += X[g] - capN_col[g]
                             any_over = True
                         elif elig[g] > 0.5 and X[g] < capN_col[g] - 1e-12:
-                            room_cell += capN_col[g] - X[g]
+                            room_profile += capN_col[g] - X[g]
                     if excess > 0.0:
                         for g in range(s0, s1):
                             if X[g] > capN_col[g] + 1e-12:
                                 X[g] = capN_col[g]
                             elif (elig[g] > 0.5 and X[g] < capN_col[g] - 1e-12
-                                  and room_cell > 1e-12):
-                                X[g] = X[g] + (capN_col[g] - X[g]) * excess / room_cell
+                                  and room_profile > 1e-12):
+                                X[g] = X[g] + (capN_col[g] - X[g]) * excess / room_profile
                 if not any_over:
                     break
         # snapshot the PRE-ELIGIBILITY decode (this is what the exact-band projection consumes —
@@ -381,14 +381,14 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fi
 
 # --------------------------------------------------------------------------- builder
 # [FN-187]
-def _prep_cols(cell_starts, cell_counts, elig, cap, floor):
+def _prep_cols(profile_starts, profile_counts, elig, cap, floor):
     """Per-column nec / floor / capN constants, matching `seed_search._cap_floor_prep`
     but as dense (N,) arrays the fused kernel can index directly."""
-    cs = np.ascontiguousarray(cell_starts, dtype=np.intp)
-    cc = np.ascontiguousarray(cell_counts, dtype=np.intp)
+    cs = np.ascontiguousarray(profile_starts, dtype=np.intp)
+    cc = np.ascontiguousarray(profile_counts, dtype=np.intp)
     elig = np.ascontiguousarray(elig, dtype=np.float64)
-    nec_cell = np.add.reduceat(elig, cs)
-    nec_col = np.repeat(nec_cell, cc).astype(np.float64)
+    nec_profile = np.add.reduceat(elig, cs)
+    nec_col = np.repeat(nec_profile, cc).astype(np.float64)
     fl_col = np.minimum(float(floor),
                         np.where(nec_col > 0, 1.0 / np.maximum(nec_col, 1.0), 0.0)).astype(np.float64)
     capN_col = np.where(nec_col >= 2.0, float(cap), 1.0).astype(np.float64)
@@ -396,8 +396,8 @@ def _prep_cols(cell_starts, cell_counts, elig, cap, floor):
 
 
 # [FN-188]
-def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
-                    cap, floor, fine_idx, zr_cell, n_fine, cv, risk, rc, ctx):
+def make_numba_eval(M, ref, zr, zq, mid_id, profile_starts, profile_counts, elig,
+                    cap, floor, fine_idx, zr_profile, n_fine, cv, risk, rc, ctx):
     """Return a callable `eval_actual(G)->(obj, viol)` (G in ACTUAL genome space) backed by
     the fused Numba kernel. All constants are captured once. Raises if Numba is unavailable
     (caller guards on NUMBA_OK)."""
@@ -410,10 +410,10 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
     cv = _c(cv); risk = _c(risk); rc = _c(rc)
     elig = _c(elig)
     mid_id = _c(mid_id, np.intp)
-    cs = _c(cell_starts, np.intp); cc = _c(cell_counts, np.intp)
+    cs = _c(profile_starts, np.intp); cc = _c(profile_counts, np.intp)
     n_fine = int(n_fine)
     fine_idx = _c(fine_idx, np.intp) if (n_fine > 0 and fine_idx is not None) else np.full(N, -1, np.intp)
-    zr_cell = _c(zr_cell) if zr_cell is not None else np.zeros(N, np.float64)
+    zr_profile = _c(zr_profile) if zr_profile is not None else np.zeros(N, np.float64)
 
     cap = float(cap); floor = float(floor)
     nec_col, fl_col, capN_col = _prep_cols(cs, cc, elig, cap, floor)
@@ -489,8 +489,8 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
     _eop = ctx.get("elig_op")
     if _eop is not None:
         has_elig = 1
-        ecs = _c(_eop["cell_starts"], np.intp)
-        ecc = _c(_eop["cell_counts"], np.intp)
+        ecs = _c(_eop["profile_starts"], np.intp)
+        ecc = _c(_eop["profile_counts"], np.intp)
         e_has_ban = 1 if _eop.get("has_ban") else 0
         e_ban = _bool(_eop["ban"]) if e_has_ban else _z()
         e_has_w = 1 if _eop.get("has_w") else 0
@@ -509,7 +509,7 @@ def make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig,
     # [FN-189]
     def eval_actual(G):
         G = np.ascontiguousarray(G, dtype=np.float64)
-        return _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fine,
+        return _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_profile, n_fine,
                            nec_col, fl_col, capN_col, has_floor, has_cap,
                            cv, risk, rc,
                            has_vcap, vcap,

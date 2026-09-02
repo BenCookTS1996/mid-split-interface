@@ -9,7 +9,7 @@ import pandas as pd
 
 
 # [FN-148]
-def cell_baseline_vs_proposed(split: pd.DataFrame,
+def profile_baseline_vs_proposed(split: pd.DataFrame,
                               avg_ticket: dict | float = 25.0) -> pd.DataFrame:
     """
     Per cell: expected successful transactions and revenue under the baseline
@@ -32,41 +32,41 @@ def cell_baseline_vs_proposed(split: pd.DataFrame,
     g["proposed_succ"] = g["share"] * g["gateway_success_rate"]
     g["baseline_succ"] = g["baseline_share"] * g["gateway_success_rate"]
 
-    cell = (g.groupby(["rpgt", "currency", "bin"], as_index=False)
-            .agg(cell_volume=("cell_volume", "first"),
+    profile = (g.groupby(["rpgt", "currency", "bin"], as_index=False)
+            .agg(profile_volume=("profile_volume", "first"),
                  proposed_rate=("proposed_succ", "sum"),
                  baseline_rate=("baseline_succ", "sum")))
 
-    cell["ticket"] = cell["rpgt"].map(ticket)
-    cell["baseline_success_txns"] = cell["baseline_rate"] * cell["cell_volume"]
-    cell["proposed_success_txns"] = cell["proposed_rate"] * cell["cell_volume"]
-    cell["incremental_success_txns"] = cell["proposed_success_txns"] - cell["baseline_success_txns"]
-    cell["incremental_revenue"] = cell["incremental_success_txns"] * cell["ticket"]
-    cell["rate_uplift_pp"] = (cell["proposed_rate"] - cell["baseline_rate"]) * 100
-    return cell
+    profile["ticket"] = profile["rpgt"].map(ticket)
+    profile["baseline_success_txns"] = profile["baseline_rate"] * profile["profile_volume"]
+    profile["proposed_success_txns"] = profile["proposed_rate"] * profile["profile_volume"]
+    profile["incremental_success_txns"] = profile["proposed_success_txns"] - profile["baseline_success_txns"]
+    profile["incremental_revenue"] = profile["incremental_success_txns"] * profile["ticket"]
+    profile["rate_uplift_pp"] = (profile["proposed_rate"] - profile["baseline_rate"]) * 100
+    return profile
 
 
 # [FN-150]
-def headline_impact(cell: pd.DataFrame) -> dict:
-    vol = cell["cell_volume"].sum()
-    base_rate = (cell["baseline_rate"] * cell["cell_volume"]).sum() / max(vol, 1)
-    prop_rate = (cell["proposed_rate"] * cell["cell_volume"]).sum() / max(vol, 1)
+def headline_impact(profile: pd.DataFrame) -> dict:
+    vol = profile["profile_volume"].sum()
+    base_rate = (profile["baseline_rate"] * profile["profile_volume"]).sum() / max(vol, 1)
+    prop_rate = (profile["proposed_rate"] * profile["profile_volume"]).sum() / max(vol, 1)
     return {
         "baseline_success_rate": float(base_rate),
         "proposed_success_rate": float(prop_rate),
         "success_rate_uplift_pp": float((prop_rate - base_rate) * 100),
-        "incremental_success_txns": float(cell["incremental_success_txns"].sum()),
-        "incremental_revenue": float(cell["incremental_revenue"].sum()),
+        "incremental_success_txns": float(profile["incremental_success_txns"].sum()),
+        "incremental_revenue": float(profile["incremental_revenue"].sum()),
     }
 
 
 # [FN-151]
-def key_contributors(cell: pd.DataFrame, by: str = "bin", top: int = 10) -> pd.DataFrame:
+def key_contributors(profile: pd.DataFrame, by: str = "bin", top: int = 10) -> pd.DataFrame:
     """Which banks / currencies / RPGTs drive most of the incremental revenue."""
-    agg = (cell.groupby(by, as_index=False)
+    agg = (profile.groupby(by, as_index=False)
            .agg(incremental_revenue=("incremental_revenue", "sum"),
                 incremental_success_txns=("incremental_success_txns", "sum"),
-                cell_volume=("cell_volume", "sum")))
+                profile_volume=("profile_volume", "sum")))
     agg = agg.sort_values("incremental_revenue", ascending=False)
     total = agg["incremental_revenue"].sum()
     agg["pct_of_uplift"] = np.where(total != 0,
@@ -92,7 +92,7 @@ def gateway_volume_shift(split: pd.DataFrame) -> pd.DataFrame:
 # [FN-153]
 def _split_volume(df: pd.DataFrame) -> pd.Series:
     """Per-row cell volume from a split frame, tolerating either column name."""
-    col = "volume" if "volume" in df.columns else ("cell_volume" if "cell_volume" in df.columns else None)
+    col = "volume" if "volume" in df.columns else ("profile_volume" if "profile_volume" in df.columns else None)
     if col is None:
         return pd.Series(0.0, index=df.index)
     return pd.to_numeric(df[col], errors="coerce").fillna(0.0)

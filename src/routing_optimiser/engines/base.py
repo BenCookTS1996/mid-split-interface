@@ -25,7 +25,7 @@ __build__ = "2026-07-22-bounds-cache+qp-projection+feasible-guard"
 
 
 @dataclass
-class CellProblem:
+class ProfileProblem:
     """One routing decision: how to split a cell's volume across gateways.
 
     A "cell" is a single RPGT x Currency x Bank bucket of traffic. Everything the
@@ -61,7 +61,7 @@ class CellProblem:
     temperature: float | None = None
     # Profile identity (payment-method × Country) for profile-grain optimisation. Default
     # "_all_" = PROFILE grain (unchanged behaviour), so every existing CellProblem construction and
-    # consumer is unaffected; only the profile assembler (`build_subcell_problems`) sets these.
+    # consumer is unaffected; only the profile assembler (`build_profile_problems`) sets these.
     # `bank` stays the raw BIN so the band projector's profile scaffold still aligns on bin/pmp/ctry.
     pmp: str = "_all_"
     ctry: str = "_all_"
@@ -73,7 +73,7 @@ class CellProblem:
 
 
 @dataclass
-class CellSolution:
+class ProfileSolution:
     """The optimiser's answer for one cell: the chosen split plus its headline stats."""
 
     shares: np.ndarray                  # fraction per gateway, sums to 1
@@ -120,7 +120,7 @@ class BaseEngine:
             self._trace.append(msg)
 
     # [FN-404]
-    def solve_traced(self, p: "CellProblem") -> tuple["CellSolution", list[str]]:
+    def solve_traced(self, p: "ProfileProblem") -> tuple["ProfileSolution", list[str]]:
         """Solve one cell AND return the stage-by-stage trace for it.
 
         Used by the UI's gateway-trace debug panel so you can see exactly what
@@ -134,7 +134,7 @@ class BaseEngine:
 
     # -- helpers shared by every engine -------------------------------------
     # [FN-405]
-    def _bounds(self, p: CellProblem) -> tuple[np.ndarray, np.ndarray]:
+    def _bounds(self, p: ProfileProblem) -> tuple[np.ndarray, np.ndarray]:
         """Per-gateway (lower, upper) share bounds from the hard constraints.
 
         WHY memoised: the bounds depend only on the hard constraints + gateway list,
@@ -250,7 +250,7 @@ class BaseEngine:
         return self._project_box_simplex(ref - mult_hi * risk, lo, hi)
 
     # [FN-408]
-    def _score(self, p: CellProblem) -> np.ndarray:
+    def _score(self, p: ProfileProblem) -> np.ndarray:
         """Per-gateway linear score: reward conversion, penalise risk.
 
         DEPRECATED: the old linear conversion-vs-risk score. Retained only for
@@ -261,7 +261,7 @@ class BaseEngine:
         return self.w * p.success_rates - (1.0 - self.w) * p.risk_rates
 
     # [FN-409]
-    def _ref_cache_key(self, p: CellProblem):
+    def _ref_cache_key(self, p: ProfileProblem):
         """Fingerprint of everything the reference split depends on EXCEPT the risk dial.
 
         The reference split is the same at every slider position, so without caching a
@@ -276,7 +276,7 @@ class BaseEngine:
         ) + tuple(self._ref_param_key(p))
 
     # [FN-410]
-    def _ref_param_key(self, p: CellProblem):
+    def _ref_param_key(self, p: ProfileProblem):
         """Engine-specific reference parameters (softmax/base default).
 
         The base softmax reference depends on the temperature (per-cell or global), the
@@ -295,7 +295,7 @@ class BaseEngine:
         )
 
     # [FN-411]
-    def _reference_split(self, p: CellProblem) -> np.ndarray:
+    def _reference_split(self, p: ProfileProblem) -> np.ndarray:
         """Cached wrapper around `_reference_split_impl`.
 
         Returns a COPY so callers can't mutate the cached array. Bit-identical to
@@ -317,7 +317,7 @@ class BaseEngine:
         return reference
 
     # [FN-412]
-    def _reference_split_impl(self, p: CellProblem) -> np.ndarray:
+    def _reference_split_impl(self, p: ProfileProblem) -> np.ndarray:
         """The slider=100 reference split: conversion only, no risk logic.
 
         Softmax over per-gateway success rates at the engine temperature, then
@@ -400,7 +400,7 @@ class BaseEngine:
         return weights
 
     # [FN-413]
-    def _project_to_vamp(self, p: CellProblem, shares: np.ndarray) -> np.ndarray:
+    def _project_to_vamp(self, p: ProfileProblem, shares: np.ndarray) -> np.ndarray:
         """Nudge a split to the closest one that meets the VAMP (risk) cap.
 
         Solves min ||x - shares||^2 s.t. sum=1, bounds, risk·x <= cap. This lets
@@ -423,8 +423,8 @@ class BaseEngine:
         return self._project_qp(shares, lower, upper, np.asarray(p.risk_rates, float), float(cap))
 
     # [FN-414]
-    def _finalise(self, p: CellProblem, shares: np.ndarray,
-                  note: str = "") -> CellSolution:
+    def _finalise(self, p: ProfileProblem, shares: np.ndarray,
+                  note: str = "") -> ProfileSolution:
         """Clean up a raw share vector into a valid CellSolution.
 
         Clip negatives, renormalise to sum 1, apply the VAMP projection, renormalise
@@ -442,10 +442,10 @@ class BaseEngine:
         expected_success = float(shares @ p.success_rates)
         expected_risk = float(shares @ p.risk_rates)
         feasible = self._is_feasible(p, shares)
-        return CellSolution(shares, expected_success, expected_risk, feasible, note)
+        return ProfileSolution(shares, expected_success, expected_risk, feasible, note)
 
     # [FN-415]
-    def _is_feasible(self, p: CellProblem, shares: np.ndarray) -> bool:
+    def _is_feasible(self, p: ProfileProblem, shares: np.ndarray) -> bool:
         """True only if `shares` satisfies EVERY hard constraint for this cell."""
         # A FAILED reference solve (e.g. Portfolio's SLSQP falling back to a return-weighted
         # split) taints the whole profile — flag it infeasible so a solver failure can never
@@ -468,19 +468,19 @@ class BaseEngine:
 
     # -- public API ---------------------------------------------------------
     # [FN-416]
-    def solve(self, p: CellProblem) -> CellSolution:
+    def solve(self, p: ProfileProblem) -> ProfileSolution:
         """Public entry point: return the chosen split for one cell.
 
         Handles the two trivial cells here (0 gateways → nothing to do; 1 gateway →
         it must take 100%) and delegates everything else to the engine's `_solve`.
         """
         if p.n() == 0:
-            return CellSolution(np.array([]), 0.0, 0.0, False, "no gateways")
+            return ProfileSolution(np.array([]), 0.0, 0.0, False, "no gateways")
         if p.n() == 1:
             return self._finalise(p, np.array([1.0]), "single gateway")
         return self._solve(p)
 
     # [FN-417]
-    def _solve(self, p: CellProblem) -> CellSolution:  # pragma: no cover
+    def _solve(self, p: ProfileProblem) -> ProfileSolution:  # pragma: no cover
         """Engine-specific split logic. Every concrete engine overrides this."""
         raise NotImplementedError

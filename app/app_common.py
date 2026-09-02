@@ -713,10 +713,10 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
     d["_freed"] = _sh - _cap                                            # >= 0, only blocked rows
     d["_rw"] = np.where(_isb, 0.0, _cap)                                # recipients = non-blocked
     _grp = d.groupby(_key)
-    _freed_cell = _grp["_freed"].transform("sum").to_numpy()
-    _rw_cell = _grp["_rw"].transform("sum").to_numpy()
-    _has_recip = _rw_cell > 1e-12
-    _add = np.where(_has_recip, d["_rw"].to_numpy() * _freed_cell / np.where(_has_recip, _rw_cell, 1.0), 0.0)
+    _freed_profile = _grp["_freed"].transform("sum").to_numpy()
+    _rw_profile = _grp["_rw"].transform("sum").to_numpy()
+    _has_recip = _rw_profile > 1e-12
+    _add = np.where(_has_recip, d["_rw"].to_numpy() * _freed_profile / np.where(_has_recip, _rw_profile, 1.0), 0.0)
     # Apply the cap+redistribute only in profiles that HAVE a non-blocked recipient; a profile whose
     # gateways are ALL blocked is left untouched (nowhere to move the freed volume).
     _new = np.where(_has_recip, _cap + _add, _sh)
@@ -1127,7 +1127,7 @@ def _ensure_base_30d_metrics():
     # hundreds of lines away.
     _c30 = ss.get("cached_base_30d_metrics")
     if _c30 is not None:
-        _need = {"cell_agg": ("rpgt_join", "currency_join", "bin_join"),
+        _need = {"profile_agg": ("rpgt_join", "currency_join", "bin_join"),
                  "gw_agg": ("rpgt_join", "currency_join", "bin_join", "gateway_join")}
         if all(all(_c in getattr(_c30.get(_k), "columns", ()) for _c in _cols)
                for _k, _cols in _need.items()):
@@ -1168,12 +1168,12 @@ def _ensure_base_30d_metrics():
         adf_30d["attempts"] = 0
     adf_30d["succ_amount"] = adf_30d["amount"] * adf_30d["success"]
 
-    cell_agg = adf_30d.groupby([adf_30d["rpgt"].astype(str).str.strip().str.lower(),
+    profile_agg = adf_30d.groupby([adf_30d["rpgt"].astype(str).str.strip().str.lower(),
                                 adf_30d["currency"].astype(str).str.strip().str.lower(),
                                 adf_30d["bin"].astype(str).str.strip().str.lower()]).agg(
-        cell_att=("attempts", "sum"), cell_succ=("success", "sum"), cell_rev=("succ_amount", "sum")
+        profile_att=("attempts", "sum"), profile_succ=("success", "sum"), profile_rev=("succ_amount", "sum")
     ).reset_index().rename(columns={"rpgt": "rpgt_join", "currency": "currency_join", "bin": "bin_join"})
-    cell_agg["cell_sr"] = np.where(cell_agg["cell_att"] > 0, cell_agg["cell_succ"] / cell_agg["cell_att"], 0)
+    profile_agg["profile_sr"] = np.where(profile_agg["profile_att"] > 0, profile_agg["profile_succ"] / profile_agg["profile_att"], 0)
 
     # Average value per successful transaction at the Bank x Currency level (ONE
     # value per bank x currency), used consistently for every revenue figure so the
@@ -1184,17 +1184,17 @@ def _ensure_base_30d_metrics():
     ).reset_index()
     bc_val.columns = ["currency_join", "bin_join", "bc_rev", "bc_succ", "bc_att"]
     bc_val["avg_txn_value"] = np.where(bc_val["bc_succ"] > 0, bc_val["bc_rev"] / bc_val["bc_succ"], 25.0)
-    cell_agg = cell_agg.merge(bc_val[["currency_join", "bin_join", "avg_txn_value"]],
+    profile_agg = profile_agg.merge(bc_val[["currency_join", "bin_join", "avg_txn_value"]],
                               on=["currency_join", "bin_join"], how="left")
-    cell_agg["avg_ticket"] = cell_agg["avg_txn_value"].fillna(25.0)
-    cell_agg = cell_agg.drop(columns=["avg_txn_value"])
+    profile_agg["avg_ticket"] = profile_agg["avg_txn_value"].fillna(25.0)
+    profile_agg = profile_agg.drop(columns=["avg_txn_value"])
     # Per-RPGT ticket (Bank×Currency×RPGT grain): used for revenue when the optimisation
     # grain is per-RPGT, so revenue tracks the RPGT mix (e.g. Annual Sub tickets ≫ Addon
     # tickets) instead of one blended value. Falls back to the Bank×Currency ticket where
     # an RPGT has no successes. At Bank×Currency grain the BC ticket (avg_ticket) is used.
-    cell_agg["rpgt_ticket"] = np.where(cell_agg["cell_succ"] > 0,
-                                       cell_agg["cell_rev"] / cell_agg["cell_succ"],
-                                       cell_agg["avg_ticket"])
+    profile_agg["rpgt_ticket"] = np.where(profile_agg["profile_succ"] > 0,
+                                       profile_agg["profile_rev"] / profile_agg["profile_succ"],
+                                       profile_agg["avg_ticket"])
 
     gw_agg = adf_30d.groupby([adf_30d["rpgt"].astype(str).str.strip().str.lower(),
                               adf_30d["currency"].astype(str).str.strip().str.lower(),
@@ -1208,7 +1208,7 @@ def _ensure_base_30d_metrics():
         "base_att": adf_30d["attempts"].sum(),
         "base_succ": adf_30d["success"].sum(),
         "base_rev": adf_30d["succ_amount"].sum(),
-        "cell_agg": cell_agg,
+        "profile_agg": profile_agg,
         "gw_agg": gw_agg,
         "adf_30d_raw": adf_30d,
         "date_col": date_col,
@@ -1247,7 +1247,7 @@ def _impact_eval_frame(split, cache, by_rpgt=False):
     by_rpgt: when True (optimisation grain = Bank×Currency×RPGT) revenue uses the
     per-RPGT ticket so it tracks the RPGT mix; otherwise the Bank×Currency ticket."""
     b2b = ss.get("bin_to_bank", {})
-    cell_agg, gw_agg = cache["cell_agg"], cache["gw_agg"]
+    profile_agg, gw_agg = cache["profile_agg"], cache["gw_agg"]
     sv = split.copy()
     if "bin" in sv.columns:
         sv["bin"] = sv["bin"].map(
@@ -1260,22 +1260,22 @@ def _impact_eval_frame(split, cache, by_rpgt=False):
     if "share" in sv.columns: amap["share"] = ("share", "mean")
     if "baseline_share" in sv.columns: amap["baseline_share"] = ("baseline_share", "mean")
     if "volume" in sv.columns: amap["volume"] = ("volume", "sum")
-    if "cell_volume" in sv.columns: amap["cell_volume"] = ("cell_volume", "sum")
+    if "profile_volume" in sv.columns: amap["profile_volume"] = ("profile_volume", "sum")
     sv = sv.groupby(gcols, as_index=False).agg(**amap)
 
-    ev = sv.merge(cell_agg, on=["rpgt_join", "currency_join", "bin_join"], how="left")
+    ev = sv.merge(profile_agg, on=["rpgt_join", "currency_join", "bin_join"], how="left")
     ev = ev.merge(gw_agg[["rpgt_join", "currency_join", "bin_join", "gateway_join", "gw_sr"]],
                   on=gcols, how="left")
     # Guarantee every column the calc below reads exists as a real Series. A split fed in without
     # cell_volume / avg_ticket / etc. (e.g. the enforced-split revenue view) would otherwise make
     # `ev.get(col, scalar)` return a scalar and crash on `.fillna`.
-    for _c, _d in (("cell_att", 0.0), ("cell_sr", 0.0), ("avg_ticket", 25.0),
-                   ("rpgt_ticket", np.nan), ("cell_volume", 0.0), ("volume", np.nan),
+    for _c, _d in (("profile_att", 0.0), ("profile_sr", 0.0), ("avg_ticket", 25.0),
+                   ("rpgt_ticket", np.nan), ("profile_volume", 0.0), ("volume", np.nan),
                    ("share", 0.0), ("baseline_share", 0.0)):
         if _c not in ev.columns:
             ev[_c] = _d
-    ev["gw_sr"] = ev["gw_sr"].fillna(ev.get("cell_sr")).fillna(0.0)
-    ev["cell_att"] = pd.to_numeric(ev.get("cell_att", 0), errors="coerce").fillna(0.0)
+    ev["gw_sr"] = ev["gw_sr"].fillna(ev.get("profile_sr")).fillna(0.0)
+    ev["profile_att"] = pd.to_numeric(ev.get("profile_att", 0), errors="coerce").fillna(0.0)
     # Ticket grain follows the optimisation grain (per-RPGT when the split is per-RPGT).
     _bc_ticket = pd.to_numeric(ev.get("avg_ticket", 25.0), errors="coerce")
     if by_rpgt and "rpgt_ticket" in ev.columns:
@@ -1295,7 +1295,7 @@ def _impact_eval_frame(split, cache, by_rpgt=False):
     for _sc in ("share", "baseline_share"):
         _tsum = ev.groupby(["rpgt_join", "currency_join", "bin_join"])[_sc].transform("sum").to_numpy()
         ev[_sc] = np.where(_tsum > 0, ev[_sc].to_numpy() / _tsum, ev[_sc].to_numpy())
-    _cv = pd.to_numeric(ev.get("cell_volume", 0), errors="coerce").fillna(0.0)
+    _cv = pd.to_numeric(ev.get("profile_volume", 0), errors="coerce").fillna(0.0)
 
     # Volume basis = forecast routed volume (cell_volume × share). Post uses the
     # summed 'volume' when present (identical), pre derives from baseline_share.
@@ -1308,10 +1308,10 @@ def _impact_eval_frame(split, cache, by_rpgt=False):
     ev["vol_delta"] = ev["post_vol"] - ev["pre_vol"]
     
     # New base attempt/success calculations for the SR charts
-    ev["post_succ"] = ev["cell_att"] * ev["share"] * ev["gw_sr"]
-    ev["pre_succ"] = ev["cell_att"] * ev["baseline_share"] * ev["gw_sr"]
-    ev["post_att"] = ev["cell_att"] * ev["share"]
-    ev["pre_att"] = ev["cell_att"] * ev["baseline_share"]
+    ev["post_succ"] = ev["profile_att"] * ev["share"] * ev["gw_sr"]
+    ev["pre_succ"] = ev["profile_att"] * ev["baseline_share"] * ev["gw_sr"]
+    ev["post_att"] = ev["profile_att"] * ev["share"]
+    ev["pre_att"] = ev["profile_att"] * ev["baseline_share"]
 
     # Revenue basis identical to the Impact tab.
     ev["post_rev"] = ev["post_succ"] * ev["avg_ticket"]
@@ -1373,8 +1373,8 @@ def _split_df_to_xlsx_bytes(rdf):
         if "GO LIVE" in _hdr:
             _gi = _hdr.index("GO LIVE") + 1
             for _row in _ws.iter_rows(min_row=2, min_col=_gi, max_col=_gi):
-                for _cell in _row:
-                    _cell.number_format = "yyyy-mm-dd"
+                for _profile in _row:
+                    _profile.number_format = "yyyy-mm-dd"
     return _xb.getvalue()
 
 

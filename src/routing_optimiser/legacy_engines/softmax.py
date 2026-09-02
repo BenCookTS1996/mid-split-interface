@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ..engines.base import BaseEngine, CellProblem, CellSolution
+from ..engines.base import BaseEngine, ProfileProblem, ProfileSolution
 
 __build__ = "2026-07-22-softmax-analytic-projection"
 
@@ -49,7 +49,7 @@ class SoftmaxEngine(BaseEngine):
                    "minimising portfolio risk at the very bottom.")
 
     # [FN-418]
-    def _solve(self, p: CellProblem) -> CellSolution:
+    def _solve(self, p: ProfileProblem) -> ProfileSolution:
         """Return the cell's split: the reference, trimmed toward the risk cap if needed.
 
         Uses guard clauses to bail early on the two common cases (slider at 100, or
@@ -146,7 +146,7 @@ class SoftmaxEngine(BaseEngine):
                 projected = np.clip(projected, 0.0, None)
                 total = projected.sum()
                 projected = projected / total if total > 0 else reference
-                return CellSolution(projected, float(projected @ p.success_rates), float(projected @ risk), False,
+                return ProfileSolution(projected, float(projected @ p.success_rates), float(projected @ risk), False,
                                     f"infeasible w={slider_weight:g}; VAMP-projected reference")
 
         try:
@@ -158,5 +158,5 @@ class SoftmaxEngine(BaseEngine):
         self._t(f"STAGE E  portfolio risk={float(solution @ risk):.5f} (cap={cap:.5f})")
         # Build the solution directly (skip the legacy VAMP re-projection in _finalise, which
         # would snap every sub-100 position to the hard cap and flatten the slider gradient).
-        return CellSolution(solution, float(solution @ p.success_rates), float(solution @ risk),
+        return ProfileSolution(solution, float(solution @ p.success_rates), float(solution @ risk),
                             self._is_feasible(p, solution), f"compliance-trim w={slider_weight:g} cap={cap:.4f}")

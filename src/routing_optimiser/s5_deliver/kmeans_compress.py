@@ -58,11 +58,11 @@ def wallet_segment_split(split: pd.DataFrame, wallet_incapable, wallet_frac=None
         bank = str(grp["bin"].iloc[0]).strip().lower()
         wf = wallet_frac.get((cur, bank), wallet_default)
         wf = 0.0 if (wf != wf) else min(max(float(wf), 0.0), 1.0)
-        cvol = float(grp["cell_volume"].iloc[0]) if "cell_volume" in grp.columns else 0.0
+        cvol = float(grp["profile_volume"].iloc[0]) if "profile_volume" in grp.columns else 0.0
 
         nw = grp.copy()
         nw["pmp"] = nonwallet_label
-        nw["cell_volume"] = cvol * (1.0 - wf)
+        nw["profile_volume"] = cvol * (1.0 - wf)
         seg_nw.append(nw)
 
         wl = grp.copy()
@@ -72,7 +72,7 @@ def wallet_segment_split(split: pd.DataFrame, wallet_incapable, wallet_frac=None
         tot = s.sum()
         wl["share"] = s / tot if tot > 0 else grp["share"].to_numpy(float)
         wl["pmp"] = wallet_label
-        wl["cell_volume"] = cvol * wf
+        wl["profile_volume"] = cvol * wf
         seg_w.append(wl)
 
     out = pd.concat(seg_nw + seg_w, ignore_index=True)
@@ -158,7 +158,7 @@ def compress_split(
     mat = mat.div(mat.sum(axis=1).replace(0, np.nan), axis=0).fillna(0.0)
     gateway_cols = list(mat.columns)
 
-    vol = (split.groupby(idx_cols)["cell_volume"].first()
+    vol = (split.groupby(idx_cols)["profile_volume"].first()
            .reindex(mat.index).fillna(0.0))
 
     md = mat.reset_index()
@@ -190,7 +190,7 @@ def compress_split(
             chosen_k = 1
 
         elbow_rows.append({**dict(zip(group_keys, gkey if isinstance(gkey, tuple) else (gkey,))),
-                           "cells": n_rows, "clusters": chosen_k,
+                           "profiles": n_rows, "clusters": chosen_k,
                            "target_accuracy": target, "achieved_accuracy": round(chosen_acc, 2)})
 
         # Emit one representative rule per cluster.
@@ -203,7 +203,7 @@ def compress_split(
             centroid = _cap_and_respill(chosen_km.cluster_centers_[cl], max_gateway_cap)
             row = {k: v for k, v in zip(group_keys, gkey if isinstance(gkey, tuple) else (gkey,))}
             row["banks"] = sorted(members["bin"].astype(str).unique().tolist())
-            row["n_cells"] = int(len(members))
+            row["n_profiles"] = int(len(members))
             row["volume"] = float(members["_vol"].sum())
             for gc, val in zip(gateway_cols, centroid):
                 row[gc] = round(float(val) * 100, 4)  # store as percentage
@@ -267,15 +267,15 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
     """
     has_pmp = "pmp" in split.columns
     idx_cols = ["rpgt", "currency", "bin"] + (["pmp"] if has_pmp else [])
-    raw_cells = int(split.groupby(idx_cols).ngroups)
+    raw_profiles = int(split.groupby(idx_cols).ngroups)
 
     # Uncompressed pool count (each profile keeps its own centroid) from the raw split.
     raw_pools = int(count_pools_fn(split))
-    curve = [(raw_cells, raw_pools)]
+    curve = [(raw_profiles, raw_pools)]
 
     # [FN-163]
     def _no_compression(_reason_feasible):
-        _st = {"raw_cells": raw_cells, "raw_pools": raw_pools, "cells": raw_cells,
+        _st = {"raw_profiles": raw_profiles, "raw_pools": raw_pools, "profiles": raw_profiles,
                "pools": raw_pools, "target_pools": int(target_pools),
                "global_accuracy": 100.0, "feasible": _reason_feasible,
                "curve": sorted(set(curve)), "evals": 1}
@@ -296,18 +296,18 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
 
     # [FN-164]
     def _eval(b):
-        b = int(max(1, min(b, raw_cells)))
+        b = int(max(1, min(b, raw_profiles)))
         if b not in _cache:
             _cl, _st, _kc = _compress_with_context(_ctx, b)
             if _kc in _by_kcur:
                 _cache[b] = _by_kcur[_kc]     # identical clustering → reuse pool count
             else:
                 _pools = int(count_pools_fn(_cl))
-                _cells = int(_st.get("compressed_rules", b))
-                _entry = (_cl, _st, _pools, _cells)
+                _profiles = int(_st.get("compressed_rules", b))
+                _entry = (_cl, _st, _pools, _profiles)
                 _by_kcur[_kc] = _entry
                 _cache[b] = _entry
-                curve.append((_cells, _pools))
+                curve.append((_profiles, _pools))
         return _cache[b]
 
     # [FN-165]
@@ -340,7 +340,7 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
         """Evaluate several budgets at once: build each clustering (cheap), dedupe by
         clustering signature, then count the UNIQUE clusterings in parallel. Populates the
         same caches as `_eval`, so results are identical to evaluating them one-by-one."""
-        bs = sorted({int(max(1, min(b, raw_cells))) for b in bs})
+        bs = sorted({int(max(1, min(b, raw_profiles))) for b in bs})
         _need = []
         for b in bs:
             if b in _cache:
@@ -366,7 +366,7 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
         return {b: _cache[b] for b in bs}
 
     # Largest budget b in [1, raw_cells] whose generated pools <= target.
-    if int(parallel) > 1 and raw_cells > 2:
+    if int(parallel) > 1 and raw_profiles > 2:
         # PARALLEL K-ARY SEARCH (opt-in): the same EXACT target as the binary search — the
         # largest budget with pools <= target — but it probes `parallel` evenly-spaced budgets
         # PER ROUND and evaluates them concurrently, so it needs far fewer sequential rounds
@@ -374,7 +374,7 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
         # as the binary search below; the invariant (_lo-1 <= b* <= _hi) is preserved every
         # round and the final budget is verified <= target, so the ceiling always holds.
         _k = max(2, int(parallel))
-        _lo, _hi, _best = 1, raw_cells, None
+        _lo, _hi, _best = 1, raw_profiles, None
         while _lo <= _hi:
             _span = _hi - _lo + 1
             if _span <= _k:
@@ -394,10 +394,10 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
             if not _ok and not _fail:
                 break
     else:
-        _lo, _hi, _best = 1, raw_cells, None
+        _lo, _hi, _best = 1, raw_profiles, None
         while _lo <= _hi:
             _mid = (_lo + _hi) // 2
-            _cl, _st, _pools, _cells = _eval(_mid)
+            _cl, _st, _pools, _profiles = _eval(_mid)
             if _pools <= int(target_pools):
                 _best = _mid
                 _lo = _mid + 1
@@ -405,15 +405,15 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
                 _hi = _mid - 1
 
     if _best is None:                       # even the smallest split overshoots the ceiling
-        _cl, _st, _pools, _cells = _eval(1)
+        _cl, _st, _pools, _profiles = _eval(1)
         _feasible = False
     else:
-        _cl, _st, _pools, _cells = _eval(_best)
+        _cl, _st, _pools, _profiles = _eval(_best)
         _feasible = True
 
     stats = {
-        "raw_cells": raw_cells, "raw_pools": raw_pools,
-        "cells": int(_cells), "pools": int(_pools),
+        "raw_profiles": raw_profiles, "raw_pools": raw_pools,
+        "profiles": int(_profiles), "pools": int(_pools),
         "target_pools": int(target_pools),
         "global_accuracy": float(_st.get("global_accuracy", 0.0)),
         "feasible": bool(_feasible),
@@ -447,7 +447,7 @@ def _build_compress_context(split: pd.DataFrame, group_keys, max_gateway_cap, k_
            .fillna(0.0))
     mat = mat.div(mat.sum(axis=1).replace(0, np.nan), axis=0).fillna(0.0)
     gateway_cols = list(mat.columns)
-    vol = split.groupby(idx_cols)["cell_volume"].first().reindex(mat.index).fillna(0.0)
+    vol = split.groupby(idx_cols)["profile_volume"].first().reindex(mat.index).fillna(0.0)
     md = mat.reset_index()
     md["_vol"] = vol.to_numpy()
 
@@ -546,7 +546,7 @@ def _compress_with_context(ctx, n_configs):
         for i in range(len(grp)):
             cvec = centroids[labels[i]]
             base = {c: grp[c].iloc[i] for c in idx_cols}
-            base["cell_volume"] = float(grp["_vol"].iloc[i])
+            base["profile_volume"] = float(grp["_vol"].iloc[i])
             for gc, val in zip(gateway_cols, cvec):
                 if val > 1e-9:
                     r = dict(base)
@@ -554,7 +554,7 @@ def _compress_with_context(ctx, n_configs):
                     r["share"] = float(val)
                     out_rows.append(r)
         per_group.append({**dict(zip(group_keys, gkey if isinstance(gkey, tuple) else (gkey,))),
-                          "cells": int(len(grp)), "clusters": int(k),
+                          "profiles": int(len(grp)), "clusters": int(k),
                           "accuracy": round(acc, 2), "volume": float(gVol[g])})
         _pr_num[rpgt] = _pr_num.get(rpgt, 0.0) + acc * gVol[g]
         _pr_den[rpgt] = _pr_den.get(rpgt, 0.0) + gVol[g]
@@ -607,13 +607,13 @@ def _compress_ext(ctx, n_configs):
     def _ward_model(g):
         if ward[g] is None:
             from scipy.cluster.hierarchy import linkage
-            n_cells = gX[g].shape[0]
-            if n_cells <= max(_WARD_RAW_MAX, int(gKmax[g])):
+            n_profiles = gX[g].shape[0]
+            if n_profiles <= max(_WARD_RAW_MAX, int(gKmax[g])):
                 # SMALL group: cluster the raw profile share-vectors directly — no k-means
                 # summarisation step, so the tree cut is a true hierarchical clustering of the
                 # profiles and keeps more fidelity. Each profile is its own leaf.
                 fine_c = gX[g]
-                fine_labels = np.arange(n_cells)
+                fine_labels = np.arange(n_profiles)
                 fv = np.asarray(gW[g], float)
             else:
                 # LARGE group: summarise with one k-means at k_max first (keeps the tree small).
@@ -721,14 +721,14 @@ def _compress_ext(ctx, n_configs):
         for i in range(len(grp)):
             cvec = centroids[labels[i]]
             base = {c: grp[c].iloc[i] for c in idx_cols}
-            base["cell_volume"] = float(grp["_vol"].iloc[i])
+            base["profile_volume"] = float(grp["_vol"].iloc[i])
             for gc, val in zip(gateway_cols, cvec):
                 if val > 1e-9:
                     r = dict(base); r["gateway"] = gc; r["share"] = float(val)
                     out_rows.append(r)
         clusters_used.append(int(cent.shape[0]))
         per_group.append({**dict(zip(group_keys, gkey if isinstance(gkey, tuple) else (gkey,))),
-                          "cells": int(len(grp)), "clusters": int(cent.shape[0]),
+                          "profiles": int(len(grp)), "clusters": int(cent.shape[0]),
                           "accuracy": round(acc, 2), "volume": float(gVol[g])})
         _pr_num[rpgt] = _pr_num.get(rpgt, 0.0) + acc * gVol[g]
         _pr_den[rpgt] = _pr_den.get(rpgt, 0.0) + gVol[g]

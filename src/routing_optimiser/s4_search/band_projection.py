@@ -183,7 +183,7 @@ _BP_COLLAPSE_SAID = {}
 def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                           pc_org, pc_vc, pc_pool, pc_band, pc_heldfac, cap_row, cap_band,
                           cap_c, cap_ctot, cap_base, pc_gc, pc_gk, vconst,
-                          ncell, nband, cap, nlane, live_rows, live_cells,
+                          nprofile, nband, cap, nlane, live_rows, live_profiles,
                           vamp, txn, psum, vpsum, moved, pr, pshare, vshare, mvrow, nzc, exc,
                           rsum, gks):
     """Bit-identical numba equivalent of PopulationBandProjector.project_pop: flat passes over
@@ -236,7 +236,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
     # FROZEN-SCAFFOLD LIFT (2026-08-19ae). `live_rows` / `live_cells` are the scaffold rows and
     # profiles the GA can actually move. Passing arange(nR) / arange(ncell) disables the lift and
     # reproduces the pre-19ae kernel exactly, so there is ONE body and no second compile.
-    nLR = live_rows.shape[0]; nLC = live_cells.shape[0]
+    nLR = live_rows.shape[0]; nLC = live_profiles.shape[0]
     vamp[:, :] = 0.0; txn[:, :] = 0.0
     # LANE INDEX, as integer arithmetic hoisted OUT of the parallel loop. The obvious form
     # `q = p if nlane > 1 else 0` does NOT survive numba's parfor pass: it unifies the ternary to
@@ -262,7 +262,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
             vamp[p, _b] += vconst[_b]
         _nzc = nzc[q]; _exc = exc[q]; _rsum = rsum[q]
         for _ci in range(nLC):
-            c = live_cells[_ci]
+            c = live_profiles[_ci]
             _psum[c] = 0.0; _moved[c] = 0.0
         for _ri in range(nLR):
             r = live_rows[_ri]
@@ -288,7 +288,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
         # ---- per-profile max-share water-fill (only profiles with >=2 routed gateways) ----
         if cap < 1.0:
             for _ci in range(nLC):
-                c = live_cells[_ci]
+                c = live_profiles[_ci]
                 _nzc[c] = 0.0
             for _ri in range(nLR):
                 r = live_rows[_ri]
@@ -297,7 +297,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                     _nzc[c] += 1.0
             for _sw in range(50):
                 for _ci in range(nLC):
-                    c = live_cells[_ci]
+                    c = live_profiles[_ci]
                     _exc[c] = 0.0
                 any_over = False
                 for _ri in range(nLR):
@@ -313,7 +313,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                     if _psum[c] > 0.0 and _nzc[c] >= 2.0 and _pshare[r] > cap + 1e-12:
                         _pshare[r] = cap
                 for _ci in range(nLC):
-                    c = live_cells[_ci]
+                    c = live_profiles[_ci]
                     _rsum[c] = 0.0
                 for _ri in range(nLR):
                     r = live_rows[_ri]
@@ -328,7 +328,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                         _pshare[r] += (cap - _pshare[r]) / _rsum[c] * _exc[c]
         # ---- vshare from the (capped) ROUTED share (0 in inactive profiles) ----
         for _ci in range(nLC):
-            c = live_cells[_ci]
+            c = live_profiles[_ci]
             _vpsum[c] = 0.0
         for _ri in range(nLR):
             r = live_rows[_ri]
@@ -462,12 +462,12 @@ _pop_band_kernel_fm_cache = {}
 # (built once per layout by _cb_arrays), so `_pshare[i]` here means the same row as `_pshare[r]`
 # there — only the label changed.
 def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
-                    cells, cstart, ccnt,
+                    profiles, cstart, ccnt,
                     cap_rowc, cap_band, cap_c, cap_ctot, cap_base,
                     pc_orgc, pc_vc, pc_pool, pc_band, pc_heldfac, pc_gc, pc_gkc, vconst,
                     cap, nlane, vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks):
     P = prop_raw.shape[0]
-    nCl = cells.shape[0]; nC = cap_rowc.shape[0]; nA = pc_orgc.shape[0]
+    nCl = profiles.shape[0]; nC = cap_rowc.shape[0]; nA = pc_orgc.shape[0]
     vamp[:, :] = 0.0; txn[:, :] = 0.0
     # Same lane discipline as the flat kernel: stride 1 => lane q == p (parallel compile, one lane
     # per candidate); stride 0 => lane 0 for everyone (serial compile, candidates run in sequence).
@@ -480,7 +480,7 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
         for _b in range(vconst.shape[0]):        # 19cz — see the flat kernel
             vamp[p, _b] += vconst[_b]
         for ci in range(nCl):
-            c = cells[ci]
+            c = profiles[ci]
             s = cstart[ci]; e = s + ccnt[ci]
             # ---- pass 1: proposals + the profile sum, in the original row order ----
             ps = 0.0
@@ -950,9 +950,9 @@ def _bitview(a):
 
 
 # [FN-011]
-def _prop_key(df: pd.DataFrame, by_rpgt: bool, by_subcell: bool = False) -> np.ndarray:
+def _prop_key(df: pd.DataFrame, by_rpgt: bool, by_profile: bool = False) -> np.ndarray:
     """Build each row's bucket address:
-      by_subcell → 'cur|bin|rpgt|pmp|ctry|mid'  (SUB-CELL decision grain)
+      by_profile → 'cur|bin|rpgt|pmp|ctry|mid'  (CELL decision grain)
       by_rpgt    → 'cur|bin|rpgt|mid'
       else       → 'cur|bin|mid'
 
@@ -964,7 +964,7 @@ def _prop_key(df: pd.DataFrame, by_rpgt: bool, by_subcell: bool = False) -> np.n
     _cur = df["cur"].astype(str).str.strip().str.lower()
     _bin = df["bin"].astype(str).str.strip()
     _mid = df["mid"].astype(str).str.strip()
-    if by_subcell:
+    if by_profile:
         return (_cur + "|" + _bin + "|" + df["rpgt"].astype(str).str.strip().str.lower() + "|"
                 + df["pmp"].astype(str).str.strip().str.lower() + "|"
                 + df["ctry"].astype(str).str.strip().str.lower() + "|" + _mid).to_numpy()
@@ -976,17 +976,17 @@ def _prop_key(df: pd.DataFrame, by_rpgt: bool, by_subcell: bool = False) -> np.n
 
 # [FN-011d]
 # Per-column cleaning that `_prop_key` applies, in key order. (column, lower) -- all are stripped.
-_PK_SPEC_SUBCELL = [("cur", True), ("bin", False), ("rpgt", True), ("pmp", True),
+_PK_SPEC_CELL = [("cur", True), ("bin", False), ("rpgt", True), ("pmp", True),
                     ("ctry", True), ("mid", False)]
 _PK_SPEC_RPGT = [("cur", True), ("bin", False), ("rpgt", True), ("mid", False)]
 _PK_SPEC_PLAIN = [("cur", True), ("bin", False), ("mid", False)]
 
 
-def _prop_key_index(df, by_rpgt, by_subcell):
+def _prop_key_index(df, by_rpgt, by_profile):
     """The pair the projector needs: (prop_keys sorted, propidx per row).
 
     Stands in for:
-        keys = _prop_key(df, by_rpgt, by_subcell)
+        keys = _prop_key(df, by_rpgt, by_profile)
         uniq, propidx = np.unique(keys, return_inverse=True)
         prop_keys = [str(k) for k in uniq]
 
@@ -1015,7 +1015,7 @@ def _prop_key_index(df, by_rpgt, by_subcell):
     Declines, exactly as 19fy's helpers do, if a cleaned value contains "|" (the join is ambiguous
     there) or if the mixed radix would overflow.
     """
-    spec = (_PK_SPEC_SUBCELL if by_subcell else
+    spec = (_PK_SPEC_CELL if by_profile else
             _PK_SPEC_RPGT if by_rpgt else _PK_SPEC_PLAIN)
     n = len(df)
     if not n:
@@ -1054,14 +1054,14 @@ def _prop_key_index(df, by_rpgt, by_subcell):
 
 
 # [FN-011b]
-def _prop_key_str(k, by_rpgt: bool, by_subcell: bool = False) -> str:
+def _prop_key_str(k, by_rpgt: bool, by_profile: bool = False) -> str:
     """Tuple→key string, matching `_prop_key`'s formats. SINGLE source so `_prop_raw` and
     `project_pop_from_props` can't diverge. Tuple layouts:
-      by_subcell → (cur, bin, rpgt, pmp, ctry, mid)
+      by_profile → (cur, bin, rpgt, pmp, ctry, mid)
       by_rpgt    → (cur, bin, rpgt, mid)
       else       → (cur, bin, mid)
     """
-    if by_subcell:
+    if by_profile:
         return "|".join([str(k[0]).strip().lower(), str(k[1]).strip(), str(k[2]).strip().lower(),
                          str(k[3]).strip().lower(), str(k[4]).strip().lower(), str(k[5]).strip()])
     if by_rpgt:
@@ -1171,16 +1171,16 @@ def _grp_codes(df, cols):
 
 
 # [FN-012]
-def _prop_raw(T0: pd.DataFrame, prop: dict, by_rpgt: bool, by_subcell: bool = False) -> np.ndarray:
+def _prop_raw(T0: pd.DataFrame, prop: dict, by_rpgt: bool, by_profile: bool = False) -> np.ndarray:
     """Look up each t0 row's proposed share from the `prop` dict by its bucket key.
 
     Rows that are switched off (`excl`) or wallet/USA-masked (`emask`) are forced to 0 —
     they can't receive routed volume, so they never enter the moved cohort.
     """
-    keys = _prop_key(T0, by_rpgt, by_subcell)
+    keys = _prop_key(T0, by_rpgt, by_profile)
     m = {}
     for k, v in prop.items():
-        m[_prop_key_str(k, by_rpgt, by_subcell)] = float(v)
+        m[_prop_key_str(k, by_rpgt, by_profile)] = float(v)
     raw = np.array([m.get(k, 0.0) for k in keys], dtype=float)
     raw = np.where(T0["excl"].to_numpy(bool), 0.0, raw)
     raw = np.where(T0["emask"].to_numpy(bool), 0.0, raw)
@@ -1348,11 +1348,11 @@ def lift_ab_report(proj, reps=3):
     _was = _PROJ_LIFT_ON
     # Snapshot every cache the flag reaches, so OFF is a true revert and ON is restored exactly.
     _snap = {k: getattr(proj, k, None) for k in
-             ("_lift_rows", "_lift_cells", "_lift_frozen_rows", "_lift_frozen_cells",
+             ("_lift_rows", "_lift_profiles", "_lift_frozen_rows", "_lift_frozen_profiles",
               "_lift_primed", "_lift_full_nR")}
 
     def _drop():
-        for _k in ("_lift_rows", "_lift_cells", "_lift_frozen_rows", "_lift_frozen_cells"):
+        for _k in ("_lift_rows", "_lift_profiles", "_lift_frozen_rows", "_lift_frozen_profiles"):
             setattr(proj, _k, None)
         proj._lift_primed = None
         proj._lift_full_nR = -1
@@ -1427,10 +1427,10 @@ def _vok_rows(T0):
     return (T0["vc"].to_numpy(float) > 0).astype(float)
 
 
-def _shares(T0, prop, by_rpgt, gcode, ngc, base, by_subcell=False):
+def _shares(T0, prop, by_rpgt, gcode, ngc, base, by_profile=False):
     """Return (pshare, vshare, psum) for the candidate. `psum` is the per-row (broadcast
     per-cell) proposed-share sum; `psum>0` is the active mask that gates `mv`."""
-    prop_raw = _prop_raw(T0, prop, by_rpgt, by_subcell)
+    prop_raw = _prop_raw(T0, prop, by_rpgt, by_profile)
     psum = np.bincount(gcode, weights=prop_raw, minlength=ngc)[gcode]
     pshare = np.array(base, dtype=float)
     np.divide(prop_raw, psum, out=pshare, where=psum > 0)
@@ -1458,9 +1458,9 @@ class BandProjector:
 
     # [FN-017]
     def __init__(self, T0: pd.DataFrame, Pc: pd.DataFrame, pool: np.ndarray, bands,
-                 by_rpgt: bool = False, by_subcell: bool = False):
+                 by_rpgt: bool = False, by_profile: bool = False):
         self.by_rpgt = by_rpgt
-        self.by_subcell = by_subcell
+        self.by_profile = by_profile
         self.bands = {(str(m).strip().lower(), int(p)) for (m, p) in bands}
         self._T0 = T0.reset_index(drop=True)
         Pc = Pc.reset_index(drop=True)
@@ -1480,13 +1480,13 @@ class BandProjector:
         _t0_ck = (self._T0["cur"].astype(str) + "|" + self._T0["bin"].astype(str) + "|"
                   + self._T0["rpgt"].astype(str) + "|" + self._T0["pmp"].astype(str) + "|"
                   + self._T0["ctry"].astype(str) + "|" + self._T0["per"].astype(str)).to_numpy()
-        _pr_by_cell = pd.Series((self._T0["pr"].to_numpy(float) if "pr" in self._T0.columns
+        _pr_by_profile = pd.Series((self._T0["pr"].to_numpy(float) if "pr" in self._T0.columns
                                  else np.ones(len(self._T0))), index=_t0_ck)
-        _pr_by_cell = _pr_by_cell[~_pr_by_cell.index.duplicated(keep="first")]
+        _pr_by_profile = _pr_by_profile[~_pr_by_profile.index.duplicated(keep="first")]
         _pc_ck = (Pc["cur"].astype(str) + "|" + Pc["bin"].astype(str) + "|" + Pc["rpgt"].astype(str)
                   + "|" + Pc["pmp"].astype(str) + "|" + Pc["ctry"].astype(str) + "|"
                   + Pc["per"].astype(str)).to_numpy()
-        _pc_prapp = (_pr_by_cell.reindex(_pc_ck).fillna(0.0).to_numpy(float)
+        _pc_prapp = (_pr_by_profile.reindex(_pc_ck).fillna(0.0).to_numpy(float)
                      if len(Pc) else np.zeros(0, float))
         # 19dc — the collapse now CARRIES the age renormalise. It used to aggregate the pool by
         # ORIGIN row alone, which discarded the aged group (profile, period, t) the renormalise
@@ -1566,7 +1566,7 @@ class BandProjector:
     def project(self, prop: dict) -> dict:
         pshare, vshare, psum = _shares(self._T0, prop, self.by_rpgt,
                                        self._gcode, self._ngc, self._base,
-                                       getattr(self, "by_subcell", False))
+                                       getattr(self, "by_profile", False))
         active = psum > 0                                   # per T0 row (broadcast per profile)
         # CONSERVATION (19aq): the VAMP hold term uses `active AND has-a-VAMP-recipient`, the
         # same gate as the kernel and the dense path. TXN keeps plain `active` — its inactive
@@ -1682,7 +1682,7 @@ class PopulationBandProjector:
 
     # [FN-019]
     def __init__(self, T0: pd.DataFrame, Pc: pd.DataFrame, pool: np.ndarray, bands,
-                 by_rpgt: bool = False, max_share: float = 1.0, by_subcell: bool = False,
+                 by_rpgt: bool = False, max_share: float = 1.0, by_profile: bool = False,
                  vamp_off_mids=frozenset(), exploration_floor: float = 0.0,
                  wallet_incapable=frozenset(), usa_only=frozenset()):
         # ── 19fz [pbp-inside] ─────────────────────────────────────────────────────────────
@@ -1705,7 +1705,7 @@ class PopulationBandProjector:
         self.by_rpgt = by_rpgt
         # PROFILE decision grain: prop keys include pmp/ctry (cur|bin|rpgt|pmp|ctry|mid) so a
         # per-profile share maps to exactly one scaffold row instead of broadcasting across sub-cells.
-        self.by_subcell = by_subcell
+        self.by_profile = by_profile
         # Per-profile max-share CAP (matches build_split_exports): no gateway may exceed max_share
         # of a routed profile; the excess water-fills onto the OTHER gateways already present.
         # 1.0 = OFF (backward-compatible). This is the SOLE driver of the scored-vs-delivered VAMP
@@ -1869,9 +1869,9 @@ class PopulationBandProjector:
         # prop-key alignment (np.unique = sorted-unique + inverse index in C)
         # 19fz: identical prop_keys + propidx, ~5.9x faster -- see _prop_key_index. None ⇒ it
         # declined, so run the exact pair it stands in for.
-        _pki = _prop_key_index(R, by_rpgt, by_subcell) if nR else ([], np.zeros(0, np.int64))
+        _pki = _prop_key_index(R, by_rpgt, by_profile) if nR else ([], np.zeros(0, np.int64))
         if _pki is None:
-            keys = _prop_key(R, by_rpgt, by_subcell)
+            keys = _prop_key(R, by_rpgt, by_profile)
             uniq, self._propidx = np.unique(keys, return_inverse=True)
             self.prop_keys = [str(k) for k in uniq]
         else:
@@ -1927,15 +1927,15 @@ class PopulationBandProjector:
             _ck_bad |= (_pc_c < 0)
             _pc_ck_full = _pc_ck_full * _k + np.where(_pc_c < 0, 0, _pc_c)
         if _ck_ok:
-            _pr_by_cell = pd.Series(_t0_pr, index=_t0_ck)
-            _pr_by_cell = _pr_by_cell[~_pr_by_cell.index.duplicated(keep="first")]
+            _pr_by_profile = pd.Series(_t0_pr, index=_t0_ck)
+            _pr_by_profile = _pr_by_profile[~_pr_by_profile.index.duplicated(keep="first")]
         else:
             # EXACT fallback: the original string join, unchanged.
-            _t0_cellkey = (T0["cur"].astype(str) + "|" + T0["bin"].astype(str) + "|" + T0["rpgt"].astype(str)
+            _t0_profilekey = (T0["cur"].astype(str) + "|" + T0["bin"].astype(str) + "|" + T0["rpgt"].astype(str)
                            + "|" + T0["pmp"].astype(str) + "|" + T0["ctry"].astype(str) + "|"
                            + T0["per"].astype(str)).to_numpy()
-            _pr_by_cell = pd.Series(_t0_pr, index=_t0_cellkey)
-            _pr_by_cell = _pr_by_cell[~_pr_by_cell.index.duplicated(keep="first")]
+            _pr_by_profile = pd.Series(_t0_pr, index=_t0_profilekey)
+            _pr_by_profile = _pr_by_profile[~_pr_by_profile.index.duplicated(keep="first")]
         # 19cw WAS TRIED HERE AND IS WRONG — DO NOT "FIX" THIS AGAIN.
         # The export's own pro_rata column IS origin-keyed (0.0 when t > period, 0.6774 at
         # t == period, 1.0 below), which reads like this lookup should use `per - t`. It should
@@ -1952,12 +1952,12 @@ class PopulationBandProjector:
         if _ck_ok:
             # -1 for a profile T0 never had: cannot match, so it lands on the same 0.0 the string
             # reindex produced via NaN.
-            _pc_cellkey = np.where(_ck_bad, -1, _pc_ck_full)[pc_keep]
+            _pc_profilekey = np.where(_ck_bad, -1, _pc_ck_full)[pc_keep]
         else:
-            _pc_cellkey = (Pc["cur"].astype(str) + "|" + Pc["bin"].astype(str) + "|" + Pc["rpgt"].astype(str)
+            _pc_profilekey = (Pc["cur"].astype(str) + "|" + Pc["bin"].astype(str) + "|" + Pc["rpgt"].astype(str)
                            + "|" + Pc["pmp"].astype(str) + "|" + Pc["ctry"].astype(str) + "|"
                            + Pc["per"].astype(str)).to_numpy()[pc_keep]
-        self._pc_prapp = (_pr_by_cell.reindex(_pc_cellkey).fillna(0.0).to_numpy(float)
+        self._pc_prapp = (_pr_by_profile.reindex(_pc_profilekey).fillna(0.0).to_numpy(float)
                           if len(pc_keep) else np.zeros(0, float))
 
         # 19cx — the AGED GROUP: (profile, APPEARANCE period, age). This is delivery's `_gk`
@@ -2096,7 +2096,7 @@ class PopulationBandProjector:
         pr = np.zeros((len(props), self._K), dtype=float)
         for r, prop in enumerate(props):
             for k, v in prop.items():
-                kk = _prop_key_str(k, self.by_rpgt, getattr(self, "by_subcell", False))
+                kk = _prop_key_str(k, self.by_rpgt, getattr(self, "by_profile", False))
                 j = kpos.get(kk)
                 if j is not None:
                     pr[r, j] += float(v)
@@ -2156,7 +2156,7 @@ class PopulationBandProjector:
             # ── 19fs: THIRD CLASS — the origin profile is FROZEN. See the module note. ──
             _org = np.asarray(self._pc_org, np.int64)
             _frz_rows = np.zeros(len(_org), bool)
-            _fzc = self._frozen_cell_mask()
+            _fzc = self._frozen_profile_mask()
             if _fzc is not None:
                 _gc_all = np.asarray(self._gcode, np.int64)
                 _oi_c = np.where(_org >= 0, _org, 0)
@@ -2283,11 +2283,11 @@ class PopulationBandProjector:
         fixed = getattr(self, "_nbbuf_fixed", None)
         if (fixed is None or getattr(self, "_nbbuf_lanes", None) != lanes
                 or not all(b.flags.writeable for b in fixed)):
-            nR = len(self._gcode); ncell = int(self._ngc)
-            fixed = (np.zeros((lanes, ncell)), np.zeros((lanes, ncell)), np.zeros((lanes, ncell)),
+            nR = len(self._gcode); nprofile = int(self._ngc)
+            fixed = (np.zeros((lanes, nprofile)), np.zeros((lanes, nprofile)), np.zeros((lanes, nprofile)),
                      np.zeros((lanes, nR)), np.zeros((lanes, nR)),          # pr, pshare
                      np.zeros((lanes, nR)), np.zeros((lanes, nR)),          # vshare, mvrow
-                     np.zeros((lanes, ncell)), np.zeros((lanes, ncell)), np.zeros((lanes, ncell)),
+                     np.zeros((lanes, nprofile)), np.zeros((lanes, nprofile)), np.zeros((lanes, nprofile)),
                      # 19cy: per-lane aged-group sums. Sized n_gk (the (profile, period, t) groups),
                      # and zeroed per candidate only at the codes the scaffold touches — see the
                      # kernel note. max(1, ...) so a scaffold with no aged rows still allocates a
@@ -2326,24 +2326,24 @@ class PopulationBandProjector:
         pre-19ae kernel. ROUTING_PROJ_LIFT=0 also forces it off.
         """
         nR = len(self._gcode)
-        ncell = int(self._ngc)
+        nprofile = int(self._ngc)
         if not _PROJ_LIFT_ON or getattr(self, "_lift_inc", None) is None or not nR:
             if getattr(self, "_lift_full_nR", -1) != nR:
                 # 19bi: int32 here too — [kernel-ab]'s G cast the lift arrays with the
                 # rest, so the adopted path must match what was measured.
                 self._lift_full_rows = _ix32(np.arange(nR, dtype=np.int64))
-                self._lift_full_cells = _ix32(np.arange(ncell, dtype=np.int64))
+                self._lift_full_profiles = _ix32(np.arange(nprofile, dtype=np.int64))
                 self._lift_full_nR = nR
-            return self._lift_full_rows, self._lift_full_cells
+            return self._lift_full_rows, self._lift_full_profiles
 
         if getattr(self, "_lift_rows", None) is None:
-            cell_live = self._frozen_cell_mask(invert=True)
-            self._lift_cells = _ix32(np.where(cell_live)[0])
+            profile_live = self._frozen_profile_mask(invert=True)
+            self._lift_profiles = _ix32(np.where(profile_live)[0])
             self._lift_rows = _ix32(
-                np.where(cell_live[np.asarray(self._gcode, np.int64)])[0])
+                np.where(profile_live[np.asarray(self._gcode, np.int64)])[0])
             self._lift_frozen_rows = np.where(
-                ~cell_live[np.asarray(self._gcode, np.int64)])[0].astype(np.int64)
-            self._lift_frozen_cells = np.where(~cell_live)[0].astype(np.int64)
+                ~profile_live[np.asarray(self._gcode, np.int64)])[0].astype(np.int64)
+            self._lift_frozen_profiles = np.where(~profile_live)[0].astype(np.int64)
             self._lift_primed = None
             _bnote(f"frozen-scaffold LIFT ON: the flat passes skip "
                   f"{len(self._lift_frozen_rows):,} of {nR:,} rows "
@@ -2359,7 +2359,7 @@ class PopulationBandProjector:
             key = (id(buffers[2]), int(lanes))
             if getattr(self, "_lift_primed", None) != key:
                 fr = self._lift_frozen_rows
-                fc = self._lift_frozen_cells
+                fc = self._lift_frozen_profiles
                 # 19cy: INDEXED, not star-unpacked. The buffer tuple grew a `gks` lane array
                 # and a fixed-width unpack turns every future addition into a ValueError raised
                 # here — a long way from the line that added it, and only on paths that prime the
@@ -2376,10 +2376,10 @@ class PopulationBandProjector:
                     for arr in (psum, moved, vpsum, nzc, exc, rsum):
                         arr[q][fc] = 0.0
                 self._lift_primed = key
-        return self._lift_rows, self._lift_cells
+        return self._lift_rows, self._lift_profiles
 
     # [FN-022b2]
-    def _frozen_cell_mask(self, invert=False):
+    def _frozen_profile_mask(self, invert=False):
         """Which scaffold cells are FROZEN — psum == 0 for every candidate, for ever.
 
         ONE DEFINITION, two callers: the lift (which skips their rows in the flat passes) and
@@ -2409,8 +2409,8 @@ class PopulationBandProjector:
         # mis-groups silently. Same trap noted in the [frozen-scaffold] measurement.
         per = np.bincount(np.asarray(self._gcode, np.int64),
                           weights=live_row.astype(float), minlength=int(self._ngc))
-        cell_live = per > 0.0
-        return cell_live if invert else ~cell_live
+        profile_live = per > 0.0
+        return profile_live if invert else ~profile_live
 
     # [FN-022c]
     def set_lift_incidence(self, incidence):
@@ -2640,19 +2640,19 @@ class PopulationBandProjector:
         cb = getattr(self, "_cb", None)
         if cb is not None and cb.get("key") == key:
             return cb if cb.get("ok") else None
-        nR = len(self._gcode); ncell = int(self._ngc)
+        nR = len(self._gcode); nprofile = int(self._ngc)
         # Built from `a` = _nb_arrays(), NOT from the raw attributes: `a` is what the flat kernel
         # actually reads (same dtypes, same int32 narrowing, cap rows already pre-filtered to
         # non-excl), so the two paths cannot drift apart in their inputs.
         gc = np.asarray(a[2], np.int64)
         try:
             lr = np.asarray(_lr, np.int64)
-            live_cell = np.zeros(ncell, bool)
-            live_cell[np.asarray(_lc, np.int64)] = True
+            live_profile = np.zeros(nprofile, bool)
+            live_profile[np.asarray(_lc, np.int64)] = True
             # THE INVARIANT, both ways round: every live row is in a live profile, and every row of a
             # live profile is live.
-            if not (live_cell[gc[lr]].all()
-                    and int(live_cell[gc].sum()) == int(lr.size)):
+            if not (live_profile[gc[lr]].all()
+                    and int(live_profile[gc].sum()) == int(lr.size)):
                 self._cb = {"key": key, "ok": False}
                 _pnote("cell-blocked projection UNAVAILABLE: the frozen-scaffold lift is no longer "
                        "cell-granular (some live cell has a frozen row), and the derived mvrow / "
@@ -2661,17 +2661,17 @@ class PopulationBandProjector:
                 return None
             order = np.argsort(gc[lr], kind="stable")          # STABLE: keeps row order in a profile
             cm = lr[order]
-            froz = np.where(~live_cell[gc])[0].astype(np.int64)
+            froz = np.where(~live_profile[gc])[0].astype(np.int64)
             perm = np.concatenate([cm, froz])
             pos = np.empty(nR, np.int64)
             pos[perm] = np.arange(nR, dtype=np.int64)
-            cnt = np.bincount(gc[cm], minlength=ncell).astype(np.int64)
-            cells = np.where(cnt > 0)[0].astype(np.int64)
-            cstart = np.zeros(ncell + 1, np.int64)
+            cnt = np.bincount(gc[cm], minlength=nprofile).astype(np.int64)
+            profiles = np.where(cnt > 0)[0].astype(np.int64)
+            cstart = np.zeros(nprofile + 1, np.int64)
             np.cumsum(cnt, out=cstart[1:])
             cb = {
                 "key": key, "ok": True, "nLR": int(cm.size), "perm": perm, "pos": pos,
-                "cells": _ix32(cells), "cstart": _ix32(cstart[cells]), "ccnt": _ix32(cnt[cells]),
+                "profiles": _ix32(profiles), "cstart": _ix32(cstart[profiles]), "ccnt": _ix32(cnt[profiles]),
                 "propidx_c": _ix32(np.asarray(a[0], np.int64)[perm]),
                 "pw_c": np.ascontiguousarray(np.asarray(a[1], np.float64)[perm]),
                 "base_c": np.ascontiguousarray(np.asarray(a[3], np.float64)[perm]),
@@ -2713,7 +2713,7 @@ class PopulationBandProjector:
             x = np.asarray(x)
             return (np.ascontiguousarray(x.astype(np.float32))
                     if x.dtype == np.float64 else x)
-        nR = len(self._gcode); ncell = int(self._ngc); B = int(self._B)
+        nR = len(self._gcode); nprofile = int(self._ngc); B = int(self._B)
         _f = {
             "args": tuple(_n(_x) for _x in a),
             "base_c": _n(cb["base_c"]), "mv_c": _n(cb["mv_c"]), "vcpos_c": _n(cb["vcpos_c"]),
@@ -2728,13 +2728,13 @@ class PopulationBandProjector:
 
     def _f32_buffers(self, f32, P, lanes, cb):
         """(vamp, txn, psum, vpsum, moved, pr, pshare) in float32, reallocated on a lane change."""
-        nR = len(self._gcode); ncell = int(self._ngc); B = int(self._B)
+        nR = len(self._gcode); nprofile = int(self._ngc); B = int(self._B)
         if (f32["buf"] is None or f32["lanes"] != int(lanes)
                 or f32["buf"][0].shape[0] != int(P)):
             f32["buf"] = (np.zeros((int(P), B), np.float32), np.zeros((int(P), B), np.float32),
-                          np.zeros((int(lanes), ncell), np.float32),
-                          np.zeros((int(lanes), ncell), np.float32),
-                          np.zeros((int(lanes), ncell), np.float32),
+                          np.zeros((int(lanes), nprofile), np.float32),
+                          np.zeros((int(lanes), nprofile), np.float32),
+                          np.zeros((int(lanes), nprofile), np.float32),
                           np.zeros((int(lanes), nR), np.float32),
                           np.zeros((int(lanes), nR), np.float32))
             f32["lanes"] = int(lanes)
@@ -2775,7 +2775,7 @@ class PopulationBandProjector:
         cb["primed"] = key
 
     # [FN-023d2]
-    def _f32_drift(self, prop_raw, a, ncell, P, v32, t32):
+    def _f32_drift(self, prop_raw, a, nprofile, P, v32, t32):
         """How far the float32 projector's answer sits from the float64 one, AT THIS WIDTH.
 
         Returns the worst single band, WHICH band that was, and the total across all bands on that
@@ -2788,12 +2788,12 @@ class PopulationBandProjector:
         """
         _nR = len(self._gcode); _B = int(self._B)
         _vb = ((np.zeros((P, _B)), np.zeros((P, _B)))
-               + tuple(np.zeros((1, ncell)) for _ in range(3))
+               + tuple(np.zeros((1, nprofile)) for _ in range(3))
                + tuple(np.zeros((1, _nR)) for _ in range(4))
-               + tuple(np.zeros((1, ncell)) for _ in range(3))
+               + tuple(np.zeros((1, nprofile)) for _ in range(3))
                + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),))   # 19cy gks
         _lr, _lc = self._lift_arrays(1, _vb)
-        _rv, _rt = _pop_band_kernel(prop_raw, *a, ncell, _B, float(self._cap), 1, _lr, _lc, *_vb)
+        _rv, _rt = _pop_band_kernel(prop_raw, *a, nprofile, _B, float(self._cap), 1, _lr, _lc, *_vb)
         out = {"at_P": int(P), "nb": int(_B)}
         for _nm, _ref, _got in (("v", _rv, v32), ("t", _rt, t32)):
             _ad = np.abs(np.asarray(_ref, np.float64) - np.asarray(_got, np.float64))
@@ -2818,7 +2818,7 @@ class PopulationBandProjector:
         # here rather than relying on the buffer identity changing. Stale frozen slots are a
         # silently wrong answer, which is the one failure mode worth paying a re-prime to avoid.
         self._lift_primed = None
-        ncell = int(self._ngc); cap = float(self._cap)
+        nprofile = int(self._ngc); cap = float(self._cap)
         vamp, txn = buf[0], buf[1]
         psum, vpsum, moved, pr, pshare = buf[2], buf[3], buf[4], buf[5], buf[6]
         gks = buf[12]                      # 19cy: per-lane aged-group sums
@@ -2829,7 +2829,7 @@ class PopulationBandProjector:
         if sw is None or sw.size < max(_lanes, 1):
             sw = self._cb_sw = np.zeros(max(_lanes, 1), np.int64)
         _args = (cb["propidx_c"], cb["pw_c"], cb["base_c"], cb["mv_c"], cb["vcpos_c"],
-                 cb["cells"], cb["cstart"], cb["ccnt"],
+                 cb["profiles"], cb["cstart"], cb["ccnt"],
                  cb["cap_rowc"], a[13], a[14], a[15], a[16],
                  cb["pc_orgc"], a[8], a[9], a[10], a[11], a[17], a[18], a[19])
         # 19bz: FLOAT32. Same kernel, a float32 specialisation of it. Every float the kernel
@@ -2841,7 +2841,7 @@ class PopulationBandProjector:
             _f32 = self._f32_arrays(a, cb)
             _fa = _f32["args"]
             _args = (cb["propidx_c"], _f32["pw_c"], _f32["base_c"], _f32["mv_c"],
-                     _f32["vcpos_c"], cb["cells"], cb["cstart"], cb["ccnt"],
+                     _f32["vcpos_c"], cb["profiles"], cb["cstart"], cb["ccnt"],
                      cb["cap_rowc"], _fa[13], _fa[14], _fa[15], _fa[16],
                      cb["pc_orgc"], _fa[8], _fa[9], _fa[10], _fa[11], _fa[17], a[18], a[19])
             cap = _f32["cap"]
@@ -2883,12 +2883,12 @@ class PopulationBandProjector:
             try:
                 _nR = len(self._gcode); _B = int(self._B)
                 _vb = ((np.zeros((P, _B)), np.zeros((P, _B)))
-                       + tuple(np.zeros((1, ncell)) for _ in range(3))
+                       + tuple(np.zeros((1, nprofile)) for _ in range(3))
                        + tuple(np.zeros((1, _nR)) for _ in range(4))
-                       + tuple(np.zeros((1, ncell)) for _ in range(3))
+                       + tuple(np.zeros((1, nprofile)) for _ in range(3))
                        + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),))   # 19cy gks
                 _lrv, _lcv = self._lift_arrays(1, _vb)
-                _rv, _rt = _pop_band_kernel(prop_raw, *a, ncell, _B, cap, 1, _lrv, _lcv, *_vb)
+                _rv, _rt = _pop_band_kernel(prop_raw, *a, nprofile, _B, cap, 1, _lrv, _lcv, *_vb)
                 del _vb                      # the tuple name only; _rv/_rt still hold its arrays
                 # 19cd: THE FLOAT32 BRANCH COMES FIRST. It used to come after the bit comparison
                 # below, and that comparison hard-coded `.view(np.int64)` on arrays that are
@@ -2985,7 +2985,7 @@ class PopulationBandProjector:
                 and int(P) > int((_F32_OK.get("first") or {}).get("at_P", 0))):
             _F32_OK["live"] = False                      # claim it before trying, so one attempt only
             try:
-                _lv = self._f32_drift(prop_raw, a, ncell, int(P), _v, _t)
+                _lv = self._f32_drift(prop_raw, a, nprofile, int(P), _v, _t)
                 _F32_OK["live"] = _lv
                 _F32_OK["dv"], _F32_OK["dt"] = _lv["dv"], _lv["dt"]
                 _fst = _F32_OK.get("first") or {}
@@ -3038,18 +3038,18 @@ class PopulationBandProjector:
         """
         vamp, txn = buf[0], buf[1]
         P = int(prop_raw.shape[0])
-        ncell, B, cap = int(self._ngc), int(self._B), float(self._cap)
+        nprofile, B, cap = int(self._ngc), int(self._B), float(self._cap)
         _lr, _lc = self._lift_arrays(lanes, buf)
         for _s0 in range(0, P, lanes):
             _s1 = min(_s0 + lanes, P)
             _n = _s1 - _s0
             _kern = _pop_band_kernel if _n == 1 else _pop_band_kernel_par
-            _kern(np.ascontiguousarray(prop_raw[_s0:_s1]), *a, ncell, B, cap, _n,
+            _kern(np.ascontiguousarray(prop_raw[_s0:_s1]), *a, nprofile, B, cap, _n,
                   _lr, _lc, vamp[_s0:_s1], txn[_s0:_s1], *buf[2:])
         return vamp, txn
 
     # [FN-024]
-    def _cellsum(self, x):
+    def _profilesum(self, x):
         """(P, nR) -> (P, ngc) segment sum over cell codes via sparse matmul (C-fast)."""
         return np.asarray((self._S @ x.T).T)
 
@@ -3066,7 +3066,7 @@ class PopulationBandProjector:
         gc = self._gcode
         W = pshare.copy()
         # cappable = active profile with >=2 non-zero routed gateways (guard read ONCE, pre-loop)
-        nz = self._cellsum((W > 1e-12).astype(float))[:, gc]
+        nz = self._profilesum((W > 1e-12).astype(float))[:, gc]
         cappable = act & (nz >= 2.0)
         if not cappable.any():
             return pshare
@@ -3074,11 +3074,11 @@ class PopulationBandProjector:
             over = (W > cap + 1e-12) & cappable
             if not over.any():
                 break
-            excess = self._cellsum(np.where(over, W - cap, 0.0))[:, gc]
+            excess = self._profilesum(np.where(over, W - cap, 0.0))[:, gc]
             W = np.where(over, cap, W)
             recip = cappable & (~over) & (W > 1e-12) & (W < cap - 1e-12)
             room = np.where(recip, cap - W, 0.0)
-            rs = self._cellsum(room)[:, gc]
+            rs = self._profilesum(room)[:, gc]
             W = W + np.where(rs > 1e-12, room / np.where(rs > 1e-12, rs, 1.0) * excess, 0.0)
         return np.where(cappable, W, pshare)
 
@@ -3103,7 +3103,7 @@ class PopulationBandProjector:
         base = self._base[None, :]; mv_s = self._mv[None, :]
         ctot = self._ctot[None, :]
 
-        psum = self._cellsum(pr)[:, self._gcode]                # (P, nR)
+        psum = self._profilesum(pr)[:, self._gcode]                # (P, nR)
         act = psum > 0
         pshare = np.where(act, np.divide(pr, psum, out=np.zeros_like(pr), where=act), base)
         if self._cap < 1.0:                                     # per-profile max-share cap
@@ -3115,11 +3115,11 @@ class PopulationBandProjector:
         # `routed` is read-only from here on (vpsum/vshare both allocate their own output), so
         # aliasing it is safe and avoids a full-width copy on the hot reference path.
         vpr = routed * self._vcpos[None, :]          # 19db: vcpos == VAMP-eligibility
-        vpsum = self._cellsum(vpr)[:, self._gcode]
+        vpsum = self._profilesum(vpr)[:, self._gcode]
         vact = vpsum > 0
         vshare = np.divide(vpr, vpsum, out=np.zeros_like(vpr), where=vact)
 
-        moved_tot = self._cellsum(base * mv)[:, self._gcode]    # (P, nR)
+        moved_tot = self._profilesum(base * mv)[:, self._gcode]    # (P, nR)
         ptxn = ctot * (base * (1.0 - mv) + moved_tot * pshare)
         ptxn = np.where(self._excl[None, :], 0.0, ptxn)
 

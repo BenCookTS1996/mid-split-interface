@@ -91,7 +91,7 @@ def _make_pool(rule: pd.Series, gateway_cols: list[str], brand: str,
 def build_configs(compressed: pd.DataFrame, brand: str = "tdr",
                   scheme: str = "vi") -> dict[str, list[dict]]:
     """Return {rpgt: [pool, ...]} ready to serialise."""
-    meta = {"rpgt", "currency", "banks", "n_cells", "volume", "pmp"}
+    meta = {"rpgt", "currency", "banks", "n_profiles", "volume", "pmp"}
     gateway_cols = [c for c in compressed.columns if c not in meta]
     configs: dict[str, list[dict]] = {}
     for _, rule in compressed.iterrows():

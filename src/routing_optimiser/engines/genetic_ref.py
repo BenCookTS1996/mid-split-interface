@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .base import BaseEngine, CellProblem, CellSolution
+from .base import BaseEngine, ProfileProblem, ProfileSolution
 
 __build__ = "2026-07-17-genetic-revenue-reference"
 
@@ -26,7 +26,7 @@ class GeneticRefEngine(BaseEngine):
                    "temperature/exponential).")
 
     # [FN-431]
-    def _solve(self, p: CellProblem) -> CellSolution:
+    def _solve(self, p: ProfileProblem) -> ProfileSolution:
         n = p.n()
         _, hi = self._bounds(p)
         eligible = hi > 0.0

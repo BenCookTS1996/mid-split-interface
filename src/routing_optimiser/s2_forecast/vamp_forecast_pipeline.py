@@ -446,7 +446,7 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
         try:
             _rr, _lvls = _hier_vamp_shrink(d)
             d["risk_rate"] = _rr
-            _LAST_VAMP_SHRINK = {"on": True, "levels": _lvls, "n_cells": int(len(d))}
+            _LAST_VAMP_SHRINK = {"on": True, "levels": _lvls, "n_profiles": int(len(d))}
         except Exception:  # noqa: BLE001
             d["risk_rate"] = _raw_rr        # never let shrinkage break the pipeline
             _LAST_VAMP_SHRINK = {"on": False, "levels": None, "error": True}
