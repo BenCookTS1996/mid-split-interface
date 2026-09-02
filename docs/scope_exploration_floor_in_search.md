@@ -342,32 +342,58 @@ The vampMid-only test bans it everywhere.
 
 `[ef-mask]` (19he) reports both counts and the disagreement every run.
 
-### Why this is more than a step-2 detail
+### CORRECTION (19hh) — the blast radius is much smaller than first written
 
-`wallet_incapable` / `usa_only` arrive as NAME SETS at **four** delivery entry points, and the
-mask is rebuilt from them in more than one place:
+The first draft of this section listed nine call sites, including `build_split_exports` and tab
+3's four enforcement calls. **That was wrong, and reading the code settled it:**
 
-* `compute_vamp_prepost_granular` — twice: the `prop_raw` zeroing (gated on `not _enforced`)
-  **and** the floor block's own `_emask_f`
-* `build_split_exports` — the SHIPPED TEMPLATE
-* `enforced_prop_items`, `enforced_split_frame`
-* tab 3's own call sites (`tab_3_split_outputs_impact.py` lines 543, 789, 1343, 4291)
+**`build_split_exports` is already FID-GRAIN and already exact.** Its own note, dated
+2026-08-17, says the vampMid roll-up was deliberately REMOVED for precisely the PaySafe reason:
 
-**Changing one of these and not the others replaces one asymmetry with a worse one.** In
-particular, a currency-grain floor over a vampMid-grain `build_split_exports` would mean the
-shipped template bans a door the floor then re-floors.
+> *"Template columns ARE fids, so `g in set` is already exact; the extra `fid2vamp.get(g) in
+> set` term rolled the vampMid's capability onto every sibling fid and over-blocked the ones
+> that CAN serve … Removed."*
 
-### The work, in order
+Fids are currency-specific, so fid grain is **finer** than (vampMid, currency). Nothing to do.
+`enforced_prop_items` and `enforced_split_frame` delegate to it, so they are fine too — and tab
+3's four sites at 543 / 789 / 1343 / 4291 are calls to *those two*, not to the projection.
 
-1. **Hoist the pair builder into a shared helper** (`app_common` or `s3_problem/eligibility`),
-   so `(vampMid, currency)` pairs have ONE source. Today it is local to tab_2.
-2. **Give the delivery functions a pair-grain parameter** alongside the name sets, falling back
-   to the name sets when pairs are absent — so an un-migrated caller keeps today's behaviour
-   exactly and the change is opt-in per call site.
-3. **Migrate the call sites together**: `compute_vamp_prepost_granular` (both mask sites),
-   `build_split_exports`, `enforced_prop_items`, `enforced_split_frame`, and tab 3's four.
-4. **Behind `ROUTING_EMASK_PAIRS`**, default OFF, because it changes the delivered number.
-5. Only then wire the floor into the kernel (step 2 of §12).
+**So there was exactly ONE coarse consumer: `compute_vamp_prepost_granular`**, because the
+pro-rata export carries vampMid and no fid. It had the wallet/USA test written out **twice** —
+the `prop_raw` zeroing and the floor block's own `_emask_f` — which is now one shared builder.
+
+### A real gap found while threading it
+
+`tab_2`'s own delivery projection passed **no** `wallet_incapable` / `usa_only` at all, only
+`capability`. For the `prop_raw` zeroing that is correct and by design (`_ep` is the enforced
+template; the fid-grain mask is already baked in). But **the exploration-floor block's mask is
+not gated on `_enforced`**, so with empty sets it was all-False — every row read as
+capability-eligible, and the floor's `base_share > 0` clause could resurrect a gateway
+enforcement had zeroed. That is the "the floor must never un-mask an ineligible gateway" hazard
+with nothing standing in its way. Passing the pairs closes it.
+
+### The work — DONE in 19hh
+
+1. ✅ **Pair builder hoisted** to `app_common.capability_pairs`, memoised on (path, mtime).
+   Verified identical to tab_2's inline version on the live MID list: **89 wallet-incapable
+   pairs, 4 USA-only pairs**, same provenance label.
+2. ✅ **Pair-grain parameters** on `compute_vamp_prepost_granular`, `projection_cache_sig` and
+   `_c_prepost_granular`, falling back to the name sets. Verified **byte-identical** to the
+   pre-19hh formula with the switch off.
+3. ✅ **Call sites migrated**: tab_2's delivery projection and tab 3's three
+   `_c_prepost_granular` calls. (Not nine — see the correction above.)
+4. ✅ **`ROUTING_EMASK_PAIRS`, default OFF.** The grain is in the cache key, and so is the
+   switch, so flipping it cannot be served a projection computed at the other grain.
+   `_PROJ_CODE_VER` bumped for the same reason.
+5. ⬜ **Step 2 of §12** — wire the floor into the kernel. Now unblocked.
+
+### Measured property of the change
+
+The pair grain **only ever removes a block, never adds one.** On a fixture spanning four
+currencies and three payment-method types, every row the two grains disagreed on was
+`name-set = masked, pairs = not masked` — 25 of 44. So arming it can only free capacity that a
+gateway can genuinely serve; it cannot take capacity away. That is the safe direction, and it
+is why this is worth arming before the floor rather than after.
 
 ### Does the whole chain still reconcile?
 

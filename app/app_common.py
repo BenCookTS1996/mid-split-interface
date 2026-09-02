@@ -268,6 +268,108 @@ class StreamlitLogHandler(logging.Handler):
             pass
 
 
+# [FN-235b] 19hh
+_CAP_PAIRS_MEMO: dict = {}
+
+
+def capability_pairs(mid_list_path, restrictions_path=None):
+    """THE ONE SOURCE of (vampMid, currency)-grain wallet/USA capability.
+
+    Returns ``(wallet_incapable_pairs, usa_only_pairs, source)`` where each pair set holds
+    ``(vampMid_lower, currency_lower)`` tuples and ``source`` is a short provenance label for
+    the run log.
+
+    WHY PAIRS AND NOT NAMES. The scaffold carries no gatewayFid, only vampMid, so a
+    capability mask keyed on the vampMid ALONE is only well defined when every fid of that
+    vampMid agrees. They do not always agree: PaySafe - Total AV is wallet-capable on
+    paysafe-usd-tav but NOT on paysafe-eur-tav / -gbp-tav, so a vampMid-only mask barred
+    PaySafe from wallet sub-cells in USD too. Currency IS on the scaffold and every fid is
+    currency-specific, so (vampMid, currency) resolves it exactly.
+
+    A pair counts as WALLET-INCAPABLE only when every ACTIVE fid for it is incapable — if any
+    active fid can serve wallets, the vampMid can be served there. With no active fid for the
+    pair at all, every fid for it is considered instead.
+
+    Built straight from Master_MID_List.csv + routing_restrictions.json, deliberately NOT from
+    ``ss["wallet_ctx"]``: that is written LATER in a run, so reading it here would serve the
+    PREVIOUS run's capability — stale the moment the MID list is edited.
+
+    19hh: hoisted verbatim out of tab_2_routing_engine, which built this inline and kept it
+    local. It is now read by the delivery path too (see docs/scope_exploration_floor_in_search.md
+    §14), and two independent constructions of the same capability rule is precisely the
+    failure this project has already had once (19cu, the vcpos gate vs delivery's denominator).
+
+    Memoised on (mid_list_path, mtime, restrictions_path, mtime) so the extra call sites cost
+    one read between them, and an edited file is still picked up.
+    """
+    _rp = restrictions_path
+
+    def _mt(_p):
+        # NOT impact_calcs._mtime: that module imports FROM this one, so reaching back for it
+        # would be a circular import.
+        try:
+            return os.path.getmtime(_p) if _p and os.path.exists(_p) else 0.0
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    try:
+        _key = (str(mid_list_path), _mt(mid_list_path),
+                str(_rp) if _rp else "", _mt(_rp))
+    except Exception:  # noqa: BLE001
+        _key = None
+    if _key is not None and _key in _CAP_PAIRS_MEMO:
+        return _CAP_PAIRS_MEMO[_key]
+
+    wc_pairs, uo_pairs, source = set(), set(), "none"
+    try:
+        from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg
+        from routing_optimiser.s3_problem.eligibility import load_usa_only as _lu
+        _cap_w, _cap_a, _vc_of = {}, {}, {}
+        if mid_list_path and os.path.exists(mid_list_path):
+            _mm = load_mid_list(mid_list_path)
+            _cc = _norm_cols(_mm)
+            _gp, _vp = _cc.get("gatewayfid"), _cc.get("vampmid")
+            _cp, _ap, _wp = _cc.get("currency"), _cc.get("isactive"), _cc.get("processwallet")
+            if _gp and _vp and _cp:
+                def _tp(_x):
+                    return str(_x).strip().lower() in ("true", "1", "yes", "t", "y")
+                _gs = _mm[_gp].map(_cg).astype(str).str.strip().str.lower().tolist()
+                _vs = _mm[_vp].astype(str).str.strip().str.lower().tolist()
+                _cs = _mm[_cp].astype(str).str.strip().str.lower().tolist()
+                _as = _mm[_ap].tolist() if _ap else [True] * len(_mm)
+                _ws = _mm[_wp].tolist() if _wp else [True] * len(_mm)
+                for _i in range(len(_gs)):
+                    _cu = _cs[_i]
+                    if _cu in ("", "excluded", "nan", "none"):
+                        continue
+                    _key2 = (_vs[_i], _cu)
+                    _act = _tp(_as[_i])
+                    _wal = _tp(_ws[_i])
+                    _cap_a.setdefault(_key2, []).append(_wal if _act else None)
+                    _cap_w.setdefault(_key2, []).append(_wal)
+                    _vc_of.setdefault(_gs[_i], _key2)
+                for _key2 in _cap_w:
+                    _actv = [_b for _b in _cap_a.get(_key2, []) if _b is not None]
+                    _use = _actv if _actv else _cap_w[_key2]
+                    if _use and not any(_use):      # NO fid here can do wallets
+                        wc_pairs.add(_key2)
+        if _rp:
+            for _f in _lu(_rp):
+                _k = _vc_of.get(str(_cg(_f)).strip().lower())
+                if _k:
+                    uo_pairs.add(_k)
+        if wc_pairs or uo_pairs:
+            source = "Master_MID_List + routing_restrictions"
+    except Exception as _e:  # noqa: BLE001 — never break a run over a capability read
+        wc_pairs, uo_pairs = set(), set()
+        source = f"FAILED ({type(_e).__name__})"
+
+    out = (wc_pairs, uo_pairs, source)
+    if _key is not None:
+        _CAP_PAIRS_MEMO[_key] = out
+    return out
+
+
 # [FN-235]
 def _switched_off_gateways(ov: dict) -> set:
     """Canonicalised, lower-cased gateway ids that are SWITCHED OFF in an already-loaded

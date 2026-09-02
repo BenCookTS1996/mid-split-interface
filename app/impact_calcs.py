@@ -1449,7 +1449,9 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
                                   kill_eff=(), month_0=None, scoped_rpgts=(),
                                   wallet_incapable=frozenset(), usa_only=frozenset(),
                                   exploration_floor=0.0, vamp_off_mids=frozenset(),
-                                  capability=None, max_share=1.0):
+                                  capability=None, max_share=1.0,
+                                  wallet_incapable_pairs=frozenset(),
+                                  usa_only_pairs=frozenset()):
     """Per-ROW baseline vs proposed VAMP / VI-Txn from the pro-rata export.
 
     Routes at the (vampMid, RPGT, BIN, Currency, pmp, Country) sub-cell grain when the
@@ -1602,11 +1604,51 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # Static masks only for RAW prop_items — enforced shares already have them baked in.
     _wc_s = {str(x).strip().lower() for x in (wallet_incapable or set())}
     _uo_s = {str(x).strip().lower() for x in (usa_only or set())}
-    if (_wc_s or _uo_s) and not _enforced:
-        _ml = t0["vampMid"].astype(str).str.strip().str.lower()
+    # ── 19hh: ONE mask builder for BOTH sites in this function. ────────────────────────────
+    # This function had the wallet/USA test written out TWICE — here for the `prop_raw` zeroing
+    # and again inside the exploration-floor block as `_emask_f`. Two copies of one rule is how
+    # they drift; there is now one.
+    #
+    # AND IT CAN RUN AT TWO GRAINS. The pro-rata export carries vampMid, NOT gatewayFid, so a
+    # name-set test is only well defined when every fid of a vampMid agrees — and they do not:
+    # PaySafe - Total AV is wallet-capable on paysafe-usd-tav but not on paysafe-eur-tav, so the
+    # name-set mask bars PaySafe from wallet sub-cells in USD too. The SEARCH resolved this in
+    # 2026-08-17 by keying on (vampMid, CURRENCY); `build_split_exports` resolved it the same
+    # day by going FID-grain (its template columns ARE fids). This function is the one consumer
+    # left on the coarse test, which is the asymmetry §14 of
+    # docs/scope_exploration_floor_in_search.md is about.
+    #
+    # ROUTING_EMASK_PAIRS=1 switches it to the pair grain the search already uses. DEFAULT OFF,
+    # because it CHANGES THE DELIVERED NUMBER: rows a vampMid can actually serve stop being
+    # zeroed, so the renormalised split moves. With it off, or with no pairs supplied, this is
+    # byte-for-byte the pre-19hh name-set test.
+    _EMASK_PAIRS = os.environ.get("ROUTING_EMASK_PAIRS", "0") != "0"
+    _wc_p = {(str(a).strip().lower(), str(b).strip().lower())
+             for a, b in (wallet_incapable_pairs or ())}
+    _uo_p = {(str(a).strip().lower(), str(b).strip().lower())
+             for a, b in (usa_only_pairs or ())}
+    _use_pairs = bool(_EMASK_PAIRS and (_wc_p or _uo_p))
+
+    def _cap_emask():
+        """The wallet/USA capability mask over `t0`, at whichever grain is armed."""
         _wallet = t0["_pmp"].isin(["googlepay", "applepay"])
         _nonusa = ~t0["_ctry"].isin(["usa", "us", "_all_", ""])
-        _emask = (_wallet & _ml.isin(_wc_s)) | (_nonusa & _ml.isin(_uo_s))
+        _ml = t0["vampMid"].astype(str).str.strip().str.lower()
+        if _use_pairs:
+            _cu = t0["Currency"].astype(str).str.strip().str.lower()
+            _pr_key = list(zip(_ml.tolist(), _cu.tolist()))
+            _wc_hit = pd.Series(np.array([_k in _wc_p for _k in _pr_key], dtype=bool),
+                                index=t0.index)
+            _uo_hit = pd.Series(np.array([_k in _uo_p for _k in _pr_key], dtype=bool),
+                                index=t0.index)
+            return (_wallet & _wc_hit) | (_nonusa & _uo_hit)
+        return (_wallet & _ml.isin(_wc_s)) | (_nonusa & _ml.isin(_uo_s))
+
+    globals()["_LAST_EMASK_GRAIN"] = (
+        "(vampMid, currency) pairs" if _use_pairs else
+        ("vampMid name sets" if (_wc_s or _uo_s) else "none — no capability data supplied"))
+    if (_wc_s or _uo_s or _use_pairs) and not _enforced:
+        _emask = _cap_emask()
         t0["prop_raw"] = np.where(_emask, 0.0, t0["prop_raw"])
     t0["_av"] = t0["VI_Txn_Count"] * t0["_keep"]
     _g = t0.groupby(grp)   # group cell keys ONCE, reuse for all three sums (bit-identical)
@@ -1631,11 +1673,10 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # floor never un-masks an ineligible gateway). floor=0 → unchanged (backward-compatible).
     _efloor = float(exploration_floor or 0.0)
     if _efloor > 0.0:
-        _wc_f = {str(x).strip().lower() for x in (wallet_incapable or set())}
-        _uo_f = {str(x).strip().lower() for x in (usa_only or set())}
-        _mlf = t0["vampMid"].astype(str).str.strip().str.lower()
-        _emask_f = ((t0["_pmp"].isin(["googlepay", "applepay"]) & _mlf.isin(_wc_f))
-                    | ((~t0["_ctry"].isin(["usa", "us", "_all_", ""])) & _mlf.isin(_uo_f)))
+        # 19hh: was a second, independent copy of the wallet/USA test. Now the SAME builder
+        # the `prop_raw` zeroing above uses, so the floor's eligibility set and the zeroing's
+        # can no longer disagree — and both move to the pair grain together under one switch.
+        _emask_f = _cap_emask()
         _elig_f = (((t0["base_share"] > 0) | (t0["prop_raw"] > 0)) & (t0["_keep"] > 0)
                    & (~_emask_f) & (t0["prop_sum"] > 0))
         _nef = t0.assign(_ef=_elig_f.astype(float)).groupby(grp)["_ef"].transform("sum")
@@ -2456,12 +2497,13 @@ def _c_vamp_post_prorata(pp_path, m, prop_items, excluded_mids, kill_eff=(), mon
 
 
 # [FN-266b]
-_PROJ_CODE_VER = "2026-08-26a-vamp-follows-volume+backfill-name"  # bump on ANY projection-logic
+_PROJ_CODE_VER = "2026-09-02-19hh-one-emask-builder+pair-grain"  # bump on ANY projection-logic
 # change so the in-memory st.cache_data entries bust on the next rerun (the data signature alone
 # can't see code edits: a re-used outputs folder + unchanged split => identical key => stale result).
 
 
-def projection_cache_sig(pp_path, prop_items, exploration_floor=0.0, extra=""):
+def projection_cache_sig(pp_path, prop_items, exploration_floor=0.0, extra="",
+                         wallet_incapable_pairs=frozenset(), usa_only_pairs=frozenset()):
     """Stable cache-key SIGNATURE for the granular projection.
 
     The projection's `@st.cache_data` key used to lean on the pipeline file's mtime (`m`), which is
@@ -2478,6 +2520,15 @@ def projection_cache_sig(pp_path, prop_items, exploration_floor=0.0, extra=""):
     h = _hl.blake2b(digest_size=16)
     for t in (prop_items or ()):
         h.update(repr(t).encode("utf-8"))
+    # 19hh: the capability GRAIN is part of the answer, so it has to be part of the key. Without
+    # this, flipping ROUTING_EMASK_PAIRS would be served the projection computed at the OTHER
+    # grain — the exact stale-cache class of bug this codebase has already had from a numba
+    # cache (band_projection's _VAMP_CONSERVE incident). The switch is hashed too, so arming it
+    # busts the key even when the pair sets themselves are unchanged.
+    _emp = os.environ.get("ROUTING_EMASK_PAIRS", "0") != "0"
+    h.update(("|wcp=" + ",".join(sorted(f"{a}~{b}" for a, b in (wallet_incapable_pairs or ())))
+              + "|uop=" + ",".join(sorted(f"{a}~{b}" for a, b in (usa_only_pairs or ())))
+              + f"|emp={int(_emp)}").encode("utf-8"))
     h.update(f"|floor={float(exploration_floor or 0.0):.8g}|{extra}|cv={_PROJ_CODE_VER}".encode("utf-8"))
     return f"{mt:.0f}:{len(prop_items or ()):d}:{h.hexdigest()}"
 
@@ -2487,7 +2538,8 @@ def projection_cache_sig(pp_path, prop_items, exploration_floor=0.0, extra=""):
 def _c_prepost_granular(pp_path, m, prop_items, excluded_mids, kill_eff=(), month_0=None,
                         scoped_rpgts=(), wallet_incapable=frozenset(), usa_only=frozenset(),
                         exploration_floor=0.0, vamp_off_mids=frozenset(),
-                        cap_sig="", _capability=None, max_share=1.0):
+                        cap_sig="", _capability=None, max_share=1.0,
+                        wallet_incapable_pairs=frozenset(), usa_only_pairs=frozenset()):
     # `m` = cache-key SIGNATURE (callers now pass projection_cache_sig(): mtime + a content hash of
     # the actual split + floor). PLAIN (non-underscore) name so it participates in the st.cache_data
     # key (underscore args are excluded from the hash) — so the cache busts whenever the deployed
@@ -2507,7 +2559,13 @@ def _c_prepost_granular(pp_path, m, prop_items, excluded_mids, kill_eff=(), mont
                                          # out of the hash (a function object is not hashable);
                                          # `cap_sig` above carries its identity into the key.
                                          capability=_capability,
-                                         max_share=max_share)
+                                         max_share=max_share,
+                                         # 19hh: PLAIN (non-underscore) names so they
+                                         # participate in the st.cache_data key — the grain
+                                         # changes the answer, so a frame computed at the other
+                                         # grain must not be served.
+                                         wallet_incapable_pairs=wallet_incapable_pairs,
+                                         usa_only_pairs=usa_only_pairs)
 
 
 # [FN-268]

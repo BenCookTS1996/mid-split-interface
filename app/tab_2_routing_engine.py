@@ -23,6 +23,9 @@ from routing_optimiser import (HardConstraints, OptimiserSettings, SoftConstrain
 from impact_calcs import _mtime, pool_targeted_compression, process_wallet_incapable
 
 from app_common import load_mid_list, _norm_cols  # memoised MID reader + column-normaliser
+# 19hh: ONE source for (vampMid, currency) wallet/USA capability — see §14 of
+# docs/scope_exploration_floor_in_search.md. The delivery path reads the same helper.
+from app_common import capability_pairs as _cap_pairs
 from app_common import run_company            # 19ea: ONE reader for the run's brand
 # 19ft: ONE resolver for config/inputs, so a mastercard run reads the mastercard copy.
 from app_common import input_json_path
@@ -3863,53 +3866,39 @@ def render():
                         _wc_es = ss.get("wallet_ctx") or {}
                         _wc_set = {str(x).strip().lower() for x in (_wc_es.get("incapable") or set())}
                         _uo_set = {str(x).strip().lower() for x in (_wc_es.get("usa_only") or set())}
-                        _wc_pairs, _uo_pairs, _pair_src = set(), set(), "none"
-                        try:
-                            from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg_pk
-                            from routing_optimiser.s3_problem.eligibility import load_usa_only as _lu_pk
-                            _cap_w, _cap_a, _vc_of = {}, {}, {}
-                            if os.path.exists(mid_list_path):
-                                # NB: locals here are suffixed _pk — `_mmp` further UP this function
-                                # holds the MID-list PATH and is read much further DOWN by
-                                # process_wallet_incapable(_mmp); binding a DataFrame to it here
-                                # clobbered that read (ValueError: truth value of a DataFrame).
-                                _mm_pk = load_mid_list(mid_list_path)
-                                _cc_pk = _norm_cols(_mm_pk)
-                                _gp_pk, _vp_pk = _cc_pk.get("gatewayfid"), _cc_pk.get("vampmid")
-                                _cp_pk, _ap_pk, _wp_pk = (_cc_pk.get("currency"), _cc_pk.get("isactive"),
-                                                          _cc_pk.get("processwallet"))
-                                if _gp_pk and _vp_pk and _cp_pk:
-                                    def _tp_pk(_x):
-                                        return str(_x).strip().lower() in ("true", "1", "yes", "t", "y")
-                                    _gs_pk = _mm_pk[_gp_pk].map(_cg_pk).astype(str).str.strip().str.lower().tolist()
-                                    _vs_pk = _mm_pk[_vp_pk].astype(str).str.strip().str.lower().tolist()
-                                    _cs_pk = _mm_pk[_cp_pk].astype(str).str.strip().str.lower().tolist()
-                                    _as_pk = _mm_pk[_ap_pk].tolist() if _ap_pk else [True] * len(_mm_pk)
-                                    _ws_pk = _mm_pk[_wp_pk].tolist() if _wp_pk else [True] * len(_mm_pk)
-                                    for _i2 in range(len(_gs_pk)):
-                                        _cu_pk = _cs_pk[_i2]
-                                        if _cu_pk in ("", "excluded", "nan", "none"):
-                                            continue
-                                        _key2 = (_vs_pk[_i2], _cu_pk)
-                                        _act_pk = _tp_pk(_as_pk[_i2])
-                                        _wal_pk = _tp_pk(_ws_pk[_i2])
-                                        _cap_a.setdefault(_key2, []).append(_wal_pk if _act_pk else None)
-                                        _cap_w.setdefault(_key2, []).append(_wal_pk)
-                                        _vc_of.setdefault(_gs_pk[_i2], _key2)
-                                    for _key2 in _cap_w:
-                                        _actv = [_b for _b in _cap_a.get(_key2, []) if _b is not None]
-                                        _use = _actv if _actv else _cap_w[_key2]
-                                        if _use and not any(_use):      # NO fid here can do wallets
-                                            _wc_pairs.add(_key2)
-                            _rrp2 = input_json_path("routing_restrictions.json")
-                            for _f2 in _lu_pk(_rrp2):
-                                _k2 = _vc_of.get(str(_cg_pk(_f2)).strip().lower())
-                                if _k2:
-                                    _uo_pairs.add(_k2)
-                            if _wc_pairs or _uo_pairs:
-                                _pair_src = "Master_MID_List + routing_restrictions"
-                        except Exception as _pke:  # noqa: BLE001
-                            _wc_pairs, _uo_pairs, _pair_src = set(), set(), f"FAILED ({type(_pke).__name__})"
+                        # 19hh: hoisted to app_common.capability_pairs — ONE source for the
+                        # (vampMid, currency) capability grain, now that the delivery path reads
+                        # it too (docs/scope_exploration_floor_in_search.md §14). The body was
+                        # moved verbatim; the comment block above it is the rationale and stays
+                        # here because this is where the mask is APPLIED.
+                        _wc_pairs, _uo_pairs, _pair_src = _cap_pairs(
+                            mid_list_path, input_json_path("routing_restrictions.json"))
+                        # 19hh: say which GRAIN the DELIVERY projection will mask at, because it
+                        # is now a switch and it changes the delivered number. The search has
+                        # been on the pair grain since 2026-08-17; delivery follows only when
+                        # ROUTING_EMASK_PAIRS is armed, so the two can be deliberately mismatched
+                        # and this line is the only thing that would say so.
+                        _emp_on = os.environ.get("ROUTING_EMASK_PAIRS", "0") != "0"
+                        log("   [emask-grain] the SEARCH masks wallet/USA capability at "
+                            f"(vampMid, currency) grain ({len(_wc_pairs):,} wallet-incapable "
+                            f"pair(s), {len(_uo_pairs):,} USA-only pair(s), from {_pair_src}). "
+                            + ("DELIVERY now masks at the SAME grain (ROUTING_EMASK_PAIRS=1) — "
+                               "the two agree. This CHANGES THE DELIVERED NUMBER against an "
+                               "unarmed run: a vampMid is no longer barred from a wallet or "
+                               "Non-USA sub-cell in a currency where one of its fids can serve "
+                               "it, so the renormalised split moves. ROUTING_EMASK_PAIRS=0 "
+                               "reverts."
+                               if _emp_on else
+                               "DELIVERY masks at the coarser vampMid-ONLY grain, which "
+                               "OVER-BLOCKS any vampMid whose fids differ in capability by "
+                               "currency (PaySafe - Total AV is wallet-capable on "
+                               "paysafe-usd-tav but not on paysafe-eur-tav). The two sides are "
+                               "therefore modelling different eligibility sets, and the "
+                               "difference lands in RECONCILIATION ERROR. "
+                               "ROUTING_EMASK_PAIRS=1 brings delivery onto the search's grain. "
+                               "NOTE build_split_exports is unaffected either way — its "
+                               "template columns are fids, so it has been exact since "
+                               "2026-08-17."))
                         if _wc_pairs or _uo_pairs:
                             _mc_pair = list(zip(_T0["_midl"].tolist(), _T0["_cur"].tolist()))
                             _wc_hit = np.array([_p in _wc_pairs for _p in _mc_pair], dtype=bool)
@@ -8844,12 +8833,36 @@ def render():
                                                 f"cannot project '{_tag}' on the DELIVERED basis: "
                                                 + ("enforced_prop_items returned nothing" if not _ep
                                                    else f"pro-rata export missing at {_ppp}"))
+                                        # ── 19hh: HAND THE PROJECTION THE CAPABILITY PAIRS ────
+                                        # This call passed NO wallet_incapable / usa_only at all
+                                        # — only `capability`. Two consequences, and the second
+                                        # is a real gap:
+                                        #   1. the `prop_raw` zeroing is skipped, which is
+                                        #      CORRECT and by design: `_ep` is the ENFORCED
+                                        #      template and build_split_exports already baked
+                                        #      the FID-grain mask into it.
+                                        #   2. but the EXPLORATION FLOOR's own mask is NOT gated
+                                        #      on `_enforced`, so with empty sets it was
+                                        #      all-False — every row read as capability-eligible,
+                                        #      and the floor's `base_share > 0` clause could
+                                        #      resurrect a gateway the enforcement had zeroed.
+                                        #      That is exactly the "the floor must never un-mask
+                                        #      an ineligible gateway" hazard, with nothing
+                                        #      standing in its way on this path.
+                                        # Passing the pairs closes (2) without touching (1).
+                                        # Under ROUTING_EMASK_PAIRS=0 (the default) the sets are
+                                        # ignored and this is unchanged.
+                                        _pj_wcp, _pj_uop, _ = _cap_pairs(
+                                            mid_list_path,
+                                            input_json_path("routing_restrictions.json"))
                                         _g = _pj_cvp(
                                             _ppp, _ep, _pj_excl,
                                             _pj["ke"], _pj["m0"], _pj_scoped,
                                             exploration_floor=_pj_floor,
                                             capability=_deliv_cap, vamp_off_mids=_vamp_off_mids,
-                                            max_share=float(_wc.get("max_share", 0.97)))
+                                            max_share=float(_wc.get("max_share", 0.97)),
+                                            wallet_incapable_pairs=_pj_wcp,
+                                            usa_only_pairs=_pj_uop)
                                         _g5 = _g[_g["period"] == 5]
                                         _t2 = _pjt.perf_counter()
                                         _pj["t_epi"] += _t1 - _t0

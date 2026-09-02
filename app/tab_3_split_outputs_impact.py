@@ -20,6 +20,10 @@ from impact_calcs import (_c_prepost_granular, _c_read_parquet, _mtime, build_ki
                           pool_targeted_compression, projection_cache_sig, rpgt_avg_ticket,
                           rpgt_currency_avg_ticket)
 
+# 19hh: ONE source for (vampMid, currency) wallet/USA capability — the three delivery
+# projections below read it so tab 3 and the engine mask at the same grain. See §14 of
+# docs/scope_exploration_floor_in_search.md.
+from app_common import capability_pairs as _cap_pairs
 from app_common import (ensure_cols, load_mid_list, _norm_cols, _map_to_bank, _renorm_share, run_company,
                         input_json_path,  # 19ft: ONE resolver for config/inputs
                         _fid2vamp_from)  # memoised MID reader + shared helpers
@@ -1376,11 +1380,18 @@ def render():
                     _wc_r = ss.get("wallet_ctx") or {}
                     _floor_r = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"
                                 else float(ss.get("exploration_floor", 0.0) or 0.0))
+                    _wcp_r, _uop_r, _ = _cap_pairs(
+                        os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"),
+                        input_json_path("routing_restrictions.json"))
                     _gran_r = _c_prepost_granular(
-                        _pp_r, projection_cache_sig(_pp_r, _prop_r, _floor_r), _prop_r, _excl_r, _kill_r, _m0_r, _scoped_rpgts,
+                        _pp_r, projection_cache_sig(_pp_r, _prop_r, _floor_r,
+                                                    wallet_incapable_pairs=_wcp_r,
+                                                    usa_only_pairs=_uop_r),
+                        _prop_r, _excl_r, _kill_r, _m0_r, _scoped_rpgts,
                         frozenset(str(x).strip().lower() for x in (_wc_r.get("incapable") or set())),
                         frozenset(str(x).strip().lower() for x in (_wc_r.get("usa_only") or set())),
                         exploration_floor=_floor_r,
+                        wallet_incapable_pairs=_wcp_r, usa_only_pairs=_uop_r,
                         # 19df — the same max-share cap the search applies, so this secondary
                         # table cannot disagree with the primary one at :4205 about what the
                         # delivered VAMP is. `_wc_rr` hands the identical value to
@@ -3400,11 +3411,18 @@ def render():
                 # (identical args) instead of projecting again.
                 _gr_floor3 = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"
                               else float(ss.get("exploration_floor", 0.0) or 0.0))
+                _wcp3, _uop3, _ = _cap_pairs(
+                    os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"),
+                    input_json_path("routing_restrictions.json"))
                 _gr = _gr_shared if _gr_shared is not None else _c_prepost_granular(
-                    pp_path, projection_cache_sig(pp_path, prop_items, _gr_floor3), prop_items, excluded_mids, _kill_eff, _m0s, _scoped_rpgts,
+                    pp_path, projection_cache_sig(pp_path, prop_items, _gr_floor3,
+                                                  wallet_incapable_pairs=_wcp3,
+                                                  usa_only_pairs=_uop3),
+                    prop_items, excluded_mids, _kill_eff, _m0s, _scoped_rpgts,
                     frozenset(str(x).strip().lower() for x in ((ss.get("wallet_ctx") or {}).get("incapable") or set())),
                     frozenset(str(x).strip().lower() for x in ((ss.get("wallet_ctx") or {}).get("usa_only") or set())),
                     exploration_floor=_gr_floor3,
+                    wallet_incapable_pairs=_wcp3, usa_only_pairs=_uop3,
                     # 19df — the same max-share cap the search applies. This site usually reuses
                     # `_gr_shared` from :4205 and only computes its own frame when that is None;
                     # if the two disagreed on the cap, which branch ran would change the numbers.
@@ -4315,12 +4333,19 @@ def render():
                     # (to compare against the old flat-rule projection). Default = the run's floor.
                     _proj_floor = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"
                                    else float(ss.get("exploration_floor", 0.0) or 0.0))
+                    _wcp0, _uop0, _ = _cap_pairs(
+                        os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"),
+                        input_json_path("routing_restrictions.json"))
                     if os.path.exists(pp_path):
                         _gr_shared = _c_prepost_granular(pp_path,
-                                                         projection_cache_sig(pp_path, _proj_prop, _proj_floor),
+                                                         projection_cache_sig(pp_path, _proj_prop, _proj_floor,
+                                                                              wallet_incapable_pairs=_wcp0,
+                                                                              usa_only_pairs=_uop0),
                                                          _proj_prop, excluded_mids,
                                                          _kill_eff, _m0s, _scoped_rpgts, _wcin, _uonly,
                                                          exploration_floor=_proj_floor,
+                                                         wallet_incapable_pairs=_wcp0,
+                                                         usa_only_pairs=_uop0,
                                                          vamp_off_mids=_vamp_off_mids,
                                                          cap_sig=_cap_sig,
                                                          _capability=_capability,
