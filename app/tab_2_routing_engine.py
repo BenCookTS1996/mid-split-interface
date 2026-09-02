@@ -4763,7 +4763,19 @@ def render():
                                                        by_subcell=bool(_opt_subcell),
                                                        # 19dw: the GA must score the same
                                                        # recipient set delivery ships.
-                                                       vamp_off_mids=_vamp_off_mids)
+                                                       vamp_off_mids=_vamp_off_mids,
+                                                       # 19he STEP 1 of the exploration floor:
+                                                       # the projector now CARRIES the floor and
+                                                       # the two capability sets so its
+                                                       # floor-eligibility mask can be measured
+                                                       # against delivery's before any kernel
+                                                       # uses it. Nothing reads them yet — see
+                                                       # docs/scope_exploration_floor_in_search.md
+                                                       # and the [ef-mask] line in the run log.
+                                                       exploration_floor=float(floor or 0.0),
+                                                       wallet_incapable=frozenset(
+                                                           _wallet_incapable or ()),
+                                                       usa_only=frozenset(_usa_only or ()))
                         _pbp_t2 = _pbp_time.perf_counter()
                         try:
                             _pbp_nR = int(len(_T0a))

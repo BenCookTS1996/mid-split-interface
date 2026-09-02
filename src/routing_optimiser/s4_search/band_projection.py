@@ -1683,7 +1683,8 @@ class PopulationBandProjector:
     # [FN-019]
     def __init__(self, T0: pd.DataFrame, Pc: pd.DataFrame, pool: np.ndarray, bands,
                  by_rpgt: bool = False, max_share: float = 1.0, by_subcell: bool = False,
-                 vamp_off_mids=frozenset()):
+                 vamp_off_mids=frozenset(), exploration_floor: float = 0.0,
+                 wallet_incapable=frozenset(), usa_only=frozenset()):
         # ── 19fz [pbp-inside] ─────────────────────────────────────────────────────────────
         # WHY THIS EXISTS. [pbp-build] priced this constructor at 114.5s and said nothing about
         # WHERE. I then attributed ~80s of it to the prop-key build from reading the code, and
@@ -1762,6 +1763,79 @@ class PopulationBandProjector:
         # change bit-identical on data with no mid-month switch-off (test_19dt).
         self._pw = np.where(self._excl | self._emask, 0.0,
                             self._pkeep).astype(np.float64)
+        # ── 19he STEP 1 of the EXPLORATION FLOOR: carry the inputs, change nothing. ────────
+        # See docs/scope_exploration_floor_in_search.md. NOTHING reads `_efloor` or `_ef_ok`
+        # yet — this step exists so the mask can be MEASURED against delivery before any
+        # kernel uses it. The 19gw attempt skipped that and shipped a floor built on an
+        # assumption about which rows delivery floors; this is that assumption turned into a
+        # number first.
+        self._efloor = float(exploration_floor or 0.0)
+        # THE STATIC HALF of delivery's floor eligibility (impact_calcs.py `_elig_f`):
+        #   delivery : (base_share > 0 | prop_raw > 0) & (_keep > 0) & ~_emask_f & (prop_sum > 0)
+        #   static   :                                   (_keep > 0) & ~emask
+        # `_pw` is ALREADY exactly that conjunction — `where(excl | emask, 0, keep)` — so this
+        # is derived from the object the kernels apply rather than a private re-implementation
+        # of the same rule. That is deliberate: a second copy of an eligibility test is how the
+        # vcpos gate and delivery's denominator drifted apart in the first place (19cu).
+        # The two candidate-dependent clauses (`prop_raw > 0`, `prop_sum > 0`) and the
+        # BASELINE-presence clause (`base_share > 0`, i.e. `self._base`) are supplied by the
+        # kernel, which is the only place they exist per candidate.
+        self._ef_ok = (self._pw > 0.0).astype(np.float64)
+        # ── THE ONE MEASUREMENT THIS STEP EXISTS FOR ──────────────────────────────────────
+        # The search's `emask` is built at (vampMid, CURRENCY) grain (see tab_2's [emask] line:
+        # "Replaces the vampMid-only test, which over-blocked sibling fids of a vampMid whose
+        # capability varies by currency (e.g. PaySafe - Total AV: wallet-capable in USD, not in
+        # EUR/GBP)"). Delivery's floor block rebuilds its OWN mask at vampMid-ONLY grain. So the
+        # two eligibility sets are NOT the same object, and the rows where they differ are
+        # exactly the currency-varying-capability rows the search deliberately stopped
+        # over-blocking. Rebuild delivery's coarser version here and COUNT the disagreement, so
+        # the choice between them is made on a number rather than on which file was read last.
+        self._ef_delivery_like = None
+        self._ef_mismatch = None
+        try:
+            _wc_f = {str(x).strip().lower() for x in (wallet_incapable or ())}
+            _uo_f = {str(x).strip().lower() for x in (usa_only or ())}
+            if _wc_f or _uo_f:
+                _mlf = R["midl"].astype(str).str.strip().str.lower()
+                _em_dl = ((R["pmp"].isin(["googlepay", "applepay"]) & _mlf.isin(_wc_f))
+                          | ((~R["ctry"].isin(["usa", "us", "_all_", ""])) & _mlf.isin(_uo_f))
+                          ).to_numpy(bool)
+                # Delivery's `_keep > 0` is `_pkeep`; its `~_emask_f` is `~_em_dl`. `excl` has no
+                # delivery analogue INSIDE the floor block, so it is left out of this comparison
+                # and the two masks are compared on the clause that actually differs.
+                _ef_dl = ((self._pkeep > 0.0) & (~_em_dl) & (~self._excl)).astype(np.float64)
+                self._ef_delivery_like = _ef_dl
+                _mm = int(np.count_nonzero(_ef_dl != self._ef_ok))
+                self._ef_mismatch = _mm
+                if self._efloor > 0.0:
+                    _bnote(
+                        f"[ef-mask] exploration floor {self._efloor:.2%} carried into the "
+                        f"projector (STEP 1: stored, not applied). Floor-eligible rows: "
+                        f"{int(self._ef_ok.sum()):,} of {len(self._ef_ok):,} by the SEARCH's "
+                        f"(vampMid, currency)-grain capability mask, "
+                        f"{int(_ef_dl.sum()):,} by DELIVERY's coarser vampMid-only mask — "
+                        f"{_mm:,} row(s) differ."
+                        + (" ZERO disagreement, so the two eligibility sets are the same set on "
+                           "this data and the grain difference is harmless here."
+                           if _mm == 0 else
+                           " THOSE ROWS ARE THE OPEN QUESTION: the search's mask is the more "
+                           "precise one (a vampMid whose fids differ in wallet/USA capability by "
+                           "currency), but DELIVERY is the authoritative number, so a floor built "
+                           "on the search's mask will floor rows delivery's floor excludes and "
+                           "reconciliation error will carry the difference. Decide which mask the "
+                           "floor uses BEFORE step 2 wires it into the kernel."))
+            elif self._efloor > 0.0:
+                _bnote(f"[ef-mask] exploration floor {self._efloor:.2%} carried into the "
+                       f"projector (STEP 1: stored, not applied). Floor-eligible rows: "
+                       f"{int(self._ef_ok.sum()):,} of {len(self._ef_ok):,}. No wallet/USA sets "
+                       "were passed, so delivery's coarser mask could not be rebuilt and the "
+                       "grain comparison is UNCHECKED this run.")
+        except Exception as _efe:  # noqa: BLE001 — a measurement must never break the build
+            self._ef_delivery_like = None
+            self._ef_mismatch = None
+            _bnote(f"[ef-mask] floor-eligibility mask comparison skipped "
+                   f"({type(_efe).__name__}: {_efe}). `_ef_ok` is still built; only the "
+                   "delivery-grain cross-check is missing.")
         # 19db — `vcpos` is now the VAMP-ELIGIBILITY mask: may this row RECEIVE redistributed VAMP?
         #   ROUTING_VSHARE_ALLROWS=1 (default): every row may, EXCEPT MIDs whose VAMP is overridden
         #       to zero (gateway_volume_overrides `apply_to: "vamp"`). Delivery honours that
