@@ -1826,13 +1826,13 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             log(f"[fullmatrix-ga]    EXACT M5 BREACH: the seed itself {_dl_bd:.6g} \u2192 the "
                 f"decoded seed the GA actually starts from {seed_band:.6g} "
                 f"({_dl_gap:+.6g}). THIS IS THE HANDICAP THE SEARCH BEGINS WITH \u2014 compare it "
-                "with how much the whole search then gains, in the final vwsr/breach line.")
+                "with how much the whole search then gains, in the final success rate/breach line.")
             if _dl_gap > 0:
                 log("[fullmatrix-ga]    \u26a0 THE ENCODING MADE THE SEED WORSE BEFORE A SINGLE "
                     "GENERATION RAN. Whatever the search gains has to cover this first. This is "
                     "why [never-worse] can ship the SEED after a full search: the seed it "
                     "re-scores at the end is the TRUE one, not the decoded copy the GA optimised.")
-        log(f"[fullmatrix-ga]    vwsr: seed {_dl_vw:.6f} \u2192 decoded {seed_vwsr:.6f} "
+        log(f"[fullmatrix-ga]    success rate: seed {_dl_vw:.6f} \u2192 decoded {seed_vwsr:.6f} "
             f"({seed_vwsr - _dl_vw:+.6f}).")
         # WHERE THE INVENTED SHARE WENT. This one IS measurable here, and it identifies the
         # mechanism exactly: if the per-row figure comes out at the clip floor, every resurrected
@@ -2100,7 +2100,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
            "perturbed (was one per row, ~99% discarded at a 1% cell rate: 8.6M draws per "
            "generation), and each child has its own deterministic stream keyed on "
            "(seed, seed-index, restart, generation, child). THIS IS A DIFFERENT RANDOM SAMPLE "
-           "than any run before 19bp, so vwsr and the breach will differ — that is the change, "
+           "than any run before 19bp, so success rate and the breach will differ — that is the change, "
            "not a fault. ROUTING_MUT_FAST=0 restores the old stream exactly."
            if _MUT_FAST else
            "LEGACY (ROUTING_MUT_FAST=0) — one shared generator, one Gaussian per row per child, "
@@ -2218,7 +2218,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     # already convey the score/feasibility, so it isn't printed.
                     log(f"[fullmatrix-ga] progress: ~{evaluated:,} splits · gen {gen} "
                         f"(seed {_s + 1}/{n_seeds} restart {_r + 1}/{restarts}) · "
-                        f"best vwsr {best_vwsr:.5f} · viol {best_band + best_other:,.4f}"
+                        f"best success rate {best_vwsr:.5f} · viol {best_band + best_other:,.4f}"
                         f"{_mid_extra} · {'feasible' if best_band <= _FEAS_EPS else 'infeasible'} "
                         f"· {_rate:,.0f}/s")
                 _gg["beat"] += time.perf_counter() - _gg_b0
@@ -2406,13 +2406,13 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     f"start pop {_pn} \u2192 {_cen_init[0]} compliant (incl. the incumbent). "
                     f"{_cen_r['kids']:,} children \u2192 {_cen_r['feas']:,} compliant "
                     f"({100.0 * _cen_r['feas'] / max(_cen_r['kids'], 1):.1f}%), "
-                    f"{_cen_r['vbet']:,} beat the incumbent on vwsr, "
+                    f"{_cen_r['vbet']:,} beat the incumbent on success rate, "
                     f"{_cen_r['feas_vbet']:,} did BOTH, {_cen_r['won']:,} would have won. "
                     + (f"gen 0 compliant {_cen_g0[0]} (mean breach {_cen_g0[1]:.3g}) \u2192 "
                        f"gen {gen} compliant {_cen_gl[0]} (mean breach {_cen_gl[1]:.3g}). "
                        if (_cen_g0 and _cen_gl) else "")
                     + f"smallest breach seen {_cb_min:.3g}; "
-                    + (f"best compliant child vwsr {_cb_bf:.6f} vs incumbent {best_vwsr:.6f} "
+                    + (f"best compliant child success rate {_cb_bf:.6f} vs incumbent {best_vwsr:.6f} "
                        f"(\u0394 {_cb_bf - best_vwsr:+.3g})."
                        if _cb_bf > float('-inf') else "NO child was ever compliant."))
 
@@ -2451,11 +2451,11 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     if _cen_on and _cen["kids"]:
         _K = _cen["kids"]
         log("")
-        log(f"[ga-census] {_K:,} children over the whole budget. Incumbent: vwsr "
+        log(f"[ga-census] {_K:,} children over the whole budget. Incumbent: success rate "
             f"{best_vwsr:.6f}, M5 band breach {best_band:.3g}, engineering violation "
             f"{best_other:.3g}.")
         log(f"[ga-census]    compliant (band \u2264 {_FEAS_EPS:g}): {_cen['feas']:,} "
-            f"({100.0 * _cen['feas'] / _K:.2f}%) \u00b7 beat the incumbent on vwsr: "
+            f"({100.0 * _cen['feas'] / _K:.2f}%) \u00b7 beat the incumbent on success rate: "
             f"{_cen['vbet']:,} ({100.0 * _cen['vbet'] / _K:.2f}%) \u00b7 BOTH: "
             f"{_cen['feas_vbet']:,} \u00b7 rejected by the engineering tie-break: "
             f"{_cen['blocked_other']:,} \u00b7 displaced the incumbent: {_cen['won']:,} "
@@ -2492,7 +2492,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         for _e in _CEN_CUTS:
             _r = _cen_eps[_e]
             log(f"[ga-census]       eps {_e:>7.0e}: {_r['n']:,} child(ren)"
-                + (f" \u00b7 best vwsr {_r['best']:.6f} vs {best_vwsr:.6f} "
+                + (f" \u00b7 best success rate {_r['best']:.6f} vs {best_vwsr:.6f} "
                    f"(\u0394 {_r['best'] - best_vwsr:+.3g})" if _r["n"] else " \u2014 nothing"))
         log("[ga-census]       (counted, NOT applied \u2014 this run ranked exactly as before.)")
         # ── 19ed C. WHAT IS THE VIOLATION MADE OF? ───────────────────────────────────────
@@ -2529,12 +2529,12 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         elif _cen["feas"] == 0:
             log(f"[ga-census]    VERDICT: NOT ONE of {_K:,} children was compliant "
                 f"(smallest breach {_cen['minband']:.3g}). The M5 breach is the STRICT "
-                f"primary key, so the ranking never reaches vwsr: {_cen['vbet']:,} child(ren) "
+                f"primary key, so the ranking never reaches success rate: {_cen['vbet']:,} child(ren) "
                 "DID convert better and every one was rejected for breaching.")
         elif _cen["blocked_other"] > 0:
             log(f"[ga-census]    VERDICT: {_cen['blocked_other']:,} compliant, "
                 "higher-converting child(ren) were rejected on the ENGINEERING violation, "
-                "which sits ABOVE vwsr in a STRICT lexicographic ranking with no tolerance "
+                "which sits ABOVE success rate in a STRICT lexicographic ranking with no tolerance "
                 "of its own. Read the three blocks above in order: if the sizes are dust the "
                 "ranking is discarding conversion for nothing; if they are real breaches the "
                 "rejections are correct in KIND and the question becomes whether a breach of "
@@ -2631,7 +2631,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             log(f"      == [eval-cost] inside the `eval` row ({_ev_tot:,.1f}s over "
                 f"{_ev['n']:,} call(s)), largest first ==")
             _ev_rows = [
-                ("eval_pop (fused numba: softmax + vwsr + engineering viol)", _ev["pop"]),
+                ("eval_pop (fused numba: softmax + success rate + engineering viol)", _ev["pop"]),
                 ("_deliver_full (blocked-caps -> eligibility -> cap, per candidate)",
                  _ev["deliver"]),
                 ("band projection + penalty (the EXACT M5 projector)", _ev["band"]),
@@ -2684,7 +2684,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     log(f"[fullmatrix-ga] evaluated {evaluated:,} candidate splits over "
         f"{len(history)} generations ({n_seeds} seed(s) × {restarts} restart(s), "
         f"pop {pop_size}) in {info['seconds']:.1f}s = {info['splits_per_s']:,.0f} splits/s")
-    log(f"[fullmatrix-ga] done vwsr={best_vwsr:.6f} M5-breach={best_band:.3e} "
+    log(f"[fullmatrix-ga] done success rate {best_vwsr:.6f} M5-breach={best_band:.3e} "
         f"eng-viol={best_other:.3e} feasible={info['feasible']} improved={info['improved_over_seed']}")
     return best_shares, info
 

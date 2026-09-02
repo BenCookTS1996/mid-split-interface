@@ -6508,7 +6508,7 @@ def render():
                                     "(build_split_exports applies no floor) — it is what happens to that "
                                     "template once it runs, which is why it belongs in the delivery "
                                     "transform and not in the decode. EXPECT A DIFFERENT SPLIT AND A "
-                                    "LOWER vwsr: the floor deliberately holds share on alternatives the "
+                                    "LOWER success rate: the floor deliberately holds share on alternatives the "
                                     "GA would abandon, and the GA can now see that abandoning them does "
                                     "not actually remove their VAMP. Watch for bands that were met and no "
                                     "longer are — a MID the GA drove to 0 now keeps a floor's worth. "
@@ -8373,7 +8373,7 @@ def render():
                                                     f"({_zc_dead.sum() / max(int(_zc_free.sum()), 1):.1%} of the cells "
                                                     "that actually have a choice) have no volume AND no VAMP anywhere "
                                                     "in them. A uniformly-chosen mutation lands on one with that "
-                                                    "probability and cannot change vwsr or any band. Excluding them "
+                                                    "probability and cannot change success rate or any band. Excluding them "
                                                     "from the mutation pool would be ANSWER-IDENTICAL (their "
                                                     "contribution is the same constant for every candidate) and "
                                                     "budget-NEUTRAL — it concentrates the same effort rather than "
@@ -10617,14 +10617,14 @@ def render():
                                         if _kg_rows and _kg_base is not None:
                                             _bK, _bT, _bB, _bV, _bS = _kg_base
                                             log(f"      {'variant':<24}{'search s':>10}"
-                                                f"{'(wrap)':>8}{'M5 breach':>12}{'vwsr':>10}"
+                                                f"{'(wrap)':>8}{'M5 breach':>12}{'success rate':>14}"
                                                 f"{'Σ|Δshare|':>12}{'max|Δshare|':>13}")
                                             for _k, _t, _b, _v, _sv in _kg_rows:
                                                 _d1 = float(np.abs(_sv - _bS).sum())
                                                 _dm = float(np.abs(_sv - _bS).max())
                                                 log(f"      {_k + ' vs A':<24}{_t:>10.1f}"
                                                     f"{_bT / max(_t, 1e-12):>7.3f}x"
-                                                    f"{_b:>12.6g}{_v:>10.5f}"
+                                                    f"{_b:>12.6g}{_v:>14.5f}"
                                                     f"{_d1:>12.4g}{_dm:>13.4g}")
                                             log("      IGNORE THE (wrap) COLUMN. Every variant "
                                                 "here runs through a PYTHON wrapper on the "
@@ -10835,7 +10835,7 @@ def render():
                                 log(f"   [full-matrix] evaluated {_fm_info['splits_evaluated']:,} "
                                     f"candidate splits over {_fm_info['generations_run']} "
                                     f"generations (pop {_fm_info['pop_size']}); "
-                                    f"vwsr={_fm_info['vwsr']:.5f} "
+                                    f"success rate {_fm_info['vwsr']:.5f} "
                                     f"viol={_fm_info['violation']:,.4f} "
                                     f"feasible={_fm_info['feasible']} "
                                     f"improved_over_compliant_seed={_fm_info['improved_over_seed']}")
@@ -10846,7 +10846,7 @@ def render():
                                 log("   ④ EFFICIENCY (full-matrix GA — the delivered search):")
                                 log(f"      settings   : {_fm_nseeds} seed(s) × {_fm_restarts} restart(s) × "
                                     f"{_fm_gens} gens × pop {_fm_pop} · restart-mode={_fm_rmode}")
-                                log(f"      result     : vwsr {_fm_info.get('vwsr', float('nan')):.5f} · "
+                                log(f"      result     : success rate {_fm_info.get('vwsr', float('nan')):.5f} · "
                                     f"viol {_fm_info.get('violation', float('nan')):,.4f} · "
                                     f"feasible={_fm_info.get('feasible')}")
                                 if _fm_cnt > 0 and _fm_secs > 0:
