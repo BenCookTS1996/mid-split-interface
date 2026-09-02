@@ -4009,17 +4009,24 @@ def render():
                                 f"{_rc_cb:,} already had a banded MID with baseline history there, "
                                 f"{_rc_cn - _rc_cb:,} exist only because a candidate door was "
                                 "injected into them.")
-                            log("      WHAT EACH STEP IS. 2 sums duplicate rows that share the "
-                                "full key — the export can carry more than one row per key. 3 is "
-                                "the big one: the scaffold only needs cells a BANDED MID can be "
-                                "routed into, and everything else is held at baseline, so its "
-                                "contribution is a constant the projector never recomputes. 4 "
-                                "keeps only the origin-month (t == 0) rows, because the scaffold "
-                                "re-derives the aged cohorts from t0 rather than storing them. 5 "
-                                "ADDS rows the export does not have at all: a zero-volume row for "
-                                "every sub-cell a banded MID is a candidate door in, so routed "
-                                "volume has somewhere to land instead of renormalising onto the "
-                                "MIDs that happen to have history there.")
+                            # 19hg: the "WHAT EACH STEP IS" paragraph is now one row per step.
+                            # KEPT rather than deleted: steps 3 and 4 drop 73% of the file
+                            # between them, and without a reason beside each number the table
+                            # reads like data loss. It is the justification for the two biggest
+                            # deltas, which is exactly what a reconciliation table needs.
+                            log("")
+                            log(f"      {'step':<6}{'why it moves':<80}")
+                            log(f"      {'-' * 6}{'-' * 80}")
+                            for _sn, _sw in (
+                                    ("2", "the export can carry more than one row per key; "
+                                          "duplicates are summed"),
+                                    ("3", "the scaffold only needs profiles a BANDED MID can be "
+                                          "routed into — the rest is a constant"),
+                                    ("4", "only origin-month (t == 0) rows are stored; aged "
+                                          "cohorts are re-derived from them"),
+                                    ("5", "adds a zero-volume row for every profile a banded MID "
+                                          "is a candidate door in")):
+                                log(f"      {_sn:<6}{_sw:<80}")
                         except Exception as _rcE:  # noqa: BLE001
                             log(f"   [scaffold-recon] skipped ({type(_rcE).__name__}: {_rcE}) — "
                                 "MEASUREMENT ONLY, the run is unaffected.")
@@ -4280,7 +4287,7 @@ def render():
                                 # rather than folded into the header as a parenthesis.
                                 log("")
                                 log(f"   [cap-timing] building the per-MID cap scaffold took "
-                                    f"{_cap_tot:.1f}s — where those seconds went, slowest first.")
+                                    f"{_cap_tot:.1f}s")
                                 log(f"      {'step':<64}{'seconds':>10}{'share':>9}")
                                 log(f"      {'-' * 64}{'-' * 10}{'-' * 9}")
                                 for _l, _v in sorted(_cap_tm["rows"], key=lambda kv: -kv[1]):
@@ -4289,10 +4296,6 @@ def render():
                                             f"{100.0 * _v / max(_cap_tot, 1e-9):>8.1f}%")
                                 log(f"      {'-' * 64}{'-' * 10}{'-' * 9}")
                                 log(f"      {'TOTAL':<64}{_cap_tot:>9.1f}s{100.0:>8.1f}%")
-                                log("      These SUM to the gap between the scaffold line above "
-                                    "and the caps line below, so there is no unexplained "
-                                    "remainder — the list is which step to attack, not a share "
-                                    "of something larger.")
                         except Exception as _cte:  # noqa: BLE001
                             log(f"   [cap-timing] unavailable ({type(_cte).__name__}) — "
                                 "measurement only.")

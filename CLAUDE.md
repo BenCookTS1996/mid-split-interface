@@ -10,6 +10,37 @@ decides **what share of each group of payments to send through each door**.
 
 ---
 
+## ⚠ VOCABULARY — PROFILE vs CELL (read this before any log line)
+
+**This is the project's terminology. Where the CODE disagrees, the code is wrong, not this.**
+
+| term | means | key | parts |
+|---|---|---|---|
+| **PROFILE** | a group of payments that get routed together — one currency, one BIN, one RPGT, one payment-method, one country. **No gateway.** | `cur\|bin\|rpgt\|pmp\|ctry` | 5 |
+| **CELL** | one **door within** a profile — a profile plus the gateway/MID serving it. This is the thing a share is attached to. | `cur\|bin\|rpgt\|pmp\|ctry\|mid` | 6 |
+
+So: **a profile contains many cells** — roughly 10 on the live scaffold (14,852 profiles,
+154,405 cells). A split assigns a share to every cell; the shares of the cells inside one
+profile sum to 1.
+
+### The code currently has these INVERTED
+
+Identifiers and many log strings use `cell` for the 5-part group and `prop-key` / `profile` for
+the 6-part row — the opposite of the table above. That inversion is why the run log reads
+confusingly, and it is being corrected outward-in:
+
+* **run-log prose** — being migrated to the table above (19hg onward)
+* **comments** — follow the prose
+* **identifiers** (`gcode`, `cell_start`, `n_cells`, `CellProblem`, `by_subcell`, …) — NOT yet
+  renamed: ~3,000 occurrences across `app/` and `src/`, including numba kernel parameters and
+  dataclass fields. A half-finished identifier rename is worse than none, so it is a dedicated
+  mechanical pass, not something to do opportunistically.
+
+**When reading code, translate:** an identifier saying `cell` almost always means this
+document's PROFILE; a `prop_key` / `propidx` almost always means this document's CELL.
+
+---
+
 ## How the app is laid out (post-refactor)
 
 The Streamlit UI used to be one ~10,000-line file. It's now split so each tab is its own file
