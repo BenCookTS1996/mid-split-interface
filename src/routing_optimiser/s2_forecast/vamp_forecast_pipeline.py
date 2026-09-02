@@ -25,7 +25,7 @@ from __future__ import annotations
 # module had NONE — so it printed "(no __build__)" on every run and a stale in-memory copy of it was
 # undetectable. That is the failure mode that wasted the 2026-08-22 16:13 run on band_projection.
 __build__ = ("2026-08-19bn-baseline-recon-wrong-frame"
-             "+2026-08-19au-baseline-recon-missing-column")
+             "+2026-08-19au-baseline-recon-missing-column+2026-09-02-19gz-baseline-row-counts-and-excel-note")
 
 
 import logging
@@ -573,9 +573,20 @@ def load_pre_forecast(path: str) -> pd.DataFrame:
                 # whose entire purpose is "never silently baseline off a mismatched file" doing
                 # nothing at all, for the second time (19au fixed a different bug in the same
                 # guard). Give it the INTERMEDIATE. Read-only: the guard only logs.
-                _pre_mid = _prorata_to_pre(pd.read_csv(fpath))
+                _raw_pre = pd.read_csv(fpath)
+                _pre_mid = _prorata_to_pre(_raw_pre)
                 out = _normalise_pre(_pre_mid)
-                logger.info(f"      - baseline from {fname}: {len(out):,} cell-rows")
+                # 19gz: SAY BOTH NUMBERS, and say why they differ. This line printed only the
+                # COLLAPSED count and was read as the file's row count — which sent at least one
+                # investigation to open the CSV in Excel, where it looked like 1,048,576 rows.
+                # That figure is Excel's hard limit (2^20); it silently truncates anything
+                # larger, so the file as seen in Excel is NOT the file.
+                logger.info(
+                    "      - baseline from %s: %s row(s) in the file → %s routing cell-row(s) "
+                    "after collapsing to (bank · currency · gateway). NOTE if you open this CSV "
+                    "in Excel it will show at most 1,048,576 rows — Excel's hard limit (2^20) — "
+                    "and truncates the rest without warning.",
+                    fname, f"{len(_raw_pre):,}", f"{len(out):,}")
                 if len(out):
                     if fname == "vamp_t_period_prorata_export.csv":
                         _reconcile_pre_against_bin_rpgt(_pre_mid, path)

@@ -1714,18 +1714,14 @@ def render():
                                         s=(_ps, "sum"), a=(_pa, "sum"))
                                     ss["processor_benchmark"] = {k: float(r["s"]) / float(r["a"])
                                                                  for k, r in _pg.iterrows() if float(r["a"]) > 0}
-                                    # 19gy: DEMOTED to _diag. This line reports a FALLBACK PRIOR
-                                    # that is only consulted for a gateway with no same-brand
-                                    # sibling that has data — on this book that is 0 of 68,283
-                                    # seeded cells, so it described a mechanism that did not
-                                    # fire. It stays in the diagnostics block (where a
-                                    # non-zero use would still be visible) rather than in the
-                                    # run's headline flow.
-                                    _diag(f"   cross-brand processor benchmark loaded: "
-                                          f"{len(ss['processor_benchmark'])} (processor, currency) "
-                                          f"rate(s) ({_pb_src}) — a fallback prior, used only for "
-                                          "a gateway whose processor has no same-brand sibling "
-                                          "with data.")
+                                    # 19gz: kept where it is, renamed to say what it IS. "processor
+                                    # benchmark ... untested-MID layer-2 prior" named its position
+                                    # in a fallback chain rather than the thing itself.
+                                    log(f"   cross-brand fallback success rate: "
+                                        f"{len(ss['processor_benchmark'])} (processor, currency) "
+                                        f"rate(s) loaded ({_pb_src}) — pooled across ALL brands, "
+                                        "and used ONLY for a gateway whose processor has no "
+                                        "same-brand sibling with any attempt data.")
                         except Exception as _e:  # noqa: BLE001
                             log(f"   [Note] cross-brand processor benchmark unavailable ({_e}); untested MIDs "
                                 "use same-brand sibling / cell average.")
@@ -1809,11 +1805,14 @@ def render():
                                 f"{len(_fc_bins):,} distinct). Fix the key before reading any "
                                 "result below — every per-cell rate is a pooled prior.")
                         else:
-                            log(f"   [bin-key] join key `bin` — {_bk_hit:,} of {len(_fc_bins):,} "
-                                f"forecast BIN(s) ({_bk_pct:.1f}%) present on the attempts frame "
-                                f"({len(_ad_bins):,} distinct there). A LOW number here is the "
-                                f"cause of a high pooled-prior rate later, and it is NOT "
-                                f"'expected at BIN grain'.")
+                            # 19gz: say what it MEANS, not what it joins on.
+                            log(f"   [bin-key] {_bk_hit:,} of {len(_fc_bins):,} BIN(s) in the "
+                                f"forecast data found in the attempts data ({_bk_pct:.1f}%; "
+                                f"{len(_ad_bins):,} distinct BINs there). Unmatched BINs have no "
+                                "attempt history of their own, so their gateways are scored on a "
+                                "POOLED AVERAGE instead of a measured success rate — a low "
+                                "percentage here is the cause of a high pooled-prior rate later, "
+                                "and it is NOT 'expected at BIN grain'.")
 
                     mid_list_path = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                     if os.path.exists(mid_list_path) and "gateway" in forecast_temp.columns:
@@ -1922,7 +1921,39 @@ def render():
                                 _drop = _gg.isin(_excl)
                                 _nd = int(_drop.sum())
                                 adf = adf[~_drop].reset_index(drop=True)
-                                log(f"   volume-override filter: dropped {_nd:,} rows for {len(_excl)} switched-off gateways (target=0, trx/both)")
+                                # 19gz: NOT redundant with the tab-2 MID constraints, and not
+                                # deletable. Those constrain a MID's M5 VAMP / txn; this drops
+                                # the ATTEMPT HISTORY of a gateway whose volume override sets it
+                                # to 0, so the engine never learns a success rate for a door that
+                                # will receive no traffic. The overrides are read at 14 sites in
+                                # this file alone (_excluded_mids, [keep-gate], [vamp-off],
+                                # build_vamp_off_mids) — removing them would change the delivered
+                                # split, not just this line.
+                                #
+                                # WHAT THIS LINE NOW ANSWERS. "15 switched off, 0 rows dropped"
+                                # has two very different causes and the old wording could not
+                                # tell them apart: either those gateways genuinely have no
+                                # attempts in the window, or the canonical-gateway names do not
+                                # match and the filter is silently doing nothing. That second
+                                # case is the same class of naming mismatch that hid the
+                                # auto-block miss for weeks, so it is now checked, not assumed.
+                                _vo_seen = int(_gg.isin(_excl).sum())
+                                _vo_named = sorted(_excl & set(_gg.unique()))
+                                log(f"   switched-off gateways: {len(_excl)} set to target 0 in "
+                                    f"the volume overrides; {_nd:,} attempt row(s) dropped so the "
+                                    "engine cannot learn a success rate for a door that receives "
+                                    "no traffic."
+                                    + ("" if _nd else
+                                       (f" ZERO dropped because none of the {len(_excl)} appears "
+                                        "in this window's attempts at all — the names DID match "
+                                        f"({len(_vo_named)} found in the frame), there is simply "
+                                        "nothing to drop."
+                                        if _vo_named else
+                                        f" ⚠ ZERO dropped AND none of the {len(_excl)} "
+                                        "switched-off gateway names appears in the attempts frame "
+                                        "under the canonical mapping. That is a NAME MISMATCH, "
+                                        "not an empty window: the filter is doing nothing and a "
+                                        "switched-off gateway may still be scored.")))
                     except Exception as e:
                         log(f"   [Warning] volume-override filter skipped: {e}")
 
@@ -1931,14 +1962,73 @@ def render():
                     # it fed the Bank×Currency score and nothing else.
                     if _do_rpgt_filter:
                         _n0, _f0 = len(adf), len(forecast_temp)
+                        # 19gz: the per-RPGT table below needs the frames BEFORE the filter, or
+                        # every out-of-scope RPGT reads zero and the table says nothing about the
+                        # decision it is there to justify.
+                        _adf_pre = adf
+                        _fc_pre = forecast_temp
                         if "rpgt" in adf.columns:
                             adf = adf[adf["rpgt"].astype(str).str.strip().str.lower().isin(_sel_rpgts)].copy()
                         if "rpgt" in forecast_temp.columns:
                             forecast_temp = forecast_temp[
                                 forecast_temp["rpgt"].astype(str).str.strip().str.lower().isin(_sel_rpgts)].copy()
-                        log(f"   RPGT scope: volume/eligibility/VAMP restricted to {len(_sel_rpgts)} RPGT(s) "
-                            f"({len(adf):,}/{_n0:,} attempts, {len(forecast_temp):,}/{_f0:,} forecast rows); "
-                            f"score per selected RPGT.")
+                        log(f"   RPGT SCOPE — volume, eligibility and VAMP are restricted to the "
+                            f"{len(_sel_rpgts)} selected RPGT(s); the rest are held at baseline. "
+                            f"Kept {len(adf):,} of {_n0:,} attempt row(s) and "
+                            f"{len(forecast_temp):,} of {_f0:,} forecast row(s).")
+                        # ── 19gz: THE PER-RPGT TABLE ──────────────────────────────────────
+                        # The line above gives two totals and no way to see WHICH RPGT carries
+                        # the volume — so "we scoped to 4 of 8" could not be judged as a
+                        # decision. Built from the PRE-FILTER frames (`_adf_pre` / `_fc_pre`,
+                        # captured just above) so every RPGT appears, in or out of scope.
+                        try:
+                            _rt_a = locals().get("_adf_pre")
+                            _fc_pre = locals().get("_fc_pre")
+                            _rows_rt = {}
+                            def _rt_put(_k, _i, _v):
+                                _k = str(_k).strip()
+                                _rows_rt.setdefault(_k, [0.0, 0, 0.0, 0])
+                                _rows_rt[_k][_i] += _v
+                            if _rt_a is not None and "rpgt" in _rt_a.columns:
+                                _ac = ("initialattempt" if "initialattempt" in _rt_a.columns
+                                       else None)
+                                for _k, _g in _rt_a.groupby(_rt_a["rpgt"].astype(str).str.strip()):
+                                    _rt_put(_k, 0, float(pd.to_numeric(_g[_ac], errors="coerce")
+                                                          .fillna(0).sum()) if _ac else float(len(_g)))
+                                    _rt_put(_k, 1, len(_g))
+                            if _fc_pre is not None and "rpgt" in _fc_pre.columns:
+                                _vc = next((_c for _c in ("volume", "Volume", "VI_Txn_Count")
+                                            if _c in _fc_pre.columns), None)
+                                for _k, _g in _fc_pre.groupby(_fc_pre["rpgt"].astype(str).str.strip()):
+                                    _rt_put(_k, 2, float(pd.to_numeric(_g[_vc], errors="coerce")
+                                                          .fillna(0).sum()) if _vc else 0.0)
+                                    _rt_put(_k, 3, len(_g))
+                            if _rows_rt:
+                                log(f"      {'RPGT':<22}{'in scope':<10}{'Σ attempts':>13}"
+                                    f"{'attempt rows':>14}{'forecast txn':>14}{'fc rows':>10}")
+                                log(f"      {'-' * 22}{'-' * 10}{'-' * 13}{'-' * 14}"
+                                    f"{'-' * 14}{'-' * 10}")
+                                _tot = [0.0, 0, 0.0, 0]
+                                for _k in sorted(_rows_rt, key=lambda _x: -_rows_rt[_x][2]):
+                                    _v = _rows_rt[_k]
+                                    for _i in range(4):
+                                        _tot[_i] += _v[_i]
+                                    log(f"      {_k[:21]:<22}"
+                                        f"{('YES' if _k.strip().lower() in _sel_rpgts else '-'):<10}"
+                                        f"{_v[0]:>13,.0f}{_v[1]:>14,}{_v[2]:>14,.0f}{_v[3]:>10,}")
+                                log(f"      {'-' * 22}{'-' * 10}{'-' * 13}{'-' * 14}"
+                                    f"{'-' * 14}{'-' * 10}")
+                                log(f"      {'TOTAL (all RPGTs)':<22}{'':<10}"
+                                    f"{_tot[0]:>13,.0f}{_tot[1]:>14,}{_tot[2]:>14,.0f}"
+                                    f"{_tot[3]:>10,}")
+                                log("      Rows marked '-' are HELD AT BASELINE: their volume is "
+                                    "not re-routed and their fraud is not counted as movable, but "
+                                    "it still lands in the M5 band totals. A large forecast-txn "
+                                    "figure on a '-' row is volume this run is choosing not to "
+                                    "optimise.")
+                        except Exception as _rte:  # noqa: BLE001
+                            log(f"      (per-RPGT breakdown unavailable: "
+                                f"{type(_rte).__name__}: {_rte})")
                         if getattr(adf, "empty", True) or getattr(forecast_temp, "empty", True):
                             raise ValueError(
                                 "RPGT scope removed all rows — the selected RPGTs in tab 2 don't "
