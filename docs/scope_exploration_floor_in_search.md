@@ -475,3 +475,64 @@ floor held fixed. That is two runs, not one, and it needs agreement before it is
 Tab 3 is the other route: its three `_c_prepost_granular` calls are on RAW frames, so
 `ROUTING_EMASK_PAIRS=1` bites there today with no floor involved. Opening tab 3 after an armed
 run tests the mask in isolation for free.
+
+---
+
+## 16. Both sides on the fine grain — the switch defaults ON (19ht)
+
+Ben's call: **both need to do the fine version.** Done, and it turned out to be a smaller change
+than §15 implied, because the delivered path was already there.
+
+### There are THREE grains, and only the coarsest was ever wrong
+
+| grain | who | since |
+|---|---|---|
+| **fid** | `build_split_exports` — its template columns ARE fids | 2026-08-17 |
+| **(vampMid, currency)** | the SEARCH, and `compute_vamp_prepost_granular` under the switch | 2026-08-17 / 19hh |
+| **vampMid name sets** | what `compute_vamp_prepost_granular` did by default | — |
+
+`enforced_prop_items` takes its shares **straight from `build_split_exports`**, so tab_2's
+reconcile path has been on the *finest* grain all along. That is the real reason the 16:19 run
+was byte-identical: not just that the mask had no consumer, but that the number it would have
+corrected was already correct.
+
+The coarse test survived in exactly two places, both of them closed on the reconcile path: the
+`prop_raw` zeroing (RAW frames only) and the exploration-floor eligibility set. Its live
+consumers are **tab 3's PRE/POST impact table** and **any floored run**.
+
+### Do the two fine grains agree? Measured, not assumed
+
+The pair grain ORs over a pair's ACTIVE fids; `build_split_exports` tests each fid on its own.
+They give the same answer only while a pair's active fids agree with each other. On the live
+`Master_MID_List` (2026-09-02):
+
+- **296** `(vampMid, currency)` groups
+- **111** of them hold more than one fid
+- **5** have fids that disagree on `processWallet`
+- **0** disagree among the **ACTIVE** fids
+
+All five are an active fid paired with its inactive `-test` sibling (`adyen-usd-tav-na` vs
+`adyen-usd-tav-na-test`, and the same for tdr / tab / tvn / tcl). So the two fine grains agree
+exactly today, and the whole disagreement was ever between the coarse test and the other two.
+
+### What shipped
+
+- `ROUTING_EMASK_PAIRS` **defaults ON**. `=0` restores the coarse test — the switch stays,
+  because this changes what tab 3 shows and what a floored run computes.
+- `impact_calcs.emask_pairs_on()` is now the **one reader** of it. tab_2's `[emask-grain]` line
+  calls that instead of doing its own `os.environ.get`, which is how a default flip would
+  otherwise have been reported wrongly in the log while behaving correctly in the code.
+- `app_common.capability_pairs` records `LAST_CAP_PAIR_SPLITS` — the pairs whose **active** fids
+  disagree — and tab_2 logs a ⚠ if it is ever non-empty. It is empty today. The thing that would
+  make it non-empty is a **MID-list edit**, which no code change would announce, and on that day
+  the search and the exports go back to masking different rows.
+- `_PROJ_CODE_VER` → `2026-09-02-19ht-pair-grain-DEFAULT-ON`. The switch was already hashed into
+  the cache key by 19hh, so a cached pairs-OFF projection cannot be served to a pairs-ON run
+  either way.
+
+### What to expect from the next run
+
+**Nothing, on the headline numbers.** The reconcile path was already fid-grain, so band values,
+success rate and reconciliation error should be unchanged from 15:22 — and if they *do* move,
+that is the finding, not the feature. The change is visible in **tab 3's PRE/POST table**, which
+is the free isolation test §15 was pointing at: it is now on the fine grain by default.

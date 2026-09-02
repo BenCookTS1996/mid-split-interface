@@ -314,6 +314,14 @@ def env_switch(name, default=None):
 # [FN-235b] 19hh
 _CAP_PAIRS_MEMO: dict = {}
 
+# 19ht: FACT, for the run log. The (vampMid, currency) pair grain is an OR over the ACTIVE fids
+# of a pair; `build_split_exports` masks per FID. The two agree exactly while every active fid of
+# a pair agrees with its siblings - 296 groups, 0 disagreements on the 2026-09-02 MID list - and
+# they diverge the moment one does not. This records the divergent pairs so the log can say so,
+# because it is a MID-LIST edit that would cause it, not a code change, and nothing else would
+# notice. Empty is the healthy state.
+LAST_CAP_PAIR_SPLITS: list = []
+
 
 def capability_pairs(mid_list_path, restrictions_path=None):
     """THE ONE SOURCE of (vampMid, currency)-grain wallet/USA capability.
@@ -363,6 +371,7 @@ def capability_pairs(mid_list_path, restrictions_path=None):
     if _key is not None and _key in _CAP_PAIRS_MEMO:
         return _CAP_PAIRS_MEMO[_key]
 
+    del LAST_CAP_PAIR_SPLITS[:]        # 19ht: recomputing, so the old record is void
     wc_pairs, uo_pairs, source = set(), set(), "none"
     try:
         from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg
@@ -396,6 +405,11 @@ def capability_pairs(mid_list_path, restrictions_path=None):
                     _use = _actv if _actv else _cap_w[_key2]
                     if _use and not any(_use):      # NO fid here can do wallets
                         wc_pairs.add(_key2)
+                    # 19ht: the ACTIVE fids of this pair DISAGREE, so an OR over them is not the
+                    # same answer as testing each fid on its own - the search (pairs) and
+                    # build_split_exports (fids) would be masking different rows. Record it.
+                    if len(set(_actv)) > 1:
+                        LAST_CAP_PAIR_SPLITS.append(_key2)
         if _rp:
             for _f in _lu(_rp):
                 _k = _vc_of.get(str(_cg(_f)).strip().lower())

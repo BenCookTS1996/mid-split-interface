@@ -1445,6 +1445,16 @@ def _max_share_waterfill(shares, t0, grp, cap, live):
     return _sh
 
 
+def emask_pairs_on():
+    """Is the wallet/USA capability mask on the FINE (vampMid, currency) grain? Default YES.
+
+    19ht. Read per call rather than at import, so `routing.env` picked up by run.command AT
+    LAUNCH is honoured and a mid-session export still works. THE one reader - tab_2's
+    [emask-grain] line calls this instead of reading the environment itself.
+    """
+    return os.environ.get("ROUTING_EMASK_PAIRS", "1") != "0"
+
+
 def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset(),
                                   kill_eff=(), month_0=None, scoped_rpgts=(),
                                   wallet_incapable=frozenset(), usa_only=frozenset(),
@@ -1618,11 +1628,27 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # left on the coarse test, which is the asymmetry §14 of
     # docs/scope_exploration_floor_in_search.md is about.
     #
-    # ROUTING_EMASK_PAIRS=1 switches it to the pair grain the search already uses. DEFAULT OFF,
-    # because it CHANGES THE DELIVERED NUMBER: rows a vampMid can actually serve stop being
-    # zeroed, so the renormalised split moves. With it off, or with no pairs supplied, this is
-    # byte-for-byte the pre-19hh name-set test.
-    _EMASK_PAIRS = os.environ.get("ROUTING_EMASK_PAIRS", "0") != "0"
+    # 19ht: DEFAULT ON. Ben's call - both sides do the fine version. There are THREE grains in
+    # this codebase, not two, and only the coarsest is wrong:
+    #
+    #   fid                    build_split_exports, since 2026-08-17. Its template columns ARE
+    #                          fids, so it is exact by construction.
+    #   (vampMid, currency)    the SEARCH, since 2026-08-17, and this function under the switch.
+    #                          A pair is incapable only when every ACTIVE fid for it is.
+    #   vampMid name sets      what this function used to do. OVER-BLOCKS: PaySafe - Total AV is
+    #                          wallet-capable on paysafe-usd-tav but not on paysafe-eur-tav, so
+    #                          the name-set test barred PaySafe from wallet profiles in USD too.
+    #
+    # MEASURED on the live Master_MID_List (2026-09-02): 296 (vampMid, currency) groups, 111 with
+    # more than one fid, and **0** where the ACTIVE fids disagree on wallet capability. So the
+    # pair grain and the fid grain give the SAME answer today - the two fine grains agree, and it
+    # is only the coarse one that ever differed. Five groups disagree among ALL fids, every one of
+    # them an inactive `-test` sibling; app_common.capability_pairs now flags it if an active fid
+    # ever joins them, because that is the day pairs and fids stop agreeing.
+    #
+    # ROUTING_EMASK_PAIRS=0 restores the coarse test. Keep the switch: this is a change to what
+    # tab 3's PRE/POST table shows and to any floored run, so there has to be a way back.
+    _EMASK_PAIRS = emask_pairs_on()
     _wc_p = {(str(a).strip().lower(), str(b).strip().lower())
              for a, b in (wallet_incapable_pairs or ())}
     _uo_p = {(str(a).strip().lower(), str(b).strip().lower())
@@ -2518,7 +2544,7 @@ def _c_vamp_post_prorata(pp_path, m, prop_items, excluded_mids, kill_eff=(), mon
 
 
 # [FN-266b]
-_PROJ_CODE_VER = "2026-09-02-19hh-one-emask-builder+pair-grain"  # bump on ANY projection-logic
+_PROJ_CODE_VER = "2026-09-02-19ht-pair-grain-DEFAULT-ON"  # bump on ANY projection-logic
 # change so the in-memory st.cache_data entries bust on the next rerun (the data signature alone
 # can't see code edits: a re-used outputs folder + unchanged split => identical key => stale result).
 

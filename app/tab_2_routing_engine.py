@@ -3925,27 +3925,41 @@ def render():
                         # been on the pair grain since 2026-08-17; delivery follows only when
                         # ROUTING_EMASK_PAIRS is armed, so the two can be deliberately mismatched
                         # and this line is the only thing that would say so.
-                        _emp_on = os.environ.get("ROUTING_EMASK_PAIRS", "0") != "0"
+                        # 19ht: read the switch from the ONE place that acts on it. Two
+                        # independent os.environ reads of one switch is how the default flip
+                        # would have been reported wrongly here while behaving correctly there.
+                        from impact_calcs import emask_pairs_on as _emp_read
+                        from app_common import LAST_CAP_PAIR_SPLITS as _cap_splits
+                        _emp_on = _emp_read()
                         log("   [emask-grain] the SEARCH masks wallet/USA capability at "
                             f"(vampMid, currency) grain ({len(_wc_pairs):,} wallet-incapable "
                             f"pair(s), {len(_uo_pairs):,} USA-only pair(s), from {_pair_src}). "
-                            + ("DELIVERY now masks at the SAME grain (ROUTING_EMASK_PAIRS=1) — "
-                               "the two agree. This CHANGES THE DELIVERED NUMBER against an "
-                               "unarmed run: a vampMid is no longer barred from a wallet or "
-                               "Non-USA profile in a currency where one of its fids can serve "
-                               "it, so the renormalised split moves. ROUTING_EMASK_PAIRS=0 "
-                               "reverts."
+                            + ("DELIVERY masks at the same grain (19ht: the default). "
+                               "build_split_exports is FINER STILL and always was — its template "
+                               "columns are fids — so all three consumers now agree. "
+                               "ROUTING_EMASK_PAIRS=0 restores the coarse vampMid-only test."
                                if _emp_on else
-                               "DELIVERY masks at the coarser vampMid-ONLY grain, which "
-                               "OVER-BLOCKS any vampMid whose fids differ in capability by "
-                               "currency (PaySafe - Total AV is wallet-capable on "
-                               "paysafe-usd-tav but not on paysafe-eur-tav). The two sides are "
-                               "therefore modelling different eligibility sets, and the "
-                               "difference lands in RECONCILIATION ERROR. "
-                               "ROUTING_EMASK_PAIRS=1 brings delivery onto the search's grain. "
-                               "NOTE build_split_exports is unaffected either way — its "
-                               "template columns are fids, so it has been exact since "
-                               "2026-08-17."))
+                               "DELIVERY is on the COARSE vampMid-only test because "
+                               "ROUTING_EMASK_PAIRS=0 is set. It OVER-BLOCKS any vampMid whose "
+                               "fids differ in capability by currency (PaySafe - Total AV is "
+                               "wallet-capable on paysafe-usd-tav but not on paysafe-eur-tav), "
+                               "so the two sides model different eligibility sets and the "
+                               "difference lands in RECONCILIATION ERROR. Unset it to agree."))
+                        # 19ht: the pair grain is an OR over a pair's ACTIVE fids;
+                        # build_split_exports tests each fid. They agree only while a pair's
+                        # active fids agree with each other. 0 of 296 do not, on the MID list this
+                        # was written against — so this is silent until a MID-LIST edit makes it
+                        # false, which no code change would announce.
+                        if _cap_splits:
+                            log(f"   [emask-grain] ⚠ {len(_cap_splits):,} (vampMid, currency) "
+                                "pair(s) have ACTIVE fids that DISAGREE on wallet capability: "
+                                + ", ".join(f"{_a}/{_b}" for _a, _b in _cap_splits[:6])
+                                + (" …" if len(_cap_splits) > 6 else "")
+                                + ". The pair grain ORs them, build_split_exports tests each fid, "
+                                "so the SEARCH and the EXPORTS are now masking different rows and "
+                                "the gap lands in RECONCILIATION ERROR. This is a Master_MID_List "
+                                "state, not a code change — the fix is in the MID list, or the "
+                                "search has to go fid-grain too.")
                         if _wc_pairs or _uo_pairs:
                             _mc_pair = list(zip(_T0["_midl"].tolist(), _T0["_cur"].tolist()))
                             _wc_hit = np.array([_p in _wc_pairs for _p in _mc_pair], dtype=bool)
