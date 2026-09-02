@@ -85,7 +85,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -755,6 +755,31 @@ _DECODE_CAP = True
 # The 20 remaining keys are all on ONE bin (cad|485097) and are the blocked-row / water-fill
 # non-idempotence [deliv-fixed] measures at 12 rows - see §12 of the scope, not this switch.
 _DECODE_DELIV = True
+
+# ── 19id: STEP 2b of docs/scope_decode_side_delivery.md §11. DEFAULT OFF. ───────────────────────
+# THE OBJECTIVE AND THE CONSTRAINTS ARE MEASURED ON DIFFERENT SPLITS.
+#
+#   v, x  = eval_pop(logits)          <- SUCCESS RATE + engineering violation, from the kernel's
+#                                        OWN internal softmax. It applies the max-share cap (19gu
+#                                        put the cap in every decode path) but NOT `block` and
+#                                        NOT `elig`.
+#   _band = band_penalty_fn(_fd)      <- CONSTRAINTS, on block -> elig -> cap.
+#
+# So the GA maximises the success rate of a split it does not ship, subject to bands measured on
+# the split it does. Eligibility zeroes rows and renormalises onto the survivors, so the delivered
+# split's success rate is a DIFFERENT number - and generally a LOWER one, because eligibility
+# removes exactly the gateways an unconstrained objective would load up.
+#
+# THIS MOVES THE HEADLINE. 0.615322 has been the same figure for nine runs and it will change.
+# That is the number becoming the one that describes what ships, not a regression - but it means
+# an armed run's success rate IS NOT COMPARABLE with any earlier run, and it must not share a run
+# with ROUTING_PROJ_SFLOOR or neither is measurable.
+#
+# `_deliver_kept(sh, _deliver_full(sh))` is the kept-grain delivered array - the same pair of
+# calls the band path already makes, so the delivered array is computed ONCE and both halves read
+# it. The extra cost is one gather per evaluation, against eval_pop's 2.4% of eval.
+_DECODE_OBJ = os.environ.get("ROUTING_DECODE_OBJ", "0") != "0"
+_OBJ_FACT = {"armed": bool(_DECODE_OBJ), "applied": False, "said": False}
 _DC_EPS = 1e-12
 _DC_BACKOFF = 1.0 - 1e-9        # target back-off: the engineering key needs an exact 0.0
 
@@ -1713,6 +1738,15 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _need_band = band_penalty_fn is not None
         _need_comp = _compress_on and _cb["cent"] is not None
         if not (_need_band or _need_comp):
+            # 19id: no delivered array is built on this path, so the objective CANNOT be moved
+            # onto it here. Say so once rather than letting an armed run quietly score half its
+            # calls on one basis and half on the other.
+            if _DECODE_OBJ and not _OBJ_FACT["said"]:
+                _OBJ_FACT["said"] = True
+                log("[decode-obj] \u26a0 ROUTING_DECODE_OBJ=1 IS NOT IN EFFECT on this call path: "
+                    "no band penalty and no compression are wired, so no delivered array is built "
+                    "and the success rate is the kernel's own - measured on the UNDELIVERED "
+                    "split. Nothing here is a measurement of the switch.")
             return v, x, _band
         _t = time.perf_counter()
         _sh = _segment_softmax(logits, p.profile_start, p.profile_len, p.max_share)
@@ -1720,13 +1754,40 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _t = time.perf_counter()
         _fd = _deliver_full(_sh)                                  # shared delivery — computed ONCE
         _ev["deliver"] += time.perf_counter() - _t
+        # ── 19id: THE OBJECTIVE, ON THE SPLIT THAT SHIPS. Both halves of the fitness now read the
+        # SAME array the bands do. `x` moves with `v` on purpose: they come out of one kernel call
+        # today, and leaving the violation on the undelivered split would make the two halves
+        # describe different splits - which is the defect this closes, not a smaller version of it.
+        _sd = None
+        if _DECODE_OBJ and _have_full:
+            _sd = np.asarray(_deliver_kept(_sh, _fd), float)
+            v = _success_rate(_sd, p.vol, p.succ, total_vol)
+            x = _violation(_sd, p)
+            if not _OBJ_FACT["said"]:
+                _OBJ_FACT["said"] = True
+                _OBJ_FACT["applied"] = True
+                log("[decode-obj] the SUCCESS RATE and the engineering violation are now measured "
+                    "on the DELIVERED split (ROUTING_DECODE_OBJ=1), the same array the bands are "
+                    "measured on. Before this the objective came from eval_pop's own softmax, "
+                    "which applies the max-share cap but NOT blocked-caps and NOT eligibility - so "
+                    "the GA maximised the success rate of a split it does not ship. THE SUCCESS "
+                    "RATE THIS RUN IS NOT COMPARABLE WITH ANY EARLIER RUN: it is a different "
+                    "quantity, and it will read LOWER because eligibility removes exactly the "
+                    "gateways an unconstrained objective loads up. ROUTING_DECODE_OBJ=0 reverts.")
+        elif _DECODE_OBJ and not _OBJ_FACT["said"]:
+            _OBJ_FACT["said"] = True
+            log("[decode-obj] \u26a0 ROUTING_DECODE_OBJ=1 WAS REQUESTED AND IS NOT IN EFFECT: no "
+                "deduped delivery hook (deliver_full_fn / gather_fn), so there is no delivered "
+                "array to score on. The objective is still the kernel's, on the undelivered "
+                "split. This run is NOT a measurement of the switch.")
         if _need_band:
             _t = time.perf_counter()
             _band = np.asarray(band_penalty_fn(_fd if _have_full else _sh), dtype=float)
             _ev["band"] += time.perf_counter() - _t
         if _need_comp:
             _t = time.perf_counter()
-            _sd = _deliver_kept(_sh, _fd)
+            if _sd is None:                       # 19id: computed above when the objective moved
+                _sd = _deliver_kept(_sh, _fd)
             v = v - _clam * np.asarray(
                 _dist_fn(_sd, _cb["assign"], _cb["cent"], _cb["cconst"]), dtype=float)
             _ev["comp"] += time.perf_counter() - _t
@@ -1738,12 +1799,20 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         NOT recomputed — this is what lets a codebook refresh skip the whole-population band
         projection). Returns (success_rate, keep_other, keep_band)."""
         _bv, _ = eval_pop(logits)
-        if _compress_on and _cb["cent"] is not None:
+        # 19id: the codebook refresh re-scores the SUCCESS RATE, so it has to use the same basis
+        # _eval_with_bands used. Leaving it on eval_pop's while the search is on the delivered
+        # split would make a refresh silently change the objective mid-run - the hardest class of
+        # bug to see, because the numbers stay plausible.
+        _need_sd = (_compress_on and _cb["cent"] is not None) or (_DECODE_OBJ and _have_full)
+        if _need_sd:
             _sh = _segment_softmax(logits, p.profile_start, p.profile_len, p.max_share)
             _fd = _deliver_full(_sh)
-            _sd = _deliver_kept(_sh, _fd)
-            _bv = _bv - _clam * np.asarray(
-                _dist_fn(_sd, _cb["assign"], _cb["cent"], _cb["cconst"]), dtype=float)
+            _sd = np.asarray(_deliver_kept(_sh, _fd), float)
+            if _DECODE_OBJ and _have_full:
+                _bv = _success_rate(_sd, p.vol, p.succ, total_vol)
+            if _compress_on and _cb["cent"] is not None:
+                _bv = _bv - _clam * np.asarray(
+                    _dist_fn(_sd, _cb["assign"], _cb["cent"], _cb["cconst"]), dtype=float)
         return _bv, keep_other, keep_band
 
     # --- seed logits (reference mapped to sorted order) ---

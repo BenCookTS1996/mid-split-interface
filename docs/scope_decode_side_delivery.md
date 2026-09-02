@@ -227,7 +227,25 @@ becoming the one that describes what ships. But it means:
   the *measurement* changes;
 - and the log must say plainly that the success rate is not comparable with any earlier run.
 
-**Not started. `ROUTING_DECODE_OBJ` is the reserved name.**
+**SHIPPED as 19id, `ROUTING_DECODE_OBJ`, default OFF.**
+
+- `v` (success rate) AND `x` (engineering violation) both move onto the delivered array. They come
+  out of one kernel call today, so leaving the violation behind would make the two halves of the
+  fitness describe different splits — the defect this closes, not a smaller version of it.
+- The delivered array is computed **once** and shared with the band path and the compress term;
+  the extra cost is one gather per evaluation against `eval_pop`'s 2.4% of eval.
+- **`_rescore_compress` moved with it.** It re-scores the success rate on a codebook refresh, and
+  leaving it on `eval_pop`'s basis would let a refresh silently change the objective mid-run —
+  the hardest class of bug to see, because the numbers stay plausible.
+- **Three distinct "not in effect" messages**, because there are three ways to arm it and get
+  nothing: no band penalty and no compression wired (no delivered array is built on that path),
+  no delivery hook supplied, and the applied case. An armed run must never quietly score half its
+  calls on one basis and half on the other.
+
+**Acceptance test:** the run's success rate WILL differ from 0.615322. That is the switch working.
+What must NOT change is feasibility — the bands are already measured on the delivered split, so
+arming this changes what the GA *prefers*, not what it is *allowed* to do. A run that comes back
+infeasible is a finding, not a tuning problem.
 
 ---
 
