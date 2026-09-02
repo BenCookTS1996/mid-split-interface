@@ -169,8 +169,15 @@ check("D2: [obj-basis] is emitted and reports the re-score",
 check("D2: [obj-basis] finds the full-grain view lines up",
       any("[obj-basis]" in s and "same denominator" in s for s in logs)
       and not any("⚠⚠" in s and "obj-basis" in s for s in logs))
-check("D1: [obj-check] no longer reports every profile summing to 1",
-      any("[obj-check]" in s and "19if's fix is live" in s for s in logs))
+# 19ig: this toy's delivery hook ZEROES rows without redistributing, so it genuinely loses
+# mass — unlike the live pipeline, where eligibility blends the incapable share onto capable
+# siblings and the delivered split sums to 1. That makes it the positive control for
+# [obj-check]'s mass guard: the warning MUST fire here, and (per the 23:01 run) must NOT fire
+# on a real book.
+check("D1: [obj-check]'s mass guard fires on a delivery hook that really loses mass",
+      any("[obj-check]" in s and "LOST OR GAINED MASS" in s for s in logs))
+check("D1: [obj-check] prices the renormalise against the pre-19if objective",
+      any("[obj-check]" in s and "PRE-19if objective" in s for s in logs))
 # gather must be untouched by the hot loop: count calls
 calls = {"n": 0}
 def counting_gather(fd, _g=gath2):

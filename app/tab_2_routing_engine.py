@@ -9694,6 +9694,105 @@ def render():
                                         _nw_pick_ga = _nw_dg <= _nw_ds
                                         _nw_rule = ("DELIVERED breach alone (no tie-break, no "
                                                     "tolerance)")
+                                        # ── 19ig [nw-conv]: WHEN BOTH ARE COMPLIANT ──────────
+                                        # The rule above was written when the GA came back with
+                                        # REAL breach regressions, and for that it is right. On
+                                        # the 2026-09-02 23:01 run it did something else: both
+                                        # candidates were compliant, both delivered breaches
+                                        # printed as 0, and the GA lost on a difference smaller
+                                        # than the run's own float32 noise floor - discarding a
+                                        # search that had just climbed 0.59175 -> 0.59774. The
+                                        # deciding quantity was rounding.
+                                        #
+                                        # So: when neither candidate's delivered breach is
+                                        # DISTINGUISHABLE from the other's - the gap is inside
+                                        # the noise floor the projector measures on this run's
+                                        # own scaffold, and BOTH sit at or under it - the breach
+                                        # cannot decide, and the tie falls through to CONVERSION.
+                                        # Whenever either candidate genuinely breaches, or the
+                                        # gap is real, nothing below fires and the rule above
+                                        # stands untouched. With float32 off the floor is 0 and
+                                        # this degenerates to the strict rule by construction.
+                                        #
+                                        # Conversion is measured HERE rather than taken from
+                                        # _fm_info, so both candidates are scored by one function
+                                        # on the DELIVERED basis - info["seed_success_rate"] is
+                                        # the DECODED seed's ([decode-loss] prices that gap) and
+                                        # comparing it with the GA's would re-introduce exactly
+                                        # the mixed-basis error 19if just closed.
+                                        _nw_conv_on = os.environ.get("ROUTING_NW_CONV",
+                                                                     "0") != "0"
+                                        # `_fx_bar` is set on the projection path above, which
+                                        # has two entries; an UnboundLocalError here would be a
+                                        # crash in a guard, so it is caught (it subclasses
+                                        # NameError) and the conservative default used instead.
+                                        try:
+                                            _nw_bar = float(_fx_bar)
+                                        except NameError:
+                                            _nw_bar = 1.0
+                                        _nw_cv = {"ga": None, "sd": None, "bar": _nw_bar}
+                                        if _nw_conv_on:
+                                            try:
+                                                _nc_v = np.asarray(ctx["profile_vol"], float)
+                                                _nc_s = np.asarray(ctx["sr"], float)
+                                                _nc_tot = float(_nc_v[np.asarray(
+                                                    ctx["profile_starts"], np.intp)].sum())
+
+                                                def _nw_vwsr(_sv, _v=_nc_v, _s=_nc_s,
+                                                             _tv=_nc_tot):
+                                                    _dv = np.asarray(_fm_deliv(
+                                                        np.asarray(_sv, float)[None, :]),
+                                                        float)[0]
+                                                    return float((_dv * _v * _s).sum()
+                                                                 / max(_tv, 1e-9))
+                                                _nw_cv["ga"] = _nw_vwsr(_fm_full)
+                                                _nw_cv["sd"] = _nw_vwsr(_fm_seed)
+                                                _nw_tie = (_nw_gap <= _nw_cv["bar"]
+                                                           and max(_nw_dg, _nw_ds)
+                                                           <= _nw_cv["bar"])
+                                                log("      [nw-conv] BOTH candidates measured on "
+                                                    "the DELIVERED basis by one function: seed "
+                                                    f"{_nw_cv['sd']:.6f} \u00b7 GA output "
+                                                    f"{_nw_cv['ga']:.6f} "
+                                                    f"(\u0394 {_nw_cv['ga'] - _nw_cv['sd']:+.6f} "
+                                                    "success rate). Breach gap "
+                                                    f"{_nw_gap:,.4g} unit(s) against a "
+                                                    f"distinguishability bar of "
+                                                    f"{_nw_cv['bar']:,.4g}"
+                                                    + (" \u2014 INSIDE it, and neither candidate "
+                                                       "is outside it either, so the breach "
+                                                       "cannot decide and CONVERSION DOES."
+                                                       if _nw_tie else
+                                                       " \u2014 outside it, so the breach DOES "
+                                                       "decide and this line changes nothing."))
+                                                if _nw_tie:
+                                                    _nw_pick_ga = (_nw_cv["ga"]
+                                                                   >= _nw_cv["sd"] - 1e-15)
+                                                    _nw_rule = ("DELIVERED breach, falling "
+                                                                "through to conversion on an "
+                                                                "indistinguishable tie "
+                                                                "(ROUTING_NW_CONV=1)")
+                                            except Exception as _nce:  # noqa: BLE001
+                                                log("      [nw-conv] SKIPPED "
+                                                    f"({type(_nce).__name__}: {_nce}) \u2014 the "
+                                                    "breach-alone rule above stands, unchanged. "
+                                                    "Nothing was decided on a partial "
+                                                    "measurement.")
+                                        elif _nw_gap <= _nw_bar and max(_nw_dg, _nw_ds) <= _nw_bar:
+                                            # Not armed, but say what the rule is costing, so the
+                                            # size of the discarded gain is a number in the log
+                                            # across several runs before anyone changes what ships.
+                                            log("      [nw-conv] the two delivered breaches "
+                                                f"differ by {_nw_gap:,.4g} unit(s), INSIDE this "
+                                                f"run's distinguishability bar of "
+                                                f"{_nw_bar:,.4g}, and neither candidate is "
+                                                "outside it. The breach that decided this run is "
+                                                "therefore not a measurable difference. "
+                                                "ROUTING_NW_CONV=1 would let CONVERSION decide "
+                                                "such a tie instead; it is OFF, so the rule above "
+                                                "stands and whichever candidate converts better "
+                                                "may have been discarded. This line is "
+                                                "READ-ONLY - it changed nothing.")
                                         # THE FLAG. This is the guard's whole remaining job
                                         # beyond picking the lower delivered breach: make the
                                         # drift impossible to miss, so nobody reads the delivered

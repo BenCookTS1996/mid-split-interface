@@ -87,7 +87,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -932,6 +932,65 @@ def _mid_vamp(shares, vol, risk, mid_id, n_mids):
     return rate
 
 
+# ── 19ig: THE PER-MID ACCUMULATION ────────────────────────────────────────────────────────
+# `np.add.at` is numpy's unbuffered scatter-add and it is slow: measured on the live shape
+# (P=35, R=140,154, 15 mids) it costs 127.5 ms per _violation call against 30.2 ms for a
+# per-candidate np.bincount, 4.2x. That only started mattering with 19id - before it, the
+# population's violation came from the numba kernel and this path ran on the seed alone.
+#
+# WHY IT IS BIT-IDENTICAL, not merely close. `np.add.at(num.T, mid_id, X.T)` walks r = 0..R-1
+# in order and adds X.T[r] into num.T[mid_id[r]]. `np.bincount(mid_id, weights=X[i])` walks r
+# in the same order accumulating into the same bin. Every output element therefore receives
+# the same float64 additions in the same sequence, and float addition is deterministic given
+# an order. That is an argument, not a measurement, so `_VIOL_FACT` MEASURES it on the first
+# live call as well - int64 bit patterns, not allclose - and run_fullmatrix_ga prints the
+# verdict. ROUTING_VIOL_BINCOUNT=0 restores np.add.at.
+_VIOL_BINCOUNT = _os_gf.environ.get("ROUTING_VIOL_BINCOUNT", "1") != "0"
+_VIOL_FACT = {"checked": False, "msg": "", "same": None}
+
+
+def _mid_accum(w, wr, mid_id, n_mids):
+    """(num, den) = per-(candidate, mid) sums of `wr` and `w`. Both (P, n_mids)."""
+    P = w.shape[0]
+    if not _VIOL_BINCOUNT:
+        num = np.zeros((P, n_mids))
+        den = np.zeros((P, n_mids))
+        np.add.at(num.T, mid_id, wr.T)
+        np.add.at(den.T, mid_id, w.T)
+        return num, den
+    num = np.empty((P, n_mids))
+    den = np.empty((P, n_mids))
+    for _i in range(P):
+        num[_i] = np.bincount(mid_id, weights=wr[_i], minlength=n_mids)[:n_mids]
+        den[_i] = np.bincount(mid_id, weights=w[_i], minlength=n_mids)[:n_mids]
+    if not _VIOL_FACT["checked"]:
+        _VIOL_FACT["checked"] = True
+        try:
+            _rn = np.zeros((P, n_mids))
+            _rd = np.zeros((P, n_mids))
+            np.add.at(_rn.T, mid_id, wr.T)
+            np.add.at(_rd.T, mid_id, w.T)
+            _same = (np.array_equal(_rn.view(np.int64), num.view(np.int64))
+                     and np.array_equal(_rd.view(np.int64), den.view(np.int64)))
+            _VIOL_FACT["same"] = bool(_same)
+            _VIOL_FACT["msg"] = (
+                ("[viol-bincount] \u2713 SELF-CHECK PASSED on the live population: per-MID "
+                 "accumulation by np.bincount is BIT-IDENTICAL to np.add.at (int64 bit-pattern "
+                 f"comparison on 2x{P}x{n_mids}, stricter than allclose) over {mid_id.size:,} "
+                 "row(s). Both walk the rows in the same order into the same bins, so every "
+                 "output element receives the same additions in the same sequence. Measured "
+                 "127.5 -> 30.2 ms per _violation call at P=35. ROUTING_VIOL_BINCOUNT=0 reverts."
+                 if _same else
+                 "[viol-bincount] \u26a0\u26a0 SELF-CHECK FAILED on the live population: "
+                 "bincount and np.add.at do NOT agree bit for bit, which they must. The "
+                 "engineering key this run is not trustworthy. Set ROUTING_VIOL_BINCOUNT=0 and "
+                 "re-run."))
+        except Exception as _vbe:  # noqa: BLE001 - a self-check must never break a run
+            _VIOL_FACT["msg"] = (f"[viol-bincount] self-check SKIPPED ({type(_vbe).__name__}: "
+                                 f"{_vbe}) - the fast path is in use with no live proof.")
+    return num, den
+
+
 def _violation(shares, p: "FullMatrixProblem"):
     """Scalar soft-constraint violation per individual (0 == compliant).
 
@@ -944,12 +1003,9 @@ def _violation(shares, p: "FullMatrixProblem"):
       * MAX-SHARE cap per row: max(0, share/max_share - 1), summed.
     Returns (P,).
     """
-    P = shares.shape[0]
     w = shares * p.vol                                    # (P,R) volume routed per row
-    num = np.zeros((P, p.n_mids))                        # vamp count per mid
-    den = np.zeros((P, p.n_mids))                        # txn total per mid
-    np.add.at(num.T, p.mid_id, (w * p.risk).T)
-    np.add.at(den.T, p.mid_id, w.T)
+    # num = vamp count per mid, den = txn total per mid. 19ig: bincount, bit-identical.
+    num, den = _mid_accum(w, w * p.risk, p.mid_id, p.n_mids)
     rate = np.divide(num, den, out=np.zeros_like(num), where=den > 0)
 
     hard = p.mid_hard_cap[None, :]
@@ -1780,7 +1836,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     #
     # Timers only. Nothing computed here moved, and `perf_counter` around four calls that each
     # take tens of milliseconds is not measurable against the work itself.
-    _ev = {"pop": 0.0, "decode": 0.0, "deliver": 0.0, "band": 0.0, "comp": 0.0, "n": 0}
+    _ev = {"pop": 0.0, "decode": 0.0, "deliver": 0.0, "band": 0.0, "comp": 0.0,
+           "obj": 0.0, "n": 0}
 
     def _eval_with_bands(logits):
         # Returns (success rate, other_viol, band_breach) as THREE separate arrays so the ranking can treat
@@ -1818,7 +1875,9 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _sd = None
         if _DECODE_OBJ and _have_full:
             _v_old = np.asarray(v, float).copy()          # 19ie: eval_pop's, before it is replaced
+            _t = time.perf_counter()
             v, x = _obj_scores(_fd, _sh)                  # 19if: full grain, no gather
+            _ev["obj"] += time.perf_counter() - _t        # 19ig: it was in `unaccounted`
             if not _OBJ_FACT["said"]:
                 # ── 19ie [obj-check], 19if ───────────────────────────────────────────────────
                 # WHY IT EXISTS. The 21:25 and 22:11 runs both made ZERO progress: `best success
@@ -1841,12 +1900,18 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 try:
                     _vn = np.asarray(v, float)
                     _P0 = int(_vn.shape[0])
-                    # (1) DOES THE SCORED ARRAY STILL SUM TO 1 PER PROFILE? The delivered split
-                    # does NOT: eligibility zeroes rows, so a profile's mass drops below 1. If
-                    # every profile reads 1.0 here, something RENORMALISED after the delivery and
-                    # this is a normalised SHAPE, not the delivered share - and the success rate
-                    # computed from it is not the success rate of what ships. On the full-grain
-                    # path there is no renormalise to do it, so this reading is the PROOF of that.
+                    # (1) DOES THE SCORED ARRAY CONSERVE MASS? 19ie asserted the delivered split
+                    # must sum to BELOW 1 per profile, on the reasoning that eligibility zeroes
+                    # rows. THAT WAS WRONG, and the 2026-09-02 23:01 run said so: 100.0% of
+                    # profiles read 1.0, and check (1b) priced the renormalise at EXACTLY 0.
+                    # Reading `eligibility.py:_apply_elig_pop`, eligibility here is MASS-
+                    # PRESERVING by construction - a ban zeroes and then `_renorm_pop`s, and the
+                    # wallet / USA-only stages are `_blend_pop`, which REDISTRIBUTES the
+                    # incapable share onto capable siblings rather than dropping it. A routing
+                    # profile must send 100% of its volume somewhere, so summing to 1 is the
+                    # CORRECT reading and gather_fn's renormalise was a no-op on it.
+                    # So this now warns on the opposite condition: mass that has gone MISSING,
+                    # which would mean the delivery transform lost volume.
                     _oc_arr = _fd if _OF is not None else np.asarray(
                         _deliver_kept(_sh, _fd), float)
                     _oc_st = (_OF.profile_start if _OF is not None else p.profile_start)
@@ -1855,15 +1920,17 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     log(f"   [obj-check] per-profile sums of the array the objective is scored "
                         f"on: min {float(_psum.min()):.6f} / mean {float(_psum.mean()):.6f} / "
                         f"max {float(_psum.max()):.6f}; {_at1:.1%} of them are 1.0 to 1e-9. "
-                        + ("\u26a0 THEY ALL SUM TO 1, WHICH THE DELIVERED SPLIT DOES NOT - "
-                           "eligibility zeroes rows, so mass must drop below 1. Something "
-                           "RENORMALISED after delivery and this is a normalised SHAPE, not the "
-                           "delivered share. 19if moved the objective onto the full-grain array "
-                           "to remove exactly this; reading 1.0 here means the fix is NOT in "
-                           "effect."
+                        + ("Mass is conserved, which is what this pipeline's eligibility does: "
+                           "it BLENDS the incapable share onto capable siblings rather than "
+                           "dropping it, so a profile still routes 100% of its volume. Nothing "
+                           "to flag."
                            if _at1 > 0.999 else
-                           "Mass below 1 where eligibility bit, which is what the delivered "
-                           "split should look like \u2014 19if's fix is live."))
+                           f"\u26a0 {1.0 - _at1:.1%} OF PROFILES HAVE LOST OR GAINED MASS. The "
+                           "delivery transform is mass-preserving by construction (ban + "
+                           "renormalise, then wallet / USA-only blends), so a profile that does "
+                           "not sum to 1 means volume went missing on the way through it - and "
+                           "the success rate computed from it is the success rate of less than a "
+                           "whole book. Investigate the transform, not the objective."))
                     # (1b) WHAT THE RENORMALISE WAS COSTING. The pre-19if objective, computed
                     # once here on the same population, so the size of the defect is a measured
                     # number in the run rather than an argument in a commit message.
@@ -1871,13 +1938,19 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                         _oc_old = np.asarray(_deliver_kept(_sh, _fd), float)
                         _oc_ov = _success_rate(_oc_old, p.vol, p.succ, total_vol)
                         _oc_d = np.asarray(_vn, float) - np.asarray(_oc_ov, float)
+                        _oc_w = float(np.abs(_oc_d).max())
                         log(f"   [obj-check] against the PRE-19if objective (gather + "
                             f"renormalise) on the same population: mean \u0394 "
-                            f"{float(_oc_d.mean()):+.6f}, worst |\u0394| "
-                            f"{float(np.abs(_oc_d).max()):.6f}. The renormalised figure is the "
-                            "success rate of a shape scaled back up to 1, so it reads HIGH by "
-                            "roughly the mass eligibility removed \u2014 it was never the "
-                            "success rate of anything that ships.")
+                            f"{float(_oc_d.mean()):+.6f}, worst |\u0394| {_oc_w:.6f}. "
+                            + ("The renormalise is a NO-OP on this book, so 19if's full-grain "
+                               "move changed the NUMBER not at all - what it bought was dropping "
+                               "the gather out of the hot loop. Read [eval-cost]'s `_obj_scores` "
+                               "row for what that was worth."
+                               if _oc_w <= 1e-9 else
+                               "The renormalised figure is the success rate of a shape scaled "
+                               "back up to 1. On a book where the delivery transform does NOT "
+                               "conserve mass that is a different quantity from the delivered "
+                               "success rate, and this is the size of the difference."))
                     # (2) IS THE NEW OBJECTIVE FLAT, OR JUST DIFFERENT? Spread across the live
                     # population, and how many distinct values it actually takes.
                     _nd = int(np.unique(np.round(_vn, 12)).size)
@@ -2048,6 +2121,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     s0 = _segment_softmax(seed_logits[None, :], p.profile_start, p.profile_len, p.max_share)
     seed_success_rate = _success_rate(s0, p.vol, p.succ, total_vol)[0]
     seed_other = _violation(s0, p)[0]           # engineering viol (global cap + max-share) — secondary
+    if _VIOL_FACT.get("msg"):   # 19ig: the line above is the run's FIRST _violation call
+        log("   " + _VIOL_FACT["msg"])
     seed_band = 0.0                              # exact M5 band breach — strict primary key
     _fd0 = _deliver_full(s0) if (band_penalty_fn is not None or _compress_on
                                  or (_DECODE_OBJ and _have_full)) else None
@@ -2778,9 +2853,28 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             "each sibling in proportion to (target - share), the room it has left before IT would "
             "hit the cap (impact_calcs._cap_rows). Single pass, because Σ(target - share) over a "
             "profile's present rows is (present_rows × target) - 1 + excess.")
-        log("[decode-cap]    THE ENGINEERING KEY should now read 0.0000 for every candidate, "
-            "because none can violate. If `viol` above is ever non-zero on the max-share term, "
-            "the water-fill did not hold and that key is what says so.")
+        if _DECODE_OBJ and _have_full:
+            # 19ig: under ROUTING_DECODE_OBJ the engineering key is measured on the DELIVERED
+            # split, where the cap genuinely CANNOT always hold - [deliv-cap] reports the
+            # (candidate, profile) pairs whose live rows have less room than the excess, and
+            # _cap_rows leaves those at baseline, above the cap. On the 23:01 run that read a
+            # flat 4.9485 for 320 generations. So the sentence below would have accused the
+            # water-fill of failing on every armed run.
+            log("[decode-cap]    THE ENGINEERING KEY IS NOT 0 THIS RUN, AND SHOULD NOT BE: "
+                "ROUTING_DECODE_OBJ measures it on the DELIVERED split, and delivery leaves "
+                "rows above the cap wherever the profile has less room than the excess (see "
+                "[deliv-cap]'s 'unsatisfiable' count). What WOULD be a defect is the key MOVING "
+                "while [deliv-cap]'s unsatisfiable count does not, or the key reading non-zero "
+                "with that count at 0 - that is the max-share term, and then the water-fill did "
+                "not hold. Note the key outranks the success rate in `_key_of`, so a candidate "
+                "that lowers it beats a better-converting one.")
+        else:
+            log("[decode-cap]    THE ENGINEERING KEY should now read 0.0000 for every candidate, "
+                "because none can violate. If `viol` above is ever non-zero on the max-share "
+                "term, the water-fill did not hold and that key is what says so. (This holds "
+                "because the key is measured on the DECODED split, which is water-filled by "
+                "construction; ROUTING_DECODE_OBJ moves it onto the delivered one, where a "
+                "non-zero reading is expected instead.)")
 
     # ── [ga-census] RUN VERDICT ──────────────────────────────────────────────────────────
     # Four candidate explanations for a flat success rate, told apart by counts; 19ed then asks the
@@ -2906,11 +3000,15 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 "19ic made this unconditional: the 2026-09-02 21:12 run took [profiles] from "
                 "6,428 keys to 20 and \u03a3|\u0394prop| from 24.4448 to 0.0302 while leaving the "
                 "success rate, all 15 delivered band values and the reconciliation error "
-                "UNCHANGED - and the shipped split stopped containing rows above the 0.97 cap. "
-                "NOT the whole fold: eval_pop still scores the SUCCESS RATE on its own softmax "
-                "with no block and no eligibility, so the OBJECTIVE is still measured on the "
-                "undelivered split while the CONSTRAINTS are measured on the delivered one "
-                "(step 2b, ROUTING_DECODE_OBJ).")
+                "UNCHANGED - and the shipped split stopped containing rows above the 0.97 cap."
+                + (" 19if CLOSED THE FOLD: with ROUTING_DECODE_OBJ armed the success rate and "
+                   "the engineering violation are measured on this same delivered array, so "
+                   "the objective and the constraints now describe one split. Read [obj-basis]."
+                   if (_DECODE_OBJ and _have_full) else
+                   " NOT the whole fold: eval_pop still scores the SUCCESS RATE on its own "
+                   "softmax with no block and no eligibility, so the OBJECTIVE is still "
+                   "measured on the undelivered split while the CONSTRAINTS are measured on "
+                   "the delivered one. ROUTING_DECODE_OBJ=1 closes it (19id/19if)."))
         except Exception as _dde:  # noqa: BLE001
             _dd_stat = None
             log(f"[decode-deliv] \u26a0 FAILED, RAW DECODE RETURNED ({type(_dde).__name__}: "
@@ -3002,10 +3100,16 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         # it. These five accumulators are taken inside `_eval_with_bands` around its own calls,
         # so they sum to it — the `unaccounted` row is computed as the difference and is the
         # function's own entry/exit, not a bucket anything can hide in.
-        _ev_tot = sum(float(_ev[_x]) for _x in ("pop", "decode", "deliver", "band", "comp"))
+        _ev_tot = sum(float(_ev[_x]) for _x in ("pop", "decode", "deliver", "band", "comp",
+                                                "obj"))
         if _ev["n"]:
-            log(f"      == [eval-cost] inside the `eval` row ({_ev_tot:,.1f}s over "
-                f"{_ev['n']:,} call(s)), largest first ==")
+            # 19ig: EVERY row of the table is a share of `_ev_ref` - the same denominator the
+            # unaccounted row uses. Before this the five stages were divided by their own sum
+            # and unaccounted by the true total, so the column read 100% and then another 49.6%.
+            _ev_ref = float(_gg["eval"]) + float(_gg["i_eval"])
+            log(f"      == [eval-cost] inside the `eval` row ({_ev_ref:,.1f}s over "
+                f"{_ev['n']:,} call(s)), largest first \u2014 every row is a share of that "
+                f"total, so the column sums to 100% ==")
             _ev_rows = [
                 ("eval_pop (fused numba: softmax + success rate + engineering viol)", _ev["pop"]),
                 ("_deliver_full (blocked-caps -> eligibility -> cap, per candidate)",
@@ -3013,17 +3117,20 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 ("band projection + penalty (the EXACT M5 projector)", _ev["band"]),
                 ("_segment_softmax decode (numpy, feeds deliver + band)", _ev["decode"]),
                 ("compressibility regulariser (0 unless it is on)", _ev["comp"]),
+                # 19ig: _obj_scores was inside `unaccounted` until now, which is why that row
+                # read 439.0s on the 22:11 run and 339.2s on the 23:01 one and neither could
+                # be attributed. It is the delivered success rate + engineering violation.
+                ("_obj_scores (delivered success rate + engineering viol)", _ev["obj"]),
             ]
             for _el, _evv in sorted(_ev_rows, key=lambda kv: -kv[1]):
                 if _evv > 0.0 or "compress" in _el:
                     log(f"         {_evv:8.1f}s  "
-                        f"({100.0 * _evv / max(_ev_tot, 1e-9):>5.1f}%)  {_el}"
+                        f"({100.0 * _evv / max(_ev_ref, 1e-9):>5.1f}%)  {_el}"
                         f"  ·  {1000.0 * _evv / max(_ev['n'], 1):,.1f} ms/call")
             # 19gx: the `eval` row counts the GENERATION calls only; `_ev` counts every call,
             # which includes the one per restart that [gen-gap] charges to `init`. On the
             # 2026-09-02 00:22 run that was 336 calls against 320 generations and the difference
             # printed as a NEGATIVE unaccounted row. Compare against both, and say which.
-            _ev_ref = float(_gg["eval"]) + float(_gg["i_eval"])
             _ev_gap = _ev_ref - _ev_tot
             log(f"         {_ev_gap:8.1f}s  "
                 f"({100.0 * _ev_gap / max(_ev_ref, 1e-9):>5.1f}%)  unaccounted — function "

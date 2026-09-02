@@ -444,3 +444,98 @@ higher; and `gather_fn` is called at most **twice** per run rather than once per
 **Explanation A is still not ruled out.** With both bases aligned the search can now move, but
 whether it moves *enough* — whether the 0.97 cap saturates the GA's main lever — is a question the
 next armed run answers, not this commit. `ROUTING_DECODE_OBJ` stays **OFF** by default.
+
+---
+
+## §15 — 19ig: the 23:01 run. The search works; the ship rule threw the result away.
+
+`ROUTING_DECODE_OBJ=1`, build 19if. **The GA climbed**: `0.59175` at generation 0 →
+`0.59774` at generation 320, monotone across all 16 restarts, `improved=True`. D2 was the whole
+of the zero progress. **Explanation A is dead** — the delivered objective is climbable and the
+operators are fine.
+
+`[obj-basis]` printed the mechanism with the run's own numbers: seed **0.592077 → 0.591691**
+on re-score, a −0.000386 that no child could ever make up.
+
+### D1 was a numerical no-op, and my 19ie premise was wrong
+
+`[obj-check]` check 1b priced the renormalise at **mean Δ −0.000000, worst |Δ| 0.000000**.
+
+Reading `eligibility.py:_apply_elig_pop`: eligibility in this pipeline is **mass-preserving**.
+A ban zeroes and then `_renorm_pop`s; the wallet and USA-only stages are `_blend_pop`, which
+**redistributes** the incapable share onto capable siblings rather than dropping it. A routing
+profile must send 100% of its volume somewhere. So the delivered split sums to 1 per profile,
+`gather_fn`'s renormalise was a no-op on it, and 19ie's assertion — "the delivered split does
+NOT sum to 1" — was false.
+
+The ⚠ that fired on a correct run is deleted. The check now warns on the **opposite** condition:
+mass that has gone missing, which would mean the transform lost volume. `tests/test_19if_obj_basis.py`
+keeps the toy hook that really does drop mass as the positive control for it.
+
+### The 439s was over-attributed
+
+| | 22:11 (19ie) | 23:01 (19if) |
+|---|---|---|
+| search | 853.2s | 715.7s |
+| `[eval-cost] unaccounted` | 439.0s | 339.2s |
+
+The gather was ~100s, not 439s. `_obj_scores` measures ~142 ms/call at P=35 (≈48s a run), so
+~290s was still untimed — `[eval-cost]`'s "no residual to argue about" was not true. 19ig times
+`_obj_scores` as its own row and puts every row of that table on **one denominator** (the five
+stages were divided by their own sum and `unaccounted` by the true total, so the column read
+100% and then another 49.6%).
+
+### `_violation`: bincount, bit-identical
+
+`np.add.at` costs **127.5 ms/call** on the live shape against **30.2 ms** for a per-candidate
+`np.bincount` — 4.2×. It only started mattering with 19id; before that the population's
+violation came from the numba kernel and this path ran on the seed alone.
+
+Bit-identity is an argument, not a hope: `np.add.at(num.T, mid_id, X.T)` walks r = 0…R−1 in
+order into bin `mid_id[r]`, and `bincount(mid_id, weights=X[i])` walks the same rows in the same
+order into the same bin, so every output element receives the same float64 additions in the same
+sequence. `[viol-bincount]` measures it anyway on the first live call, int64 bit patterns.
+`ROUTING_VIOL_BINCOUNT=0` reverts.
+
+### The engineering key is non-zero now, and that is correct
+
+`viol 4.9485`, flat for 320 generations. It is the delivered split's real max-share overage:
+`[deliv-cap]` reports **1,818,198 (candidate, profile) pairs where the cap is unsatisfiable** and
+`_cap_rows` leaves those at baseline, above 0.97. `[decode-cap]`'s standing line said a non-zero
+key means the water-fill failed; under this switch that would accuse it on every armed run, so
+the line now states which reading is which — and notes that the key **outranks the success rate**
+in `_key_of`, so a candidate that lowers it beats a better-converting one.
+
+### `[nw-conv]` — the ship rule
+
+```
+candidate          delivered   scored   drift   GA-fitness
+seed exact-proj            0        0      +0   0
+GA output                  0        0      +0   0.3
+breach gap 0 unit(s)   ⇒ SHIPPING THE SEED INSTEAD
+```
+
+`tab_2:9694` is `_nw_pick_ga = _nw_dg <= _nw_ds`, and conversion never enters. Both candidates
+were compliant, both delivered breaches printed as 0, and the GA lost on a difference smaller
+than the run's own float32 noise floor. What shipped delivers `succ=0.5918` — the seed — instead
+of the GA's 0.5977. **The deciding quantity was rounding.**
+
+`ROUTING_NW_CONV=1` makes an *indistinguishable* tie fall through to conversion: the gap must sit
+inside the distinguishability bar (`_fx_bar`, which `[f32-floor]` raises to the projector's
+measured float32 noise floor) **and** neither candidate may be outside it. Whenever either
+candidate genuinely breaches, or the gap is real, nothing fires and the breach-alone rule stands.
+With float32 off the floor is 0 and it degenerates to the strict rule by construction.
+
+Conversion is measured **at the decision point** by one function on the delivered basis, not
+taken from `_fm_info` — `info["seed_success_rate"]` is the *decoded* seed's, and comparing it
+with the GA's would re-introduce exactly the mixed-basis error 19if closed.
+
+**Default OFF.** Unarmed, the block still prints what the rule cost when the tie was
+indistinguishable, so the size of the discarded gain accumulates across runs before what ships
+changes.
+
+### Still open
+
+`[recon-breakdown]` was ⚠ UNAVAILABLE again. `[profiles]` PART B read 240 keys / Σ|Δprop| 3.7405
+rather than 19ia's 20 / 0.0302 — expected, because the **seed** shipped and only the GA's return
+path goes through `_deliver_kept`; it is not a regression, and it disappears if the GA ships.
