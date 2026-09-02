@@ -228,3 +228,62 @@ becoming the one that describes what ships. But it means:
 - and the log must say plainly that the success rate is not comparable with any earlier run.
 
 **Not started. `ROUTING_DECODE_OBJ` is the reserved name.**
+
+---
+
+## 12. Scope — the 20 residual keys: blocked rows and the water-fill
+
+**Not started. Parked deliberately, because the fix is only correct if the live engine agrees.**
+
+### What is left after 19ia/19ic
+
+`[profiles] PART B` went from **6,428 keys / Σ|Δprop| 24.4448** to **20 keys / 0.0302**. Every one
+of the 20 is on a **single BIN — `cad|485097`** — across three RPGTs, with deltas of
+`+0.004973` (×3) and `-0.001248` (×5) among the eight shown.
+
+That is the same thing `[deliv-fixed]` measures directly: **applying the transform twice moves 12
+of 154,405 rows, worst |Δ| 6.212e-04.**
+
+### The mechanism, again
+
+1. `_fm_block` pins an auto-blocked row to the exploration floor (0.01) and redistributes.
+2. `_fm_elig` zeroes ineligible rows and renormalises — which moves everything, including the
+   pinned row.
+3. `_fm_cap` water-fills at 0.97. Its recipient rule is `share > 1e-12 and share < cap`, **which a
+   blocked row sitting at the floor satisfies.** So the cap hands it excess and lifts it off the
+   floor the block just put it on.
+
+Apply the transform again and step 1 pins it back down. Hence: no fixed point, and a residual
+that no amount of re-application converges away.
+
+### The candidate fix, and why it is not obvious
+
+**Exclude blocked rows from receiving water-fill.** One clause in `_cap_rows`' recipient mask.
+
+But that is **a change to what ships**, and it is only right if the **live allocation engine also
+excludes them**. If production's water-fill does hand share to a floored blocked row, then the
+current behaviour is *faithful* and "fixing" it would open a new reconciliation gap in the
+opposite direction — the search would model something the engine does not do.
+
+**So the first step is not code. It is answering: what does the live engine do when a blocked
+gateway sits at the exploration floor and a sibling in the same profile goes over 0.97?**
+
+### Why it is low priority
+
+- **20 keys on one BIN**, Σ|Δprop| 0.0302.
+- **Zero effect on any delivered band value** — the 21:12 run's 15 bands are identical to the
+  20:37 run's, and `[rung]` reads `Σ|SPLIT| 0 (0%)`.
+- It is **three orders of magnitude** below the float32 noise floor the reconciliation detector
+  already runs with.
+
+It is a correctness wart, not a number problem. Worth closing once the engine's behaviour is
+confirmed; not worth guessing at.
+
+### If it is ever picked up
+
+1. Confirm the live engine's water-fill recipient rule for a floored blocked row.
+2. If it excludes them: one clause in `_cap_rows`, mirrored in `_cb_kernel_impl`'s water-fill and
+   in `_cap_shares_ref`, behind a switch, and `[deliv-fixed]` becomes the acceptance test — it
+   should read **0 rows moved**.
+3. If it does not exclude them: the residual is *correct* and this section should be closed with
+   that finding recorded, not with a change.

@@ -85,7 +85,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -743,8 +743,18 @@ _DECODE_CAP = True
 # are measured on the delivered one. That asymmetry is step 2b and is deliberately not touched
 # here; one axis per run.
 #
-# ROUTING_DECODE_DELIV=1 arms it. Read [decode-deliv] for what actually happened, not this comment.
-_DECODE_DELIV = os.environ.get("ROUTING_DECODE_DELIV", "0") != "0"
+# 19ic: THE SWITCH IS DELETED. Measured on the 2026-09-02 21:12 run against the 20:37 run:
+#   [profiles] discrepancy   6,428 key(s) -> 20;  Sigma|Delta prop| 24.4448 -> 0.0302
+#   the `raw` rung now EQUALS GA-fitness on every band. Three had disagreed (checkout 1,213 vs
+#   1,215, adyen_totalav 2,321 vs 2,322, paysafe 1,157 vs 1,155) and all three now read the same
+#   number twice.
+#   success rate 0.615322, all 15 delivered band values and reconciliation error 1: UNCHANGED.
+# And the shipped split became one that can actually execute: the granular samples used to show
+# rows at 100.0%, ABOVE the 0.97 cap and never shippable. They now show 97.0%, with blocked rows
+# sitting at the exploration floor instead of 0.0%.
+# The 20 remaining keys are all on ONE bin (cad|485097) and are the blocked-row / water-fill
+# non-idempotence [deliv-fixed] measures at 12 rows - see §12 of the scope, not this switch.
+_DECODE_DELIV = True
 _DC_EPS = 1e-12
 _DC_BACKOFF = 1.0 - 1e-9        # target back-off: the engineering key needs an exact 0.0
 
@@ -2582,7 +2592,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # calls `_eval_with_bands` makes every generation, so this is not a new transform — it is the
     # one the fitness already used, applied to the winner before it leaves.
     _dd_stat = None
-    if _DECODE_DELIV and _have_full:
+    if _have_full:
         try:
             _bkd = np.asarray(_deliver_kept(_bss, _deliver_full(_bss)), float)
             if _bkd.shape != _bss.shape:
@@ -2596,22 +2606,24 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 f"worst |\u0394| {_dd_stat[1]:.4g}, \u03a3|\u0394| {_dd_stat[2]:.4g}. THAT IS THE "
                 "[profiles] PART B DISCREPANCY, removed at source - the GA scored this array and "
                 "now ships it, so scored == shipped by construction rather than by tolerance. "
-                "THIS CHANGES WHAT SHIPS: tab 3's PRE/POST and the delivered M5 read off a "
-                "different array than an unarmed run. NOT the whole fold - eval_pop still scores "
-                "the SUCCESS RATE on its own softmax with no block or eligibility, so the "
-                "objective is still on the undelivered split (step 2b). "
-                "ROUTING_DECODE_DELIV=0 reverts.")
+                "19ic made this unconditional: the 2026-09-02 21:12 run took [profiles] from "
+                "6,428 keys to 20 and \u03a3|\u0394prop| from 24.4448 to 0.0302 while leaving the "
+                "success rate, all 15 delivered band values and the reconciliation error "
+                "UNCHANGED - and the shipped split stopped containing rows above the 0.97 cap. "
+                "NOT the whole fold: eval_pop still scores the SUCCESS RATE on its own softmax "
+                "with no block and no eligibility, so the OBJECTIVE is still measured on the "
+                "undelivered split while the CONSTRAINTS are measured on the delivered one "
+                "(step 2b, ROUTING_DECODE_OBJ).")
         except Exception as _dde:  # noqa: BLE001
             _dd_stat = None
-            log(f"[decode-deliv] \u26a0 ARMED AND NOT APPLIED ({type(_dde).__name__}: {_dde}) - "
-                "the RAW decode is being returned, exactly as an unarmed run. The split is "
-                "correct; it is simply not the change you asked for, so do not read this run as "
-                "a measurement of it.")
-    elif _DECODE_DELIV:
-        log("[decode-deliv] \u26a0 ROUTING_DECODE_DELIV=1 WAS REQUESTED AND IS NOT IN EFFECT: no "
-            "deduped delivery hook was supplied (deliver_full_fn / gather_fn), so there is no "
-            "delivered array to return and the raw decode ships. This run is NOT a measurement "
-            "of the switch.")
+            log(f"[decode-deliv] \u26a0 FAILED, RAW DECODE RETURNED ({type(_dde).__name__}: "
+                f"{_dde}) - the split is a valid split, but it is the one the search did NOT "
+                "score, so [profiles] PART B will show the full discrepancy again. Report this.")
+    else:
+        log("[decode-deliv] \u26a0 NOT IN EFFECT: no deduped delivery hook was supplied "
+            "(deliver_full_fn / gather_fn), so there is no delivered array to return and the RAW "
+            "decode ships. Since 19ic that is not a configuration - it means the caller did not "
+            "wire the hooks, and the split being returned is the one the search did NOT score.")
     best_shares_sorted = _bss[0]
     # restore original row order
     inv = np.empty_like(p.order)
