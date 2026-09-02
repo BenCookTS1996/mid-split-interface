@@ -376,3 +376,71 @@ because there would be no gather at all.
 **Explanation A is not ruled out and cannot be until B is fixed** — the 0.97 cap saturating the
 GA's main lever is still a real possibility, and it would be a search-design problem, not a bug.
 One thing at a time.
+
+---
+
+## §14 — 19if: the two defects, both fixed, both still behind the switch
+
+The 22:11 run carried `[obj-check]`. **The four readings disagreed**, and the disagreement is
+what identified the real fault.
+
+| Check | Reading | Verdict |
+|---|---|---|
+| 1 — per-profile sums | 100% sum to 1.0 within 1e-9 | ⚠ confirms the renormalise |
+| 2 — spread | 0.0556 over 40 distinct values (eval_pop: 0.0564) | not flat |
+| 3 — rank correlation | **+0.9972** | not scrambled |
+| 4 — transform reaching it | raw-best 0.599572 → delivered 0.598867 (Δ −0.000705) | reaching it, and lower |
+
+Checks 2–4 exonerate the array's variation and ordering. So the zero progress was **not** B, and
+not A either. The decisive arithmetic was three numbers from the run's own log:
+
+* population **delivered** max `0.598981`
+* incumbent `best_success_rate` `0.599109`
+* population **raw** best `0.599572`
+
+The incumbent sits *between* them. `seed_success_rate` is computed at
+`genetic_fullmatrix.py:1966` from `s0` — the plain softmax — and `best_success_rate`/`best_key`
+are seeded from it. 19id moved the **population** onto the delivered basis inside
+`_eval_with_bands` and left the **seed** on the raw one, so the generation loop's
+`if top_key > best_key` compared two different quantities. The delivered basis reads
+systematically ~0.0007 lower, so no child could ever win. `_key_of` orders on
+`(-band, -viol, success_rate)` and `seed_other` was raw-basis too — **two of the three key
+components were mixed-basis**. Only `seed_band` was already delivered, which is why the band half
+never showed it.
+
+### D1 — the objective moves to full grain
+
+`problem_from_ctx` now returns `meta["obj_full"]`: a `FullMatrixProblem`-shaped view of the same
+ctx columns at `n_row` grain, in ctx row order — the order `_deliver_full` returns. The delivered
+objective is scored straight off the `(P, n_row)` array. No gather, so no renormalise.
+
+This also deletes the gather from the hot loop. `[eval-cost]` charged **439.0s** of an 853.2s
+search to `unaccounted` on the 22:11 run; that row was this call. `gather_fn` itself is
+**unchanged** — its renormalise is correct for its two remaining consumers (the compress
+distortion, currently unreachable, and 19ia's return path).
+
+### D2 — the seed is re-scored on the basis its challengers use
+
+Before `seed_key` is built, when armed. `[obj-basis]` prints the before/after and then proves the
+full-grain view lines up: column count vs `n_row`, profile-volume total vs the kept problem's
+denominator (they must match or the two success rates are not the same quantity), and how much
+delivered share sits on rows outside the genome — share the kept-grain objective could not see.
+
+The objective is now spelled out **once**, in `_obj_scores`, and the seed, the population, the
+codebook re-score and `[decode-loss]` all call it. D2 was not a hard bug to write: the objective
+was spelled out at each call site and one site was missed. A future basis change now has one place
+to happen, and a missed site is an `AttributeError`, not a silent scale mismatch.
+
+### Tests — `tests/test_19if_obj_basis.py`, 14 checks
+
+Bit-identity of the shipped split, the success rate and the seed score against **19ie**
+(`ee9a5b6`, not HEAD) with the switch off; full-grain equals the un-renormalised gather; the
+renormalised figure is a different and **higher** number; delivered profiles sum below 1 while the
+renormalised copy sums to 1; the recorded seed score is the delivered one; the raw basis really is
+higher; and `gather_fn` is called at most **twice** per run rather than once per evaluation.
+
+### Still open
+
+**Explanation A is still not ruled out.** With both bases aligned the search can now move, but
+whether it moves *enough* — whether the 0.97 cap saturates the GA's main lever — is a question the
+next armed run answers, not this commit. `ROUTING_DECODE_OBJ` stays **OFF** by default.

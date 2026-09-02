@@ -8419,7 +8419,17 @@ def render():
                                     # deliver_full_fn / gather_fn stay — the BAND penalty
                                     # needs them.
                                     deliver_full_fn=_fm_deliv_full,
-                                    gather_fn=_fm_gather)
+                                    gather_fn=_fm_gather,
+                                    # 19if: the FULL-GRAIN view of the objective's inputs, built
+                                    # by problem_from_ctx from the same ctx columns the kept
+                                    # problem came from. With it the delivered objective is
+                                    # scored straight off the (P, n_row) array _fm_deliv_full
+                                    # returns - no _fm_gather, so no per-profile renormalise
+                                    # (which is right for the compress distortion and WRONG for
+                                    # the success rate) and no 439s of gather in the hot loop.
+                                    # Read only when ROUTING_DECODE_OBJ=1; None is a supported
+                                    # fallback that the GA's [obj-basis] line flags out loud.
+                                    obj_full=_fm_meta.get("obj_full"))
                                 _fm_best, _fm_info = _fm_run(_fm_p, **_fm_kw)
                                 # [frozen-scaffold] HOW MUCH OF THE PROJECTOR IS PERMANENTLY
                                 # CONSTANT? 92% of a GA generation is _pop_band_kernel over the cap

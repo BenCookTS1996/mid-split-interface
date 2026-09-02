@@ -55,6 +55,8 @@ import os
 import time
 import os as _os_gf
 
+import types
+
 import numpy as np
 
 from routing_optimiser.s4_search.rowpar import row_parallel as _rowpar
@@ -85,7 +87,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -448,7 +450,33 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
     # baseline rather than whatever drift the search happened to leave there.
     _restore_idx = np.where(_inert_row)[0]
     _base_full = np.asarray(ctx.get("base", np.zeros(n_row)), dtype=float)
+    # ── 19if: THE OBJECTIVE'S FULL-GRAIN VIEW ───────────────────────────────────
+    # `_deliver_full` hands the GA a (P, n_row) DELIVERED array. Until 19if the only way to
+    # score it was `gather_fn`, which gathers the kept columns back AND RENORMALISES each
+    # profile to 1 - correct for the compress distortion (which needs a normalised shape),
+    # wrong for the success rate (the delivered split does NOT sum to 1 per profile:
+    # eligibility zeroes rows). 19ie's [obj-check] measured exactly that: 100.0% of profiles
+    # read 1.0 to 1e-9.
+    #
+    # So the objective moves onto the full-grain array directly. This is a FullMatrixProblem-
+    # SHAPED view of the same ctx columns the kept problem was built from, at n_row grain and
+    # in ctx row order - the order `_deliver_full` returns. Every field `_success_rate` and
+    # `_violation` read is here; the per-MID arrays are per-MID and need no regrain.
+    #
+    # It also deletes the gather from the hot loop. On the 2026-09-02 22:11 armed run
+    # [eval-cost] charged 439.0s of an 853.2s search to `unaccounted`, which was this call.
+    _obj_full = types.SimpleNamespace(
+        vol=vol_full, succ=succ_full, risk=risk_full,
+        mid_id=mid_id_full, n_mids=n_mid,
+        max_share=np.full(n_row, max_gw, dtype=float),
+        mid_hard_cap=mid_hard, mid_soft_cap=mid_soft,
+        mid_band_metric=_bm, mid_band_lo=_blo, mid_band_hi=_bhi,
+        global_vamp_cap=global_cap,
+        profile_start=starts, profile_len=counts, n_row=n_row,
+        total_vol=float(vol_full[starts].sum()) if starts.size else 0.0,
+        keep_idx=keep_idx)
     meta = {"keep_idx": keep_idx, "n_row": n_row, "reference_kept": ref_kept,
+            "obj_full": _obj_full,
             "restore_idx": _restore_idx,
             "restore_val": _base_full[_restore_idx].copy() if _restore_idx.size else None}
     if _restore_idx.size:
@@ -1578,7 +1606,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                       n_seeds=1, restarts=1,
                       restart_mode="lean", compress_lambda=0.0,
                       compress_pools=200, compress_refresh=8, deliver_fn=None,
-                      codebook_fn=None, deliver_full_fn=None, gather_fn=None):
+                      codebook_fn=None, deliver_full_fn=None, gather_fn=None,
+                      obj_full=None):
     """Evolve a full-matrix BIN-grain split that maximises VWSR under dual VAMP
     ceilings, hugging the boundary via adaptive tolerance.
 
@@ -1677,6 +1706,34 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             return np.asarray(gather_fn(fd), float)
         return np.asarray(_deliver(sh), float)
 
+    # ── 19if: THE DELIVERED OBJECTIVE, DEFINED ONCE ───────────────────────────────
+    # 19id moved the POPULATION onto the delivered split and left the SEED on the raw one, so
+    # `best_key` (seeded from the seed) and `top_key` (from the population) were on different
+    # scales. The delivered basis reads systematically lower - on the 22:11 run the population's
+    # delivered max was 0.598981 against an incumbent of 0.599109 - so no child could ever win
+    # and the GA sat at generation 0 for 320 generations with improved=False.
+    #
+    # That was not a hard bug to write: the objective was spelled out at each call site, and one
+    # site was missed. So it is spelled out ONCE here and every site calls this - the seed, the
+    # population, the codebook re-score and [decode-loss]. A future basis change has one place
+    # to happen, and a missed site is an AttributeError, not a silent scale mismatch.
+    _OF = obj_full if (_DECODE_OBJ and _have_full and obj_full is not None) else None
+    _OBJ_SC = {"n": 0}
+
+    def _obj_scores(_fd_full, _sh_kept):
+        """(success rate, engineering violation) of the DELIVERED split. THE definition.
+
+        Full-grain when `obj_full` is wired: scored straight off the (P, n_row) array
+        `_deliver_full` returns, so no gather and no renormalise. Kept-grain fallback
+        otherwise - which still carries gather_fn's renormalise and is therefore WRONG for
+        the success rate; [obj-basis] says so out loud when that path is the live one."""
+        _OBJ_SC["n"] += 1
+        if _OF is not None:
+            return (_success_rate(_fd_full, _OF.vol, _OF.succ, _OF.total_vol),
+                    _violation(_fd_full, _OF))
+        _k = np.asarray(_deliver_kept(_sh_kept, _fd_full), float)
+        return _success_rate(_k, p.vol, p.succ, total_vol), _violation(_k, p)
+
     if _compress_on:
         _nmid = int(p.n_mids)
         _cvol = np.asarray(p.vol[p.profile_start], float)            # (n_profiles,) profile volume
@@ -1761,43 +1818,66 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _sd = None
         if _DECODE_OBJ and _have_full:
             _v_old = np.asarray(v, float).copy()          # 19ie: eval_pop's, before it is replaced
-            _sd = np.asarray(_deliver_kept(_sh, _fd), float)
-            v = _success_rate(_sd, p.vol, p.succ, total_vol)
-            x = _violation(_sd, p)
+            v, x = _obj_scores(_fd, _sh)                  # 19if: full grain, no gather
             if not _OBJ_FACT["said"]:
-                # ── 19ie [obj-check] ─────────────────────────────────────────────────────────
-                # The 2026-09-02 21:25 run made ZERO progress: `best success rate 0.59911` at
-                # generation 0 and at generation 320, improved=False, and the shipped split was
-                # the seed. Two explanations produce that same signature and they need opposite
-                # fixes, so guessing between them is not allowed:
+                # ── 19ie [obj-check], 19if ───────────────────────────────────────────────────
+                # WHY IT EXISTS. The 21:25 and 22:11 runs both made ZERO progress: `best success
+                # rate 0.59911` at generation 0 AND at generation 320, improved=False, seed
+                # shipped. Two explanations produce that signature and they need opposite fixes:
                 #   A  the delivered objective is genuinely FLAT (the 0.97 cap saturates the GA's
-                #      main lever), in which case the objective is right and the OPERATORS are
-                #      wrong for it;
-                #   B  `_sd` is not the delivered split, so `v` is a number about nothing. A
-                #      WRONG-BUT-VARYING _sd looks exactly like A from the outside - healthy
-                #      spread, no systematic improvement - which is why a spread test alone
-                #      cannot settle this.
+                #      main lever) - the objective is right and the OPERATORS are wrong for it;
+                #   B  the array scored is not the delivered split, so `v` is a number about
+                #      nothing. A WRONG-BUT-VARYING array looks exactly like A from outside -
+                #      healthy spread, no systematic improvement - so a spread test alone cannot
+                #      settle it.
+                # WHAT IT ANSWERED. Checks 2-4 exonerated the array's variation and ordering
+                # (spread 0.0556 over 40 distinct values against eval_pop's 0.0564; rank
+                # correlation +0.9972). Check 1 caught B: 100.0% of profiles summed to 1.0,
+                # because `gather_fn` renormalises. And the zero progress turned out to be
+                # NEITHER - it was the seed being left on the raw basis (see [obj-basis]).
+                # 19if fixed both. This block STAYS as the standing guard that the fix is live:
+                # check 1 is now read as a regression test, not a diagnosis.
                 # Fires once, only when armed, on the live population.
                 try:
                     _vn = np.asarray(v, float)
                     _P0 = int(_vn.shape[0])
-                    # (1) DOES `_sd` STILL SUM TO 1 PER PROFILE? The delivered split does NOT:
-                    # eligibility zeroes rows, so a profile's kept mass drops below 1. If every
-                    # profile reads 1.0 here, something RENORMALISED after the delivery and `_sd`
-                    # is a normalised SHAPE, not the delivered share - and the success rate
-                    # computed from it is not the success rate of what ships.
-                    _psum = np.add.reduceat(_sd, p.profile_start, axis=1)
+                    # (1) DOES THE SCORED ARRAY STILL SUM TO 1 PER PROFILE? The delivered split
+                    # does NOT: eligibility zeroes rows, so a profile's mass drops below 1. If
+                    # every profile reads 1.0 here, something RENORMALISED after the delivery and
+                    # this is a normalised SHAPE, not the delivered share - and the success rate
+                    # computed from it is not the success rate of what ships. On the full-grain
+                    # path there is no renormalise to do it, so this reading is the PROOF of that.
+                    _oc_arr = _fd if _OF is not None else np.asarray(
+                        _deliver_kept(_sh, _fd), float)
+                    _oc_st = (_OF.profile_start if _OF is not None else p.profile_start)
+                    _psum = np.add.reduceat(np.asarray(_oc_arr, float), _oc_st, axis=1)
                     _at1 = float(np.mean(np.abs(_psum - 1.0) <= 1e-9))
                     log(f"   [obj-check] per-profile sums of the array the objective is scored "
                         f"on: min {float(_psum.min()):.6f} / mean {float(_psum.mean()):.6f} / "
                         f"max {float(_psum.max()):.6f}; {_at1:.1%} of them are 1.0 to 1e-9. "
                         + ("\u26a0 THEY ALL SUM TO 1, WHICH THE DELIVERED SPLIT DOES NOT - "
-                           "eligibility zeroes rows, so kept mass must drop below 1. Something "
+                           "eligibility zeroes rows, so mass must drop below 1. Something "
                            "RENORMALISED after delivery and this is a normalised SHAPE, not the "
-                           "delivered share. That is explanation B."
+                           "delivered share. 19if moved the objective onto the full-grain array "
+                           "to remove exactly this; reading 1.0 here means the fix is NOT in "
+                           "effect."
                            if _at1 > 0.999 else
                            "Mass below 1 where eligibility bit, which is what the delivered "
-                           "split should look like."))
+                           "split should look like \u2014 19if's fix is live."))
+                    # (1b) WHAT THE RENORMALISE WAS COSTING. The pre-19if objective, computed
+                    # once here on the same population, so the size of the defect is a measured
+                    # number in the run rather than an argument in a commit message.
+                    if _OF is not None:
+                        _oc_old = np.asarray(_deliver_kept(_sh, _fd), float)
+                        _oc_ov = _success_rate(_oc_old, p.vol, p.succ, total_vol)
+                        _oc_d = np.asarray(_vn, float) - np.asarray(_oc_ov, float)
+                        log(f"   [obj-check] against the PRE-19if objective (gather + "
+                            f"renormalise) on the same population: mean \u0394 "
+                            f"{float(_oc_d.mean()):+.6f}, worst |\u0394| "
+                            f"{float(np.abs(_oc_d).max()):.6f}. The renormalised figure is the "
+                            "success rate of a shape scaled back up to 1, so it reads HIGH by "
+                            "roughly the mass eligibility removed \u2014 it was never the "
+                            "success rate of anything that ships.")
                     # (2) IS THE NEW OBJECTIVE FLAT, OR JUST DIFFERENT? Spread across the live
                     # population, and how many distinct values it actually takes.
                     _nd = int(np.unique(np.round(_vn, 12)).size)
@@ -1818,11 +1898,13 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                             f"the delivered one on the same population: {_rho:+.4f}. "
                             + ("\u26a0 NEAR ZERO - the two orderings are unrelated, so the "
                                "delivered objective is not a transform of the raw one but noise "
-                               "against it. That is B."
+                               "against it. Suspect the delivery hooks, not the search."
                                if abs(_rho) < 0.2 else
                                "Strongly ordered together - the delivered objective is a "
-                               "compressed version of the raw one, not a scrambled one, so a "
-                               "search that cannot climb it is explanation A."
+                               "compressed version of the raw one, not a scrambled one. If the "
+                               "search still cannot climb it with [obj-basis] clean, the "
+                               "objective is right and the OPERATORS are wrong for it "
+                               "(explanation A)."
                                if abs(_rho) > 0.8 else
                                "Partially ordered - read it with (1) before concluding."))
                     # (4) THE SEED'S TWO NUMBERS, SIDE BY SIDE. If the delivered figure equals
@@ -1833,7 +1915,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                         f"{float(_vn[_ib]):.6f} on the delivered one (\u0394 "
                         f"{float(_vn[_ib] - _v_old[_ib]):+.3g})."
                         + (" \u26a0 IDENTICAL TO 1e-9 - the delivery transform is not reaching "
-                           "the objective. That is B."
+                           "the objective at all."
                            if abs(float(_vn[_ib] - _v_old[_ib])) < 1e-9 else ""))
                 except Exception as _oce:  # noqa: BLE001 - a diagnostic must never break a run
                     log(f"   [obj-check] skipped ({type(_oce).__name__}: {_oce}) - the objective "
@@ -1881,10 +1963,11 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         if _need_sd:
             _sh = _segment_softmax(logits, p.profile_start, p.profile_len, p.max_share)
             _fd = _deliver_full(_sh)
-            _sd = np.asarray(_deliver_kept(_sh, _fd), float)
+            _sd = None
             if _DECODE_OBJ and _have_full:
-                _bv = _success_rate(_sd, p.vol, p.succ, total_vol)
+                _bv, _ = _obj_scores(_fd, _sh)            # 19if: the ONE definition
             if _compress_on and _cb["cent"] is not None:
+                _sd = np.asarray(_deliver_kept(_sh, _fd), float)
                 _bv = _bv - _clam * np.asarray(
                     _dist_fn(_sd, _cb["assign"], _cb["cent"], _cb["cconst"]), dtype=float)
         return _bv, keep_other, keep_band
@@ -1966,10 +2049,75 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     seed_success_rate = _success_rate(s0, p.vol, p.succ, total_vol)[0]
     seed_other = _violation(s0, p)[0]           # engineering viol (global cap + max-share) — secondary
     seed_band = 0.0                              # exact M5 band breach — strict primary key
-    _fd0 = _deliver_full(s0) if (band_penalty_fn is not None or _compress_on) else None
+    _fd0 = _deliver_full(s0) if (band_penalty_fn is not None or _compress_on
+                                 or (_DECODE_OBJ and _have_full)) else None
     if band_penalty_fn is not None:
         seed_band = float(np.asarray(
             band_penalty_fn(_fd0 if _have_full else s0), dtype=float)[0])
+    # ── 19if D2: THE SEED ON THE SAME BASIS AS ITS CHALLENGERS ────────────────────────────
+    # `seed_success_rate` and `seed_other` above are eval_pop's basis - the RAW decoded seed.
+    # `best_success_rate`/`best_key` are seeded from them (below), and from generation 0
+    # onwards every challenger arrives from `_eval_with_bands` on the DELIVERED basis. 19id
+    # moved the population and left this behind, so `top_key > best_key` compared two
+    # different quantities. The delivered basis is systematically lower (eligibility removes
+    # exactly the gateways an unconstrained objective loads up), so the incumbent could never
+    # be beaten: the 2026-09-02 21:25 and 22:11 runs both read `best success rate 0.59911` at
+    # generation 0 AND at generation 320, improved=False, and shipped the seed.
+    #
+    # `seed_band` needs no such treatment - it has been scored on `_fd0` since the bands moved
+    # to the delivered split, which is why the band half of the key never showed this.
+    if _DECODE_OBJ and _have_full and _fd0 is not None:
+        _sb_raw_v, _sb_raw_x = float(seed_success_rate), float(seed_other)
+        _sb_v, _sb_x = _obj_scores(_fd0, s0)
+        seed_success_rate = float(np.asarray(_sb_v, float).reshape(-1)[0])
+        seed_other = float(np.asarray(_sb_x, float).reshape(-1)[0])
+        log(f"[fullmatrix-ga] [obj-basis] the SEED is re-scored on the delivered split before "
+            f"it becomes the incumbent: success rate {_sb_raw_v:.6f} \u2192 "
+            f"{seed_success_rate:.6f} ({seed_success_rate - _sb_raw_v:+.6f}), engineering "
+            f"violation {_sb_raw_x:.6g} \u2192 {seed_other:.6g}. Without this the incumbent "
+            "sits on the RAW scale while every challenger is scored on the DELIVERED one, and "
+            "since delivered reads lower no child can ever win - which is exactly the "
+            "zero-progress signature the 21:25 and 22:11 runs produced.")
+        # ── the full-grain view, PROVEN rather than assumed ───────────────────────────────
+        # `_obj_scores` reads the (P, n_row) delivered array with ctx-order columns. Three
+        # things have to hold for that to be the same quantity the kept path computed, and
+        # all three are properties of THIS build's keep_idx, not laws.
+        try:
+            if _OF is None:
+                log("[fullmatrix-ga] [obj-basis] \u26a0 NO full-grain view was passed "
+                    "(obj_full=None), so the objective falls back to gather_fn - which "
+                    "RENORMALISES each profile to 1. The success rate this run is the success "
+                    "rate of a normalised shape, NOT of the delivered split. Numbers below are "
+                    "not trustworthy; pass obj_full.")
+            else:
+                _ob_f = np.asarray(_fd0, float)
+                _ob_ncol = int(_ob_f.shape[1])
+                _ob_okc = (_ob_ncol == int(_OF.n_row))
+                _ob_dv = abs(float(_OF.total_vol) - float(total_vol))
+                _ob_okv = _ob_dv <= 1e-6 * max(float(total_vol), 1.0)
+                _ob_drop = np.setdiff1d(np.arange(_ob_ncol, dtype=np.intp),
+                                        np.asarray(_OF.keep_idx, np.intp))
+                _ob_lost = float(np.abs(_ob_f[0][_ob_drop]).sum()) if _ob_drop.size else 0.0
+                log(f"[fullmatrix-ga] [obj-basis] full-grain view: {_ob_ncol:,} column(s) vs "
+                    f"n_row {int(_OF.n_row):,} "
+                    + ("\u2713" if _ob_okc else "\u26a0 MISMATCH") + "; profile-volume total "
+                    f"{float(_OF.total_vol):,.6g} vs the kept problem's {float(total_vol):,.6g} "
+                    + ("\u2713 (same denominator, so the two success rates are the same "
+                       "quantity)" if _ob_okv else f"\u26a0 DIFFER by {_ob_dv:.6g}") + "; "
+                    + (f"{_ob_drop.size:,} row(s) are outside the genome and carry "
+                       f"{_ob_lost:.4g} of delivered share on the seed"
+                       + (" \u2713 (nothing the kept path could not see)" if _ob_lost <= 1e-12
+                          else " \u2014 the kept-grain objective could NOT see this share; the "
+                               "full-grain one can, and that is the point")
+                       if _ob_drop.size else "every row is in the genome, so the two grains "
+                                             "differ only by column order"))
+                if not (_ob_okc and _ob_okv):
+                    log("[fullmatrix-ga] [obj-basis] \u26a0\u26a0 the full-grain view does NOT "
+                        "line up with the delivered array. Do NOT trust this run's objective. "
+                        "Set ROUTING_DECODE_OBJ=0 and re-run.")
+        except Exception as _obe:  # noqa: BLE001 - a self-check must never break a run
+            log(f"[fullmatrix-ga] [obj-basis] view check skipped ({type(_obe).__name__}: "
+                f"{_obe}) - the objective is unaffected, only the proof of it.")
     if _compress_on:
         _refresh_codebook(seed_logits)                            # learn the initial codebook from the seed
         _k0 = 0 if _cb["cent"] is None else _cb["cent"].shape[0]
@@ -1999,6 +2147,12 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _dl_nres = int(_dl_res.sum())
         _dl_mass = float(_dl_dec[0][_dl_res].sum())
         _dl_vw = float(_success_rate(_dl_seed, p.vol, p.succ, total_vol)[0])
+        # 19if: `seed_success_rate` is on the DELIVERED basis when the switch is armed, so the
+        # "seed -> decoded" line below has to put the undecoded seed on that basis too or it
+        # reports the basis change as if it were an encoding loss.
+        if _DECODE_OBJ and _have_full:
+            _dl_vw = float(np.asarray(
+                _obj_scores(_deliver_full(_dl_seed), _dl_seed)[0], float).reshape(-1)[0])
         _dl_bd = None
         if band_penalty_fn is not None:
             _dl_fd = _deliver_full(_dl_seed) if (_have_full or _compress_on) else None
