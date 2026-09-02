@@ -1806,13 +1806,13 @@ def render():
                                 "result below — every per-cell rate is a pooled prior.")
                         else:
                             # 19gz: say what it MEANS, not what it joins on.
-                            log(f"   [bin-key] {_bk_hit:,} of {len(_fc_bins):,} BIN(s) in the "
-                                f"forecast data found in the attempts data ({_bk_pct:.1f}%; "
-                                f"{len(_ad_bins):,} distinct BINs there). Unmatched BINs have no "
-                                "attempt history of their own, so their gateways are scored on a "
-                                "POOLED AVERAGE instead of a measured success rate — a low "
-                                "percentage here is the cause of a high pooled-prior rate later, "
-                                "and it is NOT 'expected at BIN grain'.")
+                            # 19hd: headline first, consequence under it. The single sentence
+                            # buried the number that matters behind three clauses of caveat.
+                            log(f"   [bin-key] {_bk_pct:.1f}% of {len(_fc_bins):,} BIN(s) in "
+                                f"forecast data found in the attempts data")
+                            log("             Unmatched BINs have no attempt history of their own.")
+                            log("             gateways are scored on a POOLED AVERAGE instead of "
+                                "a measured success rate")
 
                     mid_list_path = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                     if os.path.exists(mid_list_path) and "gateway" in forecast_temp.columns:
@@ -1901,8 +1901,8 @@ def render():
                                 _mismatch = adf["_g"].isin(gw_in_map) & adf["_ok"].isna()
                                 _ndrop = int(_mismatch.sum())
                                 adf = adf[~_mismatch].drop(columns=["_g", "_c", "_ok"]).reset_index(drop=True)
-                                log(f"   mis-allocated currency: {_ndrop:,} row(s) where the "
-                                    "attempt's currency != the Master MID's currency (dropped)")
+                                log(f"   mis-allocated currency: {_ndrop:,} row(s)  - attempt's "
+                                    "currency != Master MID's currency (dropped)")
                     except Exception as e:
                         log(f"   [Warning] currency filter skipped: {e}")
 
@@ -1937,23 +1937,39 @@ def render():
                                 # match and the filter is silently doing nothing. That second
                                 # case is the same class of naming mismatch that hid the
                                 # auto-block miss for weeks, so it is now checked, not assumed.
-                                _vo_seen = int(_gg.isin(_excl).sum())
-                                _vo_named = sorted(_excl & set(_gg.unique()))
-                                log(f"   switched-off gateways: {len(_excl)} set to target 0 in "
-                                    f"the volume overrides; {_nd:,} attempt row(s) dropped so the "
-                                    "engine cannot learn a success rate for a door that receives "
-                                    "no traffic."
-                                    + ("" if _nd else
-                                       (f" ZERO dropped because none of the {len(_excl)} appears "
-                                        "in this window's attempts at all — the names DID match "
-                                        f"({len(_vo_named)} found in the frame), there is simply "
-                                        "nothing to drop."
-                                        if _vo_named else
-                                        f" ⚠ ZERO dropped AND none of the {len(_excl)} "
-                                        "switched-off gateway names appears in the attempts frame "
-                                        "under the canonical mapping. That is a NAME MISMATCH, "
-                                        "not an empty window: the filter is doing nothing and a "
-                                        "switched-off gateway may still be scored.")))
+                                # ── 19hd: THE 19gz NAME-MISMATCH CHECK WAS BROKEN, AND SILENT
+                                # IS THE RIGHT DEFAULT. ────────────────────────────────────────
+                                # 19gz added a branch meant to tell two causes of "0 dropped"
+                                # apart: an empty window vs a canonical-name mismatch. It could
+                                # not. `_vo_named` non-empty implies at least one row of `_gg` is
+                                # in `_excl`, which implies `_nd >= 1` — but `_vo_named` was only
+                                # consulted inside `("" if _nd else ...)`, i.e. only when
+                                # `_nd == 0`. So `_nd == 0` was EQUIVALENT to `_vo_named` empty,
+                                # the reassuring branch was unreachable, and the ⚠ NAME MISMATCH
+                                # warning fired unconditionally on every run with nothing to drop
+                                # — exactly the empty-window case it claimed to rule out. A guard
+                                # that cannot return its own negative is not a guard.
+                                #
+                                # AND THERE IS NOTHING TO WARN ABOUT. `attempts_success.sql` ends
+                                # `AND gatewayFid IN {GATEWAY_FIDS}`, and DEFAULT_GATEWAY_FIDS
+                                # comes from `active_gateway_fids()`, which emits only rows with
+                                # IsActive truthy. All 15 switched-off fids are IsActive=FALSE in
+                                # Master_MID_List.csv, so the overlap with the queried set is 0 and
+                                # the attempts frame is STRUCTURALLY incapable of containing them.
+                                # Verified both ways: 34 older cached attempts parquets DO contain
+                                # bancard-usd-tav / cwams-usd-tav spelled identically to the
+                                # override keys (so the vocabularies match and the filter used to
+                                # drop), and their last attempt dates — 2026-06-16 and 2026-06-10 —
+                                # sit right on the overrides' own effective dates.
+                                #
+                                # So "0 dropped" is a CONSTANT, not a measurement, and the filter
+                                # stays because it is the live path for a gateway switched off
+                                # while still IsActive=TRUE. It now speaks only when it acts.
+                                if _nd:
+                                    log(f"   switched-off gateways: {_nd:,} attempt row(s) dropped "
+                                        f"for {len(_excl)} gateway(s) set to target 0 in the volume "
+                                        "overrides, so the engine cannot learn a success rate for a "
+                                        "door that receives no traffic.")
                     except Exception as e:
                         log(f"   [Warning] volume-override filter skipped: {e}")
 
@@ -1961,7 +1977,6 @@ def render():
                     # the volume routed and the VAMP cap. 19gb deleted the ALL-RPGT copy kept here:
                     # it fed the Bank×Currency score and nothing else.
                     if _do_rpgt_filter:
-                        _n0, _f0 = len(adf), len(forecast_temp)
                         # 19gz: the per-RPGT table below needs the frames BEFORE the filter, or
                         # every out-of-scope RPGT reads zero and the table says nothing about the
                         # decision it is there to justify.
@@ -1972,10 +1987,9 @@ def render():
                         if "rpgt" in forecast_temp.columns:
                             forecast_temp = forecast_temp[
                                 forecast_temp["rpgt"].astype(str).str.strip().str.lower().isin(_sel_rpgts)].copy()
-                        log(f"   RPGT SCOPE — volume, eligibility and VAMP are restricted to the "
-                            f"{len(_sel_rpgts)} selected RPGT(s); the rest are held at baseline. "
-                            f"Kept {len(adf):,} of {_n0:,} attempt row(s) and "
-                            f"{len(forecast_temp):,} of {_f0:,} forecast row(s).")
+                        # 19hd: the prose header was deleted — the per-RPGT table below carries
+                        # the same two totals AND the split behind them, which is the part that
+                        # can actually be judged.
                         # ── 19gz: THE PER-RPGT TABLE ──────────────────────────────────────
                         # The line above gives two totals and no way to see WHICH RPGT carries
                         # the volume — so "we scoped to 4 of 8" could not be judged as a
@@ -2021,11 +2035,6 @@ def render():
                                 log(f"      {'TOTAL (all RPGTs)':<22}{'':<10}"
                                     f"{_tot[0]:>13,.0f}{_tot[1]:>14,}{_tot[2]:>14,.0f}"
                                     f"{_tot[3]:>10,}")
-                                log("      Rows marked '-' are HELD AT BASELINE: their volume is "
-                                    "not re-routed and their fraud is not counted as movable, but "
-                                    "it still lands in the M5 band totals. A large forecast-txn "
-                                    "figure on a '-' row is volume this run is choosing not to "
-                                    "optimise.")
                         except Exception as _rte:  # noqa: BLE001
                             log(f"      (per-RPGT breakdown unavailable: "
                                 f"{type(_rte).__name__}: {_rte})")
@@ -2074,6 +2083,8 @@ def render():
                                 if _amt in _cols:
                                     _bits.append(f"Σ{_amt}={pd.to_numeric(df[_cols[_amt]], errors='coerce').sum():,.0f}")
                             _diag(f"      {name}: " + " · ".join(_bits))
+                        _diag("")            # 19hd: separate this from the section above
+                        _diag("")
                         _diag("②·diag DATA SHAPES after pre-processing/filters:")
                         # 19gy: the two `rows=… · currencies=… · gateways=…` shape lines are
                         # deleted. Every figure on them is stated with context somewhere else —
@@ -2211,10 +2222,7 @@ def render():
                         # where a reader who needs it will be. What a RUN needs to show is how much
                         # of the book was dropped and what happens to it.
                         log(f"   [require-forecast] {_rf_cells:,} cell(s) / {_rf_rows:,} "
-                            f"gateway-row(s) dropped — the forecast has no row for them, so there "
-                            f"is no volume to route; {len(att):,} gateway-row(s) remain. Those BINs "
-                            f"carry NO rule in the exported split and fall to the gateway config's "
-                            f"default.")
+                            f"gateway-row(s) dropped - not present in forecast")
                     att["volume"] = att["fc_volume"] * att["baseline_share"]
 
                     agg_forecast = att[_gk + ["gateway", "volume", "baseline_share"]].copy()
@@ -2447,11 +2455,12 @@ def render():
                                                          str(_rp).strip().lower(), _g))
                             if _new_rows:
                                 agg_forecast = pd.concat([agg_forecast, pd.DataFrame(_new_rows)], ignore_index=True)
-                                log(f"   exploration: injected {len(_new_rows)} fallback candidate row(s) into "
-                                    f"{'EVERY eligible cell (any-BIN eligibility ON)' if _explore_all else 'single-gateway cells'}"
-                                    f" ({len(set(k[3] for k in _inj_fc_keys))} gateway(s), "
-                                    f"{'auto: currency-capable' if _auto_explore else 'explore list'}); "
-                                    "seeded at the bank×currency average (weak prior).")
+                                log(f"   exploration: injected {len(_new_rows):,} candidate row(s) "
+                                    "into eligible cells")
+                                log(f"                {'EVERY eligible cell (any-BIN eligibility ON)' if _explore_all else 'single-gateway cells'}"
+                                    f" · {len(set(k[3] for k in _inj_fc_keys))} gateway(s) · "
+                                    f"{'auto: currency-capable' if _auto_explore else 'explore list'}"
+                                    " · seeded at the bank×currency average (weak prior).")
                             if _expl_min_vol > 0:
                                 log(f"   exploration volume gate ON (min cell volume {_expl_min_vol:,.0f}): "
                                     f"skipped {len(_pruned_cells)} near-empty cell(s) → fewer fallback rows "
@@ -2902,22 +2911,19 @@ def render():
                         _diag("④·diag ROUTING CELLS assembled:")
                         _diag(f"      cells={len(agg_problems):,} · total gateway-rows={int(_ng.sum()):,} · "
                               f"total forecast volume={_vols.sum():,.0f}")
-                        if len(_ng):
-                            _diag(f"      cells with 1 gateway (cap unsatisfiable): {int((_ng <= 1).sum()):,} · "
-                                  f"cells >50 gateways: {int((_ng > 50).sum()):,}")
+                        # 19hd: "cells with 1 gateway / cells >50 gateways" DELETED. Both read 0
+                        # on every run, and structurally so while exploration is on: the inject
+                        # above puts a fallback candidate into EVERY eligible cell, so a
+                        # 1-gateway cell cannot survive it, and no cell reaches 50 doors at this
+                        # grain. If exploration is ever switched off, 1-gateway cells become
+                        # possible again and this pair is worth reviving — the cap-unsatisfiable
+                        # case is real, it just cannot arise under the shipped configuration.
                         _diag(f"      gateway-rows on POOLED prior (no per-cell attempts): {_npool:,} · "
                               f"auto-explore injected rows: {_nexpl:,}")
-                        # currency / bank / RPGT spread
-                        _curs = sorted({str(p.currency) for p in agg_problems})
-                        _rpgts = sorted({str(p.rpgt) for p in agg_problems})
-                        # 19gj: called "banks" until now, and it was wrong under TRUE BIN GRAIN —
-                        # `p.bin` holds the BIN, and the parent-bank collapse is DISABLED for
-                        # genetic_fullmatrix (see the "[full-matrix] TRUE BIN GRAIN" line above), so
-                        # this counts distinct BINs per currency. Under a parent-bank collapse the
-                        # same field WOULD hold the bank, which is where the old name came from.
-                        _bins_n = len({(str(p.currency), str(p.bin)) for p in agg_problems})
-                        _diag(f"      currencies={_curs} · distinct BINs(×cur)={_bins_n:,} · rpgt grain values={_rpgts[:8]}"
-                              + (" …" if len(_rpgts) > 8 else ""))
+                        # 19hd: the currencies / distinct-BINs / rpgt-grain-values line DELETED.
+                        # All three are properties of the CONFIGURATION, restated: the currencies
+                        # and RPGTs are in RUN CONFIG and the RPGT-scope table, and the BIN count
+                        # is the cell count already printed two lines above.
                     except Exception as _e:  # noqa: BLE001
                         _diag(f"   [cell diagnostics failed: {_e}]")
 

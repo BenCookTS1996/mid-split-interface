@@ -565,6 +565,8 @@ def _reconcile_pre_against_bin_rpgt(pre: pd.DataFrame, out_dir: str) -> None:
                         "" if len(_pairs) == 2 else
                         f" NOTE only {sorted(_pairs)} could be compared; the other metric is "
                         "missing from one of the exports, so it is UNCHECKED.")
+        logger.info("")          # 19hd: separate the reconciliation block from what follows
+        logger.info("")
     except Exception as exc:  # noqa: BLE001 — a cross-check must never break the run
         logger.info("      (baseline reconciliation skipped: %s: %s)", type(exc).__name__, exc)
 
@@ -597,11 +599,16 @@ def load_pre_forecast(path: str) -> pd.DataFrame:
                 # investigation to open the CSV in Excel, where it looked like 1,048,576 rows.
                 # That figure is Excel's hard limit (2^20); it silently truncates anything
                 # larger, so the file as seen in Excel is NOT the file.
+                # 19hd: the Excel-truncation NOTE was removed. It answered a one-off question
+                # (why the file looked like 1,048,576 rows when opened) and that question is
+                # settled; it does not need re-answering on every run. BOTH counts stay: the
+                # file count is the source's size, and the COLLAPSED count is the routing frame
+                # this run actually uses — it is the denominator the RPGT-scope table reports
+                # against ("25,315 of 51,434 forecast row(s)"), so a reader comparing the two
+                # needs it named here.
                 logger.info(
                     "      - baseline from %s: %s row(s) in the file → %s routing cell-row(s) "
-                    "after collapsing to (bank · currency · gateway). NOTE if you open this CSV "
-                    "in Excel it will show at most 1,048,576 rows — Excel's hard limit (2^20) — "
-                    "and truncates the rest without warning.",
+                    "after collapsing to (bank · currency · gateway).",
                     fname, f"{len(_raw_pre):,}", f"{len(out):,}")
                 if len(out):
                     if fname == "vamp_t_period_prorata_export.csv":
