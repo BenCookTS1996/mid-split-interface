@@ -138,3 +138,93 @@ The 19gw floor attempt cost an 1,855s run by transforming the right rule on the 
 order-of-operations blocker in §4 is exactly that class of error, and it is invisible until you
 look at what `block` hands to `elig`. Step 3 is the design's own check: if `_fm_deliv` is not a
 provable no-op afterwards, the fold is wrong and the log says so before anything ships.
+
+---
+
+## 10. Two corrections, after 19ia
+
+### 10a. The 12 rows are NOT float32
+
+`[deliv-fixed]`'s residual — 12 of 154,405 rows, worst |Δ| 6.212e-04 — has nothing to do with
+`ROUTING_PROJ_FLOAT32`. That setting narrows the **band projector kernel**; the delivery transform
+is a different code path and is **float64 end to end**:
+
+- `_fm_cap` → `np.asarray(_farr, float)`
+- `apply_elig_pop` → `np.asarray(X, dtype=float)`
+- `[deliv-fuse]` verifies it by **int64 bit-pattern comparison**, which only makes sense on float64
+
+And the size settles it independently: **6.2e-04 on a share is not rounding.** float64 epsilon on
+a share of order 0.01–0.97 is ~1e-16 relative; 6.2e-04 is twelve orders of magnitude larger. It is
+0.06 of a percentage point — a real move on a real row.
+
+**So it is structural, exactly as predicted in §4:** `block` pins a row to the exploration floor,
+the 0.97 water-fill that runs after it sees a row with `share > 1e-12` under the cap and hands it
+excess, and the row comes off the floor. Twelve rows is small. It is not noise.
+
+### 10b. `deliver` is NOT redundant, and the 147.5s was overstated
+
+I framed the prize as *"`_deliver_full` is 147.5s, 38.2% of eval — removing it is more than a
+third of the run."* That was wrong in a way worth recording.
+
+**The transform still has to run, once per candidate, for ever.** The band penalty is scored on
+the *delivered* split — that is the whole point of 19fg and 19go — and you cannot score the
+delivered split without computing it. `_deliver_full` inside `_eval_with_bands` is not a duplicate
+or a check; it is the thing that produces the number the fitness uses.
+
+What 19ia removed was the **mismatch**, not the computation. What separates the two:
+
+| | can it go? |
+|---|---|
+| `_deliver_full` in `_eval_with_bands` | **No.** It computes the band penalty's input. |
+| the scored-vs-shipped gap (6,428 keys) | **Gone in 19ia** — return the array that was scored. |
+| the SECOND cap (`_fm_cap` after `elig`) | **Yes, but only via the §4 reorder** — put `elig` in front of the decode's cap and the second application has nothing to repair. |
+| `_fm_deliv` in the never-worse comparison | already deduped by 19fi. |
+
+So "deliver is not needed at all" is true of the **concept** — after 19ia the search's output is
+already delivery-final, and nothing downstream needs to transform it again to make it shippable.
+It is not true of the **computation**, and the honest saving is the double cap in §5, not 147.5s.
+
+---
+
+## 11. Step 2b — the objective is measured on the WRONG SPLIT
+
+Found while implementing 19ia, and it is the more consequential half.
+
+```
+v, x = eval_pop(logits)                                   # SUCCESS RATE + engineering violation
+_sh  = _segment_softmax(logits, …, p.max_share)           # decode
+_fd  = _deliver_full(_sh)                                 # block -> elig -> cap
+_band = band_penalty_fn(_fd)                              # CONSTRAINTS
+```
+
+`eval_pop` is a fused numba kernel that does **its own internal softmax** and computes the success
+rate from it. It applies the **cap** (19gu put the cap in every decode path, including this one)
+but **not `block` and not `elig`**.
+
+**So the GA maximises the success rate of a split it does not ship, subject to bands measured on
+the split it does.** Eligibility zeroes rows and renormalises onto the survivors, so the delivered
+split's success rate is a *different number* — and generally a **lower** one, because eligibility
+removes gateways the objective would otherwise have loaded up.
+
+### What closing it takes
+
+- `_fd` **already exists** at that point in the function, so the success rate can be computed from
+  it directly — a weighted sum over the delivered array. Cheap; `eval_pop` is only 22.3 ms/call
+  and 2.1% of eval, so this is not a performance question.
+- The **engineering violation** (global VAMP cap + max-share) comes out of the same kernel and
+  would have to move with it, or the two halves of `x` disagree about which split they describe.
+- **Two call paths do not have `_fd`:** the early return when no band scoring is wired
+  (`_eval_with_bands`, `_need_band` false) and `_rescore_compress`. Both need a defined answer.
+
+### Why it gets its own run, and its own warning
+
+**This changes the reported success rate.** Not the split, the *headline number* — 0.615322 has
+been the same figure for eight runs and it will move. That is not a regression; it is the number
+becoming the one that describes what ships. But it means:
+
+- it cannot share a run with `ROUTING_DECODE_DELIV` or `ROUTING_PROJ_SFLOOR`;
+- the run before it must be the armed-19ia run, so the split is already delivery-final and only
+  the *measurement* changes;
+- and the log must say plainly that the success rate is not comparable with any earlier run.
+
+**Not started. `ROUTING_DECODE_OBJ` is the reserved name.**
