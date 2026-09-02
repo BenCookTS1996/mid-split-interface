@@ -319,3 +319,74 @@ asymmetry and it is not guaranteed to stay at 1 once the floor's renormalisation
 * `[forensic]`'s bar is `f32_noise_floor()`-scaled, so **it will still fire.** Either accept that
   cost, or raise the bar to the measured class-4 residual once it is known — a decision to take
   from the first run's log, not now.
+
+
+---
+
+## 14. The capability-mask grain — DECIDED 2026-09-02
+
+**Decision: the floor uses the SEARCH's (vampMid, currency)-grain mask, and delivery is brought
+into line with it.** Recorded here because it changes the delivered number, so it is not a
+step-2 implementation detail.
+
+### The two masks
+
+| | grain | built where | over-blocks? |
+|---|---|---|---|
+| search (`emask`) | (vampMid, **currency**) | tab_2 `_wc_pairs` / `_uo_pairs`, from `Master_MID_List + routing_restrictions` | no |
+| delivery (`_emask` / `_emask_f`) | vampMid **only** | `impact_calcs`, from the `wallet_incapable` / `usa_only` NAME SETS | yes |
+
+Delivery over-blocks any vampMid whose fids differ in capability by currency — tab_2's
+`[emask]` line names the case: *PaySafe - Total AV is wallet-capable in USD, not in EUR/GBP.*
+The vampMid-only test bans it everywhere.
+
+`[ef-mask]` (19he) reports both counts and the disagreement every run.
+
+### Why this is more than a step-2 detail
+
+`wallet_incapable` / `usa_only` arrive as NAME SETS at **four** delivery entry points, and the
+mask is rebuilt from them in more than one place:
+
+* `compute_vamp_prepost_granular` — twice: the `prop_raw` zeroing (gated on `not _enforced`)
+  **and** the floor block's own `_emask_f`
+* `build_split_exports` — the SHIPPED TEMPLATE
+* `enforced_prop_items`, `enforced_split_frame`
+* tab 3's own call sites (`tab_3_split_outputs_impact.py` lines 543, 789, 1343, 4291)
+
+**Changing one of these and not the others replaces one asymmetry with a worse one.** In
+particular, a currency-grain floor over a vampMid-grain `build_split_exports` would mean the
+shipped template bans a door the floor then re-floors.
+
+### The work, in order
+
+1. **Hoist the pair builder into a shared helper** (`app_common` or `s3_problem/eligibility`),
+   so `(vampMid, currency)` pairs have ONE source. Today it is local to tab_2.
+2. **Give the delivery functions a pair-grain parameter** alongside the name sets, falling back
+   to the name sets when pairs are absent — so an un-migrated caller keeps today's behaviour
+   exactly and the change is opt-in per call site.
+3. **Migrate the call sites together**: `compute_vamp_prepost_granular` (both mask sites),
+   `build_split_exports`, `enforced_prop_items`, `enforced_split_frame`, and tab 3's four.
+4. **Behind `ROUTING_EMASK_PAIRS`**, default OFF, because it changes the delivered number.
+5. Only then wire the floor into the kernel (step 2 of §12).
+
+### Does the whole chain still reconcile?
+
+**Not automatically, and not until step 3 above is complete.** The chain has four hand-off
+points and the mask has to be the same object at every one:
+
+```
+search (projector)  ──►  delivery (compute_vamp_prepost_granular)
+                    ──►  tab 3 PRE vs POST impact table
+                    ──►  tab 3 exports / validate-split
+```
+
+The search and delivery agree once (2) and (3) land. Tab 3's table and its exports read
+`compute_vamp_prepost_granular` and `build_split_exports`, so they inherit the fix — **but only
+if tab 3's four call sites are migrated in the same change.** Leave any one of them on the name
+sets and tab 3 will show a different PRE/POST split from the one the engine reconciled against,
+which is the same class of failure as 19gw and would look like a tab 3 bug.
+
+**Acceptance test for this piece, before the floor is touched at all:** with
+`ROUTING_EMASK_PAIRS=1` and the floor still OFF everywhere, reconciliation error must stay
+inside the float32 noise floor and tab 3's PRE must still agree exactly with the baseline. That
+isolates the mask change from the floor change — one variable, as the 10:17 run was.

@@ -3973,10 +3973,15 @@ def render():
                             _rcT = int(_rc.get("t0", _rcS))
                             _rcI = int(_rc.get("inj", 0))
                             _rcF = int(_rc["final"])
-                            log("   ── Scaffold vs pro-rata export Reconciliation ── these two "
-                                "row counts measure DIFFERENT populations; here is every step "
-                                "between them ──")
+                            # 19hf: the "these two row counts measure DIFFERENT populations"
+                            # preamble moved off the header — it is what the table demonstrates,
+                            # so it does not also need announcing. Two blank lines above, because
+                            # this table sat flush against the scaffold line before it.
+                            log("")
+                            log("")
+                            log("   ── Scaffold vs pro-rata export Reconciliation ──")
                             log(f"      {'step':<58}{'delta':>14}{'running':>14}")
+                            log(f"      {'-' * 58}{'-' * 14}{'-' * 14}")
                             log(f"      {'1  pro-rata export rows on disk':<58}"
                                 f"{'':>14}{_rcD:>14,}")
                             log(f"      {'2  collapse to (cur,bin,rpgt,pmp,ctry,mid,period,t)':<58}"
@@ -3987,6 +3992,7 @@ def render():
                                 f"{_rcT - _rcS:>+14,}{_rcT:>14,}")
                             log(f"      {'5  inject candidate-door zero rows':<58}"
                                 f"{_rcI:>+14,}{_rcT + _rcI:>14,}")
+                            log(f"      {'-' * 58}{'-' * 14}{'-' * 14}")
                             log(f"      {'=  SCAFFOLD ROWS the band projector walks':<58}"
                                 f"{'':>14}{_rcF:>14,}")
                             _rc_ok = (_rcT + _rcI) == _rcF
@@ -3995,10 +4001,14 @@ def render():
                                    f"✗ OFF BY {_rcF - (_rcT + _rcI):+,} — a row was added or "
                                    "dropped between the injection and here, and this block is the "
                                    "only thing that would notice"))
-                            log(f"      cells: {_rc.get('cells', 0):,} scaffold cells "
-                                f"({_rc.get('cells_band', 0):,} with a banded MID's own baseline "
-                                f"row + {_rc.get('cells', 0) - _rc.get('cells_band', 0):,} "
-                                "candidate-door-only)")
+                            # 19hf: said as one plain sentence. It was three parenthesised
+                            # counts and a term ("candidate-door-only") defined nowhere near it.
+                            _rc_cn = int(_rc.get("cells", 0))
+                            _rc_cb = int(_rc.get("cells_band", 0))
+                            log(f"      cells: {_rc_cn:,} cell(s) the search can route into — "
+                                f"{_rc_cb:,} already had a banded MID with baseline history there, "
+                                f"{_rc_cn - _rc_cb:,} exist only because a candidate door was "
+                                "injected into them.")
                             log("      WHAT EACH STEP IS. 2 sums duplicate rows that share the "
                                 "full key — the export can carry more than one row per key. 3 is "
                                 "the big one: the scaffold only needs cells a BANDED MID can be "
@@ -4266,14 +4276,23 @@ def render():
                         try:
                             _cap_tot = sum(_v for _, _v in _cap_tm["rows"])
                             if _cap_tot >= 1.0:
+                                # 19hf: a ruled table, and the purpose said once in a sentence
+                                # rather than folded into the header as a parenthesis.
+                                log("")
                                 log(f"   [cap-timing] building the per-MID cap scaffold took "
-                                    f"{_cap_tot:.1f}s, largest first (these SUM to the gap "
-                                    "between the scaffold line above and the caps line below, so "
-                                    "there is no residual to argue about) ──")
+                                    f"{_cap_tot:.1f}s — where those seconds went, slowest first.")
+                                log(f"      {'step':<64}{'seconds':>10}{'share':>9}")
+                                log(f"      {'-' * 64}{'-' * 10}{'-' * 9}")
                                 for _l, _v in sorted(_cap_tm["rows"], key=lambda kv: -kv[1]):
                                     if _v >= 0.05:
-                                        log(f"      {_v:8.1f}s  "
-                                            f"({100.0 * _v / max(_cap_tot, 1e-9):>5.1f}%)  {_l}")
+                                        log(f"      {_l[:64]:<64}{_v:>9.1f}s"
+                                            f"{100.0 * _v / max(_cap_tot, 1e-9):>8.1f}%")
+                                log(f"      {'-' * 64}{'-' * 10}{'-' * 9}")
+                                log(f"      {'TOTAL':<64}{_cap_tot:>9.1f}s{100.0:>8.1f}%")
+                                log("      These SUM to the gap between the scaffold line above "
+                                    "and the caps line below, so there is no unexplained "
+                                    "remainder — the list is which step to attack, not a share "
+                                    "of something larger.")
                         except Exception as _cte:  # noqa: BLE001
                             log(f"   [cap-timing] unavailable ({type(_cte).__name__}) — "
                                 "measurement only.")
