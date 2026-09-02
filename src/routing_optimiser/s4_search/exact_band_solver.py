@@ -542,10 +542,17 @@ def solve_least_breach(exact_bands, incidence, base_shares, profile_starts, prof
                    + (f" Stall stop ARMED at {stall} consecutive rejected step(s) "
                       "(ROUTING_SEED_LP_STALL) — this CAN change the seed."
                       if stall else ""))
+        # 19hx: the per-step lines are a TABLE. Thirteen "exact projector: step N/40 (best breach
+        # X, tr=Y)..." lines are three columns pretending to be prose, and the whole point of
+        # reading them together is to watch tr halve while the breach does not move.
+        if log_fn:
+            log_fn("")
+            log_fn(f"         {'step':>6}{'trust region':>16}{'best breach so far':>22}")
+            log_fn(f"         {'-' * 44}")
         for outer in range(int(max_outer)):
             if log_fn:
-                log_fn(f"      exact projector: step {outer + 1}/{int(max_outer)} "
-                       f"(best breach {best_b:.4g}, tr={tr:.3g})…")
+                log_fn(f"         {f'{outer + 1}/{int(max_outer)}':>6}{tr:>16.4g}"
+                       f"{best_b:>22.6g}")
             _t_step = _time.perf_counter()
             info["ran"] = outer + 1
 
@@ -758,26 +765,42 @@ def _lp_report(info, log_fn, *, tr_min, max_outer):
             _pr = [float(d.get("pred", float("nan"))) for d in _rejs]
             _pl = [float(d.get("pull", float("nan"))) for d in _rejs]
             _dn = [float(d.get("dsn", float("nan"))) for d in _rejs]
+            _rb = [float(d.get("breach", float("nan"))) for d in _rejs]
             _fin = [x for x in _pr if not _math.isnan(x)]
+            # the re-projection is undoing the LP's step
             _pull_big = sum(1 for _p, _d in zip(_pl, _dn)
                             if not _math.isnan(_p) and not _math.isnan(_d)
                             and _d > 0 and _p > 0.5 * _d)
-            _pred_flat = sum(1 for x in _fin if abs(x) <= max(1e-9, 1e-3 * abs(_b0)))
+            # the model promises a LOT more than the incumbent and does not deliver it
+            _optimistic = sum(1 for _p, _r in zip(_pr, _rb)
+                              if not _math.isnan(_p) and not _math.isnan(_r)
+                              and _p <= 0.5 * abs(_b0) and _r >= abs(_b0))
+            # the model promises nothing better than the incumbent
+            _exhausted = sum(1 for _p in _fin if _p >= 0.9 * abs(_b0))
             log_fn("            ⇒ READING: "
-                   + (f"{_pred_flat} of {len(_fin)} rejected step(s) had the LP predicting "
-                      "essentially NOTHING, so the direction is exhausted and the halving after "
-                      "them buys nothing - that is the case where a stall stop is free. "
-                      if _pred_flat else "")
-                   + (f"{_pull_big} of {len(_rejs)} had the re-projection pulling the point back "
-                      "by more than half the LP's own step, so the step being EVALUATED is not the "
-                      "step the LP solved for - look at _project_capped_simplex_profiles before "
-                      "the trust region. "
+                   + (f"{_pull_big} of {len(_rejs)} step(s) had the re-projection pulling the "
+                      "point back by more than half the LP's own step, so the step EVALUATED is "
+                      "not the step the LP solved for - look at "
+                      "_project_capped_simplex_profiles before the trust region. "
                       if _pull_big else "")
-                   + ("Neither pattern dominates: the LP predicted a real gain, the projection "
-                      "left it broadly intact, and the exact breach still got worse - which is the "
-                      "linearisation being wrong at that step size, and halving is the correct "
-                      "response to that."
-                      if not _pred_flat and not _pull_big else ""))
+                   + (f"{_optimistic} of {len(_rejs)} step(s) had the LP predicting a breach at "
+                      f"or below half the incumbent ({_b0:.4g}) - often 0, i.e. FULL COMPLIANCE - "
+                      "and the exact breach then came back no better. THE LINEARISED MODEL IS NOT "
+                      "PREDICTIVE HERE: with far more free shares than constraints the LP can "
+                      "always find a direction that satisfies every band TO FIRST ORDER, and the "
+                      "true 1/vpsum response does not follow it. Halving the trust region does "
+                      "not rescue that - the incumbent is a genuine local minimum, the model just "
+                      "cannot see it - so the rejections after the first are pure cost and a "
+                      "stall stop is FREE. "
+                      if _optimistic else "")
+                   + (f"{_exhausted} of {len(_fin)} step(s) had the LP predicting nothing better "
+                      "than the incumbent, so the direction is exhausted on the model's own "
+                      "terms. "
+                      if _exhausted else "")
+                   + ("No pattern dominates: the LP promised a real gain, the projection left it "
+                      "intact, and the exact breach still got worse - the linearisation is wrong "
+                      "at that STEP SIZE and halving is the correct response."
+                      if not (_pull_big or _optimistic or _exhausted) else ""))
             log_fn("            [lp-why] is a DIAGNOSTIC added in 19hw to answer 'why 12 of 13?'. "
                    "It costs one array copy and one abs-sum per step. Delete it once the answer is "
                    "acted on.")
@@ -947,10 +970,19 @@ def unmet_summary(split, exact_bands, incidence, *, max_list=8):
                 continue
             total += 1
             nw = float(rr["now"]); me = str(rr.get("metric"))
+            # 19hx: THE MARGIN, ALWAYS. Without it this printed "1,300 > 1,300" and
+            # "20,000 < 20,000" — which read as a contradiction and hid the only number that
+            # matters here: how far past the line the value actually is. The seed stages drive
+            # each band ONTO its ceiling, so the margin is routinely a fraction of a unit and the
+            # 0-dp format rounded it out of existence.
             if cl is not None and float(cl) > 0 and nw > float(cl) + 1e-6:
-                unmet.append(f"{rr['midl']} {me} {nw:,.0f} > {float(cl):,.0f}")
+                _ov = nw - float(cl)
+                unmet.append(f"{rr['midl']} {me} {nw:,.0f} > {float(cl):,.0f} "
+                             f"(over by {_ov:,.4g} = {_ov / max(float(cl), 1e-12):.3%})")
             elif fl is not None and float(fl) > 0 and nw < float(fl) - 1e-6:
-                unmet.append(f"{rr['midl']} {me} {nw:,.0f} < {float(fl):,.0f}")
+                _un = float(fl) - nw
+                unmet.append(f"{rr['midl']} {me} {nw:,.0f} < {float(fl):,.0f} "
+                             f"(under by {_un:,.4g} = {_un / max(float(fl), 1e-12):.3%})")
         if total == 0:
             return ""
         if not unmet:
