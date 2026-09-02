@@ -10,7 +10,7 @@ from .utils import setup_logger
 
 logger = setup_logger(__name__)
 
-__build__ = "2026-07-19-prorata-export-fcp1-per-subcell+reconcile-guard"
+__build__ = "2026-07-19-prorata-export-fcp1-per-profile+reconcile-guard"
 
 
 def reconcile_granular_to_mid_level(output_dir, *, id_col, vamp_metric, txn_metric,

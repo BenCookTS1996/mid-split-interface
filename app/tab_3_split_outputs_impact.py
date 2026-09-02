@@ -1216,9 +1216,13 @@ def render():
                              "Old Success Rate", "New Success Rate", "30D $ Impact"]
 
                     # [FN-359]
-                    # 19hn: `_fmt_cell` / `_cells` here mean an HTML TABLE PROFILE, not a routing
-                    # profile. Do NOT let a profile->profile sweep take these.
-                    def _fmt_cell(col, v):
+                    # 19ho: named after the HTML element these build (<td>) rather than after
+                    # the word "cell", which now means one gateway in a profile everywhere else
+                    # in the project. REMOVING the ambiguous word beats carving out an exception
+                    # for it: the 19hn comment that existed to PROTECT `_fmt_cell` was itself
+                    # rewritten by a later prose sweep into "an HTML TABLE PROFILE" and "a
+                    # profile->profile sweep". That is how an exception decays.
+                    def _fmt_td(col, v):
                         if col == "Bank":
                             _s = str(v)
                             return (_s[:30] + "…") if len(_s) > 30 else _s
@@ -1246,16 +1250,16 @@ def render():
                     # [FN-361]
                     def _bank_row_html(r, is_total=False):
                         _tb = "border-top:2px solid var(--tav-line);" if is_total else ""
-                        _cells = []
+                        _tds = []
                         for _c in _cols:
                             _al = "left" if _c == "Bank" else "right"
                             _fw = "800" if is_total else ("600" if _c == "Bank" else "normal")
                             _clr = "var(--tav-ink)"
                             if _c == "30D $ Impact" and not is_total:
                                 _clr = "#22C36B" if float(r[_c]) >= 0 else "#e63748"
-                            _cells.append(f'<td style="{_bcw(_c)} text-align:{_al}; color:{_clr}; '
-                                          f'font-weight:{_fw}; {_tb} white-space:nowrap;">{_fmt_cell(_c, r[_c])}</td>')
-                        return "<tr>" + "".join(_cells) + "</tr>"
+                            _tds.append(f'<td style="{_bcw(_c)} text-align:{_al}; color:{_clr}; '
+                                          f'font-weight:{_fw}; {_tb} white-space:nowrap;">{_fmt_td(_c, r[_c])}</td>')
+                        return "<tr>" + "".join(_tds) + "</tr>"
 
                     for _, _r in bank_view.iterrows():
                         _h.append(_bank_row_html(_r))

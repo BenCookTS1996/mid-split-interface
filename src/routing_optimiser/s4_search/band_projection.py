@@ -121,8 +121,8 @@ import pandas as pd
 # end-to-end proof that nothing which matters moved.
 
 __build__ = ("2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on"
-             "+2026-08-19by-lane-cap-16-measured-on-the-cell-blocked-kernel"
-             "+2026-08-19bt-cell-blocked-kernel"
+             "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
+             "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
              "+2026-08-19bn-lane-cap-16"
              "+2026-08-19bi-int32-indices-adopted+2026-08-19bf-chunk-speedup-claim-delegated-to-kernel-ab+2026-08-19bb-docstring-proxy-claim-deleted+2026-08-19az-chunked-parallel-adopted+2026-08-19aw-serial-fastmath+2026-08-19av-lazy-fastmath+staleness-sentinel+2026-08-19aq-vamp-conservation-gate+2026-08-16-appearance-month-timing"
@@ -586,8 +586,25 @@ _cb_kernel_par = _njit(cache=False, parallel=True)(_cb_kernel_impl)
 # 19hm: renamed with the OLD NAME STILL HONOURED. A switch name is a user contract — it is
 # typed at a prompt and written into notes — so renaming it outright would silently stop
 # obeying an instruction someone had already recorded. New name wins; old name still works.
-_PROJ_CB_ON = (os.environ.get("ROUTING_PROJ_PROFILEBLOCK",
-                              os.environ.get("ROUTING_PROJ_CELLBLOCK", "1")) != "0")
+def _env_switch(_new, _old, _default):
+    """Read a renamed kill switch, honouring the old spelling and SAYING SO.
+
+    src/ must not import app/, so this is a local twin of app_common.env_switch rather than a
+    shared call. It prints for the same reason: deleting the alias is the one change in the
+    cell->profile rename that could SILENTLY ignore an instruction already written down.
+    """
+    v = os.environ.get(_new)
+    if v is not None:
+        return v
+    lv = os.environ.get(_old)
+    if lv is not None:
+        print(f"[band_projection] [deprecated-switch] {_old}={lv} was honoured. Rename it to "
+              f"{_new} — the old spelling is a compatibility shim and will be removed.")
+        return lv
+    return _default
+
+
+_PROJ_CB_ON = _env_switch("ROUTING_PROJ_PROFILEBLOCK", "ROUTING_PROJ_CELLBLOCK", "1") != "0"
 # 19bz: FLOAT32, OPT-IN. See the module patch note. This is the ONE setting in the projector that
 # changes the answer, so it defaults OFF, it announces itself in the run log, and it measures its
 # own drift on the live scaffold every run instead of quoting a remembered figure.

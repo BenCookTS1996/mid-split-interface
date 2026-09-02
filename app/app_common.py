@@ -299,6 +299,14 @@ def env_switch(name, default=None):
         lv = os.environ.get(legacy)
         if lv is not None:
             _SWITCH_LEGACY_USED[legacy] = (name, lv)
+            # 19ho: SAY SO. The alias is the ONE place the old vocabulary survives, and it
+            # survives on purpose — deleting it is the only change in this whole rename that
+            # could SILENTLY ignore an instruction someone has already written down (the switch
+            # would read as unset, the run would look fine, and it would do the opposite of what
+            # was asked). Keeping it quiet is the other failure mode, so it is now loud: every
+            # legacy read prints once, names its replacement, and the run log lists them.
+            print(f"[deprecated-switch] {legacy}={lv} was honoured. Rename it to {name} — "
+                  "the old spelling is a compatibility shim and will be removed.")
             return lv
     return default
 

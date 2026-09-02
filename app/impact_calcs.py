@@ -72,8 +72,8 @@ class _Skip(Exception):
     `except Exception` handlers that set the stash to None (= "this failed"), and a skip
     must not be recorded as a failure. Each handler re-checks the flag."""
 
-__build__ = ("2026-08-17b-count-only-pool-search+subcell-exporter+staged-enforcement"
-             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zerocell+vamp-term-stash+2026-09-01-19gq-gk-int-key+cvp-submarks+19gt-forensic-on-demand")
+__build__ = ("2026-08-17b-count-only-pool-search+profile-exporter+staged-enforcement"
+             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zeroprofile+vamp-term-stash+2026-09-01-19gq-gk-int-key+cvp-submarks+19gt-forensic-on-demand")
 
 
 # [FN-246b]
@@ -2960,8 +2960,8 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
     # sum and moves no volume. Kill-switch: ROUTING_CA_ZEROPROFILE=0.
     _ph_n = 0
     # 19hm: renamed, old name still honoured (app_common.env_switch carries the alias table).
-    if os.environ.get("ROUTING_CA_ZEROPROFILE",
-                      os.environ.get("ROUTING_CA_ZEROCELL", "1")) != "0":
+    from app_common import env_switch as _es
+    if _es("ROUTING_CA_ZEROPROFILE", "1") != "0":
         try:
             _allc = allm[_subk].drop_duplicates()
             _posc = _pos[_subk].drop_duplicates()

@@ -22,7 +22,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-__build__ = "2026-08-16-subcell-volume-glue"
+__build__ = "2026-08-16-profile-volume-glue"
 
 _ALL = "_all_"   # sentinel profile label when the export has no pmp/Country split for a profile
 

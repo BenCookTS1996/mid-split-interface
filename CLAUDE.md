@@ -55,12 +55,20 @@ name is a user contract — it gets typed at a prompt and written into notes and
 
 New name wins; either works. `app_common.env_switch` holds the alias table.
 
-### Two places the word means something else, deliberately left
+### The only place the old word survives, and why
 
-| kept as-is | why |
+| survives | why |
 |---|---|
-| `_PK_SPEC_CELL` (was `_PK_SPEC_SUBCELL`) | the 6-part prop-key spec genuinely **is** a CELL, so it moved the other way |
-| `actuarial_engine`'s `denom_cols` (was `cells`) | it held (column, denominator, m, t) tuples — never a routing group, so neither word fitted. Renamed for accuracy, not vocabulary. |
+| the four legacy `ROUTING_*` switch names, in the alias tables ONLY | Deleting them is the **one** change in this rename that could SILENTLY ignore an instruction someone has already written down: the switch would read as unset, the run would look fine, and it would do the opposite of what was asked. So they are honoured AND ANNOUNCED — `[deprecated-switch]` prints the old spelling, the value and its replacement on every legacy read. Once no note anywhere uses the old names, delete the tables. |
+
+Everything else moved, including the `__build__` tags (nothing matches on them — verified — so
+they were the only thing keeping the old word in the source) and `_fmt_cell` / `_cells` in
+tab_3, which became `_fmt_td` / `_tds`. **Removing an ambiguous word beats carving out an
+exception for it**: the comment that existed to protect `_fmt_cell` from a rename sweep was
+itself rewritten by a later sweep into "an HTML TABLE PROFILE". That is how an exception decays.
+
+`_PK_SPEC_CELL` keeps the word because it is CORRECT — that spec is the 6-part prop-key, which
+is a cell.
 
 `app/tab_1_3_config_validation.py` DOES use the word in this document's sense — a pool's
 "profile dimensions" are currency / BIN / country / provider, no gateway — so it needed no

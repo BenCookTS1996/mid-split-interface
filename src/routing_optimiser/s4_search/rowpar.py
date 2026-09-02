@@ -35,9 +35,21 @@ _RP_WORKERS = int(_os.environ.get("ROUTING_ROW_PARALLEL_WORKERS", "0") or 0)
 _RP_MIN_ROWS = int(_os.environ.get("ROUTING_ROW_PARALLEL_MIN_ROWS", "4") or 4)
 # below ~1M profiles the thread hand-off costs more than the work it hands off
 # 19hm: renamed, old name still honoured (see band_projection's note on switch contracts).
-_RP_MIN_PROFILES = int(_os.environ.get(
-    "ROUTING_ROW_PARALLEL_MIN_PROFILES",
-    _os.environ.get("ROUTING_ROW_PARALLEL_MIN_CELLS", "1000000")) or 1000000)
+def _rp_env_switch(_new, _old, _default):
+    """Renamed switch, old spelling still honoured and announced (see band_projection's twin)."""
+    v = _os.environ.get(_new)
+    if v is not None:
+        return v
+    lv = _os.environ.get(_old)
+    if lv is not None:
+        print(f"[rowpar] [deprecated-switch] {_old}={lv} was honoured. Rename it to {_new} — "
+              "the old spelling is a compatibility shim and will be removed.")
+        return lv
+    return _default
+
+
+_RP_MIN_PROFILES = int(_rp_env_switch(
+    "ROUTING_ROW_PARALLEL_MIN_PROFILES", "ROUTING_ROW_PARALLEL_MIN_CELLS", "1000000") or 1000000)
 
 _POOL = [None]
 _STATE = {}

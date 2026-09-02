@@ -26,6 +26,9 @@ from app_common import load_mid_list, _norm_cols  # memoised MID reader + column
 # 19hh: ONE source for (vampMid, currency) wallet/USA capability — see §14 of
 # docs/scope_exploration_floor_in_search.md. The delivery path reads the same helper.
 from app_common import capability_pairs as _cap_pairs
+# 19ho: ONE reader for the four renamed kill switches, so the deprecation warning for an old
+# spelling fires from a single place rather than four inline fallbacks.
+from app_common import env_switch as _env_switch
 from app_common import run_company            # 19ea: ONE reader for the run's brand
 # 19ft: ONE resolver for config/inputs, so a mastercard run reads the mastercard copy.
 from app_common import input_json_path
@@ -3754,9 +3757,8 @@ def render():
                         # incidence drops that share. Every MID of a kept profile is retained, so
                         # psum/vpsum stay exact. Kill-switch: ROUTING_DOOR_COVER_PROFILES=0.
                         # 19hm: renamed, old name still honoured.
-                        if _door_profiles and os.environ.get(
-                                "ROUTING_DOOR_COVER_PROFILES",
-                                os.environ.get("ROUTING_DOOR_COVER_CELLS", "1")) != "0":
+                        if _door_profiles and _env_switch(
+                                "ROUTING_DOOR_COVER_PROFILES", "1") != "0":
                             _keep = _keep | (_door_profiles & set(_profilek.unique()))
                             if len(_keep) != _keep_base:
                                 log(f"   [door-cover] scaffold profiles {_keep_base:,} → {len(_keep):,} "
@@ -5319,7 +5321,7 @@ def render():
                                     "enforcement blends once). Set ROUTING_GA_ELIG=0 to disable.")
                                 # 19bl: this counter is the CANARY for the 19bk clobber. It read
                                 # 147,944/245,409 (60%) on every run up to 16:01 and 0/1 (0%) at
-                                # 17:21, because the file had lost `+exact-subcell-capability`. At
+                                # 17:21, because the file had lost `+exact-profile-capability`. At
                                 # profile grain 0% is not "nothing to do" — it means the GA is
                                 # scoring with the global fraction while delivery applies the exact
                                 # rule, which is a guaranteed SPLIT divergence. Flag it, do not

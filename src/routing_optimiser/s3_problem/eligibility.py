@@ -34,10 +34,10 @@ import pandas as pd
 __build__ = ("2026-08-19bs-fused-elementwise-blends"
              "+2026-08-19bq-nocap-select-guarded"
              "+2026-08-19bm-restricted-blends"
-             "+2026-08-19bl-exact-subcell-capability-RESTORED-after-19bk-clobber"
+             "+2026-08-19bl-exact-profile-capability-RESTORED-after-19bk-clobber"
              "+2026-08-19bk-elig-inplace"
              "+2026-08-18-eligibility-ban-mask-cache+population-operator+fid-grain-capability"
-             "+exact-subcell-capability")
+             "+exact-profile-capability")
 
 WALLET_VALUES = {"googlepay", "applepay"}
 
@@ -394,12 +394,18 @@ def build_elig_operator(profiles: pd.DataFrame, rules: list[dict], fid2vamp: dic
 
     prof_cols = [c for c in ("rpgt", "currency", "bin", "bin", "country") if c in df.columns]
     if rules:
+        # 19ho: `ban_keys`, was `profiles`. THE ONE COLLISION THE RENAME PRODUCED, and it was
+        # invisible to compile, import and the ast sweep: this function's PARAMETER was `cells`
+        # and this local was ALREADY `profiles`, so cell->profile made both `profiles` and the
+        # local SHADOWED the parameter. Harmless only by luck — the parameter is consumed on the
+        # `df = profiles.reset_index(...)` line above, before the reassignment. Named for what it
+        # holds instead: the per-row field dicts `_row_banned` matches rules against.
         if prof_cols:
             _p = df[prof_cols].astype(str)
-            profiles = [{c: _p.iat[i, j] for j, c in enumerate(prof_cols)} for i in range(n)]
+            ban_keys = [{c: _p.iat[i, j] for j, c in enumerate(prof_cols)} for i in range(n)]
         else:
-            profiles = [{}] * n
-        ban = np.fromiter((_row_banned(_gw[i], _vm[i], profiles[i], rules) for i in range(n)),
+            ban_keys = [{}] * n
+        ban = np.fromiter((_row_banned(_gw[i], _vm[i], ban_keys[i], rules) for i in range(n)),
                           dtype=bool, count=n)
     else:
         ban = np.zeros(n, dtype=bool)

@@ -285,8 +285,8 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* Picks the biggest movers to show on the bridge.
 - **[FN-358]** `render._bank_detail_fragment()` — (small helper — see source)  
   *Analogy:* The expandable per-bank detail block.
-- **[FN-359]** `render._bank_detail_fragment._fmt_cell(col, v)` — (small helper — see source)  
-  *Analogy:* Formats one table cell (an HTML table cell, not a routing profile).
+- **[FN-359]** `render._bank_detail_fragment._fmt_td(col, v)` — (small helper — see source)  
+  *Analogy:* Formats one HTML `<td>` in the bank table.
 - **[FN-360]** `render._bank_detail_fragment._bcw(_c)` — (small helper — see source)  
   *Analogy:* Sets a column's padding and font size in the bank table.
 - **[FN-361]** `render._bank_detail_fragment._bank_row_html(r, is_total)` — (small helper — see source)  

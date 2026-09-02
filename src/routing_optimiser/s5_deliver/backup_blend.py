@@ -37,7 +37,7 @@ import pandas as pd
 
 from routing_optimiser.s1_extract.schema import TEMPLATE_META_COLUMNS, TEMPLATE_TRAILING_COLUMNS
 
-__build__ = "2026-07-22-backup-blend+rules-to-split+cell-level-catchall"
+__build__ = "2026-07-22-backup-blend+rules-to-split+profile-level-catchall"
 
 # Non-gateway columns in a wide rule sheet (everything else is a gateway weight column).
 # Non-gateway (meta) template columns — single source of truth is schema.py.

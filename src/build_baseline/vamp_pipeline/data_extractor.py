@@ -11,7 +11,7 @@ logger = setup_logger(__name__)
 
 # Bump this when data_extractor.py changes; run_vamp_pipeline logs it so a stale
 # .pyc (old code) is immediately obvious in the run log.
-__build__ = "2026-08-16-readsession-fallback+cell-level-catchall"
+__build__ = "2026-08-16-readsession-fallback+profile-level-catchall"
 
 class DataExtractor:
     """
