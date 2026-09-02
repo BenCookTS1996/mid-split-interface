@@ -305,3 +305,74 @@ confirmed; not worth guessing at.
    should read **0 rows moved**.
 3. If it does not exclude them: the residual is *correct* and this section should be closed with
    that finding recorded, not with a change.
+
+---
+
+## 13. Step 2b's first armed run FAILED, and reading the code found why
+
+### What the 2026-09-02 21:25 run did
+
+**Nothing.** `best success rate 0.59911` at generation 0 and at generation 320. `improved=False`.
+11,840 candidates and not one beat the decoded seed — the shipped split IS the seed (checkout
+1,104 and woodforest 16,498 are the targeted-move seed's 1,103 / 16,491).
+
+`§11`'s acceptance test said *"what must not change is feasibility"*. Feasibility held. **That was
+the wrong test.** The one that mattered — *the search must still improve on its seed* — was not
+written down, and it is the one that failed.
+
+### And the cost estimate was wrong by two orders of magnitude
+
+§11 said *"one gather per evaluation against eval_pop's 2.4% of eval"*. Measured:
+
+- `[eval-cost]` **496.1s unaccounted** — untimed work, which is exactly where `_deliver_kept` sits
+- ≈ **1,476 ms/call** against `_deliver_full`'s **477 ms/call** — **the gather is 3× the delivery**
+- search **475s → 963s**, throughput **25/s → 12/s**, eval **1,234 → 2,649 ms/gen**
+
+### THE CAUSE, found by reading `_fm_gather` (tab_2 ~8154)
+
+```python
+def _fm_gather(_fd, _cm=_fm_colmap, _cs=…, _cc=…):
+    _d = _D[:, _cm]                                          # gather the kept rows
+    _seg = repeat(reduceat(_d, _cs, axis=1), _cc, axis=1)    # per-profile sum
+    _d = where(_seg > 1e-12, _d / _seg, _d)                  # ← RENORMALISE TO SUM 1
+```
+
+**`_fm_gather` renormalises.** That is correct for the job it was written for — the
+compressibility distortion needs a normalised per-profile *shape*. It is **wrong for the success
+rate**, because the delivered split does **not** sum to 1 per profile: eligibility zeroes rows, so
+kept mass drops below 1, and renormalising **puts back exactly the mass eligibility removed.**
+
+So `_sd` is a normalised shape, not the delivered share, and `_success_rate(_sd)` is not the
+success rate of what ships. That is explanation **B**, and it also explains the one number that
+looked wrong from the start: the seed printed **0.599109** on the raw basis and the new objective's
+best printed **0.59911** — the delivered figure should have differed.
+
+**There is no kept-grain delivery reference inside the GA to have caught this**: tab_2 passes
+`deliver_full_fn` and `gather_fn` but **not** `deliver_fn`, so `_deliver` is the identity and
+`_deliver_kept`'s fallback is a no-op. The only path to kept grain is the one that renormalises.
+
+### `[obj-check]` (19ie) — the verdict, on the run's own data
+
+Fires once, only when `ROUTING_DECODE_OBJ=1`, on the live population. Four readings, because a
+**wrong-but-varying** `_sd` looks exactly like a flat objective from the outside:
+
+1. **Per-profile sums of the scored array.** The delivered split must have mass **below 1** where
+   eligibility bit. All 1.0 ⇒ something renormalised ⇒ **B**.
+2. **Spread and distinct-value count** of the new objective, beside eval_pop's on the same
+   population.
+3. **Rank correlation** between the two. A correct delivered objective is a *compression* of the
+   raw one, not a scramble. Near zero ⇒ **B**, even with a healthy spread. This is the reading the
+   spread test alone could not give.
+4. **The raw-best candidate's two scores side by side.** Identical to 1e-9 ⇒ the transform never
+   reached the objective ⇒ **B**.
+
+### The fix, once the run confirms it
+
+`gather_fn` cannot be reused for this. Step 2b needs the kept rows of the delivered array
+**without the renormalise** — either a second hook, or the success rate computed on the
+**full-grain** `_fd` directly with full-grain `vol`/`succ`, **which would also delete the 496s**
+because there would be no gather at all.
+
+**Explanation A is not ruled out and cannot be until B is fixed** — the 0.97 cap saturating the
+GA's main lever is still a real possibility, and it would be a search-design problem, not a bug.
+One thing at a time.

@@ -85,7 +85,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -1760,10 +1760,84 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         # describe different splits - which is the defect this closes, not a smaller version of it.
         _sd = None
         if _DECODE_OBJ and _have_full:
+            _v_old = np.asarray(v, float).copy()          # 19ie: eval_pop's, before it is replaced
             _sd = np.asarray(_deliver_kept(_sh, _fd), float)
             v = _success_rate(_sd, p.vol, p.succ, total_vol)
             x = _violation(_sd, p)
             if not _OBJ_FACT["said"]:
+                # ── 19ie [obj-check] ─────────────────────────────────────────────────────────
+                # The 2026-09-02 21:25 run made ZERO progress: `best success rate 0.59911` at
+                # generation 0 and at generation 320, improved=False, and the shipped split was
+                # the seed. Two explanations produce that same signature and they need opposite
+                # fixes, so guessing between them is not allowed:
+                #   A  the delivered objective is genuinely FLAT (the 0.97 cap saturates the GA's
+                #      main lever), in which case the objective is right and the OPERATORS are
+                #      wrong for it;
+                #   B  `_sd` is not the delivered split, so `v` is a number about nothing. A
+                #      WRONG-BUT-VARYING _sd looks exactly like A from the outside - healthy
+                #      spread, no systematic improvement - which is why a spread test alone
+                #      cannot settle this.
+                # Fires once, only when armed, on the live population.
+                try:
+                    _vn = np.asarray(v, float)
+                    _P0 = int(_vn.shape[0])
+                    # (1) DOES `_sd` STILL SUM TO 1 PER PROFILE? The delivered split does NOT:
+                    # eligibility zeroes rows, so a profile's kept mass drops below 1. If every
+                    # profile reads 1.0 here, something RENORMALISED after the delivery and `_sd`
+                    # is a normalised SHAPE, not the delivered share - and the success rate
+                    # computed from it is not the success rate of what ships.
+                    _psum = np.add.reduceat(_sd, p.profile_start, axis=1)
+                    _at1 = float(np.mean(np.abs(_psum - 1.0) <= 1e-9))
+                    log(f"   [obj-check] per-profile sums of the array the objective is scored "
+                        f"on: min {float(_psum.min()):.6f} / mean {float(_psum.mean()):.6f} / "
+                        f"max {float(_psum.max()):.6f}; {_at1:.1%} of them are 1.0 to 1e-9. "
+                        + ("\u26a0 THEY ALL SUM TO 1, WHICH THE DELIVERED SPLIT DOES NOT - "
+                           "eligibility zeroes rows, so kept mass must drop below 1. Something "
+                           "RENORMALISED after delivery and this is a normalised SHAPE, not the "
+                           "delivered share. That is explanation B."
+                           if _at1 > 0.999 else
+                           "Mass below 1 where eligibility bit, which is what the delivered "
+                           "split should look like."))
+                    # (2) IS THE NEW OBJECTIVE FLAT, OR JUST DIFFERENT? Spread across the live
+                    # population, and how many distinct values it actually takes.
+                    _nd = int(np.unique(np.round(_vn, 12)).size)
+                    log(f"   [obj-check] the new objective across {_P0} candidate(s): min "
+                        f"{float(_vn.min()):.6f} / median {float(np.median(_vn)):.6f} / max "
+                        f"{float(_vn.max()):.6f}, spread {float(_vn.max() - _vn.min()):.3g}, "
+                        f"{_nd} distinct value(s). For contrast eval_pop's own objective spreads "
+                        f"{float(_v_old.max() - _v_old.min()):.3g} over the SAME population.")
+                    # (3) IS IT THE SAME ORDERING? A correct delivered objective should stay
+                    # broadly MONOTONE in the raw one - eligibility and the cap are deterministic
+                    # transforms, not scramblers. Uncorrelated ranks mean selection is chasing
+                    # noise, which is B even when the spread looks healthy.
+                    if _P0 > 2:
+                        def _rk(_a):
+                            return np.argsort(np.argsort(np.asarray(_a, float))).astype(float)
+                        _rho = float(np.corrcoef(_rk(_v_old), _rk(_vn))[0, 1])
+                        log(f"   [obj-check] rank correlation between eval_pop's objective and "
+                            f"the delivered one on the same population: {_rho:+.4f}. "
+                            + ("\u26a0 NEAR ZERO - the two orderings are unrelated, so the "
+                               "delivered objective is not a transform of the raw one but noise "
+                               "against it. That is B."
+                               if abs(_rho) < 0.2 else
+                               "Strongly ordered together - the delivered objective is a "
+                               "compressed version of the raw one, not a scrambled one, so a "
+                               "search that cannot climb it is explanation A."
+                               if abs(_rho) > 0.8 else
+                               "Partially ordered - read it with (1) before concluding."))
+                    # (4) THE SEED'S TWO NUMBERS, SIDE BY SIDE. If the delivered figure equals
+                    # the raw one, the transform never reached the objective at all.
+                    _ib = int(np.argmax(_v_old))
+                    log(f"   [obj-check] the population's raw-best candidate scores "
+                        f"{float(_v_old[_ib]):.6f} on eval_pop's objective and "
+                        f"{float(_vn[_ib]):.6f} on the delivered one (\u0394 "
+                        f"{float(_vn[_ib] - _v_old[_ib]):+.3g})."
+                        + (" \u26a0 IDENTICAL TO 1e-9 - the delivery transform is not reaching "
+                           "the objective. That is B."
+                           if abs(float(_vn[_ib] - _v_old[_ib])) < 1e-9 else ""))
+                except Exception as _oce:  # noqa: BLE001 - a diagnostic must never break a run
+                    log(f"   [obj-check] skipped ({type(_oce).__name__}: {_oce}) - the objective "
+                        "is unaffected, only the explanation of it.")
                 _OBJ_FACT["said"] = True
                 _OBJ_FACT["applied"] = True
                 log("[decode-obj] the SUCCESS RATE and the engineering violation are now measured "
