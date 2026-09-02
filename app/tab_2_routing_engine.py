@@ -1358,13 +1358,34 @@ def render():
                 _settled_said = set()
                 
                 # [FN-306b]
+                _settled_pend = []
+
                 def _settled_skip(tag, verdict):
-                    """True when `tag` should be skipped; logs its standing verdict once."""
+                    """True when `tag` should be skipped; its verdict is HELD for the roll-up."""
                     if _settled_on:
                         return False
                     if tag not in _settled_said:
                         _settled_said.add(tag)
-                        log(f"   {tag} NOT RUN (settled). {verdict} ROUTING_SETTLED_DIAG=1 restores it.")
+                        _settled_pend.append((tag, verdict))
+                    return True
+
+                def _settled_flush():
+                    """19hs: ONE line for the settled diagnostics instead of one line each.
+
+                    [prop-reach], [zero-profiles] and [zero-rows] sit in the same section and each
+                    printed a full sentence of standing verdict EVERY run - three lines to say
+                    three things did not run. The verdicts still exist, in the code at the call
+                    sites where they are argued; what the log needs is which ones were skipped and
+                    the switch that brings them back. Clears the list, so a second call prints
+                    nothing - a call site added BELOW this flush needs a flush of its own.
+                    """
+                    if not _settled_pend:
+                        return
+                    _tags = ", ".join(_t for _t, _v in _settled_pend)
+                    _ns = len(_settled_pend)
+                    del _settled_pend[:]
+                    log(f"   {_ns} settled diagnostic(s) NOT RUN: {_tags}. Each carries a standing "
+                        "verdict at its call site. ROUTING_SETTLED_DIAG=1 restores all of them.")
                     return True
                 
                 # [FN-306c]
@@ -3696,8 +3717,7 @@ def render():
                                        if not _hitP.any() else
                                        "NON-ZERO \u21d2 the search WAS treating unscoped fraud as movable while "
                                        "delivery held it. The M5 band values and the reconciliation error will "
-                                       "MOVE, and that movement is this fix rather than a regression \u2014 "
-                                       "compare against the previous run before reading anything else.")
+                                       "MOVE.")
                                     + " Scope: " + ", ".join(sorted(_sel_rpgts))
                                     + ". ROUTING_SEARCH_RPGT_SCOPE=0 reverts.")
                         # 19dr — SWITCHED-OFF GATEWAYS, EXPLICITLY, IN THE SEARCH. A gateway on a volume
@@ -3762,8 +3782,7 @@ def render():
                                        "rule now exists rather than being reached by accident."
                                        if not _hitK.any() else
                                        "NON-ZERO \u21d2 the search WAS rerouting fraud off gateways that receive no "
-                                       "transactions. The M5 values and the reconciliation error will MOVE, and that "
-                                       "is this fix rather than a regression.")
+                                       "transactions. The M5 values and the reconciliation error will MOVE.")
                                     + " NOTE: delivery also SCALES prop_raw by the fractional _keep for a mid-month "
                                       "switch-off; the search does not, and that difference is NOT addressed here. "
                                       "ROUTING_SEARCH_KEEP=0 reverts.")
@@ -7771,14 +7790,15 @@ def render():
                                                         "the stage is wasted. Unset "
                                                         "ROUTING_SEED_DELIV.")
                                                 else:
+                                                    # 19hs: the "Expected, not a warning"
+                                                    # paragraph is gone. Since 19go the stage
+                                                    # ACCEPTS on DELIVERED, so RAW reading lower is
+                                                    # the design and not news - it was restated for
+                                                    # every seed, every run. The two numbers are
+                                                    # the content; the basis is named inline.
                                                     log(f"   [seed-basis]   '{_n2}' scores "
                                                         f"{_r2:.5f} on RAW and {_d2:.5f} on "
-                                                        "DELIVERED. Expected, not a warning: "
-                                                        "since 19go the stage ACCEPTS on "
-                                                        "DELIVERED, so RAW is a basis nothing "
-                                                        "targeted and nothing selects on. The "
-                                                        "delivered figure is the one that means "
-                                                        "something.")
+                                                        "DELIVERED (accepted on DELIVERED).")
                                             if _sb_noise:
                                                 log(f"   [seed-basis]   {_sb_noise} seed(s) score a "
                                                     "hair worse on DELIVERED than on RAW, all "
@@ -8379,27 +8399,17 @@ def render():
                                             log(f"      [lift-ab] skipped "
                                                 f"({type(_labE).__name__}: {_labE}) — MEASUREMENT "
                                                 "ONLY, the run and the lift are unaffected.")
-                                        if _fs_share < 0.10:
-                                            log("      ⇒ barely worth having: at this share the "
-                                                "lift is inside measurement noise. ROUTING_PROJ_"
-                                                "LIFT=0 costs you nothing.")
-                                        elif _fs_share < 0.35:
-                                            log("      ⇒ MODEST but free and bit-identical: it is "
-                                                "already ON (ROUTING_PROJ_LIFT=0 reverts). Do NOT "
-                                                "expect it to change the shape of a run — the "
-                                                "never-worse guard and the seed→genome decode are "
-                                                "where the result actually moves.")
-                                        else:
-                                            log("      ⇒ WORTH HAVING: at this share the lift is a "
-                                                "real double-digit saving, and it is bit-identical "
-                                                "rather than approximate (the skipped passes are "
-                                                "provable no-ops, verified against the pre-lift "
-                                                "kernel on stale-scratch fixtures).")
-                                        log("      CAVEAT: this counts rows that can NEVER be "
-                                            "moved. A profile whose rows are reachable but happen to "
-                                            "be 0 in the current split is NOT counted — it could "
-                                            "become non-zero, so freezing it would be wrong. This "
-                                            "is deliberately the safe, candidate-independent set.")
+                                        # 19hs: the three-way verdict and the CAVEAT were a
+                                        # settled READING of the share number printed directly
+                                        # above, restated every run. Both facts are permanent and
+                                        # belong here, not in the log: the lift is bit-identical
+                                        # (the skipped passes are provable no-ops, verified against
+                                        # the pre-lift kernel on stale-scratch fixtures), and the
+                                        # count is deliberately the safe, candidate-INDEPENDENT
+                                        # set - a profile whose rows are reachable but happen to be
+                                        # 0 in the current split is NOT counted, because it could
+                                        # become non-zero and freezing it would be wrong.
+                                        # ROUTING_PROJ_LIFT=0 reverts.
 
                                         # ── [zero-profiles] DOES THE GENOME CONTAIN PROFILES THAT CANNOT MATTER? ──
                                         # (read-only) Distinct from [frozen-scaffold] above, which counts
@@ -8532,6 +8542,7 @@ def render():
                                         except Exception as _zre:  # noqa: BLE001
                                             log(f"   [zero-rows] skipped ({type(_zre).__name__}: "
                                                 f"{_zre}) — READ-ONLY, the search is unaffected.")
+                                        _settled_flush()   # 19hs: the three-in-one roll-up
                                     else:
                                         log("   [frozen-scaffold] skipped: the projector exposes no "
                                             "scaffold arrays (propidx/gcode/ngc empty) — nothing to "
@@ -8654,7 +8665,16 @@ def render():
                                     for _bn_msg in list(getattr(_bpm, "_BUILD_NOTES", []) or []):
                                         log(f"   {_bn_msg}" if str(_bn_msg).startswith("[")
                                             else f"   [band-build] {_bn_msg}")
-                                    _ppn = list(getattr(_bpm, "_PROJ_PAR_NOTES", []) or [])
+                                    # 19hs: DEDUPE. A build verdict reaches BOTH lists, so
+                                    # [frozen-scaffold] LIFT ON printed twice, byte for byte
+                                    # (954,536 of 1,932,860 on the 2026-09-02 runs). Drop a PAR
+                                    # note that a BUILD note above already said. Identity is the
+                                    # whole string, so a note that differs at all still prints.
+                                    _bn_seen = {str(_m) for _m
+                                                in (getattr(_bpm, "_BUILD_NOTES", []) or [])}
+                                    _ppn = [_m for _m
+                                            in list(getattr(_bpm, "_PROJ_PAR_NOTES", []) or [])
+                                            if str(_m) not in _bn_seen]
                                     for _pn_msg in _ppn:
                                         # 19fv: the list now also carries the projector's one-off
                                         # BUILD verdicts ([vconst-frozen], the aged-row hoist, the

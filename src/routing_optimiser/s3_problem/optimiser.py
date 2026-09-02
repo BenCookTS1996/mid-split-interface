@@ -15,7 +15,7 @@ import pandas as pd
 from routing_optimiser.s3_problem.constraints import OptimiserSettings
 from routing_optimiser.engines import ProfileProblem, get_engine
 
-__build__ = "2026-07-29-vamp-lp-singlegw-fixed-profile-revival+2026-09-02-19gz-max-revenue-split-reference+2026-09-02-19he-floor-carried-into-projector+2026-09-02-19hh-emask-pair-grain+2026-09-02-19hi-log-simplification+2026-09-02-19hk-cell-profile-prose+2026-09-02-19hl-cell-profile-identifiers+2026-09-02-19hm-profile-vocab-complete+2026-09-02-19hn-profile-vocab-audited+2026-09-02-19ho-vocab-no-exceptions+2026-09-02-19hp-log-hierarchy+2026-09-02-19hq-autoblock-diagnosis+2026-09-02-19hr-seed-stage-sections"
+__build__ = "2026-07-29-vamp-lp-singlegw-fixed-profile-revival+2026-09-02-19gz-max-revenue-split-reference+2026-09-02-19he-floor-carried-into-projector+2026-09-02-19hh-emask-pair-grain+2026-09-02-19hi-log-simplification+2026-09-02-19hk-cell-profile-prose+2026-09-02-19hl-cell-profile-identifiers+2026-09-02-19hm-profile-vocab-complete+2026-09-02-19hn-profile-vocab-audited+2026-09-02-19ho-vocab-no-exceptions+2026-09-02-19hp-log-hierarchy+2026-09-02-19hq-autoblock-diagnosis+2026-09-02-19hr-seed-stage-sections+2026-09-02-19hs-closed-diags"
 
 
 # [FN-191]

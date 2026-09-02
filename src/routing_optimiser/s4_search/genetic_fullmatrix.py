@@ -2424,26 +2424,19 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             "fused numpy path and the numba eval kernel — water-fills each profile as it decodes, "
             "so an over-cap split is not something a candidate can express. The search does not "
             "reject or correct them; they do not exist.")
-        log("[decode-cap]    WHAT THIS REPLACED: [ms-repair], which decoded the whole population, "
-            "water-filled the over-cap profiles and re-encoded the result through log() back into "
-            "logits, which the evaluator then decoded AGAIN. 98.4% of candidates needed it on the "
-            "2026-09-01 22:09 run — a softmax cannot express an upper bound — so it cost 91.3s, "
-            "20% of that search, and three decodes of the population per generation instead of "
-            "one.")
-        log("[decode-cap]    THE RULE IS UNCHANGED and is still delivery's: the excess goes to "
+        # 19hs: three paragraphs deleted here - "WHAT THIS REPLACED" (a description of
+        # [ms-repair]: it decoded the whole population, water-filled and re-encoded through log(),
+        # cost 91.3s and three decodes per generation), "NOT BIT-IDENTICAL to the pre-19gu search",
+        # and "19gv DELETED `_repair_maxshare` and its ~380 lines". All three describe code that
+        # does not exist, printed on every run. There is no decode-then-repair path to revert to
+        # and no switch pretending there is, so there is nothing to compare against either.
+        log("[decode-cap]    THE RULE is delivery's: the excess goes to "
             "each sibling in proportion to (target - share), the room it has left before IT would "
             "hit the cap (impact_calcs._cap_rows). Single pass, because Σ(target - share) over a "
             "profile's present rows is (present_rows × target) - 1 + excess.")
         log("[decode-cap]    THE ENGINEERING KEY should now read 0.0000 for every candidate, "
             "because none can violate. If `viol` above is ever non-zero on the max-share term, "
             "the water-fill did not hold and that key is what says so.")
-        log("[decode-cap]    NOT BIT-IDENTICAL to the pre-19gu search, and it does not pretend to "
-            "be: the repair round-tripped its result through log() and back, this does not. "
-            "RECONCILIATION ERROR is the end-to-end check — delivery is an untouched path.")
-        log("[decode-cap]    19gv DELETED `_repair_maxshare` and its ~380 lines, on the evidence "
-            "of the 2026-09-01 23:12 run: engineering violation 0.0000 on every candidate and "
-            "the repair timing 0.0s per restart. There is no decode-then-repair path to revert "
-            "to any more, and no switch pretending there is.")
 
     # ── [ga-census] RUN VERDICT ──────────────────────────────────────────────────────────
     # Four candidate explanations for a flat success rate, told apart by counts; 19ed then asks the

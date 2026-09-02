@@ -859,7 +859,11 @@ def proj_config():
         if not _seen:
             out.append("float32 drift NOT YET measured \u2014 the self-check runs on the first "
                        "profile-blocked projection, so this line means none has happened yet.")
-        for _m in _seen:
+        # 19hs: the LIVE width only when there is one. The first projection's figure is the same
+        # drift at a different P, and it printed alongside the live one every run. When no live
+        # measurement exists `_seen` holds the first, this prints it, and the width caveat below
+        # is the line that says so.
+        for _m in ([_F32_OK["live"]] if isinstance(_F32_OK.get("live"), dict) else _seen):
             out.append("float32 drift at P=" + str(_m["at_P"])
                        + ("  (THE LIVE SEARCH WIDTH)" if _m is _F32_OK.get("live")
                           else "  (the first projection's width)")
@@ -876,10 +880,10 @@ def proj_config():
             out.append("float32 drift could not be re-measured at the live width this run "
                        "(see [proj-par]); the figure above is the first projection's, at its own "
                        "width. Nothing was disabled by that.")
-        if _seen:
-            out.append("what the drift costs: RECONCILIATION ERROR will read about it, by design "
-                       "\u2014 and stops being able to detect a REAL reconciliation bug at that "
-                       "size. ROUTING_PROJ_FLOAT32=0 restores exactness and the detector.")
+        # 19hs: "what the drift costs" deleted - tab_2's [f32-floor] says the same thing with the
+        # raised bar as an actual number, which is the version worth reading. The float32 banner
+        # stays loud on purpose (a drift was ACCEPTED, so its size must be re-read every run) but
+        # it is announced ONCE now, not by [proj-config], [proj-par] and [f32-floor] in turn.
     return out
 
 
