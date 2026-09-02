@@ -549,12 +549,19 @@ def solve_least_breach(exact_bands, incidence, base_shares, profile_starts, prof
             _t_step = _time.perf_counter()
             info["ran"] = outer + 1
 
-            def _ledger(_verdict, _tr=None, _b=None):
-                """Record one step. Called on EVERY exit path, so `ran` == len(steps) always."""
+            def _ledger(_verdict, _tr=None, _b=None, _pred=None, _dsn=None, _pull=None):
+                """Record one step. Called on EVERY exit path, so `ran` == len(steps) always.
+
+                19hw: `pred` / `dsn` / `pull` are what tell a REJECTED step apart from another
+                rejected step. See the [lp-why] block in _lp_report.
+                """
                 _steps.append({"step": outer + 1,
                                "tr": float(tr if _tr is None else _tr),
                                "verdict": str(_verdict),
                                "breach": float(best_b if _b is None else _b),
+                               "pred": (float(_pred) if _pred is not None else float("nan")),
+                               "dsn": (float(_dsn) if _dsn is not None else float("nan")),
+                               "pull": (float(_pull) if _pull is not None else float("nan")),
                                "secs": float(_time.perf_counter() - _t_step)})
             vals, J = model.spec_jacobian_shares(best_s)          # exact value + exact gradient
             # LP variables: Δs over ALL N (bounded 0 for non-free), then slacks per active band side.
@@ -622,8 +629,17 @@ def solve_least_breach(exact_bands, incidence, base_shares, profile_starts, prof
                 continue
             ds = res.x[:N]
             cand = best_s + ds
+            # 19hw: THE STEP THE LP SOLVED FOR, kept so the re-projection below can be measured.
+            # The LP honours Sigma ds == 0 per profile and the trust-region box, but the projection
+            # that follows can still move the point a long way - and it is the PROJECTED point
+            # that gets evaluated. If `pull` is the same order as `dsn`, the LP's step is being
+            # undone after the fact and no trust region can fix that.
+            _lp_pre = cand.copy()
+            _lp_pred = float(getattr(res, "fun", float("nan")))
+            _lp_dsn = float(np.abs(ds).sum())
             cand = _project_capped_simplex_profiles(cand, cs, cc, elig, cap, budget=1.0)
             cand = floor_catchall_shares(cand, _fmask, share_floor, cs, cc)  # keep catch-all ≥ floor
+            _lp_pull = float(np.abs(cand - _lp_pre).sum())
             bc = _brc(cand)
             if bc < best_b - max(1e-12, 1e-4 * best_b):
                 best_s = cand; best_b = bc
@@ -634,7 +650,7 @@ def solve_least_breach(exact_bands, incidence, base_shares, profile_starts, prof
                 if _rej > _rej_paid:
                     _rej_paid = _rej
                 _rej = 0
-                _ledger("accepted", _b=bc)
+                _ledger("accepted", _b=bc, _pred=_lp_pred, _dsn=_lp_dsn, _pull=_lp_pull)
                 if verbose:
                     print(f"  [slp] outer {outer}: breach {best_b:.6g} (tr={tr:.3g}, free={info['n_free']})")
                 if best_b <= tol:
@@ -642,7 +658,7 @@ def solve_least_breach(exact_bands, incidence, base_shares, profile_starts, prof
                     break
                 tr = min(tr * 1.5, 0.5)                             # grow on success
             else:
-                _ledger("rejected", _b=bc)
+                _ledger("rejected", _b=bc, _pred=_lp_pred, _dsn=_lp_dsn, _pull=_lp_pull)
                 _rej += 1
                 tr *= 0.5
                 if tr < tr_min:
@@ -708,6 +724,63 @@ def _lp_report(info, log_fn, *, tr_min, max_outer):
         else:
             log_fn("         TRAILING: none — the solve ended on an accepted step or at tolerance, "
                    "so a stall stop would have saved nothing here.")
+        # ── 19hw [lp-why]: WHY the rejected steps were rejected. ───────────────────────────
+        # Ben's question, and the ledger could not answer it before this block existed. Three
+        # causes, three different fixes, told apart by numbers the loop already has:
+        #   pred ~ 0            the LP itself sees no improvement left. Halving is pointless and a
+        #                       stall stop is free - this is the case that justifies arming K.
+        #   pull ~ dsn          the re-projection onto the capped simplex is UNDOING the LP's step,
+        #                       so the point evaluated is not the point solved for. No trust region
+        #                       fixes that; the projection does.
+        #   pred < 0, breach up the linearisation is wrong AT THIS STEP SIZE. Halving IS the right
+        #                       response and the region simply never gets small enough.
+        _rejs = [d for d in (info.get("steps") or []) if d.get("verdict") == "rejected"]
+        if _rejs:
+            log_fn("         [lp-why] the rejected steps, and what the LP thought it was buying:")
+            log_fn(f"            {'step':>5}{'tr':>11}{'LP predicted':>15}{'realised breach':>18}"
+                   f"{'|ds|':>11}{'projection pull-back':>22}")
+            log_fn(f"            {'-' * 82}")
+            _b0 = float(info.get("breach", float("nan")))
+            for d in _rejs[:14]:
+                log_fn(f"            {int(d.get('step', 0)):>5}{float(d.get('tr', 0)):>11.3g}"
+                       f"{float(d.get('pred', float('nan'))):>15.4g}"
+                       f"{float(d.get('breach', float('nan'))):>18.6g}"
+                       f"{float(d.get('dsn', float('nan'))):>11.4g}"
+                       f"{float(d.get('pull', float('nan'))):>22.4g}")
+            if len(_rejs) > 14:
+                log_fn(f"            ... {len(_rejs) - 14} more rejected step(s) not listed.")
+            log_fn(f"            {'-' * 82}")
+            log_fn(f"            incumbent breach for comparison: {_b0:.6g}. 'LP predicted' is the "
+                   "LP objective - the total overshoot the LINEARISED model says the step reaches; "
+                   "'realised' is the exact breach after the step is projected back onto the "
+                   "capped simplex and re-evaluated.")
+            import math as _math
+            _pr = [float(d.get("pred", float("nan"))) for d in _rejs]
+            _pl = [float(d.get("pull", float("nan"))) for d in _rejs]
+            _dn = [float(d.get("dsn", float("nan"))) for d in _rejs]
+            _fin = [x for x in _pr if not _math.isnan(x)]
+            _pull_big = sum(1 for _p, _d in zip(_pl, _dn)
+                            if not _math.isnan(_p) and not _math.isnan(_d)
+                            and _d > 0 and _p > 0.5 * _d)
+            _pred_flat = sum(1 for x in _fin if abs(x) <= max(1e-9, 1e-3 * abs(_b0)))
+            log_fn("            ⇒ READING: "
+                   + (f"{_pred_flat} of {len(_fin)} rejected step(s) had the LP predicting "
+                      "essentially NOTHING, so the direction is exhausted and the halving after "
+                      "them buys nothing - that is the case where a stall stop is free. "
+                      if _pred_flat else "")
+                   + (f"{_pull_big} of {len(_rejs)} had the re-projection pulling the point back "
+                      "by more than half the LP's own step, so the step being EVALUATED is not the "
+                      "step the LP solved for - look at _project_capped_simplex_profiles before "
+                      "the trust region. "
+                      if _pull_big else "")
+                   + ("Neither pattern dominates: the LP predicted a real gain, the projection "
+                      "left it broadly intact, and the exact breach still got worse - which is the "
+                      "linearisation being wrong at that step size, and halving is the correct "
+                      "response to that."
+                      if not _pred_flat and not _pull_big else ""))
+            log_fn("            [lp-why] is a DIAGNOSTIC added in 19hw to answer 'why 12 of 13?'. "
+                   "It costs one array copy and one abs-sum per step. Delete it once the answer is "
+                   "acted on.")
         _ms = int(info.get("stall_min_safe", 0))
         _k = int(info.get("stall_k", 0))
         log_fn(f"         WHAT IT WOULD HAVE COST: the longest run of consecutive rejections that a "

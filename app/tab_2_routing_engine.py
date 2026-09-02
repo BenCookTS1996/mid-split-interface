@@ -1449,8 +1449,34 @@ def render():
                             # read "2026-08-19bz-float32-optin" for weeks while its newest tag
                             # moved four times. `_parts[-1]` is the tag that changes when the
                             # file changes, which is the entire point of this column.
+                            # 19hw: AND `_parts[-1]` IS NOT THE NEWEST EITHER. It assumes the
+                            # history is appended in chronological order, and genetic_fullmatrix's
+                            # is not: its string ends `...+19gw-eval-cost+19gu-decode-cap+
+                            # 19ee-maxshare-repair`, so the table reported 19ee as newest on the
+                            # 2026-09-02 17:08 run while the file plainly contained 19gu/19gv/19gw.
+                            # A stale-bytecode guard that reports the wrong tag cannot do its job.
+                            #
+                            # Order by the PROJECT'S OWN GENERATION CODE instead - `19` + two
+                            # lower-case letters, which increments alphabetically (ee < gu < gw <
+                            # ht), so a plain string max over the codes is the right order and does
+                            # not depend on how the string was assembled. Tags with no code fall
+                            # back to a leading ISO date, then to position, which is what the old
+                            # behaviour was. A ⚠ marks a module whose newest tag is NOT last, since
+                            # that means the history is genuinely out of order in the file.
                             _parts = [x for x in str(_b).split("+") if x]
-                            return (_parts[-1], len(_parts) - 1) if len(_parts) > 1 else (str(_b), 0)
+                            if len(_parts) <= 1:
+                                return (str(_b), 0)
+                            import re as _re_bm
+
+                            def _key(_ix_tag):
+                                _ix, _tg = _ix_tag
+                                _codes = _re_bm.findall(r"19([a-z]{2})(?![a-z0-9])", _tg)
+                                _dm = _re_bm.match(r"20\d\d-\d\d-\d\d", _tg)
+                                return (max(_codes) if _codes else "",
+                                        _dm.group(0) if _dm else "", _ix)
+                            _best_ix, _best = max(enumerate(_parts), key=_key)
+                            return ((_best if _best_ix == len(_parts) - 1 else "⚠ " + _best),
+                                    len(_parts) - 1)
                         # [FN-310]
                         def _finfo(p):
                             try:
@@ -6867,9 +6893,18 @@ def render():
                                         log(f"      verdict: ✓ a COMPLIANT split EXISTS — all {_nb} band(s) "
                                             "satisfiable (feasibility certificate); seeded into the search.")
                                     else:
-                                        log(f"      verdict: ✗ {len(set(_unmet))} of {_nb} band(s) NOT reachable "
-                                            f"by the projection (min total breach {_v1:.4g}) → constraints appear "
-                                            "INFEASIBLE under this scope (not a proof — the search explores further).")
+                                        # 19hw: this said "constraints appear INFEASIBLE under
+                                        # this scope". It is stage 1 of 3, and on 2026-09-02 17:08
+                                        # stage 3 cleared every one of the bands this named. The
+                                        # honest statement is about THIS OPERATOR, not about the
+                                        # constraints.
+                                        log(f"      verdict: {len(set(_unmet))} of {_nb} band(s) NOT "
+                                            f"reached BY THIS OPERATOR (min total breach {_v1:.4g}). "
+                                            "The per-profile simplex + max-share QP cannot get "
+                                            "there; stages 2 and 3 have moves it does not, and "
+                                            "routinely clear these. This is NOT a statement that "
+                                            "the constraints are infeasible - read the stage 3 "
+                                            "verdict and [seed-basis] for that.")
                                         log("      still unmet: " + ", ".join(sorted(set(_unmet))))
                                 except Exception:  # noqa: BLE001
                                     log("   seed stage 1/3 BAND-AWARE constrained projection "
@@ -6948,7 +6983,18 @@ def render():
                                         _seeds.append(np.asarray(_exact_G, float))
                                         _verd = ("✓ COMPLIANT certificate (a feasible split provably exists)"
                                                  if _xinfo.get("feasible")
-                                                 else "local min > 0 → appears INFEASIBLE under this scope (not a proof)")
+                                                 # 19hw: was "appears INFEASIBLE under this scope".
+                                                 # A successive-LP local minimum is a statement
+                                                 # about the LP's neighbourhood, not about the
+                                                 # constraints - stage 3's move-operator escaped it
+                                                 # to breach 0 on the 17:08 run, from exactly this
+                                                 # verdict.
+                                                 else "local min > 0 - the successive-LP cannot "
+                                                      "descend further FROM HERE. That is a "
+                                                      "statement about this LP's neighbourhood, "
+                                                      "not about the constraints: stage 3's "
+                                                      "move-operator has escaped this and reached "
+                                                      "0. Not an infeasibility finding.")
                                         # 19hr: the rule that used to sit here is now the section
                                         # heading above, opened before the solver ran. What is left
                                         # is the verdict, which is what this point in the run knows.
@@ -8801,7 +8847,14 @@ def render():
                                                 "of those is a split the pre-19fg search scored as "
                                                 "compliant and delivery then had to correct — that "
                                                 "gap is what this closes.")
-                                        log(f"   [deliv-cap] profiles where the cap is unsatisfiable "
+                                        # 19hw: (candidate, profile) PAIRS, not profiles. There are
+                                        # 14,852 profiles and this read 2,260,720 on the 17:08 run -
+                                        # the counter is incremented per candidate per profile, like
+                                        # `repairing N (candidate, profile) pair(s)` two lines above,
+                                        # which was already labelled correctly. Same counter, two
+                                        # labels, and only one of them was true.
+                                        log(f"   [deliv-cap] (candidate, profile) pair(s) where the "
+                                            f"cap is unsatisfiable "
                                             f"(live rows hold less room than the excess): "
                                             f"{_DCAP['infeas']:,} — left at baseline, exactly as "
                                             "_cap_rows leaves a row with fewer than 2 present "
@@ -12013,9 +12066,36 @@ def render():
                                                 _dvt = _stash(_ic_t, "_LAST_VAMP_TERMS")
                                                 _vcp = np.asarray(getattr(_pj, "_vcpos", []), float)
                                                 _porg = np.asarray(getattr(_pj, "_pc_org", []), np.int64)
-                                                if _dvt is None or not _vcp.size or not _porg.size:
-                                                    log("      [recon-breakdown] skipped — in-search VAMP "
-                                                        "arrays or the delivered stash unavailable.")
+                                                # 19hw: WHICH of the two, said in the words
+                                                # [forensic] already promised. A string stash is
+                                                # the 19gt "deliberately skipped" sentinel and
+                                                # carries its own reason; None with no sentinel is
+                                                # a genuine absence and IS worth looking at.
+                                                _dvt_raw = getattr(_ic_t, "_LAST_VAMP_TERMS", None)
+                                                if isinstance(_dvt_raw, str):
+                                                    log("      [recon-breakdown] NOT COMPUTED, on "
+                                                        "purpose (the stash reads '"
+                                                        + _dvt_raw + "'). The breakdown "
+                                                        "explains a reconciliation error, and "
+                                                        "[forensic] above found none worth "
+                                                        "explaining, so the ~77s of attribution "
+                                                        "stashes were skipped. Nothing failed. "
+                                                        "ROUTING_FORENSIC=1 computes them anyway.")
+                                                elif _dvt is None or not _vcp.size or not _porg.size:
+                                                    log("      ⚠ [recon-breakdown] UNAVAILABLE, and "
+                                                        "not by the forensic gate: "
+                                                        + ("the delivered VAMP-terms stash is "
+                                                           "missing" if _dvt is None else "")
+                                                        + ("; " if (_dvt is None
+                                                                    and not (_vcp.size and _porg.size))
+                                                           else "")
+                                                        + ("the projector exposes no _vcpos/_pc_org "
+                                                           "arrays" if not (_vcp.size and _porg.size)
+                                                           else "")
+                                                        + ". The scored↔delivered gap cannot be "
+                                                        "attributed this run; if the reconciliation "
+                                                        "error below is non-trivial, this is the "
+                                                        "block that would have explained it.")
                                                 else:
                                                     # (1) vshare from the CAPPED routed share, over
                                                     #     VAMP-ELIGIBLE rows only (19cu/19db `_vcpos`).

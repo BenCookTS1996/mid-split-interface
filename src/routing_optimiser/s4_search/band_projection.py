@@ -3198,21 +3198,23 @@ class PopulationBandProjector:
                 _F32_OK["live"] = _lv
                 _F32_OK["dv"], _F32_OK["dt"] = _lv["dv"], _lv["dt"]
                 _fst = _F32_OK.get("first") or {}
+                # 19hw: THE NUMBERS ARE NOT REPEATED HERE. [proj-config] prints the live-width
+                # drift (19hs), [f32-floor] prints what it costs the reconciliation detector, and
+                # this line printed the same four figures a third time. It is kept because it is
+                # the ONLY thing that knows the first measurement was at a DIFFERENT width - lane
+                # count changes the order the per-profile sums accumulate in, so a narrow-width
+                # figure is not a claim about the search - so it states exactly that and points at
+                # the line that carries the figures.
                 _pnote("float32 drift RE-MEASURED at the live width P=" + str(int(P))
-                       + " (the first measurement was at P="
-                       + str(int(_fst.get("at_P", 0))) + ", which is not the width the search "
-                       "runs at). WORST SINGLE BAND max|\u0394vamp| "
-                       + format(_lv["dv"], ".4g") + " (band column " + str(_lv["dv_band"] + 1)
-                       + " of " + str(_lv["nb"]) + "), max|\u0394txn| " + format(_lv["dt"], ".4g")
-                       + " (band column " + str(_lv["dt_band"] + 1) + "). ACROSS ALL "
-                       + str(_lv["nb"]) + " BANDS on that same candidate: \u03a3|\u0394vamp| "
-                       + format(_lv["dv_sum"], ".4g") + " over " + str(_lv["dv_nover"])
-                       + " band(s), \u03a3|\u0394txn| " + format(_lv["dt_sum"], ".4g")
-                       + " over " + str(_lv["dt_nover"]) + " band(s). The MAX is one MID; the "
-                       "\u03a3 is every MID added together \u2014 read both before judging the "
-                       "setting. At P=" + str(int(_fst.get("at_P", 0))) + " the maxima were "
-                       + format(float(_fst.get("dv", 0.0)), ".4g") + " / "
-                       + format(float(_fst.get("dt", 0.0)), ".4g") + ".")
+                       + ", up from P=" + str(int(_fst.get("at_P", 0))) + " where it was first "
+                       "taken. Lane count changes the order the per-profile sums accumulate in, so "
+                       "a narrow-width figure is not a claim about the search. THE FIGURES ARE ON "
+                       "THE [proj-config] float32 drift LINE - this one does not restate them. The "
+                       "width comparison alone: max drift vamp "
+                       + format(float(_fst.get("dv", 0.0)), ".4g") + " -> "
+                       + format(_lv["dv"], ".4g") + ", txn "
+                       + format(float(_fst.get("dt", 0.0)), ".4g") + " -> "
+                       + format(_lv["dt"], ".4g") + ".")
             except Exception as _f32e:                 # noqa: BLE001
                 _pnote("float32 drift could not be re-measured at the live width ("
                        + type(_f32e).__name__ + ": " + str(_f32e) + "). NOTHING IS DISABLED by "
