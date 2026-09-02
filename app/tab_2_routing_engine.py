@@ -1199,12 +1199,16 @@ def render():
                 _log_n: dict = {}
 
                 # [FN-304]
+                _sub_depth = [0]        # 19hp: extra indent while a ④·N substep is open
+
                 def _log_emit(msg):
                     # Keep the FULL log in log_lines (shown in the expandable panel and copyable);
                     # render the tail live so the panel stays responsive during long runs. Every
                     # line is stamped with wall-clock time + seconds elapsed since the run started,
                     # so you can see when each stage/action started and finished.
                     _ts = datetime.datetime.now().strftime("%H:%M:%S")
+                    if _sub_depth[0] and isinstance(msg, str) and msg.strip():
+                        msg = " " * _sub_depth[0] + msg
                     log_lines.append(f"[{_ts} +{_pt.time() - _run_t0:6.1f}s] {msg}")
                     log_area.code("\n".join(log_lines[-1200:]), language="log")
 
@@ -1326,8 +1330,12 @@ def render():
                 # [FN-305]
                 def _stage(name):
                     _now = _pt.time()
+                    # 19hp: a stage boundary closes any open substep, and the ✓ close sits at the
+                    # SAME depth as its ▶ open — it ends the section, so indenting it read as if
+                    # it belonged inside it.
+                    _sub_depth[0] = 0
                     if _stage_state["name"] is not None:
-                        log(f"   ✓ {_stage_state['name']} — finished in {_now - _stage_state['t']:.1f}s")
+                        log(f"✓ {_stage_state['name']} — finished in {_now - _stage_state['t']:.1f}s")
                     _stage_state["name"] = name
                     _stage_state["t"] = _now
                     # 19gy: a blank line before every stage header. The finish line of one stage
@@ -1337,8 +1345,9 @@ def render():
                     log(f"▶ {name} — started")
                 # [FN-306]
                 def _stage_end():
+                    _sub_depth[0] = 0
                     if _stage_state["name"] is not None:
-                        log(f"   ✓ {_stage_state['name']} — finished in {_pt.time() - _stage_state['t']:.1f}s")
+                        log(f"✓ {_stage_state['name']} — finished in {_pt.time() - _stage_state['t']:.1f}s")
                         _stage_state["name"] = None
 
                 # 19dv — RETIRING A SETTLED MEASUREMENT. A block whose question is decided prints its
@@ -1362,9 +1371,15 @@ def render():
                 def _substep(label):
                     """A named division INSIDE a stage. Stage ④ is 95% of the run and contains the
                     scaffold, the seed, the search, delivery and every diagnostic; without these a
-                    reader has no way to tell which part they are looking at."""
+                    reader has no way to tell which part they are looking at.
+
+                    19hp: the rule itself sits ONE level in from the stage header, and everything
+                    printed until the next substep or stage boundary sits one level deeper again —
+                    so the five ④·N divisions are visibly inside ④ instead of beside it."""
+                    _sub_depth[0] = 0
                     log("")
-                    log(f"── {label} " + "─" * max(4, 74 - len(label)))
+                    log(f"   ── {label} " + "─" * max(4, 71 - len(label)))
+                    _sub_depth[0] = 3
                 
                 # [FN-307]
                 def _diag(msg):
@@ -2026,6 +2041,11 @@ def render():
                                                           .fillna(0).sum()) if _vc else 0.0)
                                     _rt_put(_k, 3, len(_g))
                             if _rows_rt:
+                                # 19hp: two blank lines above — the RPGT table sat flush against
+                                # the line before it, so it read as a continuation rather than a
+                                # section of its own.
+                                log("")
+                                log("")
                                 log(f"      {'RPGT':<22}{'in scope':<10}{'Σ attempts':>13}"
                                     f"{'attempt rows':>14}{'forecast txn':>14}{'fc rows':>10}")
                                 log(f"      {'-' * 22}{'-' * 10}{'-' * 13}{'-' * 14}"
@@ -2093,7 +2113,7 @@ def render():
                             _diag(f"      {name}: " + " · ".join(_bits))
                         _diag("")            # 19hd: separate this from the section above
                         _diag("")
-                        _diag("②·diag DATA SHAPES after pre-processing/filters:")
+                        _diag("   ②·diag DATA SHAPES after pre-processing/filters:")
                         # 19gy: the two `rows=… · currencies=… · gateways=…` shape lines are
                         # deleted. Every figure on them is stated with context somewhere else —
                         # the profile counts in ④·diag, the RPGT split in the RPGT-scope table, the
@@ -2817,7 +2837,7 @@ def render():
                                 "for history-derived gateways this run.")
 
                     _progress(_f_profiles, "Assembling profiles…")
-                    _stage("③ Assemble routing profiles from 30D attempts (forecast supplies volume only)")
+                    _stage("③ Assemble routing profiles from attempts data")
                     if _opt_profile:
                         # PROFILE decision grain: apportion each profile's forecast volume across its
                         # (pmp, Country) profiles by the pro-rata export's VI-Txn fractions (volume
@@ -2900,9 +2920,8 @@ def render():
                                 log(f"   [midlist-wallet] SKIPPED ({type(_mwe).__name__}: {_mwe}) — "
                                     "wallet-incapable doors remain candidates (masked downstream only).")
                         agg_problems = build_profile_problems(_agg_sc, agg_sr)
-                        log(f"   [profile] optimisation grain = Bank×Currency×RPGT×pmp×Country: "
-                            f"{len(agg_problems):,} profile problems from {len(agg_forecast):,} "
-                            f"profile-gateway rows (volume split by pro-rata VI, success rates broadcast).")
+                        log(f"   [profile] {len(agg_problems):,} profile problems")
+                        log(f"             {len(agg_forecast):,} profile-gateway rows")
                     else:
                         agg_problems = build_profile_problems(agg_forecast, agg_sr)
 
@@ -2916,9 +2935,14 @@ def render():
                         # [FN-312]
                         def _q(a, x):
                             return float(np.quantile(a, x)) if len(a) else 0.0
-                        _diag("④·diag ROUTING PROFILES assembled:")
-                        _diag(f"      profiles={len(agg_problems):,} · total gateway-rows={int(_ng.sum()):,} · "
-                              f"total forecast volume={_vols.sum():,.0f}")
+                        _diag("")
+                        _diag("")
+                        _diag("   ④·diag ROUTING PROFILES assembled:")
+                        _diag(f"      {'measure':<44}{'count':>16}")
+                        _diag(f"      {'-' * 44}{'-' * 16}")
+                        _diag(f"      {'profiles':<44}{len(agg_problems):>16,}")
+                        _diag(f"      {'gateway-rows':<44}{int(_ng.sum()):>16,}")
+                        _diag(f"      {'forecast volume':<44}{_vols.sum():>16,.0f}")
                         # 19hd: "profiles with 1 gateway / profiles >50 gateways" DELETED. Both read 0
                         # on every run, and structurally so while exploration is on: the inject
                         # above puts a fallback candidate into EVERY eligible profile, so a
@@ -2926,8 +2950,9 @@ def render():
                         # grain. If exploration is ever switched off, 1-gateway profiles become
                         # possible again and this pair is worth reviving — the cap-unsatisfiable
                         # case is real, it just cannot arise under the shipped configuration.
-                        _diag(f"      gateway-rows on POOLED prior (no per-profile attempts): {_npool:,} · "
-                              f"auto-explore injected rows: {_nexpl:,}")
+                        _diag(f"      {'gateway-rows on POOLED prior (no attempts)':<44}{_npool:>16,}")
+                        _diag(f"      {'auto-explore injected rows':<44}{_nexpl:>16,}")
+                        _diag(f"      {'-' * 44}{'-' * 16}")
                         # 19hd: the currencies / distinct-BINs / rpgt-grain-values line DELETED.
                         # All three are properties of the CONFIGURATION, restated: the currencies
                         # and RPGTs are in RUN CONFIG and the RPGT-scope table, and the BIN count
