@@ -1322,6 +1322,10 @@ def render():
                         log(f"   ✓ {_stage_state['name']} — finished in {_now - _stage_state['t']:.1f}s")
                     _stage_state["name"] = name
                     _stage_state["t"] = _now
+                    # 19gy: a blank line before every stage header. The finish line of one stage
+                    # and the start line of the next sat flush against each other, so the six
+                    # top-level sections of the run read as one wall.
+                    log("")
                     log(f"▶ {name} — started")
                 # [FN-306]
                 def _stage_end():
@@ -1393,9 +1397,16 @@ def render():
                                 return f"(import failed: {_e})"
                             if not _b:
                                 return "(no __build__)"
+                            # 19gy: THIS WAS PRINTING THE OLDEST TAG. A `__build__` is a
+                            # "+"-joined history in chronological order, so `_parts[0]` is the
+                            # FIRST tag ever added — it never changes, which makes it useless as
+                            # a staleness signal, and the "(+N earlier)" beside it was wrong in
+                            # the other direction too (those N are LATER). band_projection has
+                            # read "2026-08-19bz-float32-optin" for weeks while its newest tag
+                            # moved four times. `_parts[-1]` is the tag that changes when the
+                            # file changes, which is the entire point of this column.
                             _parts = [x for x in str(_b).split("+") if x]
-                            return (f"{_parts[0]}  (+{len(_parts) - 1} earlier)"
-                                    if len(_parts) > 1 else str(_b))
+                            return (_parts[-1], len(_parts) - 1) if len(_parts) > 1 else (str(_b), 0)
                         # [FN-310]
                         def _finfo(p):
                             try:
@@ -1407,7 +1418,10 @@ def render():
                         _diag(f"   started {_dt.datetime.now():%Y-%m-%d %H:%M:%S} · python {_plat.python_version()} · "
                               f"pandas {pd.__version__} · numpy {np.__version__}")
                         _diag(f"   APP_BUILD: {APP_BUILD.split(' · ')[0]}")
-                        _diag("   backend build markers (if any ≠ expected → stale bytecode; clear __pycache__):")
+                        # 19gy: ONE TABLE. Thirteen ragged lines with a 45-character tag glued
+                        # to a module name were unreadable, so the staleness check nobody could
+                        # read was a staleness check nobody used.
+                        _bm_rows = []
                         # 19gj: TWO RULES for this list, because it was noise on both counts.
                         #  1. ONLY modules this run actually uses. softmax / thompson / portfolio /
                         #     entropy were listed and are RETIRED (legacy_engines, not selectable),
@@ -1430,11 +1444,24 @@ def render():
                                    "routing_optimiser.s4_search.numba_kernels",
                                    "routing_optimiser.s4_search.exact_band_solver",
                                    "routing_optimiser.s4_search.rowpar"]:
-                            _diag(f"      {_m.split('.')[-1]:16s} {_bmark(_m)}")
+                            _bm_rows.append((_m.split(".")[-1], _bmark(_m)))
                         # impact_calcs is imported by-name (from impact_calcs import ...), so the module
                         # object isn't in scope — import it explicitly so its build marker is ALWAYS
                         # shown (confirms the _project_capped vectorise/memoise speedups are loaded).
-                        _diag(f"      {'impact_calcs':16s} {_bmark('impact_calcs')}")
+                        _bm_rows.append(("impact_calcs", _bmark("impact_calcs")))
+                        # ── the table ────────────────────────────────────────────────────────
+                        _diag("   BACKEND BUILD MARKERS — the NEWEST tag in each module's build "
+                              "history. If one is older than the change you expect, the run is on "
+                              "stale bytecode: clear __pycache__ and relaunch.")
+                        _diag(f"      {'module':<22}{'newest build tag':<44}{'earlier tags':>13}")
+                        _diag(f"      {'─' * 22}{'─' * 44}{'─' * 13}")
+                        for _bnm, _bv in _bm_rows:
+                            if isinstance(_bv, tuple):
+                                _btag, _bn = _bv
+                            else:                       # "(import failed: …)" / "(no __build__)"
+                                _btag, _bn = str(_bv), 0
+                            _diag(f"      {_bnm:<22}{_btag[:43]:<44}"
+                                  + (f"{_bn:>13,}" if _bn else f"{'—':>13}"))
                         # ── [loaded] WHICH band_projection IS ACTUALLY IN MEMORY? ─────────
                         # The marker above is a hand-maintained string, and on 2026-08-22 16:13 it
                         # was six changes out of date, so the run silently re-used an 11:20 module
@@ -1488,9 +1515,12 @@ def render():
                                          "(cell, period, t)")]
                                 _lmiss = [(_n, _w) for _n, _v, _w in _lsw if _v == "ABSENT"]
                                 if not _lmiss:
-                                    _diag(f"   [loaded]   all 4 staleness sentinels present "
-                                          f"(sentinel {_lsent}) — the module on disk is the module "
-                                          "running.")
+                                    # 19gy: SILENT WHEN HEALTHY. This line only ever said "nothing
+                                    # is wrong", every run, for weeks. The four sentinels exist to
+                                    # catch STALE BYTECODE, and a check that reports success is a
+                                    # check nobody reads — so it now speaks only when one is
+                                    # missing, which is the only time it has anything to say.
+                                    pass
                                 else:
                                     for _n, _v, _w in _lsw:
                                         _diag(f"   [loaded]   {_n} = {_v}"
@@ -1521,29 +1551,56 @@ def render():
                                           "the previous run byte-for-byte.")
                         except Exception as _le:  # noqa: BLE001
                             _diag(f"   [loaded] check skipped ({type(_le).__name__}: {_le})")
-                        _diag("   RUN CONFIG:")
-                        _diag(f"      company={_gv('sr_company')} · scheme={_gv('sr_scheme')} · "
-                              f"attempts_window={_gv('attempts_start')} → {_gv('attempts_end')}")
-                        _diag(f"      engine={_gv('engine_key')} · score_grain={_gv('_score_grain')} · opt_grain={_gv('_opt_grain')}")
-                        _diag(f"      vamp_cap={_gv('vamp_cap')} · exploration_floor={_gv('floor')} · max_gateway_share={_gv('max_share')}")
-                        _diag(f"      bayes_method={_gv('bayes_method')} · shrink κ={_gv('shrink')} · "
-                              f"time_decay={('on ' + str(_gv('decay_half')) + 'd') if _gv('apply_decay') else 'off'} · "
-                              f"xborder_penalty={_gv('xborder_penalty')}")
-                        _diag(f"      max_pools_target={_gv('max_configs')}")
+                        # 19gy: ONE TABLE, setting per row. Eight lines of `a=1 · b=2 · c=3` do
+                        # not scan, and the run log's most-read block was the hardest to read.
                         _pk = {k: params.get(k) for k in ("temperature", "temp_method", "n_variations")
                                if isinstance(params, dict) and k in params}
-                        _diag(f"      engine_params={_pk}")
+                        # `shrink κ` is EMPIRICAL BAYES ONLY. Under Empirical Bayes the shrinkage
+                        # is estimated from the data, so a κ from the sidebar is not what is
+                        # applied and printing it invites the reader to believe it was (19gy).
+                        _bm_meth = str(_gv('bayes_method') or "")
+                        _cfg_rows = [
+                            ("company", _gv('sr_company')),
+                            ("card scheme", _gv('sr_scheme')),
+                            ("attempts window", f"{_gv('attempts_start')} → {_gv('attempts_end')}"),
+                            ("engine", _gv('engine_key')),
+                            ("engine score grain", _gv('_score_grain')),
+                            ("optimisation grain", _gv('_opt_grain')),
+                            ("VAMP cap", _gv('vamp_cap')),
+                            ("exploration floor", _gv('floor')),
+                            ("max gateway share", _gv('max_share')),
+                            ("smoothing method", _bm_meth or "—"),
+                        ]
+                        if "empirical" not in _bm_meth.lower():
+                            _cfg_rows.append(("shrink κ", _gv('shrink')))
+                        _cfg_rows += [
+                            ("time decay",
+                             ("on, " + str(_gv('decay_half')) + "d half-life")
+                             if _gv('apply_decay') else "off"),
+                            ("cross-border penalty", _gv('xborder_penalty')),
+                            ("max connector pools", _gv('max_configs')),
+                            ("engine params", _pk if _pk else "(none)"),
+                        ]
                         # 19dv: `_sel_rpgts` is not bound until ~line 1600, so this read None and printed
                         # ALL on EVERY run — including runs scoped to 4 of 8 RPGTs, where [rpgt-scope]
                         # says the opposite twelve minutes later. `_rpgt_selected` IS bound by here.
                         _rs_cfg = _gv('_rpgt_selected', None)
                         _rs_txt = ("ALL" if not _rs_cfg
                               else f"{len(_rs_cfg)} selected: " + ", ".join(sorted(str(_r) for _r in _rs_cfg)))
-                        _diag(f"      auto_explore={_gv('_auto_explore')} · RPGT_scope={_rs_txt} · "
-                              f"hold_unselected_at_baseline={ss.get('eng_rpgt_hold_others')}")
-                        _diag(f"      gateway auto-block={'ON' if ss.get('block_gw_cb', False) else 'off'}"
-                              + (f" · >={int(ss.get('block_min_inp', 100) or 100)} consecutive failed attempts"
-                                 if ss.get('block_gw_cb', False) else ""))
+                        _cfg_rows += [
+                            ("auto-explore", _gv('_auto_explore')),
+                            ("RPGT scope", _rs_txt),
+                            ("hold unselected RPGTs at baseline",
+                             ss.get('eng_rpgt_hold_others')),
+                            ("gateway auto-block",
+                             (f"ON, ≥{int(ss.get('block_min_inp', 100) or 100)} consecutive "
+                              "failed attempts") if ss.get('block_gw_cb', False) else "off"),
+                        ]
+                        _diag("   RUN CONFIG:")
+                        _diag(f"      {'setting':<36}value")
+                        _diag(f"      {'─' * 36}{'─' * 44}")
+                        for _ck, _cv in _cfg_rows:
+                            _diag(f"      {_ck:<36}{_cv}")
                         # Step-size (CMA-ES σ) overrides — echoed ONLY when dialled off their no-op defaults,
                         # so a tuning A/B is self-documenting in the saved run bundle (absent line ⇒ defaults).
                         # These σ controls apply ONLY to the tilt genetic engines — the full-matrix GA has no
@@ -1556,18 +1613,36 @@ def render():
                                 _diag(f"      step-size (CMA-ES σ) TUNED: σ₀×{_s0m:g} · σ_floor={_sfl:g} · damping×{_dmp:g} "
                                       "(defaults: σ₀×1 · σ_floor=0 · damping×1)")
                         _mcn = params.get("mid_constraints", []) if isinstance(params, dict) else []
-                        _diag(f"      per-MID constraints configured: {len(_mcn or [])}")
-                        for _r in (_mcn or [])[:40]:
-                            try:
-                                _rp = _r.get("rpgt") or "ALL-RPGT"
-                                _mo = "ALL" if _r.get("month") is None else f"M{_r.get('month')}"
-                                _tl = _r.get("tol")
-                                _tls = "n/a" if _tl is None else f"{float(_tl) * 100:g}%"
-                                _diag(f"         • {_r.get('vampMid')} | {_rp} | {_mo} | "
-                                      f"{_r.get('metric')} [{_r.get('direction', 'range')}] "
-                                      f"target={_r.get('target')} tol={_tls} prio={_r.get('priority', 1)}")
-                            except Exception:  # noqa: BLE001
-                                pass
+                        # 19gy: ONE TABLE, sorted by priority then MID. Fifteen pipe-delimited
+                        # bullets with the target buried mid-line could not be scanned for "which
+                        # MID has the tightest ceiling?", which is the only question anyone asks
+                        # of this block.
+                        _diag(f"   PER-MID BAND CONSTRAINTS: {len(_mcn or [])} configured")
+                        if _mcn:
+                            _diag(f"      {'prio':<5}{'MID':<30}{'metric':<7}{'type':<10}"
+                                  f"{'target':>10}  {'tol':<6}{'month':<7}RPGT")
+                            _diag(f"      {'-' * 5}{'-' * 30}{'-' * 7}{'-' * 10}{'-' * 10}  "
+                                  f"{'-' * 6}{'-' * 7}{'-' * 10}")
+                            for _r in sorted(_mcn, key=lambda _x: (
+                                    int(_x.get("priority", 1) or 1),
+                                    str(_x.get("vampMid") or "")))[:40]:
+                                try:
+                                    _tl = _r.get("tol")
+                                    _tgt = _r.get("target")
+                                    _diag(f"      {str(_r.get('priority', 1)):<5}"
+                                          f"{str(_r.get('vampMid'))[:29]:<30}"
+                                          f"{str(_r.get('metric')):<7}"
+                                          f"{str(_r.get('direction', 'range')):<10}"
+                                          + (f"{float(_tgt):>10,.0f}" if _tgt is not None
+                                             else f"{'-':>10}")
+                                          + "  "
+                                          + (f"{'-':<6}" if _tl is None
+                                             else f"{float(_tl) * 100:g}%".ljust(6))
+                                          + ("ALL" if _r.get("month") is None
+                                             else f"M{_r.get('month')}").ljust(7)
+                                          + (str(_r.get("rpgt")) if _r.get("rpgt") else "ALL"))
+                                except Exception:  # noqa: BLE001
+                                    pass
                         _diag("   INPUT FILES:")
                         _mid_p = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                         for _label, _p in [("outputs dir", _gv("out_dir")), ("MID list", _mid_p)]:
@@ -1612,7 +1687,9 @@ def render():
                     sql_path = os.path.join(SQL_DIR, "attempts_success.sql")
                     if not os.path.exists(sql_path): raise FileNotFoundError(f"attempts_success.sql not found.")
                     attempts_path, src = run_sql_file(sql_path, CACHE_DIR, use_cache=True, fallback_csv=None, project=GCP_PROJECT, params=sql_params)
-                    log(f"   attempts source: {src}")
+                    # 19gy: "attempts source: cache" deleted — the SQL line directly above
+                    # already says "loading cached result from <path>", so this said the same
+                    # thing in one word. `src` is still used by the rest of the run.
 
                     # Optional CROSS-BRAND processor benchmark → layer-2 prior for untested MIDs.
                     # Runs only when auto-explore is on AND queries/processor_benchmark.sql exists, and
@@ -1637,14 +1714,24 @@ def render():
                                         s=(_ps, "sum"), a=(_pa, "sum"))
                                     ss["processor_benchmark"] = {k: float(r["s"]) / float(r["a"])
                                                                  for k, r in _pg.iterrows() if float(r["a"]) > 0}
-                                    log(f"   cross-brand processor benchmark: {len(ss['processor_benchmark'])} "
-                                        f"(processor, currency) rates ({_pb_src}) → untested-MID layer-2 prior.")
+                                    # 19gy: DEMOTED to _diag. This line reports a FALLBACK PRIOR
+                                    # that is only consulted for a gateway with no same-brand
+                                    # sibling that has data — on this book that is 0 of 68,283
+                                    # seeded cells, so it described a mechanism that did not
+                                    # fire. It stays in the diagnostics block (where a
+                                    # non-zero use would still be visible) rather than in the
+                                    # run's headline flow.
+                                    _diag(f"   cross-brand processor benchmark loaded: "
+                                          f"{len(ss['processor_benchmark'])} (processor, currency) "
+                                          f"rate(s) ({_pb_src}) — a fallback prior, used only for "
+                                          "a gateway whose processor has no same-brand sibling "
+                                          "with data.")
                         except Exception as _e:  # noqa: BLE001
                             log(f"   [Note] cross-brand processor benchmark unavailable ({_e}); untested MIDs "
                                 "use same-brand sibling / cell average.")
 
                     _progress(0.02, "Pre-processing…")
-                    _stage("② Pre-processing (Bayesian smoothing)")
+                    _stage("② Pre-processing")
                     # Cache the parsed attempts in-memory (keyed on path + mtime) so switching
                     # engine / re-running doesn't re-parse the same ~700k-row file every time.
                     _adf_k = (attempts_path, _mtime(attempts_path))
@@ -1815,7 +1902,8 @@ def render():
                                 _mismatch = adf["_g"].isin(gw_in_map) & adf["_ok"].isna()
                                 _ndrop = int(_mismatch.sum())
                                 adf = adf[~_mismatch].drop(columns=["_g", "_c", "_ok"]).reset_index(drop=True)
-                                log(f"   currency filter: dropped {_ndrop:,} attempt rows where currency disagreed with Master MID currency")
+                                log(f"   mis-allocated currency: {_ndrop:,} row(s) where the "
+                                    "attempt's currency != the Master MID's currency (dropped)")
                     except Exception as e:
                         log(f"   [Warning] currency filter skipped: {e}")
 
@@ -1876,7 +1964,10 @@ def render():
                             _win = (_d > (_mx - pd.Timedelta(days=30))) & (_d <= _mx)
                             if _win.sum() > 0:
                                 agg_adf = agg_adf[_win].copy()
-                                log(f"   eligibility window: {_win.sum():,} attempt rows in 30D ending {_mx.date()}")
+                                # 19gy: deleted. The window is already in RUN CONFIG's attempts
+                                # window row, and the row count reappears in [bin-key] and the
+                                # RPGT-scope table with context this line did not have.
+                                pass
                     # ---- DATA-SHAPE DIAGNOSTICS (verbose) --------------------------------
                     try:
                         # [FN-311]
@@ -1894,11 +1985,17 @@ def render():
                                     _bits.append(f"Σ{_amt}={pd.to_numeric(df[_cols[_amt]], errors='coerce').sum():,.0f}")
                             _diag(f"      {name}: " + " · ".join(_bits))
                         _diag("②·diag DATA SHAPES after pre-processing/filters:")
-                        _shape(locals().get("agg_adf"), "attempts (post-filter, eligibility window)")
-                        _shape(locals().get("agg_forecast"), "forecast baseline (routing volume)")
+                        # 19gy: the two `rows=… · currencies=… · gateways=…` shape lines are
+                        # deleted. Every figure on them is stated with context somewhere else —
+                        # the cell counts in ④·diag, the RPGT split in the RPGT-scope table, the
+                        # window in RUN CONFIG — and a bare shape line invites a reader to
+                        # reconcile two numbers that were never the same population.
                         _rpgts_all = locals().get("_all_rpgts"); _rpgts_sel = locals().get("_sel_rpgts")
                         if _rpgts_all is not None:
-                            _diag(f"      RPGTs available={sorted(map(str, _rpgts_all))[:12]} · scoped={('ALL' if not _rpgts_sel else sorted(map(str, _rpgts_sel)))}")
+                            # 19gy: deleted. The scoped list is in RUN CONFIG's RPGT-scope row
+                            # and again in the RPGT-scope table; the AVAILABLE list is a property
+                            # of the export, not of this run's decisions.
+                            pass
                     except Exception as _e:  # noqa: BLE001
                         _diag(f"   [data-shape diagnostics failed: {_e}]")
 
