@@ -7871,8 +7871,13 @@ def render():
                                                       "agree"
                                                       if str(_uR) == str(_uD) else
                                                       "agree on which; values immaterial")
-                                            if _nR != _nD and _knife:
-                                                _nR = _nD          # not a real disagreement, so nothing downstream should treat it as one
+                                            # 19hz: DO NOT overwrite _nR here. 19hx set `_nR = _nD`
+                                            # so nothing downstream would treat a knife-edge as a
+                                            # disagreement - but the log line BELOW reads _nR for
+                                            # the "met RAW" column, so the 20:20 run printed
+                                            # band-aware as 12/15 met on RAW when RAW actually
+                                            # meets 13. The fix corrupted the number it was
+                                            # reporting. `_knife` alone is what downstream reads.
                                             log(f"      {str(_sbn):<15}{_sbR:>12.5g}"
                                                 f"{_sbD:>12.5g}{_sbD - _sbR:>+11.5g}"
                                                 f"{f'{_sb_nb - _nR}/{_sb_nb}':>10}"
