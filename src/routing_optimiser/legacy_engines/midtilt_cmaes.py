@@ -61,12 +61,12 @@ __build__ = "19gd-split-from-seed_search"
 #
 #     share_g ∝ ref_g · exp(−θ_{mid(g)} · z_g)   (z_g = risk standardised WITHIN the MID)
 #
-# Raising θ_m pulls MID m out of its riskiest cells (dropping its aggregate rate)
+# Raising θ_m pulls MID m out of its riskiest profiles (dropping its aggregate rate)
 # and the freed share redistributes per profile in proportion to the revenue reference
 # (revenue-efficient recipients — unlike greedy, which dumps onto the lowest-rate
 # gateway). Genome = n_mid (~20) dims, so the search is tiny and fast, AND it targets
 # the real per-MID cross-profile constraint, so it can retain more revenue at compliance
-# than the greedy shave on MIDs whose risk varies across cells.
+# than the greedy shave on MIDs whose risk varies across profiles.
 # ---------------------------------------------------------------------------
 # [FN-106]
 def _z_per_mid(vals, mid_rows, n_mid, N):
@@ -85,7 +85,7 @@ def _z_per_mid(vals, mid_rows, n_mid, N):
 # [FN-107]
 def _cap_floor_shares(X, profile_starts, profile_counts, elig, cap, floor):
     """HARD per-profile max-share cap + exploration floor on shares X (P, N), vectorised.
-    Profiles are contiguous segments (cell_starts / cell_counts). Applies the floor first
+    Profiles are contiguous segments (profile_starts / profile_counts). Applies the floor first
     (lift eligible gateways to a per-profile-clamped floor, renormalise), then WATER-FILLS
     any over-cap excess into the same profile's under-cap eligible gateways — enforced LAST,
     so every row exits with share <= cap. Profiles with < 2 eligible gateways can't be capped
@@ -250,7 +250,7 @@ def _leaned_ref(ref, risk, elig, profile_starts, profile_counts, gamma):
 def _cap_floor_prep(profile_starts, profile_counts, elig, cap, floor):
     """Precompute the per-profile CONSTANTS the max-share/floor water-fill needs, so they
     are built ONCE per problem instead of on every decode (bit-identical, pure saving).
-    Returns None when neither cap nor floor binds. `elig_row`, `capN`, `fl`, `n_elig_cell`
+    Returns None when neither cap nor floor binds. `elig_row`, `capN`, `fl`, `n_elig_profile`
     match the arrays `_cap_floor_shares` recomputes internally each call."""
     cap = float(cap); floor = float(floor)
     if cap >= 1.0 and floor <= 0.0:
@@ -319,14 +319,14 @@ def _risk_z_per_profile(risk, profile_starts, profile_counts, N):
 def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, profile_starts, profile_counts, elig,
                      cap=1.0, floor=0.0, *, eidx=None, prep=None,
                      fine_idx=None, zr_profile=None, n_fine=0):
-    """genome (P, 3M[+K]) = [θr (risk-tilt) | θq (return-tilt) | g (gain) | cellθ (K fine)] -> (P, N).
+    """genome (P, 3M[+K]) = [θr (risk-tilt) | θq (return-tilt) | g (gain) | profileθ (K fine)] -> (P, N).
 
-        share_g ∝ ref_g · exp(−θr·zr_g + θq·zq_g + g_mid − cellθ_cell·zr_cell_g) · elig
+        share_g ∝ ref_g · exp(−θr·zr_g + θq·zq_g + g_mid − profileθ_profile·zr_profile_g) · elig
 
     renormalised per profile, then the HARD max-share cap / exploration floor. θr (≥0) pulls a MID
     toward its LOW-risk profiles, θq (≥0) toward its HIGH-revenue profiles, g moves its overall
-    presence, and the optional per-profile fine tilt cellθ (≥0, `n_fine` of them, on the top-K
-    risk-heavy profiles via `fine_idx`/`zr_cell`) shifts share WITHIN one profile toward its low-risk
+    presence, and the optional per-profile fine tilt profileθ (≥0, `n_fine` of them, on the top-K
+    risk-heavy profiles via `fine_idx`/`zr_profile`) shifts share WITHIN one profile toward its low-risk
     gateways — extra reach the coarse per-MID tilt can't provide. `n_fine`=0 (default) is the
     exact 3M-genome behaviour.
 
@@ -360,7 +360,7 @@ def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, profile_starts, profile_cou
             a[:, _fm] = a[:, _fm] - _cth[:, _fi[_fm]] * zr_profile[None, _cols][:, _fm]
     w = np.zeros((P, N), dtype=float)
     # Numerical stability: subtract each profile's MAX `a` (over its ELIGIBLE columns) before exp.
-    # A ref-weighted softmax is shift-invariant per cell (the per-profile constant cancels between
+    # A ref-weighted softmax is shift-invariant per profile (the per-profile constant cancels between
     # numerator and denominator), so the result is identical to float64 rounding — but exp can no
     # longer overflow to +inf, which is what produced inf/inf = NaN for a large tilt·z product.
     _A = np.full((P, N), -np.inf)
@@ -749,7 +749,7 @@ def run_midtilt_ga(ctx, *, pop_size=40, generations=80, seed=42,
     _base_v = ctx.get("mid_base_vol")
     _vcap = ctx.get("vamp_cap"); _volcap = ctx.get("mid_vol_cap")
 
-    # #4 richer genome: give the TOP-K risk-heavy cells (high volume × within-profile risk spread)
+    # #4 richer genome: give the TOP-K risk-heavy profiles (high volume × within-profile risk spread)
     # their own fine tilt so the search can move share WITHIN a profile toward low-risk gateways —
     # reach the coarse per-MID tilt lacks. n_fine=0 keeps the exact 3M-genome behaviour.
     _K = int(max(0, min(int(n_fine), len(cs))))
@@ -788,7 +788,7 @@ def run_midtilt_ga(ctx, *, pop_size=40, generations=80, seed=42,
 
     D = 3 * M + _K
     # CMA-ES runs in a UNIT box [0,1]^D so all coordinates share a scale; map to the actual
-    # bounds (θr,θq ∈ [0, theta_max]; g ∈ [−gain_max, gain_max]; cellθ ∈ [0, theta_max]).
+    # bounds (θr,θq ∈ [0, theta_max]; g ∈ [−gain_max, gain_max]; profileθ ∈ [0, theta_max]).
     lo_a = np.concatenate([np.zeros(M), np.zeros(M), np.full(M, -gain_max), np.zeros(_K)])
     hi_a = np.concatenate([np.full(M, theta_max), np.full(M, theta_max), np.full(M, gain_max),
                            np.full(_K, theta_max)])

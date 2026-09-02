@@ -20,7 +20,7 @@ __build__ = "2026-07-17-genetic-revenue-reference"
 class GeneticRefEngine(BaseEngine):
     key = "genetic_ref"
     label = "Genetic revenue reference"
-    description = ("Revenue-greedy waterfall: fills each cell's best-converting "
+    description = ("Revenue-greedy waterfall: fills each profile's best-converting "
                    "gateways up to the max share, then floors the rest. Genetic's "
                    "own conversion reference — independent of softmax (no "
                    "temperature/exponential).")
@@ -32,7 +32,7 @@ class GeneticRefEngine(BaseEngine):
         eligible = hi > 0.0
         if not eligible.any():
             return self._finalise(p, np.full(n, 1.0 / n), "no eligible gateway")
-        # Revenue ∝ success rate within a cell (ticket ~constant per currency×bank),
+        # Revenue ∝ success rate within a profile (ticket ~constant per currency×bank),
         # so allocate to the highest success rate first.
         sr = np.where(eligible, np.asarray(p.success_rates, float), -np.inf)
         cap = float(self.hard.max_gateway_share) if self.hard.max_gateway_share else 1.0

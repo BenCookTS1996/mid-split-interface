@@ -1,5 +1,5 @@
 """
-Load the inputs the optimiser needs and turn them into CellProblems.
+Load the inputs the optimiser needs and turn them into ProfileProblems.
 
 Two inputs:
   1. The "pre" forecast (baseline volumes + current split) from the VAMP
@@ -9,7 +9,7 @@ Two inputs:
      builds a stand-in from the attempts data so the app runs end to end.
   2. The success/attempts data (for success rates).
 
-The output is a list of CellProblem objects, one per RPGT x Currency x Bank.
+The output is a list of ProfileProblem objects, one per RPGT x Currency x Bank.
 """
 from __future__ import annotations
 
@@ -81,7 +81,7 @@ def build_profile_problems(
 
     ANALOGY: assembling each profile's "briefing pack". For every RPGT×Currency×Bank profile we pull
     the forecast's volume + current split together with each gateway's success rate, risk rate
-    and evidence, and hand the engine one CellProblem it can solve. Gateways with no per-profile
+    and evidence, and hand the engine one ProfileProblem it can solve. Gateways with no per-profile
     attempts fall back to the pooled prior (flagged so the UI can show which are educated guesses
     rather than measured rates).
     """
@@ -180,7 +180,7 @@ def build_profile_problems(
         # Not on the dataclass so it doesn't force a schema change downstream.
         problem.pooled_fallback = np.array(is_pool, bool)  # type: ignore[attr-defined]
         # Attach which gateways are auto-explore (capable-but-untested) candidates.
-        # Non-Thompson engines cap the COMBINED explore share per cell (and each
+        # Non-Thompson engines cap the COMBINED explore share per profile (and each
         # individually) so unproven gateways can't dilute proven volume; Thompson
         # ignores the flag (its wide posterior self-limits). Same attach-not-schema
         # pattern as pooled_fallback so nothing downstream needs to change.
@@ -199,7 +199,7 @@ def build_profile_problems(
         if _matched == 0:
             # NOTHING joined → the two sides key on genuinely different values: a real bug.
             warnings.warn(
-                f"build_profile_problems: 0/{_n_gw} gateways matched a per-cell success rate — the "
+                f"build_profile_problems: 0/{_n_gw} gateways matched a per-profile success rate — the "
                 f"forecast and success-rate join keys don't line up AT ALL (likely a BIN-vs-bankName "
                 f"mismatch on 'bin'); every rate is the pooled prior.", stacklevel=2)
         else:
@@ -219,7 +219,7 @@ def build_profile_problems(
     success_rates: pd.DataFrame,
     default_risk: float = 0.006,
 ) -> list[ProfileProblem]:
-    """PROFILE variant of :func:`build_profile_problems` — one CellProblem per
+    """PROFILE variant of :func:`build_profile_problems` — one ProfileProblem per
     (rpgt × currency × bin × pmp × Country) profile.
 
     Design (locked): the DECISION grain is the profile, but the SCORING (success-rate) grain
@@ -227,7 +227,7 @@ def build_profile_problems(
     BROADCAST onto each profile (no pmp/Country split of the thin conversion data). `forecast`
     must already carry `pmp` and `ctry` columns with the volume apportioned to profiles (see
     `routing_optimiser.s3_problem.profile.expand_forecast_to_profiles`). `bin` is the raw BIN and
-    the profile identity is carried on `CellProblem.pmp` / `.ctry`, so the band projector's
+    the profile identity is carried on `ProfileProblem.pmp` / `.ctry`, so the band projector's
     profile scaffold (keyed bin/pmp/ctry) still aligns.
 
     `build_profile_problems` is left byte-identical; this is a separate, gated path.

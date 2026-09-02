@@ -3,7 +3,7 @@
 Status after this session: **Stage 1 (core) is built and offline-validated.** The
 new module `src/routing_optimiser/genetic_fullmatrix.py`
 (`__build__ = "2026-08-12-fullmatrix-binmatrix-ga-dualceiling-adaptivetol"`) is
-self-contained numpy, `py_compile`-clean, and passes a synthetic multi-cell /
+self-contained numpy, `py_compile`-clean, and passes a synthetic multi-profile /
 multi-MID smoke test: VWSR improved over the safe seed (0.813 → 0.860), stayed
 feasible, and the per-mid VAMP rates sat right at the soft ceiling (0.0109 vs
 hard 0.009 / soft 0.011) — i.e. the adaptive-tolerance boundary-hugging works.
@@ -11,8 +11,8 @@ hard 0.009 / soft 0.011) — i.e. the adaptive-tolerance boundary-hugging works.
 Nothing existing was touched — Genetic / GA - Numba are untouched.
 
 ## What the core already does
-- Full-matrix genome: one logit per (cell × eligible gateway) at BIN grain;
-  per-cell softmax → shares (any allocation reachable, no tilt/anchor limit).
+- Full-matrix genome: one logit per (profile × eligible gateway) at BIN grain;
+  per-profile softmax → shares (any allocation reachable, no tilt/anchor limit).
 - BIN-grain scoring: VWSR objective + per-vampMid VAMP on the rates you pass in.
 - Dual VAMP ceilings per mid (hard `max_vamp` + soft `max_pass_vamp`, cheaper
   route passes) + adaptive VWSR tolerance so the search hugs the boundary.
@@ -25,29 +25,29 @@ Nothing existing was touched — Genetic / GA - Numba are untouched.
 ### Stage 2 — data feed  ✅ DONE (offline-validated)
 - Added `max_pass_vamp` (soft ceiling) to `HardConstraints` — defaults to `None`
   → falls back to `vamp_cap` (single hard wall). Other engines ignore it.
-- Added `genetic_fullmatrix.build_fullmatrix_problem(cell_problems, hard, *,
+- Added `genetic_fullmatrix.build_fullmatrix_problem(profile_problems, hard, *,
   mid_caps=None, exploration_floor=None)` → `(problem, meta)`. It consumes the
-  app's EXISTING `CellProblem` list at its finest grain (no pooling):
-  - `succ` = `cell.success_rates` (ALREADY EB-shrunk upstream by
-    `gateway_success_rates` inside `build_cell_problems` — no re-shrink needed).
-  - `risk` = `cell.risk_rates` (per-gateway VAMP, from `bin_rpgt_impact_export`).
-  - `mid_id` = global index of the gateway/MID NAME, so the same MID across cells
-    is one vampMid whose cap applies to its cross-cell aggregate.
+  app's EXISTING `ProfileProblem` list at its finest grain (no pooling):
+  - `succ` = `profile.success_rates` (ALREADY EB-shrunk upstream by
+    `gateway_success_rates` inside `build_profile_problems` — no re-shrink needed).
+  - `risk` = `profile.risk_rates` (per-gateway VAMP, from `bin_rpgt_impact_export`).
+  - `mid_id` = global index of the gateway/MID NAME, so the same MID across profiles
+    is one vampMid whose cap applies to its cross-profile aggregate.
   - `max_share` from `hard.max_gateway_share`; dual caps from `vamp_cap` /
     `max_pass_vamp`, with optional per-MID overrides via `mid_caps`
     (`{mid_name: (hard, soft)}`, from the tab-3 editor).
   - `meta` returns `gw_names`, `mid_names`, and `baseline_shares` (for the elite
     seed).
 - Validated: `test_fullmatrix_builder.py` — from a neutral (infeasible) seed the
-  GA delivered a feasible, higher-VWSR split by a cross-cell shift, MID rates at
-  the soft cap. **Still needs a run against the LIVE cell problems** to confirm
+  GA delivered a feasible, higher-VWSR split by a cross-profile shift, MID rates at
+  the soft cap. **Still needs a run against the LIVE profile problems** to confirm
   the real MID grouping / cap wiring behaves as expected.
 
 ### Stage 3 — register as opt-in engine (`app/tab_2_routing_engine.py`)  🟡 DRAFTED (apply live)
 
 The `ctx`-native adapter (`problem_from_ctx` / `reconstruct_full_split`) is built
 and offline-validated (`test_fullmatrix_ctx.py`: eligibility drop + reconstruct +
-cross-cell boundary-hug all pass). The tab change is small and additive. Apply
+cross-profile boundary-hug all pass). The tab change is small and additive. Apply
 these three edits at your machine, clear `__pycache__`, restart Streamlit.
 
 **Line numbers are approximate — match on the anchor text.**
@@ -81,7 +81,7 @@ and after `_comp_share_G` exists, ~line 4205):**
                 pop_size=int(ss.get("ga_seeds", 8)) * 8,
                 generations=200, seed=0, log_fn=log)
             _fm_full = reconstruct_full_split(_fm_best, _fm_meta)
-            log(f"   [full-matrix] vwsr={_fm_info['vwsr']:.5f} "
+            log(f"   [full-matrix] success_rate={_fm_info['success_rate']:.5f} "
                 f"viol={_fm_info['violation']:.2e} feasible={_fm_info['feasible']} "
                 f"improved={_fm_info['improved_over_seed']}")
             # Hand BOTH endpoints the same full-matrix split; the frontier blend
@@ -101,7 +101,7 @@ in-search split is tightened to the HARD cap here. **Do not add a second
 enforcement path — reuse this one.** Never ship `_fm_full` raw.
 
 **(d) History chart / efficiency readout:** `_fm_info["history"]` is a list of
-`(gen, best_vwsr, best_viol)` — feed it to the same chart the tilt GA uses.
+`(gen, best_success_rate, best_viol)` — feed it to the same chart the tilt GA uses.
 
 Risk to watch on the live run: `problem_from_ctx` assumes `ctx['sr']` is the
 EB-shrunk success rate and `ctx['risk']` the period-0 VAMP rate (confirmed by the
@@ -132,7 +132,7 @@ override runs (earlier it silently fell into the non-genetic path). AND: for thi
 engine the `bin_to_bank` map is forced to IDENTITY (~1254), so `parent_bank ==
 bank == BIN` and the whole pipeline (ctx, endpoints, delivery, explode,
 compression) is built per BIN — the genome is now genuinely BIN-grain, not
-parent-bank grain. Cost: more cells (~10k+), slower. Watch for the log line
+parent-bank grain. Cost: more profiles (~10k+), slower. Watch for the log line
 "[full-matrix] TRUE BIN GRAIN: parent-bank collapse DISABLED".
 
 ### Stage 3 tab edits — APPLIED (not just drafted)

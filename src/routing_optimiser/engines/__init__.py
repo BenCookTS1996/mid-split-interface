@@ -11,7 +11,7 @@ from .genetic_ref import GeneticRefEngine
 #     get_engine() must be able to resolve it for any caller that does not pass one;
 #   * ThompsonEngine and PortfolioEngine both subclass SoftmaxEngine, so softmax cannot
 #     be dropped without taking the other two with it.
-# base.py and genetic_ref.py deliberately did NOT move: the whole pipeline uses CellProblem /
+# base.py and genetic_ref.py deliberately did NOT move: the whole pipeline uses ProfileProblem /
 # BaseEngine, and the full-matrix GA dispatches its own revenue reference through
 # get_engine("genetic_ref") (tab_2_routing_engine.py, `optimise_split(agg_problems, ref_settings)`).
 from ..legacy_engines.entropy import EntropyEngine

@@ -1,8 +1,8 @@
 """
 The common contract every split engine speaks.
 
-Every engine takes a CellProblem (one RPGT x Currency x Bank profile) and returns
-a CellSolution (a vector of gateway shares that sums to 1). Because the input
+Every engine takes a ProfileProblem (one RPGT x Currency x Bank profile) and returns
+a ProfileSolution (a vector of gateway shares that sums to 1). Because the input
 and output shapes are identical across engines, the UI can swap engines from a
 dropdown without anything downstream noticing.
 
@@ -60,7 +60,7 @@ class ProfileProblem:
     # engine falls back to its global `temperature` param.
     temperature: float | None = None
     # Profile identity (payment-method × Country) for profile-grain optimisation. Default
-    # "_all_" = PROFILE grain (unchanged behaviour), so every existing CellProblem construction and
+    # "_all_" = PROFILE grain (unchanged behaviour), so every existing ProfileProblem construction and
     # consumer is unaffected; only the profile assembler (`build_profile_problems`) sets these.
     # `bank` stays the raw BIN so the band projector's profile scaffold still aligns on bin/pmp/ctry.
     pmp: str = "_all_"
@@ -425,7 +425,7 @@ class BaseEngine:
     # [FN-414]
     def _finalise(self, p: ProfileProblem, shares: np.ndarray,
                   note: str = "") -> ProfileSolution:
-        """Clean up a raw share vector into a valid CellSolution.
+        """Clean up a raw share vector into a valid ProfileSolution.
 
         Clip negatives, renormalise to sum 1, apply the VAMP projection, renormalise
         again, then attach the headline success/risk numbers and a feasibility flag.

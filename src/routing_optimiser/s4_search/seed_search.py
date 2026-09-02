@@ -14,7 +14,7 @@ WHAT THE LIVE SEARCH ACTUALLY CALLS FROM HERE:
                                   (per-profile simplex + max-share QP) -- the "band-aware seed"
                                   in the run log
     band_greedy_shares            its single-start inner routine
-    _project_capped_simplex_cells the vectorised per-profile capped-simplex QP both use
+    _project_capped_simplex_profiles the vectorised per-profile capped-simplex QP both use
     _build_mid_incidence          the (vampMid x row) incidence matrix
     _obj_viol                     the REFERENCE fitness. `numba_kernels._fused_eval` and
                                   `band_scoring` are written to match it and `verify()`
@@ -105,7 +105,7 @@ def _mid_viol_weights(ctx, M):
     tolerance and the breach_quad meaning — is preserved), while a high-volume MID's breach
     counts proportionally MORE than a tiny MID's. This stops the search wasting its gradient
     flattening hundreds of trivially-small breaches it cannot tell apart from the ones that
-    matter (see the 5-txn cad profiles vs the 44,000-txn usd profiles in the run cells).
+    matter (see the 5-txn cad profiles vs the 44,000-txn usd profiles in the run profiles).
 
     Returns ALL-ONES — i.e. behaviour byte-identical to the un-weighted violation — when
     ctx['viol_vol_weight'] is off or there is no baseline-volume basis. SINGLE SOURCE OF TRUTH:

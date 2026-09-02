@@ -23,11 +23,11 @@ So: **a profile contains many cells** — roughly 10 on the live scaffold (14,85
 154,405 cells). A split assigns a share to every cell; the shares of the cells inside one
 profile sum to 1.
 
-### The code currently has these INVERTED
+### The code USED to have these inverted — it no longer does
 
-Identifiers and many log strings use `cell` for the 5-part group and `prop-key` / `profile` for
-the 6-part row — the opposite of the table above. That inversion is why the run log reads
-confusingly, and it is being corrected outward-in:
+Identifiers and log strings used to say `cell` for the 5-part group — the opposite of the table
+above — which is why the run log used to read confusingly. Corrected outward-in across
+19hk / 19hl / 19hm / 19hn:
 
 * ✅ **run-log prose** — migrated in 19hk (297 log strings across 9 files)
 * ✅ **comments** — migrated in 19hk (793 comments across 26 files)
@@ -69,8 +69,8 @@ change. An earlier note in this file claimed otherwise; that was wrong.
 The 6-part row is still called `prop_key` / `propidx` / `prop_raw` in the code. That is a
 mechanism name rather than a grain name, so it was left alone.
 
-**When reading code, translate:** an identifier saying `cell` almost always means this
-document's PROFILE; a `prop_key` / `propidx` almost always means this document's CELL.
+**One translation still needed when reading code:** `prop_key` / `propidx` / `prop_raw` name
+this document's CELL. They are mechanism names rather than grain names, so they were left alone.
 
 ---
 
@@ -111,12 +111,17 @@ Every function in the codebase carries a stable id tag in its docstring/comment,
 
 ## Key concepts (plain English + an analogy each)
 
-- **Cell** — one `bank × currency × transaction-type` group. One routing decision is made per cell.
+- **Profile** — one group of payments routed together: `currency × BIN × transaction-type ×
+  payment-method × country`. One routing decision is made per profile. (See the ⚠ VOCABULARY
+  section above — this used to be called a "cell" throughout the code.)
   *Analogy: one row on a delivery schedule — "parcels of THIS type, to THIS region, via which couriers?"*
+
+- **Cell** — one **door within** a profile: the profile plus the gateway/MID serving it. A share
+  is attached to a cell, and the cells inside one profile sum to 100%.
 
 - **Gateway / MID** — a payment route (a "door"). A MID is a merchant account at a gateway.
 
-- **Split** — the plan: what % of a cell's payments goes through each door. Adds up to 100%.
+- **Split** — the plan: what % of a profile's payments goes through each door. Adds up to 100%.
   *Analogy: how you divide a pizza between people — the slices must sum to the whole pie.*
 
 - **Success rate** — share of payments approved. Higher is better.
@@ -136,7 +141,7 @@ Every function in the codebase carries a stable id tag in its docstring/comment,
 
 - **Pool / config** — one deployable routing rule (a JSON file). "Pools" = how many rules ship.
 
-- **Compression** — grouping near-identical cells so they can share one rule (fewer files to deploy).
+- **Compression** — grouping near-identical profiles so they can share one rule (fewer files to deploy).
   *Analogy: instead of a bespoke recipe card for every dish, one card for all the "near-identical" dishes.*
 
 ### Empirical Bayes (the smoothing behind our success rates)
@@ -160,7 +165,7 @@ transactions mixed in. More real data → the pretend ones matter less → the g
 
 ## The four engines (what "best" means to each, with an analogy)
 
-All four decide the same thing — how to divide each cell's payments between its doors — and all
+All four decide the same thing — how to divide each profile's payments between its doors — and all
 read the same inputs, so you can switch between them from a dropdown. Ineligible doors are always
 filtered out afterwards. **Genetic is the default (what runs in production).**
 
@@ -208,7 +213,7 @@ be the best one, and you only find out by trying. "Explore a little so you never
 spike** (a sudden jump in chargebacks) is the "danger". Unlike plain variance, which would also
 penalise pleasant surprises, it prices only the **bad tail** — the plausible worst case — and
 diversifies away from volatile or barely-tested doors. It gives up a sliver of average success rate
-in exchange for far fewer disasters. Risk aversion is auto-tuned per cell (no dial to set).
+in exchange for far fewer disasters. Risk aversion is auto-tuned per profile (no dial to set).
 
 **Analogy:** **spreading your savings across several accounts.** You favour good returns but steer
 clear of the wildly unpredictable options that could crash — happy to accept slightly lower average

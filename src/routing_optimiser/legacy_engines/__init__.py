@@ -12,7 +12,7 @@ longer selectable, but they are still imported and still registered in
     tab_2_routing_engine.py and tab_3_split_outputs_impact.py and would raise if the classes disappeared.
 
 `base.py` and `genetic_ref.py` deliberately stayed in `engines/`: the whole pipeline uses
-`CellProblem` / `BaseEngine`, and the full-matrix GA dispatches its own revenue reference
+`ProfileProblem` / `BaseEngine`, and the full-matrix GA dispatches its own revenue reference
 through `get_engine("genetic_ref")`.
 
 `from .base import ...` was rewritten to `from ..engines.base import ...` on the move; nothing

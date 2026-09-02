@@ -14,7 +14,7 @@ Two complementary sources feed one eligibility check:
   * ``processWallet`` column in Master_MID_List — gatewayFids flagged FALSE
     CANNOT process wallet traffic (paymentMethodProvider GOOGLEPAY / APPLEPAY).
 
-Both are enforced on the proposed split by zeroing the banned (gateway, cell)
+Both are enforced on the proposed split by zeroing the banned (gateway, profile)
 shares and redistributing the freed volume to the eligible gateways in the same
 routing group (so transactions are conserved). Wallet capability is enforced as
 a volume-weighted blend: an incapable gateway keeps only its NON-wallet share.
@@ -119,7 +119,7 @@ def _resolve_field(field: str, profile: dict):
 
 # [FN-057]
 def _row_banned(gw: str, vmid: str, profile: dict, rules: list[dict]) -> bool:
-    """True if any rule bans this gateway/vampMid for this traffic cell.
+    """True if any rule bans this gateway/vampMid for this traffic profile.
 
     A rule fires only when EVERY field it lists is both available at this grain
     AND matches. If a field can't be evaluated (e.g. 'country', which isn't part
@@ -146,7 +146,7 @@ def _row_banned(gw: str, vmid: str, profile: dict, rules: list[dict]) -> bool:
 # The ban mask depends only on the per-row PROFILE (gateway, vampMid, rpgt/currency/
 # bank/bin/country) and the rules — NOT on the split shares. The enforcement runs this
 # for every pass/dial on the same rows, so we memoise the mask on a content hash of the
-# cell columns + a signature of the rules. Bit-identical: on a hit we return the SAME
+# profile columns + a signature of the rules. Bit-identical: on a hit we return the SAME
 # boolean array the loop would have produced; on any content change the hash differs and
 # it recomputes. Only the last result is kept (calls alternate over the same one split).
 _BAN_MASK_CACHE: dict = {}
@@ -308,9 +308,9 @@ def apply_restrictions(split: pd.DataFrame, rules: list[dict], fid2vamp: dict,
     rules: from load_restrictions.
     fid2vamp: gatewayFid(lower) -> vampMid(lower).
     wallet_incapable: set of gatewayFids/vampMids (lower) that can't do wallet.
-    wallet_frac: {(currency, bank): fraction of the cell that is wallet traffic}.
+    wallet_frac: {(currency, bank): fraction of the profile that is wallet traffic}.
     usa_only: set of gatewayFids/vampMids (lower) that can ONLY process USA traffic.
-    nonusa_frac: {(currency, bank): fraction of the cell that is Non-USA traffic}.
+    nonusa_frac: {(currency, bank): fraction of the profile that is Non-USA traffic}.
     wallet_default / nonusa_default: reroute fraction for a profile absent from wallet_frac /
         nonusa_frac (default 0.0 — no reroute).
     group_keys: profile grouping for the capability blend (default (rpgt, currency, bank)).
@@ -377,10 +377,10 @@ def build_elig_operator(profiles: pd.DataFrame, rules: list[dict], fid2vamp: dic
                         nonusa_default: float = 0.0) -> dict:
     """Precompute static per-row eligibility arrays for a FIXED layout.
 
-    `cells`: one row per (profile, gateway) in the search's EXACT row order, rows CONTIGUOUS
+    `profiles`: one row per (profile, gateway) in the search's EXACT row order, rows CONTIGUOUS
     per profile, with columns at least [profile, gateway, currency, bank] (+ optional rpgt / bin /
     country, used only for ban matching). The profile segments this derives must equal the
-    (rpgt, currency, bank) groups `apply_restrictions` renormalises within, so make `cell`
+    (rpgt, currency, bank) groups `apply_restrictions` renormalises within, so make `profile`
     that composite key. Returns a dict consumed by `apply_elig_pop`."""
     df = profiles.reset_index(drop=True)
     n = len(df)
@@ -541,8 +541,8 @@ _FU_OK = {"use": _FU_ON, "why": (
 
 
 def _co_build(cc):
-    """cell_of: the profile index of every row. Built ONCE per layout by `_rx_build` and carried on
-    the operator — never rebuilt per call, and never cached under a (N, ncell) key, because two
+    """profile_of: the profile index of every row. Built ONCE per layout by `_rx_build` and carried on
+    the operator — never rebuilt per call, and never cached under a (N, nprofile) key, because two
     different sub-layouts can share that pair and a mis-keyed profile map is a silent wrong answer."""
     cc = np.asarray(cc, np.int64)
     return np.repeat(np.arange(cc.size, dtype=np.int32), cc)
@@ -590,7 +590,7 @@ def _blend_pop_ref(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
     cshare = np.where(s_cap > 0, capX / np.where(s_cap > 0, s_cap, 1.0), base)
     wfb = wf[None, :]
     blended = wfb * cshare + (1.0 - wfb) * base
-    out = np.where(base_sum > 0, blended, base)      # skip zero-total cells (the `continue`)
+    out = np.where(base_sum > 0, blended, base)      # skip zero-total profiles (the `continue`)
     return _renorm_pop_ref(out, cs, cc)
 
 
@@ -660,7 +660,7 @@ def _blend_pop(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
 # `_blend_pop` reproduce their input there, exactly. Compute them only where wf > 0.
 #
 # The trailing `_renorm_pop` is deliberately NOT restricted: its input does not sum to exactly 1.0,
-# so dividing by the profile sum changes bits even in an untouched cell.
+# so dividing by the profile sum changes bits even in an untouched profile.
 # TWO SWITCHES, because these are two independent ideas and one of them is much better than the
 # other. ROUTING_ELIG_FAST=0 reverts to the untouched reference helpers entirely (the
 # profile-grain rewrite AND the restriction). ROUTING_ELIG_RESTRICT=0 keeps the profile-grain
@@ -689,11 +689,11 @@ def nocap_note():
         return ""
     if not _n:
         return (f"[elig-nocap] the no-capable-gateway select was UNREACHABLE on all {_s:,} blend "
-                "call(s), so it was skipped every time — every cell had a capable gateway. That is "
+                "call(s), so it was skipped every time — every profile had a capable gateway. That is "
                 "a ~69 ms full-width select plus a bool repeat saved, twice per delivery, "
                 "bit-identically (19bq).")
     return (f"[elig-nocap] the select was skipped on {_s:,} of {_s + _n:,} blend call(s) "
-            f"({_s / (_s + _n):.1%}) and genuinely NEEDED on {_n:,} — some cell had no capable "
+            f"({_s / (_s + _n):.1%}) and genuinely NEEDED on {_n:,} — some profile had no capable "
             "gateway. The guard still shipped the identical answer; it just paid for the select "
             "on those calls.")
 
@@ -720,12 +720,12 @@ def _rx_build(op):
     cc = np.asarray(op["profile_counts"], np.intp)
     n = int(cc.sum())
     rx = {"n_rows": n, "n_profile": int(cs.size), "stages": {}, "why": [],
-          # 19bs: built ONCE per layout, here, and passed down. Never cached under a (N, ncell)
+          # 19bs: built ONCE per layout, here, and passed down. Never cached under a (N, nprofile)
           # key — two sub-layouts can share that pair, and a mis-keyed profile map is a silent wrong
           # answer, not a slow one.
           "co": _co_build(cc) if _FU_OK["use"] else None}
     if not _RX_ON:
-        rx["why"].append("hit-cell restriction OFF (ROUTING_ELIG_RESTRICT=0); the cell-grain "
+        rx["why"].append("hit-profile restriction OFF (ROUTING_ELIG_RESTRICT=0); the profile-grain "
                          "rewrite still applies")
         return rx
     for _k, _wfk in (("w", "w_wf"), ("u", "u_wf")):
@@ -742,15 +742,15 @@ def _rx_build(op):
             # the whole stage is the identity up to the trailing renorm
             rx["stages"][_k] = {"rows": rows, "scs": scs, "scc": scc, "co": None,
                                 "profiles": 0, "frac": 0.0}
-            rx["why"].append(f"{_k}: NO cell can change (every wf == 0) — 0 of {n:,} rows")
+            rx["why"].append(f"{_k}: NO profile can change (every wf == 0) — 0 of {n:,} rows")
         elif frac > _RX_MAXHIT:
-            rx["why"].append(f"{_k}: {frac:.1%} of rows are in changeable cells, above the "
+            rx["why"].append(f"{_k}: {frac:.1%} of rows are in changeable profiles, above the "
                              f"{_RX_MAXHIT:.0%} cut-off — kept FULL-WIDTH")
         else:
             rx["stages"][_k] = {"rows": rows, "scs": scs, "scc": scc,
                                 "co": _co_build(scc) if _FU_OK["use"] else None,
                                 "profiles": int(hit.sum()), "frac": frac}
-            rx["why"].append(f"{_k}: {int(hit.sum()):,} of {cs.size:,} cells "
+            rx["why"].append(f"{_k}: {int(hit.sum()):,} of {cs.size:,} profiles "
                              f"({hit.mean():.2%}) carrying {rows.size:,} of {n:,} rows "
                              f"({frac:.2%}) can change — the rest is copied through")
     return rx
@@ -851,7 +851,7 @@ def _rx_verdict(ref, got, rx, P, N):
 #
 # The twin below does the SAME ufuncs in the SAME order into reused scratch. Two substitutions are
 # needed because numpy offers no `out=` for either primitive:
-#   np.repeat(seg, cc, axis=1)  ->  np.take(seg, cell_of, axis=1, out=buf)   (a gather; no maths)
+#   np.repeat(seg, cc, axis=1)  ->  np.take(seg, profile_of, axis=1, out=buf)   (a gather; no maths)
 #   np.where(m, a, b)           ->  copyto(buf, b); copyto(buf, a, where=m)  (a select; no maths)
 # Measured 4.10x and np.array_equal on a 35 x 221,649 / 23,418-profile fixture.
 #
@@ -863,7 +863,7 @@ _EP_BUSY = [False]
 
 
 class _EpBuf:
-    """Scratch for one (N, ncell) shape, grown in P. Slices of one contiguous (Pmax, N) block, so
+    """Scratch for one (N, nprofile) shape, grown in P. Slices of one contiguous (Pmax, N) block, so
     calls at P=1 / 35 / 40 share a single allocation instead of three."""
 
     __slots__ = ("N", "profile_of", "P", "f", "m")
@@ -1017,9 +1017,9 @@ def apply_elig_pop(X: np.ndarray, op: dict) -> np.ndarray:
                             "[eligibility] restricted blends SELF-CHECK FAILED \u2014 " + _why
                             + ". REVERTING to the full-width blend for this process, so what "
                             "ships is the known-good answer. The premise (wf == 0 in every row "
-                            "of a cell => that cell's blend is the identity) does not hold on "
+                            "of a profile => that profile's blend is the identity) does not hold on "
                             "this data. Do not treat this as cosmetic: report it. Both the "
-                            "hit-cell restriction AND the 19bs fused elementwise passes were in "
+                            "hit-profile restriction AND the 19bs fused elementwise passes were in "
                             "play, so both are now off; re-run with ROUTING_ELIG_FUSE=0 to tell "
                             "them apart.")
                     print(_RX_OK["msg"])

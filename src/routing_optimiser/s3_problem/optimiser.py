@@ -2,7 +2,7 @@
 Run a chosen engine across every profile and assemble the proposed split.
 
 This is the layer the UI calls. It:
-  * loops over all CellProblems, solving each with the selected engine,
+  * loops over all ProfileProblems, solving each with the selected engine,
   * returns a tidy "long" split table (one row per profile x gateway),
   * can sweep the conversion<->risk slider to produce split *variations*
     (the family of solutions along the Pareto frontier).
@@ -15,7 +15,7 @@ import pandas as pd
 from routing_optimiser.s3_problem.constraints import OptimiserSettings
 from routing_optimiser.engines import ProfileProblem, get_engine
 
-__build__ = "2026-07-29-vamp-lp-singlegw-fixed-cell-revival+2026-09-02-19gz-max-revenue-split-reference+2026-09-02-19he-floor-carried-into-projector+2026-09-02-19hh-emask-pair-grain+2026-09-02-19hi-log-simplification+2026-09-02-19hk-cell-profile-prose+2026-09-02-19hl-cell-profile-identifiers+2026-09-02-19hm-profile-vocab-complete"
+__build__ = "2026-07-29-vamp-lp-singlegw-fixed-cell-revival+2026-09-02-19gz-max-revenue-split-reference+2026-09-02-19he-floor-carried-into-projector+2026-09-02-19hh-emask-pair-grain+2026-09-02-19hi-log-simplification+2026-09-02-19hk-cell-profile-prose+2026-09-02-19hl-cell-profile-identifiers+2026-09-02-19hm-profile-vocab-complete+2026-09-02-19hn-profile-vocab-audited"
 
 
 # [FN-191]
@@ -128,7 +128,7 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
         b_ub.append(-_const); _r += 1
     A_ub = sp.coo_matrix((data, (rows, cols)), shape=(_r, 2 * nk)).tocsr()
     erows, ecols, edata, b_eq, _e = [], [], [], [], 0
-    for _c, idx in profile_rows.items():        # each KEPT profile's shares sum to 1 (dropped cells = ref)
+    for _c, idx in profile_rows.items():        # each KEPT profile's shares sum to 1 (dropped profiles = ref)
         _kept = [int(i) for i in idx if keep[i]]
         if not _kept:
             continue
@@ -201,7 +201,7 @@ def _profile_recip_order(profile_rows: dict, rate: np.ndarray) -> dict:
     """Per-profile row positions sorted by rate ASCENDING, ties broken by ascending row index.
 
     This is BIT-IDENTICAL to the inline ``sorted(gen, key=lambda j: rate[j])`` used per move,
-    where ``gen`` yields ``cell_rows[c]`` (already ascending row index) and Python's sort is
+    where ``gen`` yields ``profile_rows[c]`` (already ascending row index) and Python's sort is
     stable (equal rates keep index order). Precomputing it ONCE lets the per-move recipient scan
     become a filter over this fixed order instead of re-sorting the profile every iteration — the
     move sequence, and therefore the result, is unchanged. Rates are constant, so the order is too.
@@ -230,7 +230,7 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
     profile) is RETIRED (share -> 0, exempt from the floor) and its volume handed to
     compliant gateways.
 
-    df columns: profile, gateway, vampMid, cell_vol, rate, share (reference start).
+    df columns: profile, gateway, vampMid, profile_vol, rate, share (reference start).
     Returns (adjusted_df, retired_set, still_over_set).
 
     PRIMARY path: a joint LP (`_vamp_cap_lp`) that solves all profiles together for the
@@ -264,11 +264,11 @@ def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
         return float((vol * rate[rows]).sum() / tot) if tot > 1e-12 else 0.0
 
     # INCREMENTAL rate maintenance. A MID's aggregate rate = num/den where
-    #   den = Σ cell_vol·share ,  num = Σ cell_vol·share·rate  (over its rows).
+    #   den = Σ profile_vol·share ,  num = Σ profile_vol·share·rate  (over its rows).
     # Every move shifts `delta` from ONE row of MID m to ONE row of MID m(j), so we
     # update num/den for just those two MIDs in O(1) — instead of re-summing all of a
     # MID's rows (which is O(11k) for a MID spanning thousands of profiles, the cause of
-    # the 5-minute VAMP phase). rate/cell_vol are constants, so the update is exact;
+    # the 5-minute VAMP phase). rate/profile_vol are constants, so the update is exact;
     # accumulated float drift is ~1e-13, far below the 1e-9 decision threshold, so the
     # sequence of moves (and the resulting split) is identical to the full-recompute.
     _num, _den = {}, {}
@@ -393,7 +393,7 @@ def enforce_mid_volume_caps(df: pd.DataFrame, a_max_by_mid: dict,
     uniformly across its profiles; the freed share is handed to the other gateways in
     each profile (lowest-rate first). MIDs not in the dict are untouched.
 
-    df columns: profile, gateway, vampMid, cell_vol, baseline_share, share, rate.
+    df columns: profile, gateway, vampMid, profile_vol, baseline_share, share, rate.
     Returns (adjusted_df, constrained_set).
     """
     d = df.reset_index(drop=True).copy()
@@ -450,7 +450,7 @@ def optimise_split(problems: list[ProfileProblem],
                    settings: OptimiserSettings) -> pd.DataFrame:
     """Solve every profile with the selected engine and assemble the long split table.
 
-    Runs the chosen engine over every CellProblem at the slider's current weight and stacks
+    Runs the chosen engine over every ProfileProblem at the slider's current weight and stacks
     the results into one tidy "long" DataFrame (one row per profile × gateway that receives
     volume). Gateways with a negligible share (<1e-9) are dropped.
     """

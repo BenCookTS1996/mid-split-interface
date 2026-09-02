@@ -281,7 +281,7 @@ _SWITCH_LEGACY_USED: dict = {}
 def env_switch(name, default=None):
     """Read a ROUTING_* switch by its CURRENT name, falling back to its old one.
 
-    The profile->cell rename (19hk/19hl/19hm) reaches these four switch names too, and a
+    The profile->profile rename (19hk/19hl/19hm) reaches these four switch names too, and a
     switch name is a USER CONTRACT: it gets typed at a shell prompt and written down in
     notes and tickets. Renaming it outright would silently stop honouring an instruction
     someone had already recorded — the switch would read as unset and the run would look
@@ -580,7 +580,7 @@ def _variance_gap_temp(agg_sr, anchor=0.17, t_ceiling=0.30, n_cap=500.0):
     Big z (a confidently-real gap) → sharpen; z≈0 (overlapping error bars) → flat.
     Auto-calibrated: scale so the MEDIAN profile's temperature == `anchor` (the current
     0.17 default), so overall aggressiveness is unchanged and only the distribution
-    across profiles is data-driven. No user input. Returns (temps_by_cell, median_z, scale).
+    across profiles is data-driven. No user input. Returns (temps_by_profile, median_z, scale).
     """
     g = agg_sr.copy()
     g["_c"] = g["currency"].astype(str).str.strip().str.lower()
@@ -1132,7 +1132,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # targeting: VAMP/TXN CAPACITY not presence, budget-neutral (19ab was
                            # a no-op that tripled mutation); grain log labels; [frozen-scaffold]
                            # measurement; mutation rate = one explicit number
-                           # (dead 60/n_cells term removed, ROUTING_MUT_RATE added);
+                           # (dead 60/n_profiles term removed, ROUTING_MUT_RATE added);
                            # breach-TARGETED mutation (profiles feeding a breached band get a
                            # boosted selection probability); breach_fixed 0.3; 4 silent
                            # fallbacks -> raise; scipy hard;
@@ -1275,7 +1275,7 @@ def ensure_cols(df, spec):
 
 def _impact_eval_frame(split, cache, by_rpgt=False):
     """Per-(rpgt, currency, bank, gateway) pre/post frame for a proposed split,
-    using the SAME revenue basis as the Impact tab (cell_att × share × gw_sr ×
+    using the SAME revenue basis as the Impact tab (profile_att × share × gw_sr ×
     avg_ticket). Adds pre/post/delta for volume, revenue and share. BINs are
     collapsed to parent bank. Returns a DataFrame.
 
@@ -1302,7 +1302,7 @@ def _impact_eval_frame(split, cache, by_rpgt=False):
     ev = ev.merge(gw_agg[["rpgt_join", "currency_join", "bin_join", "gateway_join", "gw_sr"]],
                   on=gcols, how="left")
     # Guarantee every column the calc below reads exists as a real Series. A split fed in without
-    # cell_volume / avg_ticket / etc. (e.g. the enforced-split revenue view) would otherwise make
+    # profile_volume / avg_ticket / etc. (e.g. the enforced-split revenue view) would otherwise make
     # `ev.get(col, scalar)` return a scalar and crash on `.fillna`.
     for _c, _d in (("profile_att", 0.0), ("profile_sr", 0.0), ("avg_ticket", 25.0),
                    ("rpgt_ticket", np.nan), ("profile_volume", 0.0), ("volume", np.nan),
@@ -1332,9 +1332,9 @@ def _impact_eval_frame(split, cache, by_rpgt=False):
         ev[_sc] = np.where(_tsum > 0, ev[_sc].to_numpy() / _tsum, ev[_sc].to_numpy())
     _cv = pd.to_numeric(ev.get("profile_volume", 0), errors="coerce").fillna(0.0)
 
-    # Volume basis = forecast routed volume (cell_volume × share). Post uses the
+    # Volume basis = forecast routed volume (profile_volume × share). Post uses the
     # summed 'volume' when present (identical), pre derives from baseline_share.
-    # Post/Pre volume = forecast routed volume (cell_volume × share), computed from the
+    # Post/Pre volume = forecast routed volume (profile_volume × share), computed from the
     # SAME routed share the revenue uses — so Volume and $ Impact always move together.
     # (The old code read a separate summed 'volume' column that could arrive as 0 and
     # zero out Post Volume while $ Impact / Δ Share still showed a gain.)

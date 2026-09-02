@@ -12,7 +12,7 @@ Written 2026-09-02 against `f48050e` (19ha).
 * RECONCILIATION ERROR **1 → 1,802**, against a float32 noise floor of 9.5
 * `[rung] TXN` — SPLIT **0 (0%)** · ENFORCEMENT **0 (0%)** · PROJECTION MATH **1,801 (100%)**
 * `[rung] VAMP` — PROJECTION MATH **1 (100%)**, i.e. nothing
-* `[rung2] GRAIN DISPERSION` 0 of 100,191 · SUB-CELL PRESENCE 0
+* `[rung2] GRAIN DISPERSION` 0 of 100,191 · PROFILE PRESENCE 0
 
 The GA shipped exactly the split it scored and `build_split_exports` rewrote nothing. The
 entire 1,802 is *"identical shares, two different M5 models"*, and all of it is TXN-side.
@@ -20,8 +20,8 @@ entire 1,802 is *"identical shares, two different M5 models"*, and all of it is 
 > **Caveat on the dispersion reading.** `[rung2]` measures the *enforced* shares out of
 > `build_split_exports`, which applies **no floor**. Its 0.0% is evidence the *shipped template*
 > is grain-flat — it is **not** evidence that the floored `prop_share` is grain-flat. The floor
-> is grain-dependent by construction (`min(floor, 1/n_eligible)` counted per sub-cell). Do not
-> use `[rung2]` to argue the floor can be applied at cell grain. That argument is what broke 19gw.
+> is grain-dependent by construction (`min(floor, 1/n_eligible)` counted per profile). Do not
+> use `[rung2]` to argue the floor can be applied at profile grain. That argument is what broke 19gw.
 
 ---
 
@@ -39,7 +39,7 @@ So `gcode` in the projector kernel **is** delivery's `grp`, and `_pshare[r]` in 
 
 **The projector already runs at the grain the floor needs. Nothing has to be re-grained.**
 
-19gw floored `prop_raw`'s columns — `propidx` grain, i.e. *search-cell* grain — and did it
+19gw floored `prop_raw`'s columns — `propidx` grain, i.e. *search-profile* grain — and did it
 *before* the `/ _psum[c]` normalisation. Coarser grain, wrong side of the divide. That is the
 whole of the error; it was not a tuning problem.
 
@@ -49,7 +49,7 @@ whole of the error; it was not a tuning problem.
 
 | | delivery | projector today | after this change |
 |---|---|---|---|
-| **TXN share** | `prop_share` — **floored**, not sub-cell capped | `_pshare` — capped, not floored | `pshf` — capped **then floored** |
+| **TXN share** | `prop_share` — **floored**, not profile capped | `_pshare` — capped, not floored | `pshf` — capped **then floored** |
 | **VAMP share** | `_vprop` = waterfill(`prop_raw/prop_sum`) — capped, **not floored** | derived from `_pshare` — capped, not floored | **unchanged** |
 
 `impact_calcs.py` says this outright at the `_vprop` block:
@@ -61,7 +61,7 @@ So the VAMP path **already agrees between the two sides** — which is exactly w
 read 1 and `[rung] TXN` read 1,801. The code reading and the measurement corroborate each other.
 
 **Second reason VAMP must stay un-floored:** `_AGE_RENORM` re-bases `_vshare` over
-`(cell, period, t)`, and delivery's `_efloor` touches only the `t == 0` slice. A floored
+`(profile, period, t)`, and delivery's `_efloor` touches only the `t == 0` slice. A floored
 `_vshare` would corrupt the aged pass, where delivery applies no floor at all.
 
 ### The landmine
@@ -79,8 +79,8 @@ failure mode from a different direction.
 Delivery's sequence for `prop_share`:
 
 ```
-_fm_cap at CELL grain (upstream, in _fm_deliv)
-  -> / prop_sum at SUB-CELL grain      <- can push a row back above the cap
+_fm_cap at CELL grain (upstream, in _fm_deliv)   # CELL = one gateway in a profile
+  -> / prop_sum at PROFILE grain       <- can push a row back above the cap
   -> FLOOR
   -> renormalise
   -> (no re-cap)
@@ -111,7 +111,7 @@ A static 0/1 per-row array. `T0` already carries `pmp`, `ctry` and `midl`, so it
 inside the projector from `wallet_incapable` / `usa_only`.
 
 **Clone `self._vcpos`.** It is already exactly this shape of thing: a static per-row eligibility
-mask, threaded into both kernels as `vcpos`, permuted cell-major by `_cb_arrays` into `vcpos_c`.
+mask, threaded into both kernels as `vcpos`, permuted profile-major by `_cb_arrays` into `vcpos_c`.
 Same shape, same threading, same lifecycle. This is not a new mechanism — it is a second
 instance of one that already works.
 
@@ -127,10 +127,10 @@ pass — four passes over `range(s, e)`:
 
 1. count eligible rows -> `n`
 2. `pshf[i] = max(_pshare[i], min(floor, 1.0/n))` where eligible, else `_pshare[i]`
-3. sum `pshf` over the cell
+3. sum `pshf` over the profile
 4. divide
 
-All contiguous, all already in cache — the cell-blocked layout makes this cheap in a way the
+All contiguous, all already in cache — the profile-blocked layout makes this cheap in a way the
 flat kernel does not.
 
 Then the `nC` txn loop reads `pshf[r]` instead of `_pshare[r]`. **Nothing else changes.**
@@ -142,7 +142,7 @@ Then the `nC` txn loop reads `pshf[r]` instead of `_pshare[r]`. **Nothing else c
 This is where the real risk lives, and 19gw never had to face it.
 
 1. **`_pop_band_kernel_impl`** (`:183`) — flat; serial + parallel compiles off one body
-2. **`_cb_kernel_impl`** (`:464`) — cell-blocked; serial + parallel. **This is the shipping kernel.**
+2. **`_cb_kernel_impl`** (`:464`) — profile-blocked; serial + parallel. **This is the shipping kernel.**
 3. **`_pop_band_kernel_fm_cache`** — lazy fastmath compile of (1); measurement only
 4. **`_shares()`** (`:1430`) — the pandas path feeding `BandProjector.project()`. Its own comment:
    *"it must move with them or the two in-search paths disagree, which `test_vconserve.py` detects."*
@@ -212,7 +212,7 @@ must be `cache=False`, or the floor must arrive as an argument rather than a glo
    implementations, one answer. `test_vconserve.py` and `test_proj_parallel.py` cover this.
 7. `adyen - totalav - na` delivers **>= its 20,000 floor** (it delivered 19,765 on the 10:17 run),
    or the drift warning explains why not.
-8. A fixture test in the 19df style: one cell, known gateway counts, floor 0.01, asserting the
+8. A fixture test in the 19df style: one profile, known gateway counts, floor 0.01, asserting the
    kernel against a hand-computed `_efloor`.
 
 ---
@@ -274,7 +274,7 @@ Three sources survive a correct implementation. Only the first is float32.
 deliberately conservative. Irreducible while `_PROJ_F32=True`. Setting `ROUTING_PROJ_FLOAT32=0`
 removes it at a throughput cost.
 
-### (b) `[denom]` class 4, "cell absent in IN-SEARCH" — the one that matters
+### (b) `[denom]` class 4, "profile absent in IN-SEARCH" — the one that matters
 
 `_inject_backfill_rows` (`impact_calcs.py:1543`) **adds zero-baseline `t0` rows** to the
 delivered frame for prop items that have no baseline row. The in-search scaffold has no
@@ -282,16 +282,16 @@ counterpart for them, so `_mD[4]` is 0 by construction while `_dlD[4]` carries r
 volume.
 
 **There is no kernel row to floor.** Putting the floor in the projector cannot close this term.
-Worse, the floor is what *creates* it: with the floor off those cells sit at baseline on both
+Worse, the floor is what *creates* it: with the floor off those profiles sit at baseline on both
 sides and net to ~0, which is why total error read 1. Turn the floor on and delivery moves them
 while the search cannot see them.
 
 On the 10:17 run, `adyen - totalav - na` split as:
 
-| `[denom]` class | cells | Δ |
+| `[denom]` class | profiles | Δ |
 |---|---|---|
 | `exact` | 4,888 | **-1,097** ← closes |
-| `cell absent in IN-SEARCH` | 266 | **+206** ← **survives** |
+| `profile absent in IN-SEARCH` | 266 | **+206** ← **survives** |
 | net | | -891 |
 
 The equivalent split for `woodforest - total av` (-782) and `authorize - total av` (+128) was not
@@ -304,9 +304,9 @@ basis so the number measures what it claims to.
 
 ### (c) The cap / grain asymmetry — small, but not structurally zero
 
-Delivery's TXN share is capped at **cell** grain by `_fm_cap` upstream, then renormalised at
-**sub-cell** grain (which can push a row back above the cap) and never re-capped. The kernel's
-TXN share is capped at **sub-cell** grain by the water-fill. Empirically this contributes ≤ 1
+Delivery's TXN share is capped at **profile** grain by `_fm_cap` upstream, then renormalised at
+**profile** grain (which can push a row back above the cap) and never re-capped. The kernel's
+TXN share is capped at **profile** grain by the water-fill. Empirically this contributes ≤ 1
 (that is what the floor-off run measures), so it is not worth chasing — but it is a real
 asymmetry and it is not guaranteed to stay at 1 once the floor's renormalisation runs on top of it.
 

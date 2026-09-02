@@ -8,13 +8,13 @@ place to change a column name if your upstream data changes.
 from __future__ import annotations
 
 # --- Decision granularity ---------------------------------------------------
-# Routing decisions are made per CELL. A profile is one combination of:
+# Routing decisions are made per PROFILE. A profile is one combination of:
 #   RPGT (transaction type) x Currency x Bank
 # The optimiser decides, for each profile, what fraction of that profile's forecast
 # volume to send to each eligible gateway/MID.
 COARSE_PROFILE_KEYS = ["rpgt", "currency", "bin"]
 
-# --- Full cell key -------------------------------------------------------
+# --- Full profile key -------------------------------------------------------
 # The k-means + config generator work at a finer grain (they also carry brand,
 # country, BIN and payment-method-provider). We keep those columns flowing
 # through so the compressed output matches your existing templates.

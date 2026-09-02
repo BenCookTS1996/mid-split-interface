@@ -153,7 +153,7 @@ def _render_prepost_table(vp: pd.DataFrame, fit_content: bool = False, bold: boo
         else:
             tb = "" if _is_mc else "border-bottom:1px solid var(--tav-line);"
         wt = ("800" if is_total else "600") if bold else ("600" if is_total else "400")
-        # Conditional formatting: a VAMP/CB cell (and its paired txn) is RED / AMBER when BOTH its
+        # Conditional formatting: a VAMP/CB profile (and its paired txn) is RED / AMBER when BOTH its
         # count and its rate exceed the scheme thresholds set above (Visa 1500·1.5% / 1200·1.2%;
         # Mastercard 100·1.5% / 70·0.9%).
         _bgmap = {}

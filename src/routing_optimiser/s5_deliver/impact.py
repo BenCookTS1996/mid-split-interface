@@ -79,7 +79,7 @@ def gateway_volume_shift(split: pd.DataFrame) -> pd.DataFrame:
     """How much volume each gateway gains/loses vs baseline (the 'stolen'
     volume view from your VAMP guide)."""
     g = split.copy()
-    _v = _split_volume(g)                                   # tolerate 'volume' or 'cell_volume'
+    _v = _split_volume(g)                                   # tolerate 'volume' or 'profile_volume'
     g["proposed_volume"] = g["share"] * _v
     g["baseline_volume"] = g["baseline_share"] * _v
     out = (g.groupby("gateway", as_index=False)

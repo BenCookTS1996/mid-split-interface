@@ -34,7 +34,7 @@ class HardConstraints:
     # Only the full-matrix engine reads this; other engines ignore it.
     max_pass_vamp: float | None = None
 
-    # Gateways that are hard-banned for this cell (e.g. currency not supported).
+    # Gateways that are hard-banned for this profile (e.g. currency not supported).
     banned_gateways: tuple[str, ...] = ()
 
     # Gateways that MUST receive traffic if eligible (rarely needed, but here

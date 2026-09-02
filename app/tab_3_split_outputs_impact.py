@@ -239,7 +239,7 @@ def render():
                 # load_success_data). Keeping the real bank name for fallback traffic — rather than
                 # collapsing it to "Other" — means the Mid Detail / bank breakdowns show the actual
                 # banks, while the numeric-vs-name split still cleanly separates BIN-specific
-                # overrides (numeric) from fallback cells (bank names) everywhere downstream.
+                # overrides (numeric) from fallback profiles (bank names) everywhere downstream.
                 if "bin" in _adf_v.columns and "bin" in _split_v.columns:
                     _sv_r = _split_v["rpgt"].astype(str).str.strip().str.lower()
                     _sv_c = _split_v["currency"].astype(str).str.strip().str.lower()
@@ -264,7 +264,7 @@ def render():
                 if _cache_v is None:
                     raise ValueError("Base 30-day metrics could not be built from the attempts data.")
                 # Volume basis + actual observed baseline routing. The parsed rules carry neither
-                # cell_volume nor baseline_share. Build the split the impact/bridge is scored on
+                # profile_volume nor baseline_share. Build the split the impact/bridge is scored on
                 # from two kinds of profile:
                 #   • BIN-specific (explicit numeric BIN — here only Annual Sub Renewal) → the
                 #     exported OVERRIDE routing (proposed share) measured against the OBSERVED
@@ -274,9 +274,9 @@ def render():
                 #     profiles straight from the observed 30D attempts (ALL gateways, incl. any not in
                 #     the sheet), with baseline == proposed → exactly 0 impact and a distribution
                 #     that matches actuals.
-                # (cell_att / gw_att / attempts arrive as pandas *nullable* Int64; convert to numpy
+                # (profile_att / gw_att / attempts arrive as pandas *nullable* Int64; convert to numpy
                 # float64 throughout, else a downstream .to_numpy() is object and the share renorm
-                # does Python division → ZeroDivisionError on zero-attempt cells.)
+                # does Python division → ZeroDivisionError on zero-attempt profiles.)
                 def _lc(s):
                     return s.astype(str).str.strip().str.lower()
 
@@ -585,8 +585,8 @@ def render():
                     _enf["share"] = _enf["share"].fillna(0.0)
                     _enf["baseline_share"] = _enf["baseline_share"].fillna(0.0)
                 # Carry per-profile volume through so the eval frame can size pre/post volume + revenue.
-                # (The ideal split has `cell_volume`; the enforced split from build_split_exports does
-                # NOT — without this, _impact_eval_frame's cell_volume/volume would be missing.)
+                # (The ideal split has `profile_volume`; the enforced split from build_split_exports does
+                # NOT — without this, _impact_eval_frame's profile_volume/volume would be missing.)
                 _cvsrc = None
                 if "profile_volume" in _spl.columns:
                     _cvsrc = _spl.groupby(["rpgt", "currency", "bin"], as_index=False)["profile_volume"].first()
@@ -683,7 +683,7 @@ def render():
                    f"{base_sr:.2%} → {exp_sr:.2%}",
                    tip="Card payments approved out of every 100 attempts.")
             # Revenue on the SAME attempts×SR×AOV basis as the Success Rate card and the by-vampMid
-            # revenue bridge (waterfall): pre/post = Σ (cell_att × share × gw_sr × avg_ticket) =
+            # revenue bridge (waterfall): pre/post = Σ (profile_att × share × gw_sr × avg_ticket) =
             # Σ pre_rev / post_rev from the enforced+blended eval frame (the bridge, _ev == eval_df,
             # sums the very same columns). The baseline uses the MODELLED pre_rev (not actual
             # successes) so the card reconciles EXACTLY with the bridge and the delta is pure routing.
@@ -750,7 +750,7 @@ def render():
                 _fs_e = ss.get("forecast_settings", {}) or {}
                 _brand_e = str(_fs_e.get("company", "TotalAV"))
                 _gl_e = ss.get("split_go_live_date", date.today())
-                # _maxN (target pools), _wc_e, _raw_cells, _comp_long/_comp_stats set above.
+                # _maxN (target pools), _wc_e, _raw_profiles, _comp_long/_comp_stats set above.
                 if _exp_split is not None and not getattr(_exp_split, "empty", True):
                     # Isolate the export button + its heavy pool-compression / xlsx build in a
                     # FRAGMENT: clicking Export reruns ONLY this widget, so the charts and metric
@@ -778,7 +778,7 @@ def render():
                                     # Compute (+cache) the pool-targeted split now, if a target is set.
                                     _pt_long = None
                                     if _maxN > 0:
-                                        with st.spinner("Finding the cell budget that hits your pool target…"):
+                                        with st.spinner("Finding the profile budget that hits your pool target…"):
                                             _pt_long, _ = _run_pool_compression()
                                     _gl_tag = pd.to_datetime(str(_gl_e)).strftime("%d_%m_%Y")
 
@@ -899,7 +899,7 @@ def render():
                 _sc = _evframe.copy()
                 if _sc is None or getattr(_sc, "empty", True):
                     return
-                # Profile key = (rpgt, currency, bank); cell_volume is the profile total on every row.
+                # Profile key = (rpgt, currency, bank); profile_volume is the profile total on every row.
                 _sc["_profilek"] = (_sc["rpgt_join"].astype(str) + "|"
                                  + _sc["currency_join"].astype(str) + "|"
                                  + _sc["bin_join"].astype(str))
@@ -1216,7 +1216,9 @@ def render():
                              "Old Success Rate", "New Success Rate", "30D $ Impact"]
 
                     # [FN-359]
-                    def _fmt_profile(col, v):
+                    # 19hn: `_fmt_cell` / `_cells` here mean an HTML TABLE PROFILE, not a routing
+                    # profile. Do NOT let a profile->profile sweep take these.
+                    def _fmt_cell(col, v):
                         if col == "Bank":
                             _s = str(v)
                             return (_s[:30] + "…") if len(_s) > 30 else _s
@@ -1244,23 +1246,23 @@ def render():
                     # [FN-361]
                     def _bank_row_html(r, is_total=False):
                         _tb = "border-top:2px solid var(--tav-line);" if is_total else ""
-                        _profiles = []
+                        _cells = []
                         for _c in _cols:
                             _al = "left" if _c == "Bank" else "right"
                             _fw = "800" if is_total else ("600" if _c == "Bank" else "normal")
                             _clr = "var(--tav-ink)"
                             if _c == "30D $ Impact" and not is_total:
                                 _clr = "#22C36B" if float(r[_c]) >= 0 else "#e63748"
-                            _profiles.append(f'<td style="{_bcw(_c)} text-align:{_al}; color:{_clr}; '
+                            _cells.append(f'<td style="{_bcw(_c)} text-align:{_al}; color:{_clr}; '
                                           f'font-weight:{_fw}; {_tb} white-space:nowrap;">{_fmt_cell(_c, r[_c])}</td>')
-                        return "<tr>" + "".join(_profiles) + "</tr>"
+                        return "<tr>" + "".join(_cells) + "</tr>"
 
                     for _, _r in bank_view.iterrows():
                         _h.append(_bank_row_html(_r))
                     _h.append(_bank_row_html(total_row, is_total=True))
                     _h.append("</table></div>")
 
-                    # Revenue bridge across the top 10 most-impacted Bank×Currency cells.
+                    # Revenue bridge across the top 10 most-impacted Bank×Currency profiles.
                     _bank_wf = None
                     if HAS_PLOTLY and not bank_table.empty:
                         _bt = bank_table.copy()
@@ -1893,7 +1895,7 @@ def render():
                 
                     # Proposed Share = the engine's allocation (volume-weighted).
                     t_raw = gw_sh["raw_att"].sum()
-                    _eng_exp = gw_sh["Expected Attempts"]            # engine cell_att * share
+                    _eng_exp = gw_sh["Expected Attempts"]            # engine profile_att * share
                     _t_eng = _eng_exp.sum()
                     prop_frac = np.where(_t_eng > 0, _eng_exp / _t_eng, 0.0)
                     sr_frac = gw_sh["Raw 30D Success Rate"]          # still a fraction here
@@ -1971,7 +1973,7 @@ def render():
                     _es_min = float(_es_nz.min()) if not _es_nz.empty else 0.0
                     _es_rng = (_es_max - _es_min) if (_es_max - _es_min) > 1e-9 else 1.0
 
-                    # width:auto + nowrap → each column is only as wide as its longest cell.
+                    # width:auto + nowrap → each column is only as wide as its longest profile.
                     html_gw = ['<div style="box-shadow: 0 4px 12px rgba(0,0,0,0.08); border-radius:0; overflow:auto; width:100%; height:460px; background-color: var(--tav-card); border: 1px solid var(--tav-line);">']
                     html_gw.append('<table style="width:100%; border-collapse:collapse; font-size:0.74rem;"><tr>')
                     for col in gw_sh_view.columns:
@@ -2168,7 +2170,7 @@ def render():
                 # Bank×Currency row's left column (all three same width; waterfall spans them).
                 with _rpgt_tab_slot:
                     # ---- Table: 30D revenue by RPGT (pre vs post) — header removed ----
-                    # PRE uses the MODELLED pre_rev baseline (cell_att × baseline_share × gw_sr ×
+                    # PRE uses the MODELLED pre_rev baseline (profile_att × baseline_share × gw_sr ×
                     # avg_ticket) and POST = expected revenue — the SAME basis as the Expected Revenue
                     # card and every other bridge, so all revenue bridges reconcile. Keyed on _rl
                     # (rpgt lowercased) to match _post_l.
@@ -2266,7 +2268,7 @@ def render():
                                          .fillna(0.0).sum()) or 1.0
                         _cur_scale = float(base_succ) / _sum_pre         # modelled baseline → card base_succ
                         # Validate isolates the BIN-specific overrides: the eval-frame PRE is already
-                        # the authoritative baseline (catch-all cells = live actuals, pre == post).
+                        # the authoritative baseline (catch-all profiles = live actuals, pre == post).
                         # Rescaling to the raw actual base_succ re-introduces a scale factor that
                         # would drift those 0-movement profiles, so keep PRE unscaled here — this also
                         # matches the SR card baseline, which is overridden to Σ pre_succ / base_att.
@@ -2892,7 +2894,7 @@ def render():
                     else:
                         # Fallback = the (bank, currency, gateway) grouped mean, looked up PER ROW by
                         # key (reindex on workings' own keys) rather than assigned by position — a
-                        # key-sorted .values array would otherwise attach scores to the wrong cell.
+                        # key-sorted .values array would otherwise attach scores to the wrong profile.
                         _grp_fb = sr_df.groupby(["bin", "currency", "gateway"])[rate_col].mean()
                         _grp_fb_aligned = _grp_fb.reindex(
                             pd.MultiIndex.from_frame(workings[["bin", "currency", "gateway"]])).to_numpy()
@@ -3038,8 +3040,8 @@ def render():
                     _pre_fallback = workings_full["Avg txn value (Bank x Cur)"] * _raw_succ
                     # Pre Revenue (Adj) on the RAW basis (per user): value the ACTUAL observed 30D
                     # successes at the per-RPGT ticket, per RPGT, summed to the gateway. Baseline share
-                    # does NOT enter (unlike the modelled cell_att × baseline_share × gw_sr). Built from
-                    # plot_adf_sel (observed successes, has RPGT) × cell_agg's per-RPGT ticket; the full
+                    # does NOT enter (unlike the modelled profile_att × baseline_share × gw_sr). Built from
+                    # plot_adf_sel (observed successes, has RPGT) × profile_agg's per-RPGT ticket; the full
                     # per-(bank,cur,RPGT,gateway) frame (_raw_rpgt) is reused by the per-RPGT breakdown.
                     _raw_rpgt = None
                     try:
@@ -3136,10 +3138,10 @@ def render():
                     if _show_softmax:
                         if _profiletemp:
                             _fb = float(_temp) if _temp else 0.17
-                            workings_full["Temperature (cell)"] = [
+                            workings_full["Temperature (profile)"] = [
                                 _profiletemp.get(f"{c}|{b}", _fb) for c, b in
                                 zip(workings_full["currency_join"], workings_full["bin_join"])]
-                            _k = workings_full["Temperature (cell)"].astype(float) * 100.0   # per-profile multiplier
+                            _k = workings_full["Temperature (profile)"].astype(float) * 100.0   # per-profile multiplier
                         else:
                             _k = float(_temp) * 100.0            # dial 0.16 -> k = 16
                         _es = workings_full["Engine Score (Smoothed SR)"].astype(float)  # fraction
@@ -3194,8 +3196,8 @@ def render():
                     if _show_softmax:
                         _softmax_cols = ["k applied (score x k)", "Euler's constant", "Weighting",
                                          "Total Weighting", "Softmax Share (pre-floor)"]
-                        if "Temperature (cell)" in workings_full.columns:
-                            _softmax_cols = ["Temperature (cell)"] + _softmax_cols
+                        if "Temperature (profile)" in workings_full.columns:
+                            _softmax_cols = ["Temperature (profile)"] + _softmax_cols
                     else:
                         _softmax_cols = []
                     # ALLOCATION-chain columns (floor / max-share params + the net floor+cap+enforce
@@ -3292,7 +3294,7 @@ def render():
                             # merge POOLED score / softmax / allocation / genetic columns (broadcast per RPGT)
                             _pool = [c for c in ["Cross-border?", "All_Time_Attempts", "All_Time_Success", "All-Time Raw SR",
                                                  "Prior SR %", "κ used", "Bayesian Adj Attempts", "Bayesian Adj Success",
-                                                 "Engine Score (Smoothed SR)", "Temperature (cell)", "k applied (score x k)",
+                                                 "Engine Score (Smoothed SR)", "Temperature (profile)", "k applied (score x k)",
                                                  "Euler's constant", "Weighting", "Total Weighting", "Softmax Share (pre-floor)",
                                                  "Exploration floor %", "Max share cap %", "Reference Share (waterfall)",
                                                  "Tilt (pp)", "Final Share"] if c in workings_full.columns]
@@ -3340,7 +3342,7 @@ def render():
                                 "Proposed Share": st.column_config.NumberColumn(format="%.2f%%"),
                                 "Raw Attempts (30D)": st.column_config.NumberColumn(format="%d"),
                                 "Raw Successes (30D)": st.column_config.NumberColumn(format="%d"),
-                                "Expected Attempts": st.column_config.NumberColumn(format="%d", help="cell attempts × proposed share (Σ per cell = Σ Raw Attempts)."),
+                                "Expected Attempts": st.column_config.NumberColumn(format="%d", help="profile attempts × proposed share (Σ per profile = Σ Raw Attempts)."),
                                 "Expected Success": st.column_config.NumberColumn(format="%d", help="Expected Attempts × SR."),
                                 "Pre Revenue (Adj)": st.column_config.NumberColumn(format="$%.0f", help="Raw Successes × Ticket (per-RPGT)."),
                                 "Post Revenue": st.column_config.NumberColumn(format="$%.0f", help="Expected Success × Ticket (per-RPGT)."),
@@ -3378,13 +3380,13 @@ def render():
                             # -------- 3) Allocation Workings --------
                             st.markdown("<h4 style='color:#0B1F3A;margin:0.4rem 0 0.2rem;'>Allocation Workings</h4>", unsafe_allow_html=True)
                             _c3 = ["Bank", "Currency", "Gateway", "RPGT", "Engine Score (Smoothed SR)",
-                                   "Temperature (cell)", "k applied (score x k)", "Euler's constant", "Weighting",
+                                   "Temperature (profile)", "k applied (score x k)", "Euler's constant", "Weighting",
                                    "Total Weighting", "Softmax Share (pre-floor)", "Reference Share (waterfall)", "Tilt (pp)",
                                    "Exploration floor %", "Max share cap %", "Proposed Share", "Floor+cap+enforce shift (pp)"]
                             _c3 = [c for i, c in enumerate(_c3) if c in _wr.columns and c not in _c3[:i]]
                             st.dataframe(_wr[_c3], use_container_width=True, hide_index=True, column_config={
                                 "Engine Score (Smoothed SR)": st.column_config.NumberColumn(format="%.2f%%"),
-                                "Temperature (cell)": st.column_config.NumberColumn(format="%.3f"),
+                                "Temperature (profile)": st.column_config.NumberColumn(format="%.3f"),
                                 "k applied (score x k)": st.column_config.NumberColumn(format="%.4f"),
                                 "Euler's constant": st.column_config.NumberColumn(format="%.5f"),
                                 "Weighting": st.column_config.NumberColumn(format="%.2f"),
@@ -3461,7 +3463,7 @@ def render():
                     _f_per = fg[4].selectbox("period", _per_opts, index=_per_def, key=f"{mode}_pp_period")
                     _f_t = fg[5].selectbox("t", ["(All)"] + sorted(_gr["t"].unique().tolist()), key=f"{mode}_pp_t")
 
-                    # Frame filtered by the cell fields only (period/t excluded)
+                    # Frame filtered by the profile fields only (period/t excluded)
                     # so the monthly chart spans all periods.
                     _fp = _gr.copy()
                     for _c, _v in [("vampMid", _f_mid), ("RPGT", _f_rpgt), ("BIN", _f_bin), ("Currency", _f_cur)]:

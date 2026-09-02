@@ -17,7 +17,7 @@ line — one Streamlit tab per station (labels exactly as shown in the UI):
 DATA FLOW (state is carried between stations in st.session_state, aliased `ss`)
 ------------------------------------------------------------------------------
   attempts + baseline forecast
-        └─> ss["problems"]      one CellProblem per RPGT×Currency×Bank
+        └─> ss["problems"]      one ProfileProblem per RPGT×Currency×Bank
               └─ (tab 2 runs the engine: genetic / softmax / thompson / portfolio)
               └─> ss["variations"]   the produced split(s) — now a SINGLE dial-0 entry
                     └─> ss["split"] + ss["settings"]   the delivered "long" split table
@@ -26,7 +26,7 @@ DATA FLOW (state is carried between stations in st.session_state, aliased `ss`)
 KEY session_state KEYS
 ----------------------
   ss["forecast"], ss["sr"]      baseline forecast + per-gateway success rates
-  ss["problems"]                list[CellProblem] the engines solve
+  ss["problems"]                list[ProfileProblem] the engines solve
   ss["variations"]              produced split variation(s); tabs 3 & 4 read this
   ss["split"], ss["settings"]   the delivered split + the settings that produced it
   ss["wallet_ctx"]              eligibility context (bans / wallet / USA) for enforcement + export

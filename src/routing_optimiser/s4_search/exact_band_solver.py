@@ -104,7 +104,7 @@ class ExactBandModel:
         self.pj = pj
         # GRADIENT-ONLY regularisation: floor the per-profile VAMP/txn denominators (vpsum/psum) at
         # `vps_eps` INSIDE the analytic Jacobian only. This tames the 1/vpsum blow-up on near-empty
-        # cells (the 1e18 gradients that freeze the seed solvers) WITHOUT changing any forward/breach
+        # profiles (the 1e18 gradients that freeze the seed solvers) WITHOUT changing any forward/breach
         # value — the reported VAMP, `breach`, `spec_values`, and all diagnostics stay exact. Every
         # solver that uses this gradient re-validates its candidate on the true (unregularised) breach,
         # so this only affects search DIRECTION, never a scored number. 0 = off (raw gradient).
@@ -313,7 +313,7 @@ class ExactBandModel:
                     continue
                 # δ (own-column) term: only for q that is a capped row in band b
                 Jtxn[b, sel] += wt[sel] * act[sel] * inv_psum[sel]
-                # profile term: A_b[c] = Σ_{r∈sel, cell c} ctot·moved_tot·pshare, applied to every q∈c
+                # profile term: A_b[c] = Σ_{r∈sel, profile c} ctot·moved_tot·pshare, applied to every q∈c
                 A_bc = np.bincount(gcode[sel], wt[sel] * pshare[sel], minlength=ngc)
                 Jtxn[b, :] -= act * inv_psum * A_bc[gcode]
 
@@ -589,14 +589,14 @@ def solve_least_breach(exact_bands, incidence, base_shares, profile_starts, prof
                     row[:N] = -gi; row[N + k] = -lim
                     rhs.append(vi - lim)
                 rows.append(row)
-            # SPARSE LP matrices. At BIN grain nvar≈135k and n_cell≈14k, so a DENSE A_eq would be ~15 GB
+            # SPARSE LP matrices. At BIN grain nvar≈135k and n_profile≈14k, so a DENSE A_eq would be ~15 GB
             # (and was rebuilt every step — the hang). A_eq is a profile-membership indicator (exactly one 1
             # per free column) → ~nvar nonzeros; A_ub is the n_slack dense band-gradient rows. HiGHS solves
             # the sparse LP directly — identical problem, identical result, just representable at BIN grain.
             fidx = np.where(free)[0]
             A_ub = _sparse.csr_matrix(np.asarray(rows, float)) if rows else None
             b_ub = np.asarray(rhs, float)
-            # equality: Σ_free Δs = 0 per cell (keep each profile sum fixed)
+            # equality: Σ_free Δs = 0 per profile (keep each profile sum fixed)
             n_profile = len(cs)
             Aeq = _sparse.coo_matrix((np.ones(fidx.size), (profile_of[fidx], fidx)),
                                      shape=(n_profile, nvar)).tocsr()
@@ -755,7 +755,7 @@ def colocation_report(split, exact_bands, incidence, *, mid_id, profile_starts, 
                       profile_cur=None, profile_bank=None, profile_rpgt=None, top_profiles=8):
     """READ-ONLY diagnostic: for every breached CEILING MID, is a headroom SIBLING co-located?
 
-    At the engine's profile grain (one profile = one contiguous [cell_starts[c], +cell_counts[c]) block of
+    At the engine's profile grain (one profile = one contiguous [profile_starts[c], +profile_counts[c]) block of
     gateway-rows), for each MID whose projected M5 value exceeds its ceiling this walks the profiles where
     that MID actually carries share and checks whether an ELIGIBLE, co-located OTHER MID could absorb the
     excess WITHOUT breaching its own cap — i.e. a sibling with NO ceiling on that metric (unlimited room)
@@ -835,18 +835,18 @@ def colocation_report(split, exact_bands, incidence, *, mid_id, profile_starts, 
                             (f"{n}(room {'∞' if np.isinf(rm) else format(rm, ',.0f')}"
                              + (f", rate {rk:.3f}" if me == "vamp" else "") + ")")
                             for n, rm, rk in sibs[:4])
-                        lines.append(f"         cell {int(c)} [{lbl}] ~{contrib.get(int(c), 0.0):,.0f} "
+                        lines.append(f"         profile {int(c)} [{lbl}] ~{contrib.get(int(c), 0.0):,.0f} "
                                      f"{me} · siblings: {txt}")
                     else:
-                        lines.append(f"         cell {int(c)} [{lbl}] ~{contrib.get(int(c), 0.0):,.0f} "
+                        lines.append(f"         profile {int(c)} [{lbl}] ~{contrib.get(int(c), 0.0):,.0f} "
                                      f"{me} · NO eligible headroom sibling")
             out.append(f"      • {bm} [{me}]: {nw:,.0f} > ceil {cl:,.0f} (over {-h:,.0f}); carries scoped "
-                       f"share in {cells.size} cell(s), {nwith} have ≥1 eligible headroom sibling co-located.")
+                       f"share in {profiles.size} profile(s), {nwith} have ≥1 eligible headroom sibling co-located.")
             out.extend(lines)
         out.append("      (read-only — no share changed. 'room' = sibling MID's own M5 ceiling − its "
-                   "current projected M5 value; ∞ = sibling has no cap on this metric. Many cells WITH a "
+                   "current projected M5 value; ∞ = sibling has no cap on this metric. Many profiles WITH a "
                    "co-located headroom sibling ⇒ the excess CAN move → a search failure, not true "
-                   "infeasibility. Few/none ⇒ genuine cell-grain / scope block.)")
+                   "infeasibility. Few/none ⇒ genuine profile-grain / scope block.)")
         return out
     except Exception as exc:  # noqa: BLE001 — a diagnostic must never break the run
         return [f"   co-location diagnostic skipped ({type(exc).__name__}: {exc})."]
@@ -1022,7 +1022,7 @@ def floor_min_report(split, exact_bands, incidence, *, mid_id, profile_starts, p
             line = (f"      • {sp.label} [{sp.metric}]: now {base_vals[i]:,.0f} · reachable-min "
                     f"{val0:,.0f} · ceil {float(cl):,.0f} → {verdict}")
             if n_irr:
-                line += f"  [{n_irr} cell(s) where it's the ONLY eligible gateway — irreducible]"
+                line += f"  [{n_irr} profile(s) where it's the ONLY eligible gateway — irreducible]"
             out.append(line)
             if wf > 0:
                 valf, _ = _push_min(mi, wf)
@@ -1090,10 +1090,10 @@ def vamp_sibling_report(split, exact_bands, incidence, *, max_list=15):
             has_sib = (vpos_per_profile - m_per_profile) > 0            # another VAMP-positive row in the profile
             n_with = int(has_sib[profiles_m].sum()); n_tot = int(profiles_m.size)
             tag = ("reducible by routing" if n_with == n_tot else
-                   "SOLE VAMP gateway in ALL its cells → VAMP immovable by share" if n_with == 0 else
-                   f"immovable in {n_tot - n_with} of {n_tot} cells (sole VAMP gateway there)")
+                   "SOLE VAMP gateway in ALL its profiles → VAMP immovable by share" if n_with == 0 else
+                   f"immovable in {n_tot - n_with} of {n_tot} profiles (sole VAMP gateway there)")
             out.append(f"      • {sp.label} [vamp]: {base_vals[i]:,.0f} > {float(cl):,.0f} · "
-                       f"{n_with}/{n_tot} of its VAMP cells have a co-located VAMP-positive sibling "
+                       f"{n_with}/{n_tot} of its VAMP profiles have a co-located VAMP-positive sibling "
                        f"→ {tag}")
             shown += 1
             if shown >= int(max_list):
@@ -1101,8 +1101,8 @@ def vamp_sibling_report(split, exact_bands, incidence, *, max_list=15):
         if shown == 0:
             out.append("      (no breached VAMP ceiling bands at this split.)")
         out.append("      (read-only. Where a breached VAMP MID is the SOLE VAMP-positive gateway in a "
-                   "cell, vshare = 1 for any share > 0, so the softmax engine cannot reduce its VAMP "
-                   "there — a structural limit, not a solver bug. Many such cells ⇒ the fix must add an "
+                   "profile, vshare = 1 for any share > 0, so the softmax engine cannot reduce its VAMP "
+                   "there — a structural limit, not a solver bug. Many such profiles ⇒ the fix must add an "
                    "eligible VAMP-positive recipient or allow zeroing, not more search.)")
         return out
     except Exception as exc:  # noqa: BLE001 — a diagnostic must never break the run
@@ -1142,7 +1142,7 @@ def incidence_selfcheck_report(split, exact_bands, incidence, *, mid_id=None, mi
                ]
         # 19gs: FOUR PARAGRAPHS DELETED. They were the write-up of the 2026-08-31 investigation
         # into a 9,018-profile coverage gap — how to read Σshare as a profile count, why those profiles
-        # cannot reach a band, why [cells] was not a contradiction, and what the note used to
+        # cannot reach a band, why [profiles] was not a contradiction, and what the note used to
         # say before it was settled. That gap was closed by [require-forecast] (19em), which
         # removes those profiles upstream; coverage has read 100.0% on every run since. Four
         # paragraphs of settled history printed on every healthy run is what buried the ONE line
@@ -1152,8 +1152,8 @@ def incidence_selfcheck_report(split, exact_bands, incidence, *, mid_id=None, mi
                 f"      ⚠ {N - cov:,} share column(s) map to NO prop-key, so the band projector "
                 "cannot see them: whatever the search routes there is invisible to every band "
                 "figure in this run, and those MIDs will deliver under what was scored. Σshare "
-                "is a CELL COUNT (each cell's shares sum to 1.0), so the dropped figure above is "
-                "a number of cells. Read [drop-measure] for which rows, and [rung] for whether "
+                "is a PROFILE COUNT (each profile's shares sum to 1.0), so the dropped figure above is "
+                "a number of profiles. Read [drop-measure] for which rows, and [rung] for whether "
                 "the shipped split loses the same ones.")
         # PER-BANDED-MID coverage (needs the per-column MID map). Uses ExactBandModel's specs +
         # labels — the SAME naming seed_gradient_report aligns to mid_names — so it lines up with the
@@ -1268,7 +1268,7 @@ def vpsum_report(split, exact_bands, incidence, *, near_zero=1e-6, max_list=15):
                              for j in range(max(len(pk), 1))])
         row_mid = prop_mid[model.propidx] if model.propidx.size else np.array([], dtype=object)
         vpos = (model.vcpos > 0.5) & (~model.mask)
-        out = ["   ── VPSUM (VAMP denominator per cell; near-zero ⇒ the 1/vpsum gradient blow-up) ──"]
+        out = ["   ── VPSUM (VAMP denominator per profile; near-zero ⇒ the 1/vpsum gradient blow-up) ──"]
         shown = 0
         for i, sp in enumerate(model.specs):
             if sp.metric != "vamp":
@@ -1283,7 +1283,7 @@ def vpsum_report(split, exact_bands, incidence, *, near_zero=1e-6, max_list=15):
             profiles_m = np.unique(model.gcode[rows_m])
             vp = vpsum_profile[profiles_m]
             n_nz = int((vp < float(near_zero)).sum())
-            out.append(f"      • {sp.label} [vamp]: {cells_m.size:,} cells · vpsum min {vp.min():.3g} "
+            out.append(f"      • {sp.label} [vamp]: {profiles_m.size:,} profiles · vpsum min {vp.min():.3g} "
                        f"p50 {np.median(vp):.3g} max {vp.max():.3g} · {n_nz:,} below {near_zero:g} "
                        "(near-empty → gradient blow-up)")
             shown += 1
@@ -1325,7 +1325,7 @@ def usable_recipient_report(split, exact_bands, incidence, *, max_list=15):
         usable = vpos & sib_ok                            # VAMP-positive + live + headroom-ok row
         nprofile = model.ngc
         out = ["   ── USABLE RECIPIENT (co-located + VAMP-positive + eligible + headroom — the only "
-               "cells with a LEGAL VAMP move) ──"]
+               "profiles with a LEGAL VAMP move) ──"]
         shown = 0
         for i, sp in enumerate(model.specs):
             if sp.metric != "vamp":
@@ -1344,7 +1344,7 @@ def usable_recipient_report(split, exact_bands, incidence, *, max_list=15):
                    if other_usable.any() else np.zeros(nprofile, int))
             has = ouc[profiles_m] > 0
             n_with = int(has.sum())
-            out.append(f"      • {sp.label} [vamp]: {n_with:,}/{cells_m.size:,} of its VAMP cells have a "
+            out.append(f"      • {sp.label} [vamp]: {n_with:,}/{profiles_m.size:,} of its VAMP profiles have a "
                        f"USABLE recipient (VAMP-positive + eligible + headroom)"
                        + ("  → NO legal move anywhere (structural)" if n_with == 0 else ""))
             shown += 1
@@ -1353,7 +1353,7 @@ def usable_recipient_report(split, exact_bands, incidence, *, max_list=15):
         if shown == 0:
             out.append("      (no breached VAMP ceiling bands at this split.)")
         out.append("      (read-only. This intersects co-location + VAMP-positive + eligibility + "
-                   "headroom — the count of cells where a compliant reroute is actually legal. 0 ⇒ "
+                   "headroom — the count of profiles where a compliant reroute is actually legal. 0 ⇒ "
                    "genuinely structural; >0 ⇒ a legal move exists there.)")
         return out
     except Exception as exc:  # noqa: BLE001
@@ -1408,7 +1408,7 @@ def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mi
         sib_ok = np.array([_ok(x) for x in row_mid]) if row_mid.size else np.array([], bool)
         usable = vpos & sib_ok
         nprofile = model.ngc
-        out = ["   ── BREACH CONCENTRATION (which cells produce the breach VAMP, and do THOSE cells have "
+        out = ["   ── BREACH CONCENTRATION (which profiles produce the breach VAMP, and do THOSE profiles have "
                "a usable recipient?) ──"]
         shown = 0
         for i, sp in enumerate(specs):
@@ -1449,20 +1449,20 @@ def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mi
                     break
                 cum90 += float(contrib[k]); n90 += 1
             out.append(f"      • {sp.label} [vamp]: total {tot:,.0f} · ceil {float(cl):,.0f} · over "
-                       f"{over:,.0f}; 90% of VAMP in {n90} of {cells.size:,} cells; to shed the overshoot "
-                       f"need ~{n_need} top cell(s), {n_need_usable}/{n_need} have a usable recipient")
+                       f"{over:,.0f}; 90% of VAMP in {n90} of {profiles.size:,} profiles; to shed the overshoot "
+                       f"need ~{n_need} top profile(s), {n_need_usable}/{n_need} have a usable recipient")
             for k in order[:int(top)]:
                 c = int(profiles[k]); has = (c >= 0 and ouc[c] > 0)
-                out.append(f"          cell {c} [{lab.get(c, '')}] VAMP {float(contrib[k]):,.1f}"
+                out.append(f"          profile {c} [{lab.get(c, '')}] VAMP {float(contrib[k]):,.1f}"
                            + ("  · usable recipient ✓" if has else "  · NO usable recipient here"))
             shown += 1
             if shown >= int(max_mids):
                 break
         if shown == 0:
             out.append("      (no breached VAMP ceiling bands at this split.)")
-        out.append("      (read-only. If the top cells needed to shed the overshoot mostly HAVE a usable "
+        out.append("      (read-only. If the top profiles needed to shed the overshoot mostly HAVE a usable "
                    "recipient ⇒ reachable → a search/decode fix helps; if they're mostly sole-VAMP ⇒ "
-                   "structural — a real VAMP recipient must be made eligible in those specific cells.)")
+                   "structural — a real VAMP recipient must be made eligible in those specific profiles.)")
         return out
     except Exception as exc:  # noqa: BLE001
         return [f"   breach-concentration check skipped ({type(exc).__name__}: {exc})."]
@@ -1677,7 +1677,7 @@ def solve_global_linear_lp(exact_bands, incidence, base_shares, profile_starts, 
         # Exact value + gradient at the base split (single linearisation).
         vals, J = model.spec_jacobian_shares(s0)
         # HiGHS rejects a model outright ("Model error") if ANY coefficient is non-finite. The
-        # linear-FRACTIONAL VAMP Jacobian can produce NaN/Inf on a degenerate cell (e.g. vpsum≈0),
+        # linear-FRACTIONAL VAMP Jacobian can produce NaN/Inf on a degenerate profile (e.g. vpsum≈0),
         # so scrub them to 0 (a non-finite sensitivity means "this gateway can't reliably move this
         # band" → treat it as immovable for this band). Same for the band values feeding the RHS.
         _nfJ = int((~np.isfinite(J)).sum())
@@ -1739,7 +1739,7 @@ def solve_global_linear_lp(exact_bands, incidence, base_shares, profile_starts, 
             if info.get("jac_clipped") or info.get("nonfinite_jac"):
                 log_fn(f"      global LP: conditioning guard — zeroed {info.get('jac_clipped', 0)} "
                        f"degenerate (|∂band/∂share|>{_JCLIP:.0g}) and {info.get('nonfinite_jac', 0)} "
-                       "non-finite gradient entries (near-empty-cell artifacts; those gateways held "
+                       "non-finite gradient entries (near-empty-profile artifacts; those gateways held "
                        "for those bands).")
 
         # ── LP variables: [ Δs (N) | slack (n_slack) | t (F) ] ──────────────────────────────────
@@ -1781,7 +1781,7 @@ def solve_global_linear_lp(exact_bands, incidence, base_shares, profile_starts, 
         b_ub = np.nan_to_num(np.concatenate([np.asarray(_b, float), np.zeros(2 * F)]),
                              nan=0.0, posinf=0.0, neginf=0.0)
         c_obj = np.nan_to_num(c_obj, nan=1.0, posinf=0.0, neginf=0.0)
-        # equality: Σ_free Δs = 0 per cell (each profile stays summed to its reference total)
+        # equality: Σ_free Δs = 0 per profile (each profile stays summed to its reference total)
         n_profile = len(cs)
         Aeq = _sparse.coo_matrix((np.ones(F), (profile_id[fidx], fidx)),
                                  shape=(n_profile, nvar)).tocsr()
@@ -1849,7 +1849,7 @@ def _tmove_cost(cost, secs, log_fn, *, fastls):
                f"matvec(s) at {1000.0 * _mv_s / max(int(cost.get('mv', 0)), 1):.1f} ms each; "
                f"{_pen_s:.1f}s ({_pen_s / max(_tot, 1e-9):.0%}) in {int(cost.get('pen', 0)):,} "
                f"penalty pass(es); {_oth:.1f}s ({_oth / max(_tot, 1e-9):.0%}) elsewhere \u2014 the "
-               "per-cell Python loops that BUILD each batch, which no counter here covers.")
+               "per-profile Python loops that BUILD each batch, which no counter here covers.")
         _n = int(cost.get("occ_n", 0))
         if _n and fastls:
             _mean = float(cost.get("occ_sum", 0.0)) / _n
@@ -1891,12 +1891,12 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
     moves shares. Before 19be every ceiling, VAMP or TXN, was written into one per-MID slot (last
     spec wins), `report()`'s one-row-per-SPEC was collapsed by midl the same way, and the running
     budget was debited in VAMP units whichever metric the surviving ceiling belonged to. Since risk
-    is ~1e-2, a TXN ceiling debited at cell_vol×risk read roughly a hundred times the room it had.
+    is ~1e-2, a TXN ceiling debited at profile_vol×risk read roughly a hundred times the room it had.
     That is how a VAMP shed onto the txn-only WoodForest (23,961 against a 24,000 txn ceiling) was
     allowed to continue: the RAW line-search saw it 39 under, delivery added ~115, and it landed 14
     OVER — the band [seed-basis] flagged as appearing only on the delivered side. Now each ceiling
     keeps its own budget in its own units, a share increment is converted with that metric's own
-    density (TXN = cell_vol × movable_frac; VAMP = that × the row's risk), and a recipient must have
+    density (TXN = profile_vol × movable_frac; VAMP = that × the row's risk), and a recipient must have
     room under all of them. `ROUTING_TMOVE_ALLBANDS=0` ignores recipients' TXN ceilings — which is
     what the pre-19be DOCSTRING claimed the code did.
 
@@ -1923,7 +1923,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
     routing (the recipient pool lacks the collective headroom under its own ceilings). Never raises.
 
     Inputs mirror the co-location diagnostic: `mid_id` (per-row MID index into `mid_names`), `risk`
-    (per-row VAMP rate), `cell_vol` (per-profile forecast volume), `elig` (per-row eligibility).
+    (per-row VAMP rate), `profile_vol` (per-profile forecast volume), `elig` (per-row eligibility).
     `movable_frac` converts a share increment to approximate METRIC increments for the running
     recipient budgets — TXN share×vol×frac, VAMP share×vol×risk×frac. Approximate on purpose; the
     exact line-search is the guard."""
@@ -1997,7 +1997,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
         # so a MID with both a VAMP and a TXN ceiling kept whichever spec came LAST and lost the
         # other, `_rep` collapsed report()'s one-row-per-SPEC the same way, and the budget was
         # then debited in VAMP units whatever metric the surviving ceiling belonged to. A txn
-        # ceiling of 24,000 debited at cell_vol×risk (risk ~1e-2) reads ~100x the room it has —
+        # ceiling of 24,000 debited at profile_vol×risk (risk ~1e-2) reads ~100x the room it has —
         # which is how a VAMP shed onto the txn-only WoodForest (23,961 of 24,000) was allowed to
         # continue until delivery put it 14 OVER.
         _MET_COL = {"vamp": 0, "txn": 1}
@@ -2166,7 +2166,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
                         if room <= 1e-9:
                             continue
                         # 19be: convert the share increment into EACH metric's own units and
-                        # respect BOTH budgets. TXN per unit share is cell_vol × movable_frac;
+                        # respect BOTH budgets. TXN per unit share is profile_vol × movable_frac;
                         # VAMP is that times the row's risk. Debiting a txn ceiling by a VAMP
                         # increment (risk ~1e-2) was reading ~100x the room that existed.
                         _dt = float(profile_vol[c]) * float(movable_frac)
@@ -2261,7 +2261,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
             if log_fn:
                 _cleared = all(now1_m[t] <= ceil_m[t] + 1e-6 for t in start_breached)
                 log_fn(f"      targeted-move seed: exact breach {b0:.4g} → {b1:.4g} in {passes} pass(es) "
-                       f"({total_moves:,} cell-moves, {moved_share:.3g} share). "
+                       f"({total_moves:,} profile-moves, {moved_share:.3g} share). "
                        + ("ALL ceilings cleared — a compliant split exists." if _cleared
                           else ("Some ceilings remain and a pass found NO improving move ⇒ this "
                                 "operator is exhausted (evidence of joint infeasibility BY THIS "

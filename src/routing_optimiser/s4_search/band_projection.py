@@ -39,7 +39,7 @@ Key structural facts verified in `_project_capped`:
     movement is governed by the ORIGIN t0 row's movable fraction and share
     (`_Pc → _T0` join on `om == per`).
   * The moved-VAMP POOL is already aggregated to PROFILE grain (vampMid summed out):
-    `pool(cell,per,t) = Σ_all-mids vc·pro_rata·fcp1` (the app's static `_Pc_movedvpool_a`),
+    `pool(profile,per,t) = Σ_all-mids vc·pro_rata·fcp1` (the app's static `_Pc_movedvpool_a`),
     then re-split by the proposed share.
   * Caps are NOT applied inside the projection — the ceiling/floor is compared afterwards.
     So the forward map is LINEAR in the (per-profile-normalised) share.
@@ -57,8 +57,8 @@ Therefore, for the count metrics:
     VAMP(mid,P) = Σ_pc vc                                    (static constant)
                 − Σ_{origin t0 rows} (mv·Σvc) · [psum_origin>0]   (movement, psum-gated)
                 + Σ_{origin t0 rows} pool_sum · vshare(origin)    (redistributed pool)
-    Txn (mid,P) = Σ_{t0 cap rows}  ctot·base                         if psum_cell==0
-                = Σ_{t0 cap rows}  ctot·(base·(1−mv) + moved_tot·pshare)  if psum_cell>0
+    Txn (mid,P) = Σ_{t0 cap rows}  ctot·base                         if psum_profile==0
+                = Σ_{t0 cap rows}  ctot·(base·(1−mv) + moved_tot·pshare)  if psum_profile>0
 where the per-row constants (`ctot`, `base`, `mv=pr·fcp`, `moved_tot`, `pool_sum`, `Σvc`) are
 STATIC (precomputed once) and the only per-candidate inputs are the per-profile shares and the
 `psum>0` active mask. `vshare`/`pshare` are the exact per-profile normalisations `_project_capped`
@@ -187,7 +187,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                           vamp, txn, psum, vpsum, moved, pr, pshare, vshare, mvrow, nzc, exc,
                           rsum, gks):
     """Bit-identical numba equivalent of PopulationBandProjector.project_pop: flat passes over
-    the reduced scaffold with per-profile scratch (ncell), no dense (P × nR) arrays. ~7× faster on
+    the reduced scaffold with per-profile scratch (nprofile), no dense (P × nR) arrays. ~7× faster on
     the real scaffold. cap_row is pre-filtered to non-excl rows (excl txn contributions are 0).
 
     `cap` (max_share) < 1.0 folds in the per-profile max-share water-fill (matches
@@ -211,7 +211,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
     owns that pairing (nlane == 1 <=> the serial compile); do not call the parallel compile with
     nlane == 1.
 
-    FROZEN-SCAFFOLD LIFT (2026-08-19ae). The flat passes walk `live_rows` / `live_cells` instead
+    FROZEN-SCAFFOLD LIFT (2026-08-19ae). The flat passes walk `live_rows` / `live_profiles` instead
     of every row and profile. A scaffold profile whose every row is masked or sits on a prop-key that no
     GA column maps to has psum == 0 for EVERY candidate, so all ten flat passes over its rows are
     provably no-ops: `psum += v` adds exactly 0.0 (exact in floating point), and moved / nzc /
@@ -233,8 +233,8 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
     ceiling is min(P, cores)x."""
     P = prop_raw.shape[0]; nR = propidx.shape[0]
     nA = pc_org.shape[0]; nC = cap_row.shape[0]
-    # FROZEN-SCAFFOLD LIFT (2026-08-19ae). `live_rows` / `live_cells` are the scaffold rows and
-    # profiles the GA can actually move. Passing arange(nR) / arange(ncell) disables the lift and
+    # FROZEN-SCAFFOLD LIFT (2026-08-19ae). `live_rows` / `live_profiles` are the scaffold rows and
+    # profiles the GA can actually move. Passing arange(nR) / arange(nprofile) disables the lift and
     # reproduces the pre-19ae kernel exactly, so there is ONE body and no second compile.
     nLR = live_rows.shape[0]; nLC = live_profiles.shape[0]
     vamp[:, :] = 0.0; txn[:, :] = 0.0
@@ -500,7 +500,7 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
                     if sh > 1e-12:
                         nz += 1.0
                 _moved[c] = mv
-                # ---- water-fill, per cell (see point 3 of the patch note) ----
+                # ---- water-fill, per profile (see point 3 of the patch note) ----
                 if cap < 1.0 and nz >= 2.0:
                     for _it in range(50):
                         exc = 0.0
@@ -761,7 +761,7 @@ def proj_config():
     _f32_word = ("ON \u2014 this run's answer is NOT exact" if _f32_eff
                  else "off (float64, exact)")
     out = ["PROJECTOR CONFIGURATION (stated every run, whether or not anything is unusual): "
-           "cell-blocked kernel " + ("ON" if _cb_eff else "OFF")
+           "profile-blocked kernel " + ("ON" if _cb_eff else "OFF")
            + " \u00b7 float32 " + _f32_word
            + " \u00b7 lane cap " + str(_PROJ_LANE_CAP)
            + " \u00b7 chunking " + ("ON" if _PROJ_CHUNK_ON else "off")
@@ -769,12 +769,12 @@ def proj_config():
 
     # REQUESTED vs IN EFFECT — a different sentence, because only one of the two is a bug.
     if _PROJ_CB_ON and not _cb_eff:
-        out.append("*** cell-blocked was REQUESTED and is NOT IN EFFECT \u2014 something disabled "
+        out.append("*** profile-blocked was REQUESTED and is NOT IN EFFECT \u2014 something disabled "
                    "it during this process; the [proj-par] line below says what. The flat kernel "
                    "is running: correct, and roughly HALF SPEED. float32 lives inside the "
-                   "cell-blocked path, so it is off too regardless of its own switch.")
+                   "profile-blocked path, so it is off too regardless of its own switch.")
     if _PROJ_F32 and not _f32_eff:
-        out.append("*** float32 was REQUESTED and is NOT IN EFFECT \u2014 the cell-blocked path it "
+        out.append("*** float32 was REQUESTED and is NOT IN EFFECT \u2014 the profile-blocked path it "
                    "lives in is not running. Fix that first; the float32 switch alone cannot do "
                    "anything.")
 
@@ -827,10 +827,10 @@ def proj_config():
 
     # WHAT IS ACTUALLY VERIFIED, as opposed to merely switched on.
     if _cb_eff:
-        out.append("cell-blocked: "
+        out.append("profile-blocked: "
                    + ("VERIFIED against the flat kernel on this run's own scaffold"
                       if _CB_OK.get("checked")
-                      else "NOT YET verified \u2014 the self-check runs on the first cell-blocked "
+                      else "NOT YET verified \u2014 the self-check runs on the first profile-blocked "
                            "projection, so this line means none has happened yet")
                    + "; water-fill high-water mark " + str(int(_CB_OK.get("sweeps", 0)))
                    + " sweep(s) of 50.")
@@ -841,7 +841,7 @@ def proj_config():
                  if isinstance(_m, dict)]
         if not _seen:
             out.append("float32 drift NOT YET measured \u2014 the self-check runs on the first "
-                       "cell-blocked projection, so this line means none has happened yet.")
+                       "profile-blocked projection, so this line means none has happened yet.")
         for _m in _seen:
             out.append("float32 drift at P=" + str(_m["at_P"])
                        + ("  (THE LIVE SEARCH WIDTH)" if _m is _F32_OK.get("live")
@@ -1708,7 +1708,7 @@ class PopulationBandProjector:
 
         self.by_rpgt = by_rpgt
         # PROFILE decision grain: prop keys include pmp/ctry (cur|bin|rpgt|pmp|ctry|mid) so a
-        # per-profile share maps to exactly one scaffold row instead of broadcasting across sub-cells.
+        # per-profile share maps to exactly one scaffold row instead of broadcasting across profiles.
         self.by_profile = by_profile
         # Per-profile max-share CAP (matches build_split_exports): no gateway may exceed max_share
         # of a routed profile; the excess water-fills onto the OTHER gateways already present.
@@ -1729,7 +1729,7 @@ class PopulationBandProjector:
         pc_mid = Pc["midl"].to_numpy(); pc_per = Pc["per"].to_numpy().astype(int)
         iscap = T0["iscap"].to_numpy(bool)
 
-        # banded aged rows + their origin profiles; banded capped t0 rows + their cells (VECTORISED).
+        # banded aged rows + their origin profiles; banded capped t0 rows + their profiles (VECTORISED).
         # `bandset` should be the ACTUALLY-CONSTRAINED (midl,per) pairs only — restricting it here
         # is what lets the reduced scaffold shrink (fewer banded rows → fewer relevant profiles).
         _pbp_mark("_origin_map  [19fy: int64 join]")
@@ -1883,7 +1883,7 @@ class PopulationBandProjector:
         self._K = len(self.prop_keys)
 
         _pbp_mark("prop-key index  [19fz: K strings not nR]")
-        # sparse profile-incidence (ngc × nR); cellsum(x) = (S @ x.T).T  (sparse@dense, C-fast)
+        # sparse profile-incidence (ngc × nR); profilesum(x) = (S @ x.T).T  (sparse@dense, C-fast)
         import scipy.sparse as _sp
         self._S = _sp.csr_matrix((np.ones(nR), (self._gcode, np.arange(nR))),
                                  shape=(max(self._ngc, 1), max(nR, 1)))
@@ -2264,7 +2264,7 @@ class PopulationBandProjector:
     def _nb_buffers(self, P, lanes=1):
         """Pre-allocated working buffers for the numba kernel, cached & REUSED across calls
         (removes tens of MB of per-generation alloc/free). The big scratch (psum/vpsum/moved
-        sized ncell; pr/pshare/vshare/mvrow sized nR) is P-INDEPENDENT so it's allocated ONCE;
+        sized nprofile; pr/pshare/vshare/mvrow sized nR) is P-INDEPENDENT so it's allocated ONCE;
         only vamp/txn (P×B, tiny) reallocate when P changes (λ eval_ov vs P=1 score_of). The
         returned vamp/txn ARE these buffers — the caller must consume them before the next call
         (the search's _bands_pen reads them straight into the penalty, so that holds)."""
@@ -2275,7 +2275,7 @@ class PopulationBandProjector:
         # reused for its lifetime) fixes it; the main process keeps its original buffers.
         # Numerically identical — same np.zeros scratch, fully overwritten each call.
         # NB: must test EVERY buffer, not just the first. joblib only memmaps arrays over its
-        # size threshold (~1 MB), so the small per-profile scratch (psum/vpsum/moved, sized ncell)
+        # size threshold (~1 MB), so the small per-profile scratch (psum/vpsum/moved, sized nprofile)
         # can stay writeable while the large per-row scratch (pr/pshare/vshare/mvrow, sized nR)
         # is memmapped read-only — checking fixed[0] alone would miss that and the kernel fails.
         # LANED as of 2026-08-19y: first axis is the parallel lane, so the candidate loop can be
@@ -2308,7 +2308,7 @@ class PopulationBandProjector:
 
     # [FN-022b]
     def _lift_arrays(self, lanes, buffers=None):
-        """(live_rows, live_cells) for the frozen-scaffold lift, and PRIME the frozen scratch.
+        """(live_rows, live_profiles) for the frozen-scaffold lift, and PRIME the frozen scratch.
 
         A scaffold profile is FROZEN when every one of its rows is either masked (excl|emask) or sits
         on a prop-key with an all-zero incidence row — i.e. a prop-key no GA share column maps to,
@@ -2352,8 +2352,8 @@ class PopulationBandProjector:
             _bnote(f"frozen-scaffold LIFT ON: the flat passes skip "
                   f"{len(self._lift_frozen_rows):,} of {nR:,} rows "
                   f"({len(self._lift_frozen_rows) / max(nR, 1):.1%}) in "
-                  f"{len(self._lift_frozen_cells):,} of {ncell:,} frozen profiles "
-                  f"({len(self._lift_frozen_cells) / max(ncell, 1):.1%}). Bit-identical: those "
+                  f"{len(self._lift_frozen_profiles):,} of {nprofile:,} frozen profiles "
+                  f"({len(self._lift_frozen_profiles) / max(nprofile, 1):.1%}). Bit-identical: those "
                   "passes are provable no-ops (psum += 0.0, everything else guarded on psum > 0). "
                   "The nC/nA accumulation loops are NOT touched — reassociating those sums would "
                   "not be bit-identical — so the realised speedup is below the row share. "
@@ -2459,7 +2459,7 @@ class PopulationBandProjector:
                 _pnote("projection is on the pure-NumPy REFERENCE path, NOT the numba kernel — "
                        + ("numba is unavailable in this process"
                           if not _HAVE_NUMBA else
-                          "the band scaffold is empty (no constrained cells this build)")
+                          "the band scaffold is empty (no constrained profiles this build)")
                        + ". Results are correct but this is the slow path, and candidate "
                          "parallelism does not apply to it.")
             return self.project_pop(prop_raw)
@@ -2614,7 +2614,7 @@ class PopulationBandProjector:
             if _cbres is not None:
                 # 19ch: RECORD what was dispatched. Two blocks derived this from the rule and
                 # disagreed on 2026-08-25 19:14; nothing wrote down what actually ran.
-                _path_note("cell-blocked", P, par, chunk, _lanes, nlane, nthr)
+                _path_note("profile-blocked", P, par, chunk, _lanes, nlane, nthr)
                 return _cbres
         if chunk:
             _path_note("flat-chunked", P, par, chunk, _lanes, nlane, nthr)
@@ -2658,8 +2658,8 @@ class PopulationBandProjector:
             if not (live_profile[gc[lr]].all()
                     and int(live_profile[gc].sum()) == int(lr.size)):
                 self._cb = {"key": key, "ok": False}
-                _pnote("cell-blocked projection UNAVAILABLE: the frozen-scaffold lift is no longer "
-                       "cell-granular (some live cell has a frozen row), and the derived mvrow / "
+                _pnote("profile-blocked projection UNAVAILABLE: the frozen-scaffold lift is no longer "
+                       "profile-granular (some live profile has a frozen row), and the derived mvrow / "
                        "vshare depend on that. Running the flat kernel, which does not. This is a "
                        "correctness refusal, not a performance one — report it.")
                 return None
@@ -2689,7 +2689,7 @@ class PopulationBandProjector:
             }
             self._cb = cb
             _bnote(f"profile-blocked layout built: {cb['nLR']:,} live rows in "
-                  f"{cells.size:,} profiles (~{cb['nLR'] / max(cells.size, 1):.1f} rows/profile), "
+                  f"{profiles.size:,} profiles (~{cb['nLR'] / max(profiles.size, 1):.1f} rows/profile), "
                   f"{froz.size:,} frozen rows parked in the tail. The multi-pass block now runs "
                   "one profile at a time (an L1-sized working set) instead of ~15 passes over the "
                   "whole scaffold, and mvrow / vshare are derived in their only reader instead of "
@@ -2699,7 +2699,7 @@ class PopulationBandProjector:
             return cb
         except Exception as _cbe:                  # noqa: BLE001
             self._cb = {"key": key, "ok": False}
-            _pnote(f"cell-blocked layout could not be built ({type(_cbe).__name__}: {_cbe}) — "
+            _pnote(f"profile-blocked layout could not be built ({type(_cbe).__name__}: {_cbe}) — "
                    "running the flat kernel. Correct, just slower.")
             return None
 
@@ -2875,7 +2875,7 @@ class PopulationBandProjector:
             _v, _t = _run()
         except Exception as _cbe:                  # noqa: BLE001
             _CB_OK["use"] = False
-            _pnote(f"cell-blocked projection FAILED to run ({type(_cbe).__name__}: {_cbe}) — "
+            _pnote(f"profile-blocked projection FAILED to run ({type(_cbe).__name__}: {_cbe}) — "
                    "disabled for this process, the flat kernel takes over. Correct, just slower.")
             return None
         if not _CB_OK["checked"]:
@@ -2931,7 +2931,7 @@ class PopulationBandProjector:
                            "than assuming the size it was accepted at. (The figure accepted on "
                            "2026-08-24, '~2 transactions', came from [kernel-ab] row F, which "
                            "times a FLAT float32 kernel on a copy of prop_raw. This path is the "
-                           "cell-blocked one on the live scaffold and on 2026-08-25 it measured "
+                           "profile-blocked one on the live scaffold and on 2026-08-25 it measured "
                            "about 7x that.) Measured on THIS run's "
                            f"scaffold against the float64 kernel: max|\u0394vamp| {_dv:.4g}, "
                            f"max|\u0394txn| {_dt2:.4g} at P={P}. TWO CONSEQUENCES. (1) "
@@ -2950,15 +2950,15 @@ class PopulationBandProjector:
                 _same = (np.array_equal(_bitview(_rv), _bitview(_v))
                          and np.array_equal(_bitview(_rt), _bitview(_t)))
                 if _same:
-                    _pnote("cell-blocked projection SELF-CHECK PASSED on the live scaffold: "
+                    _pnote("profile-blocked projection SELF-CHECK PASSED on the live scaffold: "
                            "bit-identical to the flat kernel (int64 bit-pattern comparison on "
                            f"vamp AND txn at P={P}, stricter than np.array_equal). "
                            f"Water-fill high-water mark {int(sw.max())} sweep(s) of 50 — the ONE "
-                           "way per-cell convergence could differ from the flat kernel's global "
-                           "loop is a cell that never converges, so it is counted, not assumed.")
+                           "way per-profile convergence could differ from the flat kernel's global "
+                           "loop is a profile that never converges, so it is counted, not assumed.")
                 else:
                     _CB_OK["use"] = False
-                    _pnote("*** cell-blocked projection SELF-CHECK FAILED — "
+                    _pnote("*** profile-blocked projection SELF-CHECK FAILED — "
                            f"max|\u0394vamp|={float(np.abs(_rv - _v).max()):.6e} "
                            f"max|\u0394txn|={float(np.abs(_rt - _t).max()):.6e}. DISABLED for the "
                            "rest of this process and the flat kernel's result is being used, so "
@@ -2966,7 +2966,7 @@ class PopulationBandProjector:
                     return _rv, _rt
             except Exception as _cve:              # noqa: BLE001
                 _CB_OK["use"] = False
-                _pnote(f"*** cell-blocked self-check could not run ({type(_cve).__name__}: "
+                _pnote(f"*** profile-blocked self-check could not run ({type(_cve).__name__}: "
                        f"{_cve}) \u2014 falling back to the flat kernel for this process rather "
                        "than trusting an unverified path. READ THIS BEFORE READING ANY TIMING "
                        "BELOW: the flat kernel is the SLOW one, and the float32 projector lives "
@@ -3011,13 +3011,13 @@ class PopulationBandProjector:
             except Exception as _f32e:                 # noqa: BLE001
                 _pnote("float32 drift could not be re-measured at the live width ("
                        + type(_f32e).__name__ + ": " + str(_f32e) + "). NOTHING IS DISABLED by "
-                       "this \u2014 it is a measurement, not a check, and the cell-blocked path "
+                       "this \u2014 it is a measurement, not a check, and the profile-blocked path "
                        "was already verified. The drift figures reported are the first "
                        "measurement's, at its own width.")
         if int(sw.max()) >= 50 and not _CB_OK.get("shouted"):
             _CB_OK["shouted"] = True
-            _pnote("*** cell-blocked water-fill hit the 50-sweep cap. That is the one case where "
-                   "per-cell convergence is NOT provably identical to the flat kernel's global "
+            _pnote("*** profile-blocked water-fill hit the 50-sweep cap. That is the one case where "
+                   "per-profile convergence is NOT provably identical to the flat kernel's global "
                    "loop. Re-run with ROUTING_PROJ_PROFILEBLOCK=0 and compare before trusting these "
                    "numbers.")
         _CB_OK["sweeps"] = max(int(_CB_OK.get("sweeps", 0)), int(sw.max()))

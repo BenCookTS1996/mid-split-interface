@@ -62,7 +62,7 @@ def parse_backup_catchall(backup_dir: str, rpgt_filter: str | None = None) -> Di
     STICKY/'all' pmp/'all' country expanded exactly as data_extractor does.
 
     Returns {} when the folder is empty/absent (⇒ blend is a no-op, back to raw split).
-    Raw sheet percentages are preserved (e.g. braintree 12.0); blend_cell_shares divides
+    Raw sheet percentages are preserved (e.g. braintree 12.0); blend_profile_shares divides
     by 100 to combine with the optimiser's fractional shares.
     """
     out: Dict[Tuple[str, str, str, str], Dict[str, float]] = {}
@@ -128,19 +128,19 @@ def blend_profile_shares(specific: Dict[str, float], catchall: Dict[str, float])
     Returns {gatewayFid: effective_share} summing to 1.0.
 
     PROFILE-LEVEL catch-all (2026-08-16): a profile that carries ANY specific positive share is a DEFINED
-    cell, so the catch-all does NOT fire for it — only its specific shares ship (renormalised).
+    profile, so the catch-all does NOT fire for it — only its specific shares ship (renormalised).
     This mirrors data_extractor._apply_chronological_deduplication, which drops Expanded catch-all
     rows in any full-grain profile that already has a Specific rule. The catch-all is injected ONLY when
-    the profile has no specific share at all (a genuinely undefined cell). (Previously the catch-all
+    the profile has no specific share at all (a genuinely undefined profile). (Previously the catch-all
     was injected per-gateway even into routed profiles — re-adding a zeroed gateway at ~10% — which is
     the behaviour that was corrected.)
     """
     spec = {g: float(v) for g, v in (specific or {}).items() if float(v) > 0}
     _stot = sum(spec.values())
     if _stot > 0:
-        # Defined cell → catch-all does NOT fire; just renormalise the specific shares to sum 1.
+        # Defined profile → catch-all does NOT fire; just renormalise the specific shares to sum 1.
         return {g: v / _stot for g, v in spec.items()}
-    # No specific share in the profile → undefined cell → fall back to the catch-all alone.
+    # No specific share in the profile → undefined profile → fall back to the catch-all alone.
     inj = {g: (float(v) / _PCT_SCALE) for g, v in (catchall or {}).items() if float(v) > 0}
     t = sum(inj.values())
     return {g: v / t for g, v in inj.items()} if t > 0 else dict(spec)

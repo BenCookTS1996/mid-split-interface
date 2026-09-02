@@ -59,10 +59,10 @@ def load_config(config_path):
 def _preview(pre, label="pre"):
     """The preview scripts/run_vamp_forecast_pipeline.py existed for."""
     try:
-        _cells = pre[["rpgt", "currency", "bin"]].drop_duplicates().shape[0]
+        _profiles = pre[["rpgt", "currency", "bin"]].drop_duplicates().shape[0]
     except Exception:  # noqa: BLE001 - a preview must never fail a run
-        _cells = "?"
-    print(f"Baseline '{label}' forecast: {len(pre):,} rows across {_cells} cells")
+        _profiles = "?"
+    print(f"Baseline '{label}' forecast: {len(pre):,} rows across {_profiles} profiles")
     print(pre.head(10).to_string(index=False))
 
 

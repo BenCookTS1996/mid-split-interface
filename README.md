@@ -9,8 +9,8 @@ into ready-to-deploy config files.
 **The one analogy to remember:** each gateway is a **door** you can send a payment through.
 This tool decides how many payments go through each door.
 
-A **cell** is one `transaction-type × currency × bank` combination — the tool makes one
-routing decision per cell.
+A **profile** is one `transaction-type × currency × bank` combination — the tool makes one
+routing decision per profile.
 
 **More docs in this repo:**
 - **`CLAUDE.md`** — project context + a concept glossary, including **Empirical Bayes** and the
@@ -24,9 +24,9 @@ routing decision per cell.
 
 You only really need these:
 
-- **Cell** — one bank × currency × transaction-type group. One routing decision is made per cell.
+- **Profile** — one bank × currency × transaction-type group. One routing decision is made per profile.
 - **Gateway / MID** — a payment route (a "door"). A MID is a merchant account at a gateway.
-- **Split** — the plan: what percentage of a cell's payments goes through each door. Adds up to 100%.
+- **Split** — the plan: what percentage of a profile's payments goes through each door. Adds up to 100%.
 - **Success rate** — the share of payments that get approved. Higher is better.
 - **Risk rate (VAMP rate)** — the share that turn into chargebacks/fraud flags. Lower is better.
 - **VAMP** — Visa's fraud-monitoring programme. Go over its limit and you get penalised, so we keep risk under it.
@@ -34,7 +34,7 @@ You only really need these:
 - **Baseline** — how things are routed *today*. Every proposal is compared against this "before" picture.
 - **Engine** — the method that decides the split. Four are available; they all take the same inputs and produce the same kind of plan, so you can swap between them freely.
 - **Pool / config** — one deployable routing rule (a JSON file). "Pools" = how many rules ship.
-- **Compression** — grouping near-identical cells so they can share one rule (fewer files to deploy).
+- **Compression** — grouping near-identical profiles so they can share one rule (fewer files to deploy).
 - **Eligibility** — hard yes/no route rules: some doors are banned, some can't do wallet payments (Apple/Google Pay), some only serve USA traffic. Ineligible doors get zero share.
 
 ---
@@ -52,7 +52,7 @@ Grouped by the panel they live in. Defaults are in brackets.
 - **Split engine** — which method decides the plan (see "The four engines" below). **Genetic** is the default.
 - **Engine score grain** — how much data to pool when judging a door's success rate. *Bank × Currency* blends all transaction types (more data, steadier); *Bank × Currency × RPGT* is per-type (more specific, but noisier).
 - **Optimisation grain** — the level the plan is actually made at. *Bank × Currency × RPGT* makes a separate plan per transaction type (the default).
-- **Max share per gateway** — the most any single door can take of a cell [0.97 = never more than 97%, so there's always a backup].
+- **Max share per gateway** — the most any single door can take of a profile [0.97 = never more than 97%, so there's always a backup].
 - **Exploration floor** — a minimum share every eligible door keeps, so no door ever goes fully dark [1%].
 - **Search budget (Genetic only)** — how hard the search looks: number of rounds, candidate plans per round, independent restarts. More = potentially better, but slower. Sensible defaults are filled in and a live estimate of the search size shows underneath.
 
@@ -73,15 +73,15 @@ Grouped by the panel they live in. Defaults are in brackets.
 ```
 Baseline forecast (today's routing)
    → Routing engine        pick an engine, set the limits, run the search
-   → Proposed split        one plan: what % of each cell goes to each door
+   → Proposed split        one plan: what % of each profile goes to each door
                            (ineligible doors — banned / wallet / USA-only — are filtered out)
    → Impact dashboard      risk + success-rate + revenue, before vs after
-   → Compression           group near-identical cells so fewer rules ship
+   → Compression           group near-identical profiles so fewer rules ship
    → JSON configs          deployable routing files, per BIN
 ```
 
 **The key design idea:** every engine reads the same input and writes the same kind of
-output (a table of door percentages per cell). So switching engines is just a dropdown —
+output (a table of door percentages per profile). So switching engines is just a dropdown —
 nothing downstream has to change. Like swapping the recipe but keeping the same kitchen.
 
 ### End to end
@@ -97,7 +97,7 @@ flowchart TD
     SR --> ENG
     MID --> ENG
     ENG --> ELIG["Eligibility filter<br/>drop banned / wallet-incapable / USA-only doors"]
-    ELIG --> SPLIT["Proposed split<br/>door % per cell"]
+    ELIG --> SPLIT["Proposed split<br/>door % per profile"]
     SPLIT --> IMP["Impact dashboard<br/>risk, success rate, revenue"]
     SPLIT --> KM["Compression<br/>cut the number of rules"]
     KM --> CFG["JSON routing configs<br/>one per BIN"]
@@ -105,7 +105,7 @@ flowchart TD
 
 ### Why two levels of detail
 
-The **decision** is made at parent-bank level (fewer cells, more data each), but real risk
+The **decision** is made at parent-bank level (fewer profiles, more data each), but real risk
 and the deployed configs are per **BIN**. So the plan is expanded to BIN level, then folded
 back up for the on-screen tables. Think of deciding a household budget by category, then
 itemising each receipt for the accounts.
@@ -134,7 +134,7 @@ flowchart LR
 
 ## The four engines
 
-All four decide the same thing — how to divide each cell's payments between its doors —
+All four decide the same thing — how to divide each profile's payments between its doors —
 and all take the same inputs, so you can switch from the dropdown. Ineligible doors
 (banned / wallet-incapable / USA-only) are always filtered out afterwards.
 
@@ -258,7 +258,7 @@ production. Pick the baseline source on tab 1:
    forecast computed.
 3. **Synthesise from attempts (offline)** — a stand-in baseline for the bundled sample.
 
-Under the hood the pipeline's `Sim_Sales` becomes each cell's `volume`, `Sim_Rate` (VAMPs ÷
+Under the hood the pipeline's `Sim_Sales` becomes each profile's `volume`, `Sim_Rate` (VAMPs ÷
 sales) becomes its `risk_rate`, and each door's share becomes its `baseline_share` — at
 `vampMid × RPGT × BIN × Currency` grain. Success rates come from the attempts extract, smoothed
 for thin data.
@@ -269,7 +269,7 @@ for thin data.
 
 - The tool uses the **real pipeline baseline** when you run live or point at its outputs; the
   synthesiser is only a no-BigQuery fallback.
-- The VAMP cap is applied per cell; **global per-acquirer caps** would need an extra layer on top.
+- The VAMP cap is applied per profile; **global per-acquirer caps** would need an extra layer on top.
 - On the bundled 50-row sample the attempts data and a real pipeline baseline don't share the
   same BIN/gateway space, so success rates fall back to the pooled average. On your real data
   (same keys) they join properly.
@@ -282,15 +282,15 @@ for thin data.
 src/routing_optimiser/
   constraints.py       the hard/soft limits + run settings
   success_rates.py     per-door success rates (smoothed for thin data)
-  data_loader.py       load the baseline forecast → one problem per cell
+  data_loader.py       load the baseline forecast → one problem per profile
   engines/             base + softmax / thompson / portfolio (genetic runs separately)
   seed_search.py    the genetic (CMA-ES) search
   numba_kernels.py     the fast, compiled version of the genetic scoring loop
   band_scoring.py      per-MID monthly-target scoring during the search
   band_projection.py   the exact risk projection those targets are scored against
-  optimiser.py         run an engine across all cells
+  optimiser.py         run an engine across all profiles
   eligibility.py       banned / wallet / USA-only route rules
-  kmeans_compress.py   group near-identical cells to cut the rule count
+  kmeans_compress.py   group near-identical profiles to cut the rule count
 src/build_baseline/    the real forecast pipelines (vamp_pipeline + mastercard_pipeline)
 queries/               the pipeline's BigQuery extracts (visa/ + mastercard/ subfolders)
 app/streamlit_app.py   the app (4 tabs) — tab files are app/tab_<tab>[_<sub>]_<name>.py

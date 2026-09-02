@@ -111,7 +111,7 @@ class PortfolioEngine(SoftmaxEngine):
             lower = lower * (1.0 / lower.sum())
 
         # AUTO risk-aversion (no dial): scale the penalty so it is comparable to
-        # the return magnitude in THIS cell. Then a gateway with an average
+        # the return magnitude in THIS profile. Then a gateway with an average
         # downside pays ~_AVERSION of its return, above-average (volatile / thin)
         # gateways get trimmed, and a clearly-best low-downside gateway keeps its
         # share — consistently across profiles whatever the absolute risk scale.
@@ -185,7 +185,7 @@ class PortfolioEngine(SoftmaxEngine):
 
         # Validity / failure check: a finite split summing to 1 that BEATS the trivial
         # return-weighted fallback. If not, flag the profile infeasible (surfaced downstream via
-        # base._is_feasible → CellSolution.feasible) and fall back — a failed profile is never
+        # base._is_feasible → ProfileSolution.feasible) and fall back — a failed profile is never
         # reported as healthy (parity with Softmax's infeasible path).
         if np.all(np.isfinite(x)) and abs(float(x.sum()) - 1.0) < 1e-6 and _f(x) <= _f(x_start) + 1e-9:
             p._ref_infeasible = False       # type: ignore[attr-defined]

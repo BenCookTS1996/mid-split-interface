@@ -40,7 +40,7 @@ def wallet_segment_split(split: pd.DataFrame, wallet_incapable, wallet_frac=None
     wallet-incapable, the split is returned unchanged (no pmp dimension), so configs
     keep matching all payment methods.
 
-    split columns: rpgt, currency, bank, gateway, share, cell_volume.
+    split columns: rpgt, currency, bank, gateway, share, profile_volume.
     """
     wallet_incapable = set(wallet_incapable or [])
     if not wallet_incapable:
@@ -246,14 +246,14 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
 
     Parameters
     ----------
-    split : per-profile long split (rpgt, currency, bank[, pmp], gateway, share, cell_volume).
+    split : per-profile long split (rpgt, currency, bank[, pmp], gateway, share, profile_volume).
     target_pools : desired MAX number of generated pools (hard ceiling).
     count_pools_fn : callable(compressed_long_df) -> int. Runs the caller's
         build_split_exports + generate_configs on a split and returns the pool count.
         Supplied by the caller because pool generation needs brand/wallet/country context.
 
     Returns (compressed_long, stats) where stats has:
-      raw_cells, raw_pools, profiles, pools, target_pools, global_accuracy,
+      raw_profiles, raw_pools, profiles, pools, target_pools, global_accuracy,
       feasible (bool; False = even the smallest split exceeds target),
       curve [(profiles, pools), ...] over the evaluated budgets, evals (int).
 
@@ -365,7 +365,7 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
                 _cache[b] = _by_kcur[_kc]
         return {b: _cache[b] for b in bs}
 
-    # Largest budget b in [1, raw_cells] whose generated pools <= target.
+    # Largest budget b in [1, raw_profiles] whose generated pools <= target.
     if int(parallel) > 1 and raw_profiles > 2:
         # PARALLEL K-ARY SEARCH (opt-in): the same EXACT target as the binary search — the
         # largest budget with pools <= target — but it probes `parallel` evenly-spaced budgets
@@ -762,7 +762,7 @@ def compress_to_budget(split: pd.DataFrame, n_configs: int,
 
     Returns (compressed_long, stats):
       compressed_long : long-format split (rpgt, currency, bank[, pmp], gateway, share,
-                        cell_volume) with each profile set to its centroid — feed to the
+                        profile_volume) with each profile set to its centroid — feed to the
                         exporter so identical centroids collapse into one config each.
       stats           : {raw_rules, compressed_rules, global_accuracy, per_group,
                          per_rpgt, curve, n_groups, budget}. `curve` = [(total_clusters,

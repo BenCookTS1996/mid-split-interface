@@ -19,7 +19,7 @@ over. A mismatch reverts to serial for the process and records why.
 
 Switches: ROUTING_ROW_PARALLEL=0 disables it everywhere. ROUTING_ROW_PARALLEL_WORKERS pins the
 thread count (default: every core the process may use). ROUTING_ROW_PARALLEL_MIN_ROWS and
-..._MIN_CELLS set the size below which threading is pure overhead.
+..._MIN_PROFILES set the size below which threading is pure overhead.
 """
 from __future__ import annotations
 

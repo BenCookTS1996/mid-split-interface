@@ -32,7 +32,7 @@ _Total: 431 functions across 37 files · analogy coverage: 431/431._
   *Analogy:* Counts the real engines under the hood, ignoring the pretend hyper-thread ones.
 - **[FN-242]** `_apply_blocked_caps(split, blocked_pairs, floor)` — Cap the share of any BANK-BLOCKED (bank, gateway) to the exploration floor and redistribute  
   *Analogy:* Throttles any bank-blocked door down to a trickle, so we stop feeding a dead route.
-- **[FN-243]** `_ensure_base_30d_metrics()` — Compute & cache the 30-day baseline metrics (cell/gateway success rates,  
+- **[FN-243]** `_ensure_base_30d_metrics()` — Compute & cache the 30-day baseline metrics (profile/gateway success rates,  
   *Analogy:* Works out the last-30-days 'before' picture once and keeps it on hand.
 - **[FN-244]** `_impact_eval_frame(split, cache, by_rpgt)` — Per-(rpgt, currency, bank, gateway) pre/post frame for a proposed split,  
   *Analogy:* Lays the 'before' and 'after' numbers side by side for one proposed plan.
@@ -110,7 +110,7 @@ _Total: 431 functions across 37 files · analogy coverage: 431/431._
   *Analogy:* A fingerprint of the inputs, so an unchanged compression is served from cache.
 - **[FN-279]** `pool_targeted_compression(ss, split_ideal)` — Run (and cache in ss) the pool-count-targeting compression for `split_ideal`.  
   *Analogy:* Runs the group-to-budget squeeze and remembers the result.
-- **[FN-280]** `rpgt_avg_ticket(cell_agg)` — RPGT-level average ticket from the 30D actuals (the window ending just before  
+- **[FN-280]** `rpgt_avg_ticket(profile_agg)` — RPGT-level average ticket from the 30D actuals (the window ending just before  
   *Analogy:* The typical payment size per type, from the last 30 days.
 - **[FN-281]** `mid_revenue_month_table(granular, rpgt_ticket, months)` — Per-vampMid × month VI Txn + $Revenue (pre/post) from the pro-rata granular.  
   *Analogy:* A per-account, month-by-month tally of transactions and dollars, before vs after.
@@ -190,7 +190,7 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
 - **[FN-312]** `render._q(a, x)` — (small helper — see source)  
   *Analogy:* Reads a percentile off a list of numbers (the median, the 90th, and so on).
 - **[FN-313]** `render._explode(agg_split)` — (small helper — see source)  
-  *Analogy:* Fans a parent-bank cell back out to its individual BIN-level banks.
+  *Analogy:* Fans a parent-bank profile back out to its individual BIN-level banks.
 - **[FN-314]** `render._scope_base(mid, rpgt, month)` — (small helper — see source)  
   *Analogy:* Narrows the data down to one account (and optionally one payment-type or month).
 - **[FN-315]** `render._rule_a(_tg, _tl, _mtr, _bt, _bv)` — (small helper — see source)  
@@ -258,7 +258,7 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
 - **[FN-346]** `render._endpoint_agg(_shares)` — (small helper — see source)  
   *Analogy:* Aggregates the final numbers at the slider's endpoint.
 - **[FN-347]** `render._log_pc(_w, _sta)` — (small helper — see source)  
-  *Analogy:* Logs the projected-vs-cap detail for each cell.
+  *Analogy:* Logs the projected-vs-cap detail for each profile.
 
 ## `app/tab_3_split_outputs_impact.py`
 *How it ties in:* Tab 3 UI — show the split, its before→after risk/revenue, and dashboards.
@@ -286,7 +286,7 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
 - **[FN-358]** `render._bank_detail_fragment()` — (small helper — see source)  
   *Analogy:* The expandable per-bank detail block.
 - **[FN-359]** `render._bank_detail_fragment._fmt_cell(col, v)` — (small helper — see source)  
-  *Analogy:* Formats one table cell.
+  *Analogy:* Formats one table cell (an HTML table cell, not a routing profile).
 - **[FN-360]** `render._bank_detail_fragment._bcw(_c)` — (small helper — see source)  
   *Analogy:* Sets a column's padding and font size in the bank table.
 - **[FN-361]** `render._bank_detail_fragment._bank_row_html(r, is_total)` — (small helper — see source)  
@@ -296,7 +296,7 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
 - **[FN-363]** `render._style(fig)` — (small helper — see source)  
   *Analogy:* Applies colours and formatting to a table.
 - **[FN-364]** `render._lum_sr(_hex)` — (small helper — see source)  
-  *Analogy:* Picks black-or-white text so it stays readable on any cell colour.
+  *Analogy:* Picks black-or-white text so it stays readable on any profile colour.
 - **[FN-365]** `render._score_of(_g)` — (small helper — see source)  
   *Analogy:* Reads a plan's headline score for display.
 - **[FN-366]** `render._sr_bridge(_grp_col, _other)` — (small helper — see source)  
@@ -306,7 +306,7 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
 - **[FN-368]** `render._md_detail_fragment._wrap(_s, _w)` — (small helper — see source)  
   *Analogy:* Wraps content in its display box.
 - **[FN-369]** `render._md_detail_fragment._impact_bg(_col)` — (small helper — see source)  
-  *Analogy:* Colours a cell by how big the change is.
+  *Analogy:* Colours a profile by how big the change is.
 - **[FN-370]** `render._spread_fig(_col, _unit)` — (small helper — see source)  
   *Analogy:* Draws the spread/scatter figure.
 - **[FN-371]** `render._conv_df(h)` — (small helper — see source)  
@@ -377,9 +377,9 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* Rescales a set of shares so they add back up to 100%.
 - **[FN-002]** `parse_backup_catchall(backup_dir, rpgt_filter)` — Read every rule file in ``backup_dir`` and return the CATCH-ALL (BIN=Other/All)  
   *Analogy:* Reads the 'catch-all' fallback routes from the rule files.
-- **[FN-003]** `blend_cell_shares(specific, catchall)` — Reproduce the pipeline's effective per-cell routing shares.  
+- **[FN-003]** `blend_profile_shares(specific, catchall)` — Reproduce the pipeline's effective per-profile routing shares.  
   *Analogy:* Works out the real routing once the always-on backup doors are mixed in.
-- **[FN-004]** `_catchall_by_vampmid(catchall_cell, fid2vamp)` — Map a cell's catch-all {gatewayFid: pct} onto {vampMid: pct} (summing fids that  
+- **[FN-004]** `_catchall_by_vampmid(catchall_profile, fid2vamp)` — Map a profile's catch-all {gatewayFid: pct} onto {vampMid: pct} (summing fids that  
   *Analogy:* Re-expresses the fallback routes in per-account terms.
 - **[FN-005]** `blend_prop_items(prop_items, catchall, fid2vamp, by_rpgt)` — Blend the backup catch-all into a projection's prop_items so the projected POST  
   *Analogy:* Folds the fallback routes into a proposed split before projecting its impact.
@@ -395,7 +395,7 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* A turbo switch: bolts on the fast compiler if it's installed, otherwise runs the function plain.
 - **[FN-009]** `_njit._deco(f)` — (small helper — see source)  
   *Analogy:* The clamp that actually fastens the turbo kit onto the function.
-- **[FN-010]** `_pop_band_kernel(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, ctot, pc_org, pc_vc, pc_pool, pc_band, cap_row, cap_band, ncell, nband, vamp, txn, psum, vpsum, moved, pr, pshare, vshare, mvrow)` — Bit-identical numba equivalent of PopulationBandProjector.project_pop: flat passes over  
+- **[FN-010]** `_pop_band_kernel(prop_raw, propidx, masked, gcode, base, mv_s, vcpos, ctot, pc_org, pc_vc, pc_pool, pc_band, cap_row, cap_band, nprofile, nband, vamp, txn, psum, vpsum, moved, pr, pshare, vshare, mvrow)` — Bit-identical numba equivalent of PopulationBandProjector.project_pop: flat passes over  
   *Analogy:* The engine-room version of the band maths — same numbers, whole population in one fast sweep.
 - **[FN-011]** `_prop_key(df, by_rpgt)` — Build each row's bucket address ('cur|bin|mid', or 'cur|bin|rpgt|mid' when by_rpgt).  
   *Analogy:* Writes each row's postal address (currency|bin|mid) so proposals file into the right pigeonhole.
@@ -408,7 +408,7 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
 - **[FN-015]** `_shares(T0, prop, by_rpgt, gcode, ngc, base)` — Return (pshare, vshare, psum) for the candidate. `psum` is the per-row (broadcast  
   *Analogy:* For one candidate plan, works out how traffic and value spread across the doors.
 - **[FN-016]** `project_reference(T0, Pc, pool, prop, by_rpgt)` — Faithful re-implementation of `_project_capped`'s array math (a readable oracle).  
-  *Analogy:* the two-cohort model that ALL three projectors here share: split each MID's volume into a HELD cohort (stays put) and a MOVED cohort (the movable fraction mv=pr·fcp, re-routed across gateways by the candidate's proposed shares). In a cell the candidate leaves empty (psum==0) nothing can move, so the held cohort keeps 100%. The final band value = held volume + the candidate's slice of the redistributed moved pool.
+  *Analogy:* the two-cohort model that ALL three projectors here share: split each MID's volume into a HELD cohort (stays put) and a MOVED cohort (the movable fraction mv=pr·fcp, re-routed across gateways by the candidate's proposed shares). In a profile the candidate leaves empty (psum==0) nothing can move, so the held cohort keeps 100%. The final band value = held volume + the candidate's slice of the redistributed moved pool.
 - **[FN-017]** `BandProjector.__init__(self, T0, Pc, pool, bands, by_rpgt)` — (small helper — see source)  
   *Analogy:* Loads the projector with the fixed scaffolding it reuses for every plan.
 - **[FN-018]** `BandProjector.project(self, prop)` — (small helper — see source)  
@@ -423,8 +423,8 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* Keeping reusable mixing bowls ready so the fast engine never stops to fetch new ones.
 - **[FN-023]** `PopulationBandProjector.project_pop_numba(self, prop_raw)` — Numba-accelerated project_pop — bit-identical, ~7× faster on the real scaffold.  
   *Analogy:* The turbo lane — same answer as the plain version, about 7x quicker.
-- **[FN-024]** `PopulationBandProjector._cellsum(self, x)` — (P, nR) -> (P, ngc) segment sum over cell codes via sparse matmul (C-fast).  
-  *Analogy:* Totting up each cell's share by sliding a stencil across the rows.
+- **[FN-024]** `PopulationBandProjector._profilesum(self, x)` — (P, nR) -> (P, ngc) segment sum over profile codes via sparse matmul (C-fast).  
+  *Analogy:* Totting up each profile's share by sliding a stencil across the rows.
 - **[FN-025]** `PopulationBandProjector.project_pop(self, prop_raw)` — prop_raw : (P, K) proposed share per `prop_keys`. Returns (vamp[P,B], txn[P,B]).  
   *Analogy:* The main assembly line: feed in every plan, get back each one's risk and volume per band.
 
@@ -481,15 +481,15 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* The config factory — export templates in, deployable ConnectorPool files out.
 
 ## `src/routing_optimiser/data_loader.py`
-*How it ties in:* Loads the baseline forecast + rates and builds one problem per cell for the engines.
+*How it ties in:* Loads the baseline forecast + rates and builds one problem per profile for the engines.
 
 - **[FN-048]** `synthesise_forecast_from_success(success_df, default_risk)` — Build a plausible baseline forecast from the attempts data.  
   *Analogy:* When no official forecast exists, sketches a believable one from recent attempt history — a stand-in until the real numbers arrive.
 - **[FN-049]** `load_forecast(path, success_df)` — Load the baseline 'pre' forecast — from a file, a pipeline output directory, or (when  
   *Analogy:* Fetches how things are routed today, from whichever source has it (a file, a pipeline run, or a folder).
-- **[FN-050]** `build_cell_problems(forecast, success_rates, default_risk)` — Join forecast volume + baseline split with success/risk rates per cell.  
-  *Analogy:* assembling each cell's "briefing pack". For every RPGT×Currency×Bank cell we pull the forecast's volume + current split together with each gateway's success rate, risk rate and evidence, and hand the engine one CellProblem it can solve. Gateways with no per-cell attempts fall back to the pooled prior (flagged so the UI can show which are educated guesses rather than measured rates).
-- **[FN-051]** `build_cell_problems._nk(x)` — (small helper — see source)  
+- **[FN-050]** `build_profile_problems(forecast, success_rates, default_risk)` — Join forecast volume + baseline split with success/risk rates per profile.  
+  *Analogy:* assembling each profile's "briefing pack". For every RPGT×Currency×Bank profile we pull the forecast's volume + current split together with each gateway's success rate, risk rate and evidence, and hand the engine one ProfileProblem it can solve. Gateways with no per-profile attempts fall back to the pooled prior (flagged so the UI can show which are educated guesses rather than measured rates).
+- **[FN-051]** `build_profile_problems._nk(x)` — (small helper — see source)  
   *Analogy:* Tidies each label to a standard spelling so two data sources line up when joined.
 - **[FN-052]** `prepare_inputs(success_source, forecast_path, shrink_strength)` — Convenience: load everything and return (problems, success_rates, forecast).  
   *Analogy:* The one-stop loader — grabs every input and hands back a ready-to-solve bundle.
@@ -516,16 +516,16 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
 - **[FN-061]** `_renorm(df, group_keys, col)` — Renormalise `col` to sum 1 within each group (leaves all-zero groups).  
   *Analogy:* After removing banned doors, rebalances the rest back to 100% (leaving fully-blocked groups at zero).
 - **[FN-062]** `_capability_blend(df, group_cols, incapable, frac_map, default)` — Volume-weighted capability blend, returning the new per-row share array.  
-  *Analogy:* an `incapable` gateway is like a vendor that can't take a certain payment type. It keeps only the (1 − frac) share it CAN serve; the `frac` portion of each cell is handed to the vendors that CAN (renormalised among themselves), so no transactions are lost. Used identically for wallet capability (frac = the cell's wallet share) and country capability (frac = the cell's Non-USA share). `frac_map` is keyed by (currency, bank); `default` is used when a cell isn't in the map.
+  *Analogy:* an `incapable` gateway is like a vendor that can't take a certain payment type. It keeps only the (1 − frac) share it CAN serve; the `frac` portion of each profile is handed to the vendors that CAN (renormalised among themselves), so no transactions are lost. Used identically for wallet capability (frac = the profile's wallet share) and country capability (frac = the profile's Non-USA share). `frac_map` is keyed by (currency, bank); `default` is used when a profile isn't in the map.
 - **[FN-063]** `apply_restrictions(split, rules, fid2vamp, wallet_incapable, wallet_frac, wallet_default, usa_only, nonusa_frac, nonusa_default, group_keys)` — Return the split with bans + wallet capability + country capability enforced.  
   *Analogy:* The bouncer — removes every barred or incapable door and rebalances the rest.
-- **[FN-064]** `build_elig_operator(cells, rules, fid2vamp)` — Precompute static per-row eligibility arrays for a FIXED layout.  
+- **[FN-064]** `build_elig_operator(profiles, rules, fid2vamp)` — Precompute static per-row eligibility arrays for a FIXED layout.  
   *Analogy:* Pre-builds the guest list once for a fixed layout, so every plan can be checked instantly.
 - **[FN-065]** `build_elig_operator._incap_mask(incapable)` — (small helper — see source)  
   *Analogy:* Marks which doors can't handle this payment type.
 - **[FN-066]** `build_elig_operator._wf(frac_map, default)` — (small helper — see source)  
   *Analogy:* Works out how much of each row's traffic is wallet pay that needs re-routing.
-- **[FN-067]** `_renorm_pop(X, cs, cc)` — Per-cell renormalise to sum 1, leaving all-zero cells (matches `_renorm`).  
+- **[FN-067]** `_renorm_pop(X, cs, cc)` — Per-profile renormalise to sum 1, leaving all-zero profiles (matches `_renorm`).  
   *Analogy:* The rebalance-to-100% step, done for a whole batch of plans at once.
 - **[FN-068]** `_blend_pop(X, incap, wf, cs, cc)` — Vectorised twin of `_capability_blend` + its trailing `_renorm`, over a population.  
   *Analogy:* The wallet-shift step, applied to a whole batch of plans at once.
@@ -541,16 +541,16 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* The menu board — lists which engines you can pick, with their friendly labels.
 
 ## `src/routing_optimiser/engines/base.py`
-*How it ties in:* The shared 'recipe contract' every engine follows: one cell in, shares out, plus reusable helpers.
+*How it ties in:* The shared 'recipe contract' every engine follows: one profile in, shares out, plus reusable helpers.
 
-- **[FN-401]** `CellProblem.n(self)` — Number of gateways in this cell (length of every aligned array).  
-  *Analogy:* A quick head-count of the doors in this cell.
+- **[FN-401]** `ProfileProblem.n(self)` — Number of gateways in this profile (length of every aligned array).  
+  *Analogy:* A quick head-count of the doors in this profile.
 - **[FN-402]** `BaseEngine.__init__(self, weight, hard, soft)` — (small helper — see source)  
   *Analogy:* Hands a fresh engine its risk dial and the rules it must obey — briefing a chef before they cook.
 - **[FN-403]** `BaseEngine._t(self, msg)` — Record one debug/trace line (a no-op unless tracing is switched on).  
   *Analogy:* The engine's flight recorder — jots down each step, but only when someone's watching.
-- **[FN-404]** `BaseEngine.solve_traced(self, p)` — Solve one cell AND return the stage-by-stage trace for it.  
-  *Analogy:* Solve one cell AND keep the running commentary, so the debug panel can replay every move.
+- **[FN-404]** `BaseEngine.solve_traced(self, p)` — Solve one profile AND return the stage-by-stage trace for it.  
+  *Analogy:* Solve one profile AND keep the running commentary, so the debug panel can replay every move.
 - **[FN-405]** `BaseEngine._bounds(self, p)` — Per-gateway (lower, upper) share bounds from the hard constraints.  
   *Analogy:* Works out each door's allowed min/max share (and remembers it) — the 'at least this, no more than that' limits.
 - **[FN-406]** `BaseEngine._project_box_simplex(v, lo, hi)` — Euclidean projection of ``v`` onto ``{x : sum(x)=1, lo<=x<=hi}``.  
@@ -569,12 +569,12 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* Builds that starting split: favour the best doors, but floor every door so none goes dark — reward the top performers while keeping everyone in the game.
 - **[FN-413]** `BaseEngine._project_to_vamp(self, p, shares)` — Nudge a split to the closest one that meets the VAMP (risk) cap.  
   *Analogy:* If a split is too risky, nudge it to the closest one that meets the risk cap — pull an over-full glass back to the fill line.
-- **[FN-414]** `BaseEngine._finalise(self, p, shares, note)` — Clean up a raw share vector into a valid CellSolution.  
+- **[FN-414]** `BaseEngine._finalise(self, p, shares, note)` — Clean up a raw share vector into a valid ProfileSolution.  
   *Analogy:* Plates the dish: clean up the raw split, renormalise, apply the risk cap, and attach the headline success/risk numbers.
-- **[FN-415]** `BaseEngine._is_feasible(self, p, shares)` — True only if `shares` satisfies EVERY hard constraint for this cell.  
+- **[FN-415]** `BaseEngine._is_feasible(self, p, shares)` — True only if `shares` satisfies EVERY hard constraint for this profile.  
   *Analogy:* The pass/fail check — does this split break any hard rule (over a cap, on a banned door)?
-- **[FN-416]** `BaseEngine.solve(self, p)` — Public entry point: return the chosen split for one cell.  
-  *Analogy:* The front door: handle the trivial cells (0 or 1 door) itself, hand the rest to the engine's own method.
+- **[FN-416]** `BaseEngine.solve(self, p)` — Public entry point: return the chosen split for one profile.  
+  *Analogy:* The front door: handle the trivial profiles (0 or 1 door) itself, hand the rest to the engine's own method.
 - **[FN-417]** `BaseEngine._solve(self, p)` — Engine-specific split logic. Every concrete engine overrides this.  
   *Analogy:* The blank the concrete engine fills in with its own way of deciding a split.
 
@@ -611,14 +611,14 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
 ## `src/routing_optimiser/engines/softmax.py`
 *How it ties in:* Softmax engine — reward the best doors, keep a spread; trim toward the risk cap if needed.
 
-- **[FN-418]** `SoftmaxEngine._solve(self, p)` — Return the cell's split: the reference, trimmed toward the risk cap if needed.  
+- **[FN-418]** `SoftmaxEngine._solve(self, p)` — Return the profile's split: the reference, trimmed toward the risk cap if needed.  
   *Analogy:* Draw the conversion-chasing split; only if it's too risky, walk it back just enough to sit on the risk line.
 
 ## `src/routing_optimiser/engines/thompson.py`
 *How it ties in:* Thompson engine — bet on each door by its chance of being the best (explores thin doors).
 
 - **[FN-419]** `_leggauss_cached(m)` — Gauss–Legendre nodes/weights on [-1, 1] for m points. `leggauss` is a pure  
-  *Analogy:* Precomputes and remembers the fixed 'measuring points' for the probability maths, so they aren't re-derived for every cell — keeping one ruler handy instead of re-marking one each time.
+  *Analogy:* Precomputes and remembers the fixed 'measuring points' for the probability maths, so they aren't re-derived for every profile — keeping one ruler handy instead of re-marking one each time.
 - **[FN-420]** `ThompsonEngine._ref_param_key(self, p)` — (small helper — see source)  
   *Analogy:* Thompson's fingerprint of what its starting split depends on (its Beta belief + tilt).
 - **[FN-421]** `ThompsonEngine._beta_params(self, p)` — Beta(alpha, beta) per gateway — a SELF-CONTAINED posterior from the  
@@ -637,7 +637,7 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* Collapses a door's deprecated aliases onto its one true name.
 - **[FN-074]** `_mm_kappa(vg, ng, fallback, kmax)` — Method-of-moments Beta-Binomial concentration (kappa) for one back-off LEVEL,  
   *Analogy:* Measures how alike a group of rates are, to decide how hard to smooth them.
-- **[FN-075]** `_hier_vamp_shrink(d, fallback_kappa, kmax)` — FULLY-AUTOMATIC hierarchical empirical-Bayes shrinkage of the per-cell VAMP rate.  
+- **[FN-075]** `_hier_vamp_shrink(d, fallback_kappa, kmax)` — FULLY-AUTOMATIC hierarchical empirical-Bayes shrinkage of the per-profile VAMP rate.  
   *Analogy:* Automatically smooths thin risk data by borrowing strength from broader groups.
 - **[FN-076]** `_normalise_pre(df)` — Normalise a pipeline export into the optimiser's baseline contract:  
   *Analogy:* Tidies a raw pipeline export into the clean 'before' shape the optimiser wants.
@@ -649,12 +649,12 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* Sniffs a file to tell which export format it is.
 
 ## `src/routing_optimiser/ga_oliver.py`
-- **[FN-080]** `_renorm_cells(X, cs, cc, elig, ref)` — Zero non-eligible rows, then renormalise each cell to sum 1 over its eligible rows.  
-  *Analogy:* Zeroes banned doors, then rebalances each cell to 100%.
-- **[FN-081]** `_mutate(X, cs, cc, elig, ref, rng, mutation_rate, strength)` — Gaussian per-row mutation on a random subset of CELLS (mirrors Oliver's mutate_split, but  
-  *Analogy:* Randomly jiggles some cells to explore new splits.
-- **[FN-082]** `_crossover(A, B, cs, cc, rng, cx_rate)` — Per-cell uniform crossover (mirrors make_children): each cell independently comes from one  
-  *Analogy:* Mixes two parent splits cell-by-cell to breed a child.
+- **[FN-080]** `_renorm_profiles(X, cs, cc, elig, ref)` — Zero non-eligible rows, then renormalise each profile to sum 1 over its eligible rows.  
+  *Analogy:* Zeroes banned doors, then rebalances each profile to 100%.
+- **[FN-081]** `_mutate(X, cs, cc, elig, ref, rng, mutation_rate, strength)` — Gaussian per-row mutation on a random subset of PROFILES (mirrors Oliver's mutate_split, but  
+  *Analogy:* Randomly jiggles some profiles to explore new splits.
+- **[FN-082]** `_crossover(A, B, cs, cc, rng, cx_rate)` — Per-profile uniform crossover (mirrors make_children): each profile independently comes from one  
+  *Analogy:* Mixes two parent splits profile-by-profile to breed a child.
 - **[FN-083]** `_score(X, ctx, cs, cc, elig, cap, floor)` — Cap-at-evaluation (uncapped genome), then this app's _obj_viol → (obj, viol).  
   *Analogy:* Grades a candidate split on revenue and rule-breaking.
 - **[FN-084]** `_fast_nondominated_fronts(M)` — M: (P, k) MINIMISATION objectives. Returns list of fronts (each a list of indices).  
@@ -671,9 +671,9 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* A single 'higher is better' score that always ranks legal splits above illegal ones.
 
 ## `src/routing_optimiser/genetic_fullmatrix.py`
-- **[FN-090]** `_renorm_cells(X, cs, cc)` — Renormalise each contiguous cell segment of X (P, N) so every cell sums to 1.  
-  *Analogy:* Rebalances each cell of the full matrix back to 100%.
-- **[FN-091]** `_repair(X, cs, cc, elig, cap, floor)` — Make every row a deployable split: non-negative, eligible-only, per-cell sum 1, then  
+- **[FN-090]** `_renorm_profiles(X, cs, cc)` — Renormalise each contiguous profile segment of X (P, N) so every profile sums to 1.  
+  *Analogy:* Rebalances each profile of the full matrix back to 100%.
+- **[FN-091]** `_repair(X, cs, cc, elig, cap, floor)` — Make every row a deployable split: non-negative, eligible-only, per-profile sum 1, then  
   *Analogy:* Fixes any candidate into a deployable split — non-negative, eligible, summing to one.
 - **[FN-092]** `_objectives(pop, ctx)` — (revenue [maximise], aggregate expected VAMP count [minimise]) per candidate.  
   *Analogy:* Scores each candidate on revenue and total risk.
@@ -691,7 +691,7 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* Produces the next generation of candidate matrices.
 - **[FN-099]** `_nsga2.breed.better(i, j)` — (small helper — see source)  
   *Analogy:* The head-to-head judge for two candidates.
-- **[FN-100]** `run_fullmatrix_ga(ctx, lam)` — Evolve the full per-cell share matrix. Single-objective (revenue − λ·risk) by default;  
+- **[FN-100]** `run_fullmatrix_ga(ctx, lam)` — Evolve the full per-profile share matrix. Single-objective (revenue − λ·risk) by default;  
   *Analogy:* The whole full-matrix search from start to finish.
 - **[FN-101]** `run_fullmatrix_ga.fit_of(P)` — (small helper — see source)  
   *Analogy:* Reads one candidate's fitness.
@@ -707,24 +707,24 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* A checklist marking which rows belong to which merchant account, for fast totalling.
 - **[FN-105]** `_fitness(pop, ctx, lam)` — Vectorised fitness. Revenue is the SAME quantity tab 4 shows as incremental  
   *Analogy:* The scoreboard — how much extra revenue each candidate plan is expected to earn.
-- **[FN-106]** `_risk_z_per_mid(risk, mid_rows, n_mid, N)` — Standardise each vampMid's per-cell risk across ITS rows, so θ_m tilts that  
+- **[FN-106]** `_risk_z_per_mid(risk, mid_rows, n_mid, N)` — Standardise each vampMid's per-profile risk across ITS rows, so θ_m tilts that  
   *Analogy:* Grades each door's riskiness on a curve within its own account, so a tilt means the same everywhere.
-- **[FN-107]** `_cap_floor_shares(X, cell_starts, cell_counts, elig, cap, floor)` — HARD per-cell max-share cap + exploration floor on shares X (P, N), vectorised.  
+- **[FN-107]** `_cap_floor_shares(X, profile_starts, profile_counts, elig, cap, floor)` — HARD per-profile max-share cap + exploration floor on shares X (P, N), vectorised.  
   *Analogy:* Trims any door over its ceiling, lifts any below its floor, then rebalances back to 100%.
 - **[FN-108]** `_mid_over(shares, ctx, include_floor_shortfall)` — Per-candidate per-MID breach magnitude (P, M): the RELATIVE overage (actual/limit − 1,  
   *Analogy:* Measures how far over its limit each merchant account has strayed.
-- **[FN-109]** `_ret_z_per_mid(ret, mid_rows, n_mid, N)` — Standardise each vampMid's per-cell REVENUE-efficiency (rev_coef) across ITS  
+- **[FN-109]** `_ret_z_per_mid(ret, mid_rows, n_mid, N)` — Standardise each vampMid's per-profile REVENUE-efficiency (rev_coef) across ITS  
   *Analogy:* Grades each door's revenue-per-payment on a curve within its own account.
-- **[FN-110]** `_leaned_ref(ref, risk, elig, cell_starts, cell_counts, gamma)` — Lean the revenue reference gently toward LOWER global risk (γ ≥ 0): the θ=0  
+- **[FN-110]** `_leaned_ref(ref, risk, elig, profile_starts, profile_counts, gamma)` — Lean the revenue reference gently toward LOWER global risk (γ ≥ 0): the θ=0  
   *Analogy:* Gives the starting plan a gentle nudge toward the safer doors before the search begins.
-- **[FN-111]** `_cap_floor_prep(cell_starts, cell_counts, elig, cap, floor)` — Precompute the per-cell CONSTANTS the max-share/floor water-fill needs, so they  
+- **[FN-111]** `_cap_floor_prep(profile_starts, profile_counts, elig, cap, floor)` — Precompute the per-profile CONSTANTS the max-share/floor water-fill needs, so they  
   *Analogy:* Prepping the cap/floor tools once so the balancing step runs fast.
-- **[FN-112]** `_cap_floor_apply(X, prep)` — HARD per-cell floor-then-cap water-fill using PRECOMPUTED constants (`prep` from  
+- **[FN-112]** `_cap_floor_apply(X, prep)` — HARD per-profile floor-then-cap water-fill using PRECOMPUTED constants (`prep` from  
   *Analogy:* Pouring share back and forth between doors until each sits between its floor and ceiling.
-- **[FN-113]** `_risk_z_per_cell(risk, cell_starts, cell_counts, N)` — Standardise each CELL's per-gateway risk across ITS rows (mirror of `_risk_z_per_mid`  
-  *Analogy:* The same risk grading-on-a-curve, but within each cell instead of each account.
-- **[FN-114]** `_decode_midtilt3(genome, M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig, cap, floor)` — genome (P, 3M[+K]) = [θr (risk-tilt) | θq (return-tilt) | g (gain) | cellθ (K fine)] -> (P, N).  
-  *Analogy:* θr / θq / g are ~three knobs per MID. Turning θr up leans that MID's volume toward its LOW-risk cells, θq toward its HIGH-revenue cells, and g raises/lowers its overall presence. This function turns those ~20 knob settings into a full per-gateway split (then applies the hard floor/cap). That tiny genome is why the search is so fast.
+- **[FN-113]** `_risk_z_per_profile(risk, profile_starts, profile_counts, N)` — Standardise each PROFILE's per-gateway risk across ITS rows (mirror of `_risk_z_per_mid`  
+  *Analogy:* The same risk grading-on-a-curve, but within each profile instead of each account.
+- **[FN-114]** `_decode_midtilt3(genome, M, ref, zr, zq, mid_id, profile_starts, profile_counts, elig, cap, floor)` — genome (P, 3M[+K]) = [θr (risk-tilt) | θq (return-tilt) | g (gain) | profileθ (K fine)] -> (P, N).  
+  *Analogy:* θr / θq / g are ~three knobs per MID. Turning θr up leans that MID's volume toward its LOW-risk profiles, θq toward its HIGH-revenue profiles, and g raises/lowers its overall presence. This function turns those ~20 knob settings into a full per-gateway split (then applies the hard floor/cap). That tiny genome is why the search is so fast.
 - **[FN-115]** `_mid_viol_weights(ctx, M)` — Per-MID VIOLATION weight (VOLUME-WEIGHTING of the feasibility violation).  
   *Analogy:* Weights each account's rule-break by how much traffic it carries, so big accounts count more.
 - **[FN-116]** `_obj_viol(shares, ctx)` — Split the score into (objective, violation) for feasibility-first ranking.  
@@ -741,7 +741,7 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* The sorting rule that always puts rule-abiding plans ahead of rule-breaking ones.
 - **[FN-122]** `_cmaes(eval_ov, x0, sigma0, lo, hi)` — Active (μ/μ_w, λ)-CMA-ES over the box [lo, hi] (bounds via clipping). `eval_ov(X)`  
   *Analogy:* CMA-ES searches like a smart swarm. Each generation it samples candidate tilt-vectors from a bell-shaped "cloud", scores them, keeps the best few, then MOVES and RESHAPES the cloud toward them — automatically learning which directions matter and how big a step to take. "Active" means it also nudges the cloud AWAY from the worst directions, and "feasibility-first" means a compliant candidate always beats a non-compliant one when picking the winner.
-- **[FN-123]** `run_midtilt_ga(ctx, lam)` — Active-CMA-ES cross-cell per-vampMid tilt search — the live engine (see the block  
+- **[FN-123]** `run_midtilt_ga(ctx, lam)` — Active-CMA-ES cross-profile per-vampMid tilt search — the live engine (see the block  
   *Analogy:* The whole breeding programme end to end — the actual search that runs in production.
 - **[FN-124]** `run_midtilt_ga._decode(G)` — (small helper — see source)  
   *Analogy:* The programme's own translator from dials to a finished split, with caps applied.
@@ -761,8 +761,8 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* Scores a single candidate plan.
 - **[FN-132]** `run_midtilt_ga.better(a, b)` — (small helper — see source)  
   *Analogy:* The tie-breaker judge deciding which of two plans wins — rules first, then revenue.
-- **[FN-133]** `run_midtilt_ga._cellrep(v)` — (small helper — see source)  
-  *Analogy:* Totals each cell, then stamps that total back onto every door in it.
+- **[FN-133]** `run_midtilt_ga._profilerep(v)` — (small helper — see source)  
+  *Analogy:* Totals each profile, then stamps that total back onto every door in it.
 - **[FN-134]** `run_midtilt_ga._midsum1(v)` — (small helper — see source)  
   *Analogy:* Totals one plan's traffic per merchant account.
 - **[FN-135]** `run_midtilt_ga.eval_ov(V)` — (small helper — see source)  
@@ -770,7 +770,7 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
 - **[FN-136]** `run_midtilt_ga.score_of(gu)` — (small helper — see source)  
   *Analogy:* The turbo-lane single-plan scorer.
 - **[FN-137]** `run_midtilt_ga._fine_grad(vec)` — (small helper — see source)  
-  *Analogy:* Works out which way to nudge the fine per-cell dials to improve revenue.
+  *Analogy:* Works out which way to nudge the fine per-profile dials to improve revenue.
 - **[FN-138]** `run_midtilt_ga._grads(gu)` — (small helper — see source)  
   *Analogy:* The compass telling the polish step which direction is downhill.
 - **[FN-139]** `run_midtilt_ga._fit_to_target(target)` — (small helper — see source)  
@@ -793,17 +793,17 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* The final leaderboard rule that crowns the overall winning plan — rules first.
 
 ## `src/routing_optimiser/impact.py`
-- **[FN-148]** `cell_baseline_vs_proposed(split, avg_ticket)` — Per cell: expected successful transactions and revenue under the baseline  
-  *Analogy:* For each cell, the expected approvals and revenue before vs after.
-- **[FN-149]** `cell_baseline_vs_proposed.ticket(rpgt)` — (small helper — see source)  
+- **[FN-148]** `profile_baseline_vs_proposed(split, avg_ticket)` — Per profile: expected successful transactions and revenue under the baseline  
+  *Analogy:* For each profile, the expected approvals and revenue before vs after.
+- **[FN-149]** `profile_baseline_vs_proposed.ticket(rpgt)` — (small helper — see source)  
   *Analogy:* The typical payment size used in that calculation.
-- **[FN-150]** `headline_impact(cell)` — (small helper — see source)  
+- **[FN-150]** `headline_impact(profile)` — (small helper — see source)  
   *Analogy:* The top-line 'what changes overall' summary numbers.
-- **[FN-151]** `key_contributors(cell, by, top)` — Which banks / currencies / RPGTs drive most of the incremental revenue.  
+- **[FN-151]** `key_contributors(profile, by, top)` — Which banks / currencies / RPGTs drive most of the incremental revenue.  
   *Analogy:* Names the banks, currencies and payment types driving most of the change.
 - **[FN-152]** `gateway_volume_shift(split)` — How much volume each gateway gains/loses vs baseline (the 'stolen'  
   *Analogy:* How much traffic each door gains or loses versus today.
-- **[FN-153]** `_split_volume(df)` — Per-row cell volume from a split frame, tolerating either column name.  
+- **[FN-153]** `_split_volume(df)` — Per-row profile volume from a split frame, tolerating either column name.  
   *Analogy:* Reads each row's volume from a split, coping with missing columns.
 - **[FN-154]** `gateway_move_vs_reference(ref_split, sel_split, keys)` — Per-gateway volume BEFORE (`ref_split`) vs AFTER (`sel_split`), aligned on the  
   *Analogy:* Each door's traffic before vs after, measured against the reference plan.
@@ -811,7 +811,7 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* How much total traffic shifts as the slider moves — the 'how much are we changing?' curve.
 
 ## `src/routing_optimiser/kmeans_compress.py`
-*How it ties in:* Groups near-identical cells so fewer deployable rules ship.
+*How it ties in:* Groups near-identical profiles so fewer deployable rules ship.
 
 - **[FN-156]** `wallet_segment_split(split, wallet_incapable, wallet_frac, wallet_default, fid2vamp, wallet_label, nonwallet_label)` — Add a `pmp` (paymentMethodProvider) dimension so wallet traffic routes only  
   *Analogy:* Splits wallet traffic out by provider, so Apple/Google Pay get their own routing line.
@@ -820,12 +820,12 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
 - **[FN-158]** `_weighted_accuracy(X, recon, w)` — % fidelity: 100 = identical. Uses L1 distance on share vectors.  
   *Analogy:* A faithfulness score — 100 means the compressed rules match the originals exactly.
 - **[FN-159]** `_fit_k(X, w, k, seed)` — (small helper — see source)  
-  *Analogy:* Tries grouping the cells into k bundles and measures how well it fits.
+  *Analogy:* Tries grouping the profiles into k bundles and measures how well it fits.
 - **[FN-160]** `compress_split(split, group_keys, rpgt_targets, max_gateway_cap, k_max, seed)` — Returns (compressed_rules, elbow, stats).  
-  *Analogy:* The grouping machine — bundles near-identical cells so fewer rules ship, and reports how good the fit is.
+  *Analogy:* The grouping machine — bundles near-identical profiles so fewer rules ship, and reports how good the fit is.
 - **[FN-161]** `count_config_rules(compressed)` — Number of JSON routing rules the compressed split will generate.  
   *Analogy:* Counts how many deployable rule files a given grouping would produce.
-- **[FN-162]** `compress_to_pool_budget(split, target_pools, count_pools_fn, group_keys, max_gateway_cap, k_max, seed, method, allocation, parallel, count_backend)` — Compress so the GENERATED POOL count is <= target_pools, using as large a cell  
+- **[FN-162]** `compress_to_pool_budget(split, target_pools, count_pools_fn, group_keys, max_gateway_cap, k_max, seed, method, allocation, parallel, count_backend)` — Compress so the GENERATED POOL count is <= target_pools, using as large a profile  
   *Analogy:* Bundles just enough to fit within an allowed number of deployable rules.
 - **[FN-163]** `compress_to_pool_budget._no_compression(_reason_feasible)` — (small helper — see source)  
   *Analogy:* The 'leave it as-is' shortcut when everything already fits without grouping.
@@ -838,7 +838,7 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
 - **[FN-167]** `_build_compress_context(split, group_keys, max_gateway_cap, k_max, seed, method, allocation)` — Precompute everything that DOESN'T depend on the cluster budget: the volume-weighted  
   *Analogy:* Preps everything that doesn't change with the target size, once, up front.
 - **[FN-168]** `_compress_with_context(ctx, n_configs)` — Greedy volume-weighted cluster allocation for a given budget, using a prebuilt  
-  *Analogy:* Hands out cluster slots greedily, giving the busiest cells their own rule first.
+  *Analogy:* Hands out cluster slots greedily, giving the busiest profiles their own rule first.
 - **[FN-169]** `_compress_with_context._fit(g, k)` — (small helper — see source)  
   *Analogy:* Tries one grouping and scores its fit.
 - **[FN-170]** `_compress_with_context._push_next(g)` — (small helper — see source)  
@@ -846,23 +846,23 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
 - **[FN-171]** `_compress_ext(ctx, n_configs)` — OPT-IN compression: alternative cluster METHOD and/or budget ALLOCATION.  
   *Analogy:* An alternative grouping method (Ward) for when the default needs a second opinion.
 - **[FN-172]** `_compress_ext._ward_model(g)` — (small helper — see source)  
-  *Analogy:* Builds the Ward family-tree of which cells are most alike.
+  *Analogy:* Builds the Ward family-tree of which profiles are most alike.
 - **[FN-173]** `_compress_ext._labels_centroids(g, k)` — (small helper — see source)  
-  *Analogy:* Reads off which bundle each cell lands in, and each bundle's representative split.
+  *Analogy:* Reads off which bundle each profile lands in, and each bundle's representative split.
 - **[FN-174]** `_compress_ext._acc(g, k)` — (small helper — see source)  
   *Analogy:* Scores how faithful a given grouping is.
 - **[FN-175]** `_compress_ext._push(g)` — (small helper — see source)  
   *Analogy:* Spends the next slot where it adds the most fidelity.
-- **[FN-176]** `compress_to_budget(split, n_configs, group_keys, max_gateway_cap, k_max, seed, method, allocation)` — Compress a per-cell split to ~n_configs representative rules TOTAL by greedily  
+- **[FN-176]** `compress_to_budget(split, n_configs, group_keys, max_gateway_cap, k_max, seed, method, allocation)` — Compress a per-profile split to ~n_configs representative rules TOTAL by greedily  
   *Analogy:* Squeezes the plan down to about a target number of representative rules.
 
 ## `src/routing_optimiser/menu_picker.py`
-- **[FN-177]** `_cell_matrix(split, idx_cols, gateway_cols)` — (cells x gateways) share matrix (renormalised) + per-cell volume, aligned to  
-  *Analogy:* Lays every cell's split out as a tidy grid.
+- **[FN-177]** `_profile_matrix(split, idx_cols, gateway_cols)` — (profiles x gateways) share matrix (renormalised) + per-profile volume, aligned to  
+  *Analogy:* Lays every profile's split out as a tidy grid.
 - **[FN-178]** `_build_group_menu(X, w, menu_k, seed)` — Shortlist of candidate split vectors for one group: volume-weighted KMeans centroids  
   *Analogy:* Draws up a shortlist of candidate splits a group could share.
-- **[FN-179]** `menu_compress(split, group_keys, menu_k, max_items, max_gateway_cap, seed)` — Compress a per-cell split by MENU PICKING.  
-  *Analogy:* Compresses by having each cell pick the closest split off a shared menu.
+- **[FN-179]** `menu_compress(split, group_keys, menu_k, max_items, max_gateway_cap, seed)` — Compress a per-profile split by MENU PICKING.  
+  *Analogy:* Compresses by having each profile pick the closest split off a shared menu.
 - **[FN-180]** `menu_compress._item_id(c)` — (small helper — see source)  
   *Analogy:* Gives each menu choice a label.
 - **[FN-181]** `menu_compress._distinct_items()` — (small helper — see source)  
@@ -879,11 +879,11 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* A second turbo switch, for the no-compiler fallback path.
 - **[FN-185]** `njit.deco(f)` — (small helper — see source)  
   *Analogy:* The bolt that attaches the compiler to the function.
-- **[FN-186]** `_fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_cell, n_fine, nec_col, fl_col, capN_col, has_floor, has_cap, cv, risk, rc, has_vcap, vcap, has_volcap, volcap, n_bands, b_mi, b_bval, b_ceil, b_floor, b_has_ceil, b_has_floor, b_pmul, has_base, base_vol, wm, max_share, floor_val, rmw, has_vfr, vfr, bfix, qwt, pexp, has_elig, ecs, ecc, e_has_ban, e_ban, e_has_w, e_w_incap, e_w_wf, e_has_u, e_u_incap, e_u_wf)` — One fused pass: ACTUAL genome batch G (P, 3M[+K]) -> (obj (P,), viol (P,)).  
+- **[FN-186]** `_fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_profile, n_fine, nec_col, fl_col, capN_col, has_floor, has_cap, cv, risk, rc, has_vcap, vcap, has_volcap, volcap, n_bands, b_mi, b_bval, b_ceil, b_floor, b_has_ceil, b_has_floor, b_pmul, has_base, base_vol, wm, max_share, floor_val, rmw, has_vfr, vfr, bfix, qwt, pexp, has_elig, ecs, ecc, e_has_ban, e_ban, e_has_w, e_w_incap, e_w_wf, e_has_u, e_u_incap, e_u_wf)` — One fused pass: ACTUAL genome batch G (P, 3M[+K]) -> (obj (P,), viol (P,)).  
   *Analogy:* instead of building each intermediate array and handing it to the next NumPy step (like shipping half-finished parts between factory stations), this does the whole decode → eligibility → score on ONE workbench per candidate. The bulky in-between arrays never exist — which is where the speed comes from — while the maths and the summation ORDER stay the same, so the answer matches the NumPy path to float64 rounding.
-- **[FN-187]** `_prep_cols(cell_starts, cell_counts, elig, cap, floor)` — Per-column nec / floor / capN constants, matching `seed_search._cap_floor_prep`  
+- **[FN-187]** `_prep_cols(profile_starts, profile_counts, elig, cap, floor)` — Per-column nec / floor / capN constants, matching `seed_search._cap_floor_prep`  
   *Analogy:* Pre-cutting each door's cap/floor constants so the conveyor never pauses to recompute them.
-- **[FN-188]** `make_numba_eval(M, ref, zr, zq, mid_id, cell_starts, cell_counts, elig, cap, floor, fine_idx, zr_cell, n_fine, cv, risk, rc, ctx)` — Return a callable `eval_actual(G)->(obj, viol)` (G in ACTUAL genome space) backed by  
+- **[FN-188]** `make_numba_eval(M, ref, zr, zq, mid_id, profile_starts, profile_counts, elig, cap, floor, fine_idx, zr_profile, n_fine, cv, risk, rc, ctx)` — Return a callable `eval_actual(G)->(obj, viol)` (G in ACTUAL genome space) backed by  
   *Analogy:* Builds and hands you the ready-tuned fast scorer.
 - **[FN-189]** `make_numba_eval.eval_actual(G)` — (small helper — see source)  
   *Analogy:* The scorer itself — feed it plans, get back scores and rule-breaks.
@@ -891,37 +891,37 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* Runs the plain and turbo scorers on the same plans to prove they agree to the last digit.
 
 ## `src/routing_optimiser/optimiser.py`
-*How it ties in:* Runs an engine across every cell and assembles the split; also the per-MID risk-cap enforcers.
+*How it ties in:* Runs an engine across every profile and assembles the split; also the per-MID risk-cap enforcers.
 
 - **[FN-191]** `_vamp_cap_lp(df, cap, floor, max_share, agg_cap, _reduce)` — Joint solve for the per-vampMid VAMP cap: the split CLOSEST to the reference  
   *Analogy:* Finds the split closest to the reference that keeps every MID's risk under the cap, in one big 'least movement' solve — rearranging the fewest parcels so no truck is overloaded.
 - **[FN-192]** `vamp_frontier_lp(df, cap, agg_cap, floor, max_share)` — Frontier point (public wrapper for `_vamp_cap_lp` with an aggregate budget):  
   *Analogy:* The same, plus a whole-book risk budget — used to trace the risk-vs-revenue trade-off curve.
 - **[FN-193]** `_group_indices(labels)` — {label -> ascending row positions}, identical to  
-  *Analogy:* A filing clerk sorting rows into labelled trays (one tray per cell or MID) in a single pass.
-- **[FN-194]** `_cell_recip_order(cell_rows, rate)` — Per-cell row positions sorted by rate ASCENDING, ties broken by ascending row index.  
-  *Analogy:* Pre-sorts each cell's doors cheapest-risk-first, once, so moves don't re-sort every time.
-- **[FN-195]** `enforce_mid_vamp_caps(df, cap, floor, max_share, max_iter, step)` — Cross-cell adjustment so each vampMid's AGGREGATE VAMP rate <= cap.  
-  *Analogy:* a MID's monitored rate is the volume-weighted average across every cell it runs in — like a student's overall grade averaged across subjects, weighted by credit hours. To pull that average under the limit with the least disruption, we move volume off the MID's WORST cells onto the cheapest alternative in each; a MID that's over the limit in EVERY cell can't be fixed by re-weighting, so it's retired (dropped) and its volume handed off.
+  *Analogy:* A filing clerk sorting rows into labelled trays (one tray per profile or MID) in a single pass.
+- **[FN-194]** `_profile_recip_order(profile_rows, rate)` — Per-profile row positions sorted by rate ASCENDING, ties broken by ascending row index.  
+  *Analogy:* Pre-sorts each profile's doors cheapest-risk-first, once, so moves don't re-sort every time.
+- **[FN-195]** `enforce_mid_vamp_caps(df, cap, floor, max_share, max_iter, step)` — Cross-profile adjustment so each vampMid's AGGREGATE VAMP rate <= cap.  
+  *Analogy:* a MID's monitored rate is the volume-weighted average across every profile it runs in — like a student's overall grade averaged across subjects, weighted by credit hours. To pull that average under the limit with the least disruption, we move volume off the MID's WORST profiles onto the cheapest alternative in each; a MID that's over the limit in EVERY profile can't be fixed by re-weighting, so it's retired (dropped) and its volume handed off.
 - **[FN-196]** `enforce_mid_vamp_caps._mid_rate(m)` — (small helper — see source)  
   *Analogy:* Reads a MID's current volume-weighted risk rate.
 - **[FN-197]** `enforce_mid_vamp_caps._rt(m)` — (small helper — see source)  
   *Analogy:* A fast running-total version of that rate, updated as volume moves instead of recomputed.
 - **[FN-198]** `enforce_mid_volume_caps(df, a_max_by_mid, max_share)` — Scale each vampMid's allocated volume down to a_max x its BASELINE volume.  
-  *Analogy:* a spend cap per MID. If a MID is routed more volume than a_max × what it historically carried, we shrink every one of its cells by the same factor (like trimming an over-budget line item proportionally) and hand the freed volume to the cheapest other gateway in each cell.
-- **[FN-199]** `optimise_split(problems, settings)` — Solve every cell with the selected engine and assemble the long split table.  
-  *Analogy:* Runs the chosen engine over every cell and stacks the answers into one tidy table — the assembly line turning per-cell decisions into the whole plan.
+  *Analogy:* a spend cap per MID. If a MID is routed more volume than a_max × what it historically carried, we shrink every one of its profiles by the same factor (like trimming an over-budget line item proportionally) and hand the freed volume to the cheapest other gateway in each profile.
+- **[FN-199]** `optimise_split(problems, settings)` — Solve every profile with the selected engine and assemble the long split table.  
+  *Analogy:* Runs the chosen engine over every profile and stacks the answers into one tidy table — the assembly line turning per-profile decisions into the whole plan.
 - **[FN-200]** `portfolio_summary(split)` — Volume-weighted headline numbers for a whole split (the book-level scorecard).  
   *Analogy:* Rolls a whole plan up into its headline volume-weighted success and risk numbers.
 - **[FN-201]** `sweep_slider(problems, settings, weights)` — Produce split *variations* across the conversion↔risk slider.  
   *Analogy:* Re-solves the whole book at each risk-dial position to trace the trade-off curve (used by the pipeline script).
 
 ## `src/routing_optimiser/precluster.py`
-- **[FN-202]** `_cell_signatures(ctx)` — One hashable signature per cell. Two cells share a signature IFF, gateway-for-gateway  
-  *Analogy:* Gives each cell a fingerprint, so identical ones can be spotted.
-- **[FN-203]** `build_clusters(ctx)` — Group cells by identical signature. Returns a dict with:  
-  *Analogy:* Buckets together cells with matching fingerprints.
-- **[FN-204]** `reduce_ctx(ctx, clusters)` — Build a REDUCED ctx over one representative cell per cluster. Intensive per-gateway fields  
+- **[FN-202]** `_profile_signatures(ctx)` — One hashable signature per profile. Two profiles share a signature IFF, gateway-for-gateway  
+  *Analogy:* Gives each profile a fingerprint, so identical ones can be spotted.
+- **[FN-203]** `build_clusters(ctx)` — Group profiles by identical signature. Returns a dict with:  
+  *Analogy:* Buckets together profiles with matching fingerprints.
+- **[FN-204]** `reduce_ctx(ctx, clusters)` — Build a REDUCED ctx over one representative profile per cluster. Intensive per-gateway fields  
   *Analogy:* Shrinks the problem to one representative per bucket.
 - **[FN-205]** `reduce_ctx._take(name)` — (small helper — see source)  
   *Analogy:* Pulls the representative row out of a bucket.
@@ -929,8 +929,8 @@ Removed: nothing imported it, and the full-pipeline "Validate Split" sub-tab
   *Analogy:* Runs the search on the shrunken problem, then copies answers back — same result, less work.
 - **[FN-207]** `run_midtilt_ga_preclustered._red(w)` — (small helper — see source)  
   *Analogy:* The reduced-problem helper inside that run.
-- **[FN-208]** `expand_shares(rep_shares, expand)` — Copy each representative cell's per-gateway shares to ALL its member cells → full (N,)  
-  *Analogy:* Copies each representative's split back onto all its identical cells.
+- **[FN-208]** `expand_shares(rep_shares, expand)` — Copy each representative profile's per-gateway shares to ALL its member profiles → full (N,)  
+  *Analogy:* Copies each representative's split back onto all its identical profiles.
 
 ## `src/routing_optimiser/run_bundle.py`
 - **[FN-209]** `_write_config(folder, config)` — Write config as YAML if available, else JSON. Returns the path written.  

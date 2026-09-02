@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from routing_optimiser import (HardConstraints, OptimiserSettings,  # noqa: E402
                                SoftConstraints, build_configs,
-                               cell_baseline_vs_proposed, compress_split,
+                               profile_baseline_vs_proposed, compress_split,
                                count_config_rules, engine_choices,
                                gateway_volume_shift, headline_impact,
                                key_contributors, optimise_split,
@@ -43,7 +43,7 @@ def main():
     print("Engines available:", [k for k, _ in engine_choices()])
     print(f"\n[1/6] Loading inputs from {args.success} ...")
     problems, sr, forecast = prepare_inputs(args.success, args.forecast)
-    print(f"      cells: {len(problems)}   success-rate rows: {len(sr)}")
+    print(f"      profiles: {len(problems)}   success-rate rows: {len(sr)}")
 
     settings = OptimiserSettings(
         risk_conversion_weight=args.weight, engine=args.engine,
@@ -56,15 +56,15 @@ def main():
     summ = portfolio_summary(split)
     print(f"      portfolio success={summ['expected_success_rate']:.4f}  "
           f"risk={summ['expected_risk_rate']:.4f}  "
-          f"infeasible_cells={summ['infeasible_cells']}")
+          f"infeasible_profiles={summ['infeasible_profiles']}")
 
     print("[3/6] Impact vs baseline ...")
-    cell = cell_baseline_vs_proposed(split, avg_ticket=25.0)
-    hi = headline_impact(cell)
+    profile = profile_baseline_vs_proposed(split, avg_ticket=25.0)
+    hi = headline_impact(profile)
     print(f"      success-rate uplift: {hi['success_rate_uplift_pp']:+.2f} pp   "
           f"incremental revenue: {hi['incremental_revenue']:+,.0f}")
     print("      top contributor banks:")
-    kc = key_contributors(cell, by="bin", top=5)
+    kc = key_contributors(profile, by="bin", top=5)
     for _, r in kc.iterrows():
         print(f"        {r['bin'][:34]:34}  rev {r['incremental_revenue']:+9,.0f}  "
               f"({r['pct_of_uplift']:.0f}% of uplift)")
@@ -86,7 +86,7 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
     split.to_csv(os.path.join(args.outdir, "proposed_split.csv"), index=False)
     compressed.to_csv(os.path.join(args.outdir, "compressed_rules.csv"), index=False)
-    cell.to_csv(os.path.join(args.outdir, "impact_by_cell.csv"), index=False)
+    profile.to_csv(os.path.join(args.outdir, "impact_by_profile.csv"), index=False)
     gateway_volume_shift(split).to_csv(os.path.join(args.outdir, "gateway_volume_shift.csv"), index=False)
     paths = write_configs(configs, os.path.join(args.outdir, "configs"),
                           brand="tdr", date="260629")
