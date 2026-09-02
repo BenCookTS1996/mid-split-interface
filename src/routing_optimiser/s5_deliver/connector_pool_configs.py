@@ -8,7 +8,7 @@ pandas DataFrames — exactly the ones produced by `build_split_exports` in the 
 templates). All the pool-building logic (grouping, provider combination, priority,
 weight normalisation, selectors, naming) is preserved verbatim.
 
-(The older `config_generator.build_configs` — a simpler per-cell pooler — is left untouched;
+(The older `config_generator.build_configs` — a simpler per-profile pooler — is left untouched;
 this module is the script-faithful path. `build_configs` is NOT dead: it is still exported and
 called from scripts/run_pipeline.py, even though the k-means *tab* it once backed is retired.)
 

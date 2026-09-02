@@ -443,7 +443,7 @@ class ActuarialEngine:
         """Infer VAMP for gateways whose source data does not carry any, from their siblings.
 
         See the module patch notes. In one line: for each (Company, rpgt, Currency) group and each
-        (origin month, age) cell, take the VAMP rate the REPORTING gateways show, and give each
+        (origin month, age) profile, take the VAMP rate the REPORTING gateways show, and give each
         flagged row that rate applied to its own transactions for that origin month.
 
         This runs AFTER _apply_magic_lock has already set these gateways to zero (ai01), so the
@@ -472,8 +472,8 @@ class ActuarialEngine:
         for k in gkeys[1:]:
             gid = gid.str.cat(df[k].astype(str), sep='|')
 
-        # Which transaction column is the denominator for each cell.
-        cells = []
+        # Which transaction column is the denominator for each profile.
+        profiles = []
         for m in range(6):
             for t in range(10):
                 col = f't{t}_fcast_m{m}'
@@ -482,13 +482,13 @@ class ActuarialEngine:
                 origin = m - t
                 trx = f'fc_vi_trx_m{origin}' if origin >= 0 else f'p{abs(origin) - 1}'
                 if trx in df.columns:
-                    cells.append((col, trx, m, t))
+                    profiles.append((col, trx, m, t))
 
-        if not cells:
-            logger.warning("   > inject_from_siblings: no cell has a transaction denominator - skipped.")
+        if not profiles:
+            logger.warning("   > inject_from_siblings: no profile has a transaction denominator - skipped.")
             return df
 
-        need = sorted({c for c, _, _, _ in cells} | {x for _, x, _, _ in cells})
+        need = sorted({c for c, _, _, _ in profiles} | {x for _, x, _, _ in profiles})
         sib = ~mask
         # Sibling totals per group, one pass. Flagged rows are excluded from BOTH sides so the
         # rate is the reporting population's own rate and cannot be diluted by the zeros ai01 left.
@@ -498,7 +498,7 @@ class ActuarialEngine:
         gid_inj = gid[mask]
         rpgt_inj = df.loc[mask, 'rpgt'].astype(str) if 'rpgt' in df.columns else None
 
-        for col, trx, _m, _t in cells:
+        for col, trx, _m, _t in profiles:
             sv = gsum[col]
             st = gsum[trx]
             rate = (sv / st.where(st > 0)).fillna(0.0)
@@ -651,7 +651,7 @@ class ActuarialEngine:
 
         The removed fraud is DELETED, not redistributed: that volume moved to other gateways on
         the switch-off date and their own forecasts already carry its fraud, so redistributing
-        would double-count it. `vamp_fcast{_m}` is recomputed from the surviving cells so each
+        would double-count it. `vamp_fcast{_m}` is recomputed from the surviving profiles so each
         row's total still equals its own age breakdown.
 
         Only `target: 0` with `apply_to` in (trx, both). An `apply_to: "vamp"` override means the
@@ -733,7 +733,7 @@ class ActuarialEngine:
                         "on the switch-off date and their forecasts already carry its fraud, so "
                         "redistributing would double-count. The book total falls by this amount "
                         "and every per-row vamp_fcast has been recomputed from its surviving age "
-                        "cells. ROUTING_OVERRIDE_ORIGIN_CUTOFF=0 reverts.")
+                        "profiles. ROUTING_OVERRIDE_ORIGIN_CUTOFF=0 reverts.")
         else:
             logger.info("   > override origin cutoff: nothing to remove - no switched-off gateway "
                         "carried forecast VAMP with an origin after its effective date.")

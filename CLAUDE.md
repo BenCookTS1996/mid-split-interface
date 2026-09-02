@@ -37,15 +37,34 @@ confusingly, and it is being corrected outward-in:
   `_opt_profile`, the numba kernel parameters, and the module
   `s3_problem/subcell.py` → `s3_problem/profile.py`.
 
-### The four things deliberately NOT renamed
+### Docstrings and the switch names (19hm)
+
+Docstrings were neither log strings nor comments, so phase 1 missed them — 195 migrated in 19hm.
+`src/build_baseline/**` is migrated too, and `schema.py`'s `CELL_KEYS` is now
+`COARSE_PROFILE_KEYS` (it is the coarse 3-part grouping; `PROFILE_KEYS` already meant a profile).
+
+**The four kill switches were renamed WITH THEIR OLD NAMES STILL HONOURED**, because a switch
+name is a user contract — it gets typed at a prompt and written into notes and tickets:
+
+| new name | old name, still accepted |
+|---|---|
+| `ROUTING_PROJ_PROFILEBLOCK` | `ROUTING_PROJ_CELLBLOCK` |
+| `ROUTING_DOOR_COVER_PROFILES` | `ROUTING_DOOR_COVER_CELLS` |
+| `ROUTING_ROW_PARALLEL_MIN_PROFILES` | `ROUTING_ROW_PARALLEL_MIN_CELLS` |
+| `ROUTING_CA_ZEROPROFILE` | `ROUTING_CA_ZEROCELL` |
+
+New name wins; either works. `app_common.env_switch` holds the alias table.
+
+### Two places the word means something else, deliberately left
 
 | kept as-is | why |
 |---|---|
-| `ROUTING_PROJ_CELLBLOCK`, `ROUTING_CA_ZEROCELL`, `ROUTING_DOOR_COVER_CELLS`, `ROUTING_ROW_PARALLEL_MIN_CELLS` | kill-switch names are a **user contract** — they are typed by hand and written down elsewhere |
-| `_PK_SPEC_CELL` (was `_PK_SPEC_SUBCELL`) | the 6-part prop-key spec genuinely **is** a CELL in this vocabulary, so it moved the other way |
-| `schema.py`'s `CELL_KEYS` / `PROFILE_KEYS` | `PROFILE_KEYS` already means this document's profile; `CELL_KEYS` is a **coarser 3-part** grouping that would collide if renamed. Needs a new name, not a sweep. |
-| `app/tab_1_3_config_validation.py`, `render_profile_lookup`, `render_config_profile_charts`, `_profile_of` | "profile" there means a **gateway-pool** profile (which currencies/BINs a pool covers) — an unrelated sense of the word |
-| `src/build_baseline/**` | a separate subsystem (the tab-1 baseline builder) with its own vocabulary; out of scope for this pass |
+| `_PK_SPEC_CELL` (was `_PK_SPEC_SUBCELL`) | the 6-part prop-key spec genuinely **is** a CELL, so it moved the other way |
+| `actuarial_engine`'s `denom_cols` (was `cells`) | it held (column, denominator, m, t) tuples — never a routing group, so neither word fitted. Renamed for accuracy, not vocabulary. |
+
+`app/tab_1_3_config_validation.py` DOES use the word in this document's sense — a pool's
+"profile dimensions" are currency / BIN / country / provider, no gateway — so it needed no
+change. An earlier note in this file claimed otherwise; that was wrong.
 
 The 6-part row is still called `prop_key` / `propidx` / `prop_raw` in the code. That is a
 mechanism name rather than a grain name, so it was left alone.

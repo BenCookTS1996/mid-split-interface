@@ -14,7 +14,7 @@ Two complementary sources feed one eligibility check:
   * ``processWallet`` column in Master_MID_List — gatewayFids flagged FALSE
     CANNOT process wallet traffic (paymentMethodProvider GOOGLEPAY / APPLEPAY).
 
-Both are enforced on the proposed split by zeroing the banned (gateway, profile)
+Both are enforced on the proposed split by zeroing the banned (gateway, cell)
 shares and redistributing the freed volume to the eligible gateways in the same
 routing group (so transactions are conserved). Wallet capability is enforced as
 a volume-weighted blend: an incapable gateway keeps only its NON-wallet share.
@@ -48,7 +48,7 @@ def load_usa_only(path: str) -> frozenset:
 
     Read from the ``usa_only_gateways`` key of routing_restrictions.json. These
     are enforced like wallet capability: the gateway keeps only the USA fraction
-    of each cell, the Non-USA portion is redistributed. Missing/invalid -> empty."""
+    of each profile, the Non-USA portion is redistributed. Missing/invalid -> empty."""
     if not path or not os.path.exists(path):
         return frozenset()
     try:
@@ -69,7 +69,7 @@ def load_explore_gateways(path: str) -> frozenset:
 
     Motivation: eligibility is normally built from OBSERVED 30D attempts, so a brand-
     new gateway (no attempts for a bank) is never a candidate and never gets volume.
-    Listing it here forces it into the candidate set for its currency's cells."""
+    Listing it here forces it into the candidate set for its currency's profiles."""
     if not path or not os.path.exists(path):
         return frozenset()
     try:
@@ -110,7 +110,7 @@ def load_restrictions(path: str) -> list[dict]:
 # [FN-056]
 def _resolve_field(field: str, profile: dict):
     """Value for a rule field, aliasing 'bin' onto the 'bin' column (BIN-level
-    cells are keyed as 'bin' in this app). Returns None if unavailable."""
+    profiles are keyed as 'bin' in this app). Returns None if unavailable."""
     pv = profile.get(field)
     if pv is None and field == "bin":
         pv = profile.get("bin")
@@ -119,7 +119,7 @@ def _resolve_field(field: str, profile: dict):
 
 # [FN-057]
 def _row_banned(gw: str, vmid: str, profile: dict, rules: list[dict]) -> bool:
-    """True if any rule bans this gateway/vampMid for this traffic profile.
+    """True if any rule bans this gateway/vampMid for this traffic cell.
 
     A rule fires only when EVERY field it lists is both available at this grain
     AND matches. If a field can't be evaluated (e.g. 'country', which isn't part
@@ -211,7 +211,7 @@ _MIXED = frozenset({"", "_all_", "all", "nan", "none"})
 
 # [FN-062a]
 def _exact_wallet_frac(pmp):
-    """1.0 in a wallet sub-cell, 0.0 in a card sub-cell, None when the value is mixed."""
+    """1.0 in a wallet profile, 0.0 in a card profile, None when the value is mixed."""
     p = str(pmp).strip().lower()
     if p in _MIXED:
         return None
@@ -220,7 +220,7 @@ def _exact_wallet_frac(pmp):
 
 # [FN-062b]
 def _exact_nonusa_frac(ctry):
-    """1.0 in a Non-USA sub-cell, 0.0 in a USA sub-cell, None when the value is mixed."""
+    """1.0 in a Non-USA profile, 0.0 in a USA profile, None when the value is mixed."""
     c = str(ctry).strip().lower()
     if c in _MIXED:
         return None
@@ -229,7 +229,7 @@ def _exact_nonusa_frac(ctry):
 
 # [FN-062c]
 def _profile_col(df, kind):
-    """The column carrying this restriction's sub-cell identity, or None at cell grain."""
+    """The column carrying this restriction's profile identity, or None at profile grain."""
     if kind == "wallet":
         return "pmp" if "pmp" in df.columns else None
     if kind == "nonusa":
@@ -244,11 +244,11 @@ def _capability_blend(df: pd.DataFrame, group_cols: list[str], incapable, frac_m
     """Volume-weighted capability blend, returning the new per-row share array.
 
     ANALOGY: an `incapable` gateway is like a vendor that can't take a certain payment type.
-    It keeps only the (1 − frac) share it CAN serve; the `frac` portion of each cell is handed
+    It keeps only the (1 − frac) share it CAN serve; the `frac` portion of each profile is handed
     to the vendors that CAN (renormalised among themselves), so no transactions are lost. Used
-    identically for wallet capability (frac = the cell's wallet share) and country capability
-    (frac = the cell's Non-USA share). `frac_map` is keyed by (currency, bank); `default` is
-    used when a cell isn't in the map.
+    identically for wallet capability (frac = the profile's wallet share) and country capability
+    (frac = the profile's Non-USA share). `frac_map` is keyed by (currency, bank); `default` is
+    used when a profile isn't in the map.
     """
     # FID-GRAIN capability (2026-08-17). `incapable` carries BOTH gatewayFids and their
     # rolled-up vampMids, so ALSO testing `_vm` over-blocks every fid of a vampMid whose
@@ -311,9 +311,9 @@ def apply_restrictions(split: pd.DataFrame, rules: list[dict], fid2vamp: dict,
     wallet_frac: {(currency, bank): fraction of the cell that is wallet traffic}.
     usa_only: set of gatewayFids/vampMids (lower) that can ONLY process USA traffic.
     nonusa_frac: {(currency, bank): fraction of the cell that is Non-USA traffic}.
-    wallet_default / nonusa_default: reroute fraction for a cell absent from wallet_frac /
+    wallet_default / nonusa_default: reroute fraction for a profile absent from wallet_frac /
         nonusa_frac (default 0.0 — no reroute).
-    group_keys: cell grouping for the capability blend (default (rpgt, currency, bank)).
+    group_keys: profile grouping for the capability blend (default (rpgt, currency, bank)).
     """
     if split is None or getattr(split, "empty", True):
         return split
@@ -377,9 +377,9 @@ def build_elig_operator(profiles: pd.DataFrame, rules: list[dict], fid2vamp: dic
                         nonusa_default: float = 0.0) -> dict:
     """Precompute static per-row eligibility arrays for a FIXED layout.
 
-    `cells`: one row per (cell, gateway) in the search's EXACT row order, rows CONTIGUOUS
-    per cell, with columns at least [cell, gateway, currency, bank] (+ optional rpgt / bin /
-    country, used only for ban matching). The cell segments this derives must equal the
+    `cells`: one row per (profile, gateway) in the search's EXACT row order, rows CONTIGUOUS
+    per profile, with columns at least [profile, gateway, currency, bank] (+ optional rpgt / bin /
+    country, used only for ban matching). The profile segments this derives must equal the
     (rpgt, currency, bank) groups `apply_restrictions` renormalises within, so make `cell`
     that composite key. Returns a dict consumed by `apply_elig_pop`."""
     df = profiles.reset_index(drop=True)
@@ -502,7 +502,7 @@ def _fu_blend(capX, base, seg, co, wf, out, all_pos):
         sd     = repeat(where(seg > 0, seg, 1.0), cc)
         cshare = capX / sd                       (all_pos)   or   where(posc, capX / sd, base)
         out    = wf * cshare + (1.0 - wf) * base
-    `all_pos` is the 19bq no-capable-gateway guard, decided at CELL grain by the caller."""
+    `all_pos` is the 19bq no-capable-gateway guard, decided at PROFILE grain by the caller."""
     P, N = capX.shape
     for p in range(P):
         for i in range(N):
@@ -541,16 +541,16 @@ _FU_OK = {"use": _FU_ON, "why": (
 
 
 def _co_build(cc):
-    """cell_of: the cell index of every row. Built ONCE per layout by `_rx_build` and carried on
+    """cell_of: the profile index of every row. Built ONCE per layout by `_rx_build` and carried on
     the operator — never rebuilt per call, and never cached under a (N, ncell) key, because two
-    different sub-layouts can share that pair and a mis-keyed cell map is a silent wrong answer."""
+    different sub-layouts can share that pair and a mis-keyed profile map is a silent wrong answer."""
     cc = np.asarray(cc, np.int64)
     return np.repeat(np.arange(cc.size, dtype=np.int32), cc)
 
 
 # [FN-067]
 def _renorm_pop_ref(X: np.ndarray, cs: np.ndarray, cc: np.ndarray) -> np.ndarray:
-    """THE REFERENCE. Per-cell renormalise to sum 1, leaving all-zero cells (matches `_renorm`).
+    """THE REFERENCE. Per-profile renormalise to sum 1, leaving all-zero profiles (matches `_renorm`).
     Untouched since 2026-07-29; `_renorm_pop` below is checked against it, never the reverse."""
     s = np.repeat(np.add.reduceat(X, cs, axis=1), cc, axis=1)
     return np.where(s > 0, X / np.where(s > 0, s, 1.0), X)
@@ -560,12 +560,12 @@ def _renorm_pop(X: np.ndarray, cs: np.ndarray, cc: np.ndarray, co=None) -> np.nd
     """Same result, bit for bit, in three full-width passes instead of five.
 
     TWO CHANGES, both exact:
-      * The safe denominator is built at CELL grain and repeated. np.repeat is a gather of identical
+      * The safe denominator is built at PROFILE grain and repeated. np.repeat is a gather of identical
         values, so repeat(where(seg > 0, seg, 1.0), cc) == where(repeat(seg) > 0, repeat(seg), 1.0)
         elementwise — the 23,418-element select replaces an 8.5-million-element one (68.9 ms).
       * The OUTER select is dropped, because it is a no-op: where seg <= 0 the denominator is exactly
         1.0, so X / 1.0 == X, which is precisely what the discarded branch returned.
-    135.5 ms -> 67.0 ms at 35 x 242,670 / 23,418 cells."""
+    135.5 ms -> 67.0 ms at 35 x 242,670 / 23,418 profiles."""
     seg = np.add.reduceat(X, cs, axis=1)
     if co is not None and _FU_OK["use"]:
         # 19bs: one fused pass instead of repeat + select + divide. Same reduceat, same divisor,
@@ -581,7 +581,7 @@ def _blend_pop_ref(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
     """THE REFERENCE, untouched since 2026-07-29.
     Vectorised twin of `_capability_blend` + its trailing `_renorm`, over a population.
     An incapable gateway keeps (1-wf) of its share; the wf portion redistributes to the
-    capable gateways in the cell (renormalised among themselves). Cells with zero total,
+    capable gateways in the profile (renormalised among themselves). Profiles with zero total,
     or with no capable gateway, are left unchanged — exactly as the scalar version."""
     base = X
     base_sum = np.repeat(np.add.reduceat(base, cs, axis=1), cc, axis=1)
@@ -599,16 +599,16 @@ def _blend_pop(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
     """Same result, bit for bit, with three of the five full-width selects removed.
 
       * `base_sum` is never materialised. Its only use was the trailing select, and that select is a
-        no-op: a cell with base_sum <= 0 is all zeros (shares are non-negative), so capX is zero, so
+        no-op: a profile with base_sum <= 0 is all zeros (shares are non-negative), so capX is zero, so
         seg_c is zero, so cshare == base, so blended == base. Both branches return base.
         This is the ONE step that leans on the data (non-negative shares) rather than purely on IEEE
         arithmetic — which is why the whole path self-checks live and reverts on mismatch.
-      * The safe denominator and the `> 0` mask are built at CELL grain and repeated; the mask
+      * The safe denominator and the `> 0` mask are built at PROFILE grain and repeated; the mask
         repeats as bool, so it moves 1 byte per row instead of 8.
       * The trailing renorm is the fast one above.
 
-    437.3 ms -> 270.2 ms at 35 x 242,670 / 23,418 cells. Bit-identical (int64 view) across
-    all-zero cells, cells with no capable gateway, -0.0 shares and 1e-14 magnitudes."""
+    437.3 ms -> 270.2 ms at 35 x 242,670 / 23,418 profiles. Bit-identical (int64 view) across
+    all-zero profiles, profiles with no capable gateway, -0.0 shares and 1e-14 magnitudes."""
     base = X
     if co is not None and _FU_OK["use"]:
         # 19bs: THREE full-width arrays instead of eight. The two reduceat calls are untouched and
@@ -699,10 +699,10 @@ def nocap_note():
 
 
 def _rx_rows(cs, cc, hit):
-    """Row indices of the hit cells, plus the reduceat starts/counts for the gathered array.
+    """Row indices of the hit profiles, plus the reduceat starts/counts for the gathered array.
 
-    Vectorised ragged-range: for hit cell i the rows are cs[i] .. cs[i]+cc[i]-1, and in the gathered
-    array they land at scs[i] .. scs[i]+scc[i]-1. A python loop over 23,418 cells would also work
+    Vectorised ragged-range: for hit profile i the rows are cs[i] .. cs[i]+cc[i]-1, and in the gathered
+    array they land at scs[i] .. scs[i]+scc[i]-1. A python loop over 23,418 profiles would also work
     but this runs once per layout and there is no reason to be slow about it."""
     sel = np.where(hit)[0]
     scc = np.asarray(cc, np.intp)[sel]
@@ -757,7 +757,7 @@ def _rx_build(op):
 
 
 def _blend_pop_rx(X, incap, wf, cs, cc, st, co=None):
-    """`_blend_pop` over the changeable cells only, then the SAME full-width trailing renorm.
+    """`_blend_pop` over the changeable profiles only, then the SAME full-width trailing renorm.
 
     THE PRIMITIVES MUST MATCH the full version operation for operation — np.add.reduceat over the
     gathered array with its own starts, np.repeat with its own counts. Anything else (a .sum(axis=1),
@@ -806,7 +806,7 @@ def _blend_pop_rx(X, incap, wf, cs, cc, st, co=None):
 def _apply_elig_pop_rx(Xa, op, cs, cc, rx):
     """Same three stages, same order, blends restricted where the index says it is safe.
 
-    19bs: `rx["co"]` is the row->cell map for the full layout, built once when the index was.
+    19bs: `rx["co"]` is the row->profile map for the full layout, built once when the index was.
     Passing it in is what switches the helpers to the fused elementwise passes; passing None
     leaves them on the 19bm numpy chain, which is the revert path."""
     _co = rx.get("co")
@@ -897,7 +897,7 @@ def _ep_buf(cs, cc, N):
 
 
 def _seg_bcast(X, cs, buf, profile_of, out):
-    """Per-cell sum broadcast back to row grain — np.repeat's result, gathered instead."""
+    """Per-profile sum broadcast back to row grain — np.repeat's result, gathered instead."""
     np.take(np.add.reduceat(X, cs, axis=1), profile_of, axis=1, out=out)
     return out
 

@@ -32,7 +32,7 @@ def synthesise_forecast_from_success(success_df: pd.DataFrame,
     """Build a plausible baseline forecast from the attempts data.
 
     Used when a real VAMP 'pre' export isn't wired in yet. Volume = observed
-    attempts; baseline_share = observed share of that gateway within the cell.
+    attempts; baseline_share = observed share of that gateway within the profile.
     """
     g = (success_df.groupby(["rpgt", "currency", "bin", "gateway"], as_index=False)
          .agg(volume=("attempts", "sum")))
@@ -77,11 +77,11 @@ def build_profile_problems(
     success_rates: pd.DataFrame,
     default_risk: float = 0.006,
 ) -> list[ProfileProblem]:
-    """Join forecast volume + baseline split with success/risk rates per cell.
+    """Join forecast volume + baseline split with success/risk rates per profile.
 
-    ANALOGY: assembling each cell's "briefing pack". For every RPGT×Currency×Bank cell we pull
+    ANALOGY: assembling each profile's "briefing pack". For every RPGT×Currency×Bank profile we pull
     the forecast's volume + current split together with each gateway's success rate, risk rate
-    and evidence, and hand the engine one CellProblem it can solve. Gateways with no per-cell
+    and evidence, and hand the engine one CellProblem it can solve. Gateways with no per-profile
     attempts fall back to the pooled prior (flagged so the UI can show which are educated guesses
     rather than measured rates).
     """
@@ -219,16 +219,16 @@ def build_profile_problems(
     success_rates: pd.DataFrame,
     default_risk: float = 0.006,
 ) -> list[ProfileProblem]:
-    """SUB-CELL variant of :func:`build_profile_problems` — one CellProblem per
-    (rpgt × currency × bin × pmp × Country) sub-cell.
+    """PROFILE variant of :func:`build_profile_problems` — one CellProblem per
+    (rpgt × currency × bin × pmp × Country) profile.
 
-    Design (locked): the DECISION grain is the sub-cell, but the SCORING (success-rate) grain
-    stays at CELL — so success rates are joined on the CELL key (rpgt,currency,bin,gateway) and
-    BROADCAST onto each sub-cell (no pmp/Country split of the thin conversion data). `forecast`
-    must already carry `pmp` and `ctry` columns with the volume apportioned to sub-cells (see
+    Design (locked): the DECISION grain is the profile, but the SCORING (success-rate) grain
+    stays at PROFILE — so success rates are joined on the PROFILE key (rpgt,currency,bin,gateway) and
+    BROADCAST onto each profile (no pmp/Country split of the thin conversion data). `forecast`
+    must already carry `pmp` and `ctry` columns with the volume apportioned to profiles (see
     `routing_optimiser.s3_problem.profile.expand_forecast_to_profiles`). `bin` is the raw BIN and
-    the sub-cell identity is carried on `CellProblem.pmp` / `.ctry`, so the band projector's
-    sub-cell scaffold (keyed bin/pmp/ctry) still aligns.
+    the profile identity is carried on `CellProblem.pmp` / `.ctry`, so the band projector's
+    profile scaffold (keyed bin/pmp/ctry) still aligns.
 
     `build_profile_problems` is left byte-identical; this is a separate, gated path.
     """

@@ -5,7 +5,7 @@ orchestrator; each tab's body lives in its OWN module now (see the FILE MAP belo
 WHAT IT DOES
 ------------
 Given a baseline traffic forecast plus recent attempts/success data, it proposes how to SPLIT
-each cell's volume across payment gateways to trade conversion off against risk (VAMP), then
+each profile's volume across payment gateways to trade conversion off against risk (VAMP), then
 turns the chosen split into deployable ConnectorPool JSON configs. It's a four-station assembly
 line — one Streamlit tab per station (labels exactly as shown in the UI):
 

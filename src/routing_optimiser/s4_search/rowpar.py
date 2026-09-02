@@ -34,7 +34,10 @@ _RP_ON = _os.environ.get("ROUTING_ROW_PARALLEL", "1") != "0"
 _RP_WORKERS = int(_os.environ.get("ROUTING_ROW_PARALLEL_WORKERS", "0") or 0)
 _RP_MIN_ROWS = int(_os.environ.get("ROUTING_ROW_PARALLEL_MIN_ROWS", "4") or 4)
 # below ~1M profiles the thread hand-off costs more than the work it hands off
-_RP_MIN_PROFILES = int(_os.environ.get("ROUTING_ROW_PARALLEL_MIN_CELLS", "1000000") or 1000000)
+# 19hm: renamed, old name still honoured (see band_projection's note on switch contracts).
+_RP_MIN_PROFILES = int(_os.environ.get(
+    "ROUTING_ROW_PARALLEL_MIN_PROFILES",
+    _os.environ.get("ROUTING_ROW_PARALLEL_MIN_CELLS", "1000000")) or 1000000)
 
 _POOL = [None]
 _STATE = {}

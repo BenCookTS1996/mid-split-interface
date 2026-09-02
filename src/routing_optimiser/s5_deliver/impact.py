@@ -12,7 +12,7 @@ import pandas as pd
 def profile_baseline_vs_proposed(split: pd.DataFrame,
                               avg_ticket: dict | float = 25.0) -> pd.DataFrame:
     """
-    Per cell: expected successful transactions and revenue under the baseline
+    Per profile: expected successful transactions and revenue under the baseline
     split vs the proposed split, plus the incremental (uplift) figures.
 
     avg_ticket: average amount per transaction, either a flat float or a dict
@@ -91,7 +91,7 @@ def gateway_volume_shift(split: pd.DataFrame) -> pd.DataFrame:
 
 # [FN-153]
 def _split_volume(df: pd.DataFrame) -> pd.Series:
-    """Per-row cell volume from a split frame, tolerating either column name."""
+    """Per-row profile volume from a split frame, tolerating either column name."""
     col = "volume" if "volume" in df.columns else ("profile_volume" if "profile_volume" in df.columns else None)
     if col is None:
         return pd.Series(0.0, index=df.index)
@@ -102,7 +102,7 @@ def _split_volume(df: pd.DataFrame) -> pd.Series:
 def gateway_move_vs_reference(ref_split: pd.DataFrame, sel_split: pd.DataFrame,
                               keys=("rpgt", "currency", "bin", "gateway")) -> pd.DataFrame:
     """Per-gateway volume BEFORE (`ref_split`) vs AFTER (`sel_split`), aligned on the
-    cell×gateway grain. Use with the revenue reference (dial 100) as `ref_split` and the
+    profile×gateway grain. Use with the revenue reference (dial 100) as `ref_split` and the
     selected compliant split as `sel_split` to see the traffic moved to meet constraints.
 
     Returns one row per gateway: ref_volume, prop_volume, delta_volume (+gained / −shed),

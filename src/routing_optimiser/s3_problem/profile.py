@@ -1,19 +1,19 @@
-"""Sub-cell grain helpers (Stage 1 of moving the optimiser DECISION grain from
-cell = bank x currency x RPGT  →  sub-cell = bank x currency x RPGT x pmp x Country.
+"""Profile grain helpers (Stage 1 of moving the optimiser DECISION grain from
+profile = bank x currency x RPGT  →  profile = bank x currency x RPGT x pmp x Country.
 
 Design (locked with the user):
-  * SCORING (success-rate) grain stays at CELL — success rates are NOT split by pmp/Country;
-    they are BROADCAST unchanged onto each sub-cell (removes the data-sparsity risk).
-  * The DECISION grain moves to sub-cell, so the GA can route sub-cells differently to satisfy
+  * SCORING (success-rate) grain stays at PROFILE — success rates are NOT split by pmp/Country;
+    they are BROADCAST unchanged onto each profile (removes the data-sparsity risk).
+  * The DECISION grain moves to profile, so the GA can route profiles differently to satisfy
     their different VAMP exposure + eligibility (wallet / USA-Non-USA).
-  * The forecast pipeline / pro-rata export are UNTOUCHED. Sub-cell VOLUME comes from the
-    pro-rata export's baseline VI-Txn split (the "volume glue"): each cell's forecast volume is
-    apportioned across its (pmp, Country) sub-cells by the sub-cell's share of the cell's
+  * The forecast pipeline / pro-rata export are UNTOUCHED. Profile VOLUME comes from the
+    pro-rata export's baseline VI-Txn split (the "volume glue"): each profile's forecast volume is
+    apportioned across its (pmp, Country) profiles by the profile's share of the profile's
     baseline VI-Txn at t=0.
 
 This module is PURE (no Streamlit / BigQuery) so it is unit-testable in isolation. The tab-2
 assembly wires these in behind a new grain option; the exact-band VAMP projector and the
-eligibility masks are already sub-cell-native and are applied by the existing paths.
+eligibility masks are already profile-native and are applied by the existing paths.
 
 `__build__` is logged at run start so stale bytecode is obvious.
 """
@@ -32,15 +32,15 @@ def profile_vi_fractions(prorata: pd.DataFrame,
                          *, currency="Currency", bin_="BIN", rpgt="RPGT",
                          pmp="paymentMethodProvider", country="Country",
                          vi="VI_Txn_Count", t="t") -> pd.DataFrame:
-    """Per (currency, bank, rpgt) CELL, the fraction of baseline VI-Txn volume sitting in each
-    (pmp, Country) SUB-CELL — the weights used to apportion the cell's forecast volume.
+    """Per (currency, bank, rpgt) PROFILE, the fraction of baseline VI-Txn volume sitting in each
+    (pmp, Country) PROFILE — the weights used to apportion the profile's forecast volume.
 
     Uses the t==0 (origination) rows of the pro-rata export, summed over vampMid, so `vi` is the
-    sub-cell's baseline transaction volume. Returns a tidy frame:
+    profile's baseline transaction volume. Returns a tidy frame:
         cur, bank, rpgt, pmp, ctry, vi, vi_frac
     with keys lower-cased/stripped (bank kept as a trimmed string) and `vi_frac` summing to 1.0
-    within each (cur, bank, rpgt) cell. A cell whose total VI is 0 collapses to a single
-    '_all_'/'_all_' sub-cell with vi_frac = 1.0 (so it behaves exactly like today's cell grain).
+    within each (cur, bank, rpgt) profile. A profile whose total VI is 0 collapses to a single
+    '_all_'/'_all_' profile with vi_frac = 1.0 (so it behaves exactly like today's profile grain).
     """
     df = prorata
     cur = df[currency].astype(str).str.strip().str.lower()
@@ -74,14 +74,14 @@ def profile_vi_fractions(prorata: pd.DataFrame,
 def expand_forecast_to_profiles(forecast: pd.DataFrame, fractions: pd.DataFrame,
                                 *, currency="currency", bin_="bin", rpgt="rpgt",
                                 volume="volume") -> pd.DataFrame:
-    """Replicate each cell's rows across its (pmp, Country) sub-cells, apportioning the cell's
+    """Replicate each profile's rows across its (pmp, Country) profiles, apportioning the profile's
     forecast VOLUME by `fractions` (from :func:`profile_vi_fractions`). Every other column
     (gateway, baseline_share, success/risk rates, …) is BROADCAST unchanged — scoring stays at
-    cell grain. Adds `pmp` and `ctry` columns and a `profile` key.
+    profile grain. Adds `pmp` and `ctry` columns and a `profile` key.
 
-    Volume conservation: the sum of `volume` over a cell's sub-cell rows equals the original cell
-    volume (fractions sum to 1 per cell). Rows whose cell has no entry in `fractions` are kept as a
-    single '_all_'/'_all_' sub-cell (unchanged), so nothing is dropped.
+    Volume conservation: the sum of `volume` over a profile's profile rows equals the original profile
+    volume (fractions sum to 1 per profile). Rows whose profile has no entry in `fractions` are kept as a
+    single '_all_'/'_all_' profile (unchanged), so nothing is dropped.
     """
     f = forecast.copy()
     f["_cur"] = f[currency].astype(str).str.strip().str.lower()

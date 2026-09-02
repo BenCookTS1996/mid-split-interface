@@ -1,13 +1,13 @@
 """
 The common contract every split engine speaks.
 
-Every engine takes a CellProblem (one RPGT x Currency x Bank cell) and returns
+Every engine takes a CellProblem (one RPGT x Currency x Bank profile) and returns
 a CellSolution (a vector of gateway shares that sums to 1). Because the input
 and output shapes are identical across engines, the UI can swap engines from a
 dropdown without anything downstream noticing.
 
 WHY it is shaped this way: think of the engines as interchangeable "recipes" that
-all take the same ingredients (a cell's gateways, their success/risk rates) and
+all take the same ingredients (a profile's gateways, their success/risk rates) and
 all produce the same kind of dish (a set of shares summing to 100%). The rest of
 the app is the kitchen — it doesn't care which recipe was used, only that the dish
 has the expected shape. This file defines that shared ingredient/dish contract and
@@ -26,9 +26,9 @@ __build__ = "2026-07-22-bounds-cache+qp-projection+feasible-guard"
 
 @dataclass
 class ProfileProblem:
-    """One routing decision: how to split a cell's volume across gateways.
+    """One routing decision: how to split a profile's volume across gateways.
 
-    A "cell" is a single RPGT x Currency x Bank bucket of traffic. Everything the
+    A "profile" is a single RPGT x Currency x Bank bucket of traffic. Everything the
     engines need to decide that bucket's split lives here; the arrays are all
     aligned to `gateways` (index i describes the same gateway everywhere).
     """
@@ -68,13 +68,13 @@ class ProfileProblem:
 
     # [FN-401]
     def n(self) -> int:
-        """Number of gateways in this cell (length of every aligned array)."""
+        """Number of gateways in this profile (length of every aligned array)."""
         return len(self.gateways)
 
 
 @dataclass
 class ProfileSolution:
-    """The optimiser's answer for one cell: the chosen split plus its headline stats."""
+    """The optimiser's answer for one profile: the chosen split plus its headline stats."""
 
     shares: np.ndarray                  # fraction per gateway, sums to 1
     expected_success_rate: float
@@ -121,10 +121,10 @@ class BaseEngine:
 
     # [FN-404]
     def solve_traced(self, p: "ProfileProblem") -> tuple["ProfileSolution", list[str]]:
-        """Solve one cell AND return the stage-by-stage trace for it.
+        """Solve one profile AND return the stage-by-stage trace for it.
 
         Used by the UI's gateway-trace debug panel so you can see exactly what
-        the engine did to a single cell (reference split, floor, QP result).
+        the engine did to a single profile (reference split, floor, QP result).
         """
         self._trace = []
         solution = self.solve(p)
@@ -138,9 +138,9 @@ class BaseEngine:
         """Per-gateway (lower, upper) share bounds from the hard constraints.
 
         WHY memoised: the bounds depend only on the hard constraints + gateway list,
-        NOT on the slider, so the same cell object flowing through every slider
+        NOT on the slider, so the same profile object flowing through every slider
         position of a sweep would otherwise recompute them 2-3x per solve. We cache
-        them on the cell keyed by the hard-constraint fingerprint and hand back fresh
+        them on the profile keyed by the hard-constraint fingerprint and hand back fresh
         COPIES, so callers (e.g. softmax's floor layer) can safely mutate their copy.
         """
         hard_key = (round(float(self.hard.max_gateway_share), 9),
@@ -265,7 +265,7 @@ class BaseEngine:
         """Fingerprint of everything the reference split depends on EXCEPT the risk dial.
 
         The reference split is the same at every slider position, so without caching a
-        sweep would rebuild it once per position. We cache it on the cell object keyed by
+        sweep would rebuild it once per position. We cache it on the profile object keyed by
         this fingerprint. Engine-SPECIFIC bits come from `_ref_param_key`, so each engine
         captures exactly what ITS reference depends on — no stale hits, no needless misses.
         """
@@ -279,7 +279,7 @@ class BaseEngine:
     def _ref_param_key(self, p: ProfileProblem):
         """Engine-specific reference parameters (softmax/base default).
 
-        The base softmax reference depends on the temperature (per-cell or global), the
+        The base softmax reference depends on the temperature (per-profile or global), the
         constraint-aware γ, and the auto-explore share caps. Subclasses OVERRIDE this to
         declare their own reference params (Thompson's Beta prior, Portfolio's prior_count)
         and drop any that don't affect their reference — so a temperature change no longer
@@ -446,7 +446,7 @@ class BaseEngine:
 
     # [FN-415]
     def _is_feasible(self, p: ProfileProblem, shares: np.ndarray) -> bool:
-        """True only if `shares` satisfies EVERY hard constraint for this cell."""
+        """True only if `shares` satisfies EVERY hard constraint for this profile."""
         # A FAILED reference solve (e.g. Portfolio's SLSQP falling back to a return-weighted
         # split) taints the whole profile — flag it infeasible so a solver failure can never
         # masquerade as a healthy split downstream.
@@ -469,9 +469,9 @@ class BaseEngine:
     # -- public API ---------------------------------------------------------
     # [FN-416]
     def solve(self, p: ProfileProblem) -> ProfileSolution:
-        """Public entry point: return the chosen split for one cell.
+        """Public entry point: return the chosen split for one profile.
 
-        Handles the two trivial cells here (0 gateways → nothing to do; 1 gateway →
+        Handles the two trivial profiles here (0 gateways → nothing to do; 1 gateway →
         it must take 100%) and delegates everything else to the engine's `_solve`.
         """
         if p.n() == 0:

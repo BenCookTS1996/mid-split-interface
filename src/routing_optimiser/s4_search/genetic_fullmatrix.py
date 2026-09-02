@@ -18,7 +18,7 @@ ships. (The Bank x Currency score grain it used was itself removed in 19gb.)
 This module is the deliberate opposite, mirroring a co-worker's DEAP design while
 keeping our guarantees:
 
-  * FULL-MATRIX genome        - one gene per (cell x eligible gateway) at BIN
+  * FULL-MATRIX genome        - one gene per (profile x eligible gateway) at BIN
                                 grain, so ANY per-bin allocation is reachable
                                 (no tilt/anchor restriction).
   * BIN-GRAIN scoring         - success/risk are the per-bin (EB-shrunk) rates,
@@ -98,10 +98,10 @@ _FEAS_EPS = 1e-9
 class FullMatrixProblem:
     """One optimisation problem in LONG format.
 
-    Every row is an ELIGIBLE (cell, gateway) pair. Rows MUST be grouped so each
-    cell's rows are contiguous (the constructor `build` enforces this). A "cell"
+    Every row is an ELIGIBLE (profile, gateway) pair. Rows MUST be grouped so each
+    profile's rows are contiguous (the constructor `build` enforces this). A "profile"
     is the routing-decision grain — here BIN x (currency x bank) — one simplex of
-    shares per cell.
+    shares per profile.
 
     Arrays are all length R (number of eligible rows) unless noted.
     """
@@ -144,7 +144,7 @@ class FullMatrixProblem:
               max_share, floor, mid_hard_cap, mid_soft_cap,
               mid_band_metric=None, mid_band_lo=None, mid_band_hi=None,
               global_vamp_cap=np.inf):
-        """Sort rows to contiguous cell groups and precompute segment indices.
+        """Sort rows to contiguous profile groups and precompute segment indices.
 
         Returns a ready-to-optimise FullMatrixProblem. `order` records the
         original row order so the caller can map the returned split back.
@@ -189,19 +189,19 @@ def build_fullmatrix_problem(profile_problems, hard, *, mid_caps=None,
     """Turn the app's existing ``CellProblem`` list into a FullMatrixProblem.
 
     This is the Stage-2 data feed. It uses the finest grain the app already
-    produces (one cell per CellProblem — RPGT x Currency x Bank, no pooling) and
-    the rates already attached to each cell:
+    produces (one profile per CellProblem — RPGT x Currency x Bank, no pooling) and
+    the rates already attached to each profile:
 
-      * ``cell.success_rates`` are ALREADY empirical-Bayes shrunk (built upstream
+      * ``profile.success_rates`` are ALREADY empirical-Bayes shrunk (built upstream
         by ``success_rates.gateway_success_rates`` inside ``build_profile_problems``),
         so feeding them straight in is the "EB-shrunk bin rates" requirement — no
         re-shrinking needed, no pooled->broadcast gap.
-      * ``cell.risk_rates`` are the per-gateway VAMP rates (from
+      * ``profile.risk_rates`` are the per-gateway VAMP rates (from
         ``bin_rpgt_impact_export.csv`` at period=0, loaded upstream).
 
-    The SAME gateway/MID name recurs across many cells; that shared name is one
-    vampMid, and its VAMP cap applies to its aggregate across every cell — which
-    is exactly the cross-cell coupling the full-matrix GA scores.
+    The SAME gateway/MID name recurs across many profiles; that shared name is one
+    vampMid, and its VAMP cap applies to its aggregate across every profile — which
+    is exactly the cross-profile coupling the full-matrix GA scores.
 
     Parameters
     ----------
@@ -217,7 +217,7 @@ def build_fullmatrix_problem(profile_problems, hard, *, mid_caps=None,
     -------
     (problem, meta) where meta = {"gw_names": [...], "mid_names": [...],
         "baseline_shares": (R,) in original row order} for mapping the GA output
-        back to (cell, gateway) and for elite seeding.
+        back to (profile, gateway) and for elite seeding.
     """
     # global MID (== gateway name) index
     mid_names: list[str] = []
@@ -285,13 +285,13 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
                      mid_names=None, seed_full=None, mid_bands=None):
     """Build a FullMatrixProblem from the genetic engine's ``ctx`` dict.
 
-    This is the REAL integration surface for tab_2_routing_engine. The cross-cell tilt GA
+    This is the REAL integration surface for tab_2_routing_engine. The cross-profile tilt GA
     already assembles ``ctx`` with everything at BIN grain in long format:
-      * contiguous cells       - ctx['cell_starts'] / ctx['cell_counts']
+      * contiguous profiles       - ctx['cell_starts'] / ctx['cell_counts']
       * per-row success (EB)   - ctx['sr']   (already empirical-Bayes shrunk)
       * per-row VAMP rate      - ctx['risk']
       * per-row vampMid index  - ctx['mid_id']
-      * per-row cell volume     - ctx['cell_vol']
+      * per-row profile volume     - ctx['cell_vol']
       * eligibility mask        - ctx['elig']   (config bans -> share 0)
       * hard VAMP cap           - ctx['vamp_cap']
       * max-share / floor        - ctx['max_share'] / ctx['floor']
@@ -473,8 +473,8 @@ def reconstruct_full_split(best_kept_shares, meta):
     """Map a kept-row split back to the full ``n_row`` vector (0 at banned rows).
 
     19eh: a config-BANNED row correctly lands on 0 - it can never carry share. A row dropped by
-    [prune-inert] must not: its cell was removed from the genome for having no forecast volume,
-    and leaving it at 0 would export that cell as all-zeros instead of a simplex summing to 1.
+    [prune-inert] must not: its profile was removed from the genome for having no forecast volume,
+    and leaving it at 0 would export that profile as all-zeros instead of a simplex summing to 1.
     Those rows are restored to their baseline share.
     """
     full = np.zeros(meta["n_row"], dtype=float)
@@ -732,12 +732,12 @@ def _cap_shares_ref(sh, profile_start, profile_len, max_share):
     A row whose cap is not live (>= 1, <= 0, non-finite) is uncapped: its target is +inf, so it
     is never over, and its HEADROOM is clipped to 1.0 rather than left infinite — an infinite
     pool would make every share of the excess 0/inf = 0.0 and the update inf * 0.0 = NaN, which
-    would silently poison the cell.
+    would silently poison the profile.
 
     A row the candidate put at zero is NOT a recipient. Giving it share would be inventing a
     door, and `_cap_rows` excludes it too (`W > 1e-12`).
 
-    A cell that cannot absorb its own excess (fewer live rows than 1/cap) is left ALONE, exactly
+    A profile that cannot absorb its own excess (fewer live rows than 1/cap) is left ALONE, exactly
     as `_cap_rows` leaves a row with fewer than 2 present gateways. It is counted, not hidden."""
     _s = np.asarray(sh, float)
     _cap = np.asarray(max_share, float)
@@ -760,9 +760,9 @@ def _cap_shares_ref(sh, profile_start, profile_len, max_share):
 
 
 def _segment_softmax_serial(logits, profile_start, profile_len):
-    """Per-cell softmax over contiguous row segments. THE REFERENCE.
+    """Per-profile softmax over contiguous row segments. THE REFERENCE.
 
-    logits: (P, R). Returns shares (P, R) where each cell's rows sum to 1.
+    logits: (P, R). Returns shares (P, R) where each profile's rows sum to 1.
     Numerically stable (subtracts per-segment max).
 
     Every operation here is elementwise or runs along axis=1, so row p of the output depends only on
@@ -824,8 +824,8 @@ def _segment_softmax(logits, profile_start, profile_len, max_share=None):
 def _success_rate(shares, vol, succ, total_vol):
     """Success rate per individual, over the routed volume. shares: (P, R) -> (P,).
 
-    VWSR = sum(vol*share*succ) / sum(cell volume). The denominator is fixed
-    (shares sum to 1 within a cell), so this is LINEAR in shares.
+    VWSR = sum(vol*share*succ) / sum(profile volume). The denominator is fixed
+    (shares sum to 1 within a profile), so this is LINEAR in shares.
     """
     return (shares * (vol * succ)).sum(axis=1) / total_vol
 
@@ -976,14 +976,14 @@ def _fused_eval_kernel(logits, profile_starts, profile_counts, vol, succ, risk,
     Returns (success_rate[P], viol[P]) — bit-for-bit the same quantities as
     ``_success_rate(_segment_softmax(...))`` and ``_violation(_segment_softmax(...))``.
 
-    19gu [decode-cap]: with `decode_cap` the per-cell shares are WATER-FILLED before they are
+    19gu [decode-cap]: with `decode_cap` the per-profile shares are WATER-FILLED before they are
     accumulated, so this kernel decodes the same capped shares `_segment_softmax(..., max_share)`
     does. That is the whole reason it lives here rather than in a wrapper: the numpy path and this
     one must decode the SAME object, and any divergence between them is a scored-vs-delivered bug
     (see the note on -inf logits below, which exists for exactly the same reason).
 
-    THE COST IS ONE EXTRA PASS OVER A CELL, and only when that cell has an over-cap row. The
-    shares are held in `buf` — one scratch array per candidate, sized to the widest cell — instead
+    THE COST IS ONE EXTRA PASS OVER A PROFILE, and only when that profile has an over-cap row. The
+    shares are held in `buf` — one scratch array per candidate, sized to the widest profile — instead
     of being consumed as they are produced, which is the only structural change to the loop.
 
     `share_over` is left in and still accumulated. With the cap folded in it should read 0.0 for
@@ -1132,8 +1132,8 @@ def _compress_distortion_kernel(shares, profile_starts, profile_counts, mid_id, 
     """Volume-weighted VQ distortion of a population vs a FIXED codebook.
 
     ‖shape − c_k‖² = Σ_m shape_m² − 2 Σ_m shape_m·c_k,m + ‖c_k‖²  (‖c_k‖²=cconst[k]),
-    so only a cell's OWN rows are touched; the absent-mid tail is the constant cconst[k].
-    Numba-safe: scalar loops + one thread-local n_mid buffer, cleared per cell. Each
+    so only a profile's OWN rows are touched; the absent-mid tail is the constant cconst[k].
+    Numba-safe: scalar loops + one thread-local n_mid buffer, cleared per profile. Each
     candidate i writes only out[i] (no cross-candidate reduction) so _prange is
     bit-identical to serial — the verify-gate confirms it. Returns distortion[P].
     """
@@ -1218,8 +1218,8 @@ def _lloyd_weighted(X, w, k, seed, iters=50):
 
 
 def _fit_codebook(shape_mat, cvol, pools, seed):
-    """Learn a codebook of centroid SHAPES from per-cell shapes (volume-weighted, so
-    high-volume cells pull the centroids — matching tab-3's compressor). K = min(pools,
+    """Learn a codebook of centroid SHAPES from per-profile shapes (volume-weighted, so
+    high-volume profiles pull the centroids — matching tab-3's compressor). K = min(pools,
     n_cells). Returns (assign[intp] (n_cells,), cent (K,n_mid), cconst (K,) = ‖cent‖²)."""
     X = np.ascontiguousarray(shape_mat, float)
     w = np.maximum(np.asarray(cvol, float), 1e-12)
@@ -1239,7 +1239,7 @@ def _fit_codebook(shape_mat, cvol, pools, seed):
 
 
 def _profile_shape_matrix(shares_row, profile_start, mid_id, n_mid):
-    """Per-cell per-vampMid shape matrix for ONE split: (n_cells, n_mid)."""
+    """Per-profile per-vampMid shape matrix for ONE split: (n_cells, n_mid)."""
     sh = np.asarray(shares_row, float)[None, :]
     n_profiles = profile_start.shape[0]
     cm = np.zeros((n_profiles, n_mid))
@@ -1381,7 +1381,7 @@ def _shares_to_logits(shares, eps=1e-6, hard_zero=False, profile_start=None,
     """Shares -> the logit genome. `hard_zero` (19cm) encodes an exact zero as -inf.
 
     WHY -inf AND NOT A SMALLER eps. The damage this repairs is the vshare cliff, and vshare
-    SELF-NORMALISES: where a breached MID is the only VAMP-positive gateway in a cell, its vshare is
+    SELF-NORMALISES: where a breached MID is the only VAMP-positive gateway in a profile, its vshare is
     s/s = 1 for any s > 0. The cliff is scale-invariant, so 1e-30 is exactly as bad as 1e-6 and only
     a TRUE zero changes anything.
 
@@ -1391,14 +1391,14 @@ def _shares_to_logits(shares, eps=1e-6, hard_zero=False, profile_start=None,
     gives exp(-inf - m) = 0 EXACTLY in both with no kernel change at all. The zero lives in the DATA,
     so the two paths cannot disagree about it.
 
-    IT SURVIVES THE OPERATORS FOR FREE: -inf + noise is -inf, and `_crossover` moves whole cell
+    IT SURVIVES THE OPERATORS FOR FREE: -inf + noise is -inf, and `_crossover` moves whole profile
     segments, so a seed's zeros are inherited by its descendants. `_init_pop`'s unanchored
     exploration children carry no -inf, so the search space is NOT permanently narrowed — the seed's
     structure merely becomes representable.
 
-    THE ONE WAY IT COULD PRODUCE nan: a cell with every row masked has max = -inf, and
-    -inf - (-inf) is nan. A valid seed sums to 1 in every cell so this cannot arise, but it is
-    checked rather than assumed, and such a cell is left un-masked with the count reported."""
+    THE ONE WAY IT COULD PRODUCE nan: a profile with every row masked has max = -inf, and
+    -inf - (-inf) is nan. A valid seed sums to 1 in every profile so this cannot arise, but it is
+    checked rather than assumed, and such a profile is left un-masked with the count reported."""
     _sh = np.asarray(shares, float)
     _out = np.log(np.clip(_sh, eps, None))
     if not hard_zero:
@@ -1422,15 +1422,15 @@ def _shares_to_logits(shares, eps=1e-6, hard_zero=False, profile_start=None,
 
 
 def _greedy_reference(p: "FullMatrixProblem"):
-    """Fallback seed if the caller gives no reference: per-cell softmax over
+    """Fallback seed if the caller gives no reference: per-profile softmax over
     success (a conversion-greedy split). Returns shares (R,)."""
     logits = p.succ * 6.0   # mild temperature; only a SEED, GA refines from here
     return _segment_softmax(logits[None, :], p.profile_start, p.profile_len, p.max_share)[0]
 
 
 def _crossover(a, b, profile_start, profile_len, rng):
-    """Uniform per-CELL crossover: each cell's whole logit segment comes from one
-    parent (keeps within-cell simplex structure intact)."""
+    """Uniform per-PROFILE crossover: each profile's whole logit segment comes from one
+    parent (keeps within-profile simplex structure intact)."""
     n_profiles = len(profile_start)
     pick = rng.random(n_profiles) < 0.5
     row_pick = np.repeat(pick, profile_len)
@@ -1438,12 +1438,12 @@ def _crossover(a, b, profile_start, profile_len, rng):
 
 
 def _mutate(logits, rate, strength, profile_start, profile_len, rng, profile_w=None):
-    """Gaussian perturbation of a fraction of CELLS' logit segments.
+    """Gaussian perturbation of a fraction of PROFILES' logit segments.
 
-    `cell_w`: optional (n_cells,) multiplier on each cell's SELECTION PROBABILITY (not on the
-    noise). Added 2026-08-19ab for breach-targeted mutation — cells feeding a still-breached band
+    `cell_w`: optional (n_cells,) multiplier on each profile's SELECTION PROBABILITY (not on the
+    noise). Added 2026-08-19ab for breach-targeted mutation — profiles feeding a still-breached band
     get boosted so the mutation budget lands where the shortfall is instead of being spread
-    uniformly over every cell, most of which feed already-compliant MIDs.
+    uniformly over every profile, most of which feed already-compliant MIDs.
 
     The RNG DRAW COUNT is deliberately unchanged: still exactly one `rng.random(n_cells)` and one
     `standard_normal(logits.shape)`, in that order. Only the threshold each draw is compared
@@ -1484,7 +1484,7 @@ def _mutate_fast(logits, rate, strength, profile_start, profile_len, rng, profil
     """`_mutate`'s twin, drawing Gaussians only for the rows it perturbs.
 
     NOT bit-identical to `_mutate` and not intended to be — see the note above. Same distribution,
-    same per-cell selection rule, a fraction of the draws."""
+    same per-profile selection rule, a fraction of the draws."""
     n_profiles = len(profile_start)
     _thr = rate if profile_w is None else np.minimum(np.asarray(profile_w, float) * rate, 1.0)
     hit = rng.random(n_profiles) < _thr
@@ -1612,7 +1612,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _dist_fn, _dist_backend = make_distortion(p, use_numba=numba)
 
         def _refresh_codebook(logits_row):
-            """(Re)learn the codebook from ONE split's DELIVERED per-cell shapes.
+            """(Re)learn the codebook from ONE split's DELIVERED per-profile shapes.
 
             When ``codebook_fn`` is supplied (the caller's EXACT tab-3 ward/knapsack
             compressor), it maps the delivered GA-grain shares to (assign, cent, cconst)
@@ -1882,7 +1882,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 "unanchored exploration children do not \u2014 the search space is not narrowed.")
             if int(_hz_info.get("rows_unmasked_to_avoid_nan", 0)):
                 log(f"[fullmatrix-ga]    \u26a0 {int(_hz_info['rows_unmasked_to_avoid_nan']):,} "
-                    f"row(s) in {int(_hz_info.get('cells_all_zero', 0)):,} ALL-ZERO profile(s) were "
+                    f"row(s) in {int(_hz_info.get('profiles_all_zero', 0)):,} ALL-ZERO profile(s) were "
                     "left un-masked: masking every row of a profile makes the stable softmax nan. A "
                     "profile of a valid seed sums to 1, so this should not happen \u2014 report it.")
         else:
@@ -2690,7 +2690,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
 
 
 def _profile_volume_total(p: "FullMatrixProblem"):
-    """Total volume across cells (each cell's volume counted once)."""
+    """Total volume across profiles (each profile's volume counted once)."""
     # vol is repeated per row; take the first row of each profile segment.
     return float(p.vol[p.profile_start].sum())
 

@@ -1,9 +1,9 @@
 """
-Run a chosen engine across every cell and assemble the proposed split.
+Run a chosen engine across every profile and assemble the proposed split.
 
 This is the layer the UI calls. It:
   * loops over all CellProblems, solving each with the selected engine,
-  * returns a tidy "long" split table (one row per cell x gateway),
+  * returns a tidy "long" split table (one row per profile x gateway),
   * can sweep the conversion<->risk slider to produce split *variations*
     (the family of solutions along the Pareto frontier).
 """
@@ -15,7 +15,7 @@ import pandas as pd
 from routing_optimiser.s3_problem.constraints import OptimiserSettings
 from routing_optimiser.engines import ProfileProblem, get_engine
 
-__build__ = "2026-07-29-vamp-lp-singlegw-fixed-cell-revival+2026-09-02-19gz-max-revenue-split-reference+2026-09-02-19he-floor-carried-into-projector+2026-09-02-19hh-emask-pair-grain+2026-09-02-19hi-log-simplification+2026-09-02-19hk-cell-profile-prose+2026-09-02-19hl-cell-profile-identifiers"
+__build__ = "2026-07-29-vamp-lp-singlegw-fixed-cell-revival+2026-09-02-19gz-max-revenue-split-reference+2026-09-02-19he-floor-carried-into-projector+2026-09-02-19hh-emask-pair-grain+2026-09-02-19hi-log-simplification+2026-09-02-19hk-cell-profile-prose+2026-09-02-19hl-cell-profile-identifiers+2026-09-02-19hm-profile-vocab-complete"
 
 
 # [FN-191]
@@ -23,9 +23,9 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
                  agg_cap: float = None, _reduce: bool = True):
     """Joint solve for the per-vampMid VAMP cap: the split CLOSEST to the reference
     (minimum total share movement) whose every vampMid AGGREGATE VAMP rate is <= cap,
-    subject to per-cell shares summing to 1 and the exploration-floor / max-share
+    subject to per-profile shares summing to 1 and the exploration-floor / max-share
     bounds. Solved as one sparse LP (min L1 movement, linear rate constraints), so it
-    retains more revenue than the greedy's lowest-rate dumping and resolves all cells
+    retains more revenue than the greedy's lowest-rate dumping and resolves all profiles
     together. Returns (adjusted_df, retired, still_over) ONLY if it finds a fully
     cap-compliant solution; otherwise None so the caller falls back to the greedy shave.
     Guarded: needs SciPy/HiGHS and re-checks compliance after solving.
@@ -35,15 +35,15 @@ def _vamp_cap_lp(df: pd.DataFrame, cap: float, floor: float = 0.0, max_share: fl
     tightening agg_cap dial-by-dial gives the min-movement (max-revenue) split at each
     risk budget, i.e. a Pareto-optimal frontier point rather than a linear share blend.
 
-    BINDING-CELL REDUCTION (`_reduce`, speed #1, EXACT). With no aggregate budget the LP
-    SEPARATES by cell: the only cross-cell constraints are the per-MID rate rows, so a cell
-    is coupled to the solve ONLY if it contains a row of an over-cap MID. Every other cell's
+    BINDING-PROFILE REDUCTION (`_reduce`, speed #1, EXACT). With no aggregate budget the LP
+    SEPARATES by profile: the only cross-profile constraints are the per-MID rate rows, so a profile
+    is coupled to the solve ONLY if it contains a row of an over-cap MID. Every other profile's
     minimum-movement optimum is exactly its own reference (already sums to 1 and within
-    [floor, max_share]), so we fix those cells to reference and build the LP over ONLY the
-    binding cells — a much smaller matrix, identical solution. A cell whose reference is NOT
+    [floor, max_share]), so we fix those profiles to reference and build the LP over ONLY the
+    binding profiles — a much smaller matrix, identical solution. A profile whose reference is NOT
     bound-feasible is kept in the LP too, so nothing that could move is dropped. `_reduce=False`
-    forces the full all-cells LP (used by the self-test to prove the reduction is identical).
-    The reduction is skipped when `agg_cap` is set (that constraint couples every cell)."""
+    forces the full all-profiles LP (used by the self-test to prove the reduction is identical).
+    The reduction is skipped when `agg_cap` is set (that constraint couples every profile)."""
     try:
         from scipy.optimize import linprog
         import scipy.sparse as sp
@@ -187,7 +187,7 @@ def _group_indices(labels: np.ndarray) -> dict:
     pass (pandas groupby) instead of a full-array scan per distinct label.
 
     The old dict-comprehension was O(n_rows · n_labels) — for ~692k rows and
-    ~19k cells that's ~1.3e10 object-string comparisons *per call*, the dominant
+    ~19k profiles that's ~1.3e10 object-string comparisons *per call*, the dominant
     cost of the VAMP-cap phase. This is O(n_rows) and returns the SAME arrays
     (sorted ascending), so every downstream move — and the result — is identical.
     """
@@ -198,12 +198,12 @@ def _group_indices(labels: np.ndarray) -> dict:
 
 # [FN-194]
 def _profile_recip_order(profile_rows: dict, rate: np.ndarray) -> dict:
-    """Per-cell row positions sorted by rate ASCENDING, ties broken by ascending row index.
+    """Per-profile row positions sorted by rate ASCENDING, ties broken by ascending row index.
 
     This is BIT-IDENTICAL to the inline ``sorted(gen, key=lambda j: rate[j])`` used per move,
     where ``gen`` yields ``cell_rows[c]`` (already ascending row index) and Python's sort is
     stable (equal rates keep index order). Precomputing it ONCE lets the per-move recipient scan
-    become a filter over this fixed order instead of re-sorting the cell every iteration — the
+    become a filter over this fixed order instead of re-sorting the profile every iteration — the
     move sequence, and therefore the result, is unchanged. Rates are constant, so the order is too.
     """
     return {c: rows[np.argsort(rate[rows], kind="stable")] for c, rows in profile_rows.items()}
@@ -213,27 +213,27 @@ def _profile_recip_order(profile_rows: dict, rate: np.ndarray) -> dict:
 def enforce_mid_vamp_caps(df: pd.DataFrame, cap: float, floor: float = 0.0,
                           max_share: float = 1.0, max_iter: int = 4000,
                           step: float = 0.05):
-    """Cross-cell adjustment so each vampMid's AGGREGATE VAMP rate <= cap.
+    """Cross-profile adjustment so each vampMid's AGGREGATE VAMP rate <= cap.
 
-    ANALOGY: a MID's monitored rate is the volume-weighted average across every cell it runs
+    ANALOGY: a MID's monitored rate is the volume-weighted average across every profile it runs
     in — like a student's overall grade averaged across subjects, weighted by credit hours. To
     pull that average under the limit with the least disruption, we move volume off the MID's
-    WORST cells onto the cheapest alternative in each; a MID that's over the limit in EVERY
-    cell can't be fixed by re-weighting, so it's retired (dropped) and its volume handed off.
+    WORST profiles onto the cheapest alternative in each; a MID that's over the limit in EVERY
+    profile can't be fixed by re-weighting, so it's retired (dropped) and its volume handed off.
 
-    A vampMid spans many routing cells; its Visa-monitored rate is the volume-
-    weighted mean of its per-cell rates. Starting from the reference split, we
-    iteratively shave share off the MID's HIGHEST-rate cells (handing it to the
-    lowest-rate other gateway in that cell) until the MID's aggregate rate is
+    A vampMid spans many routing profiles; its Visa-monitored rate is the volume-
+    weighted mean of its per-profile rates. Starting from the reference split, we
+    iteratively shave share off the MID's HIGHEST-rate profiles (handing it to the
+    lowest-rate other gateway in that profile) until the MID's aggregate rate is
     under the cap - which minimises movement from the reference. A MID that can't
     be brought under the cap by re-weighting (its rate exceeds the cap in every
-    cell) is RETIRED (share -> 0, exempt from the floor) and its volume handed to
+    profile) is RETIRED (share -> 0, exempt from the floor) and its volume handed to
     compliant gateways.
 
-    df columns: cell, gateway, vampMid, cell_vol, rate, share (reference start).
+    df columns: profile, gateway, vampMid, cell_vol, rate, share (reference start).
     Returns (adjusted_df, retired_set, still_over_set).
 
-    PRIMARY path: a joint LP (`_vamp_cap_lp`) that solves all cells together for the
+    PRIMARY path: a joint LP (`_vamp_cap_lp`) that solves all profiles together for the
     minimum-movement cap-compliant split — retains more revenue than the greedy shave
     and is order-independent. If the LP is unavailable, infeasible (e.g. the floor
     conflicts with the cap so some MID must retire) or errors, we fall back to the
@@ -382,18 +382,18 @@ def enforce_mid_volume_caps(df: pd.DataFrame, a_max_by_mid: dict,
     """Scale each vampMid's allocated volume down to a_max x its BASELINE volume.
 
     ANALOGY: a spend cap per MID. If a MID is routed more volume than a_max × what it
-    historically carried, we shrink every one of its cells by the same factor (like trimming
+    historically carried, we shrink every one of its profiles by the same factor (like trimming
     an over-budget line item proportionally) and hand the freed volume to the cheapest other
-    gateway in each cell.
+    gateway in each profile.
 
     `a_max_by_mid[mid]` is the maximum allowed (proposed / baseline) volume ratio
     for that vampMid, derived upstream from its per-MID monthly VAMP-count / Txn
     caps (and 0 if a rate cap it can't meet by re-weighting forces retirement).
     A MID whose current proposed volume exceeds a_max x baseline is scaled back
-    uniformly across its cells; the freed share is handed to the other gateways in
-    each cell (lowest-rate first). MIDs not in the dict are untouched.
+    uniformly across its profiles; the freed share is handed to the other gateways in
+    each profile (lowest-rate first). MIDs not in the dict are untouched.
 
-    df columns: cell, gateway, vampMid, cell_vol, baseline_share, share, rate.
+    df columns: profile, gateway, vampMid, cell_vol, baseline_share, share, rate.
     Returns (adjusted_df, constrained_set).
     """
     d = df.reset_index(drop=True).copy()
@@ -448,10 +448,10 @@ def enforce_mid_volume_caps(df: pd.DataFrame, a_max_by_mid: dict,
 # [FN-199]
 def optimise_split(problems: list[ProfileProblem],
                    settings: OptimiserSettings) -> pd.DataFrame:
-    """Solve every cell with the selected engine and assemble the long split table.
+    """Solve every profile with the selected engine and assemble the long split table.
 
     Runs the chosen engine over every CellProblem at the slider's current weight and stacks
-    the results into one tidy "long" DataFrame (one row per cell × gateway that receives
+    the results into one tidy "long" DataFrame (one row per profile × gateway that receives
     volume). Gateways with a negligible share (<1e-9) are dropped.
     """
     engine = get_engine(settings.engine, settings.risk_conversion_weight,
@@ -509,7 +509,7 @@ def portfolio_summary(split: pd.DataFrame) -> dict:
     """Volume-weighted headline numbers for a whole split (the book-level scorecard).
 
     Blends every gateway-row's success and risk rate by its volume — i.e. what the WHOLE
-    proposed book is expected to convert at and risk at — plus a count of cells that failed
+    proposed book is expected to convert at and risk at — plus a count of profiles that failed
     a hard constraint. Like averaging a fleet's fuel economy weighted by miles driven.
     """
     if split.empty:

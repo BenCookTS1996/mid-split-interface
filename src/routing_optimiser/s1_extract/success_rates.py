@@ -1,11 +1,11 @@
 """
 Estimate the expected success (authorisation) rate for every
-RPGT x Currency x Bank x Gateway cell from the attempts/success data.
+RPGT x Currency x Bank x Gateway profile from the attempts/success data.
 
-Many cells have tiny sample sizes, so a raw success/attempts ratio is noisy
-(one gateway looks "100%" off two transactions). We shrink each cell's rate
+Many profiles have tiny sample sizes, so a raw success/attempts ratio is noisy
+(one gateway looks "100%" off two transactions). We shrink each profile's rate
 towards a sensible prior (the pooled rate for its RPGT x Currency) using
-empirical-Bayes shrinkage, so small cells lean on the group average and only
+empirical-Bayes shrinkage, so small profiles lean on the group average and only
 break away when they have real evidence.
 """
 from __future__ import annotations
@@ -307,13 +307,13 @@ def rpgt_gateway_sensitivity(sr_df, avg_ticket: float = 1.0, min_attempts: float
     Consumes the output of ``gateway_success_rates`` (one row per rpgt×currency×bank×gateway
     with the EMPIRICAL-BAYES-shrunk ``success_rate`` — thin gateways already pulled toward
     the pooled rate, so they can't masquerade as best/worst). For each (rpgt, currency, bank)
-    cell we take the best−worst gap of the shrunk gateway rates: that is the success-rate swing
-    reachable by rerouting within that cell. Volume-weighting those gaps up to the RPGT gives
+    profile we take the best−worst gap of the shrunk gateway rates: that is the success-rate swing
+    reachable by rerouting within that profile. Volume-weighting those gaps up to the RPGT gives
     its sensitivity (percentage points), and Σ(gap × volume × avg_ticket) is the revenue at
     stake between best- and worst-case routing.
 
     Returns one row per rpgt: ``volume`` (30-day attempts), ``sensitivity_pp``,
-    ``dollars_at_stake``, ``cells`` (number of routable cells), sorted by dollars.
+    ``dollars_at_stake``, ``profiles`` (number of routable profiles), sorted by dollars.
     """
     need = {"rpgt", "currency", "bin", "gateway", "attempts", "success_rate"}
     d = sr_df.copy()

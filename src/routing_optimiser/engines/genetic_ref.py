@@ -1,9 +1,9 @@
 """Genetic engine's OWN conversion reference — a revenue-greedy waterfall.
 
-The genetic engine is a cross-cell per-vampMid tilt GA that starts from a per-cell
+The genetic engine is a cross-profile per-vampMid tilt GA that starts from a per-profile
 conversion reference and tilts it toward VAMP compliance. That reference must be
 revenue-optimal, but it must be GENETIC'S OWN — not borrowed from the softmax
-engine. This builds it independently: greedily fill each cell's volume onto its
+engine. This builds it independently: greedily fill each profile's volume onto its
 highest-success (revenue-per-attempt) gateways up to the max-gateway-share cap,
 then floor the rest so nothing goes dark. It's the max-revenue split given the
 share cap, with NO softmax temperature/exponential — deterministic and distinct.

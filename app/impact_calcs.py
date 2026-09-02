@@ -180,7 +180,7 @@ def compute_vamp_post_by_mid(tp_path, prop_items, month_0, go_live, excluded_mid
 
     NON-INVASIVE: re-scales vamp_t_period_export.csv's baseline (VAMP_Pre /
     VI_Txn_Pre) by each MID's proposed-vs-baseline transaction volume, phased in
-    from the Split Go Live date. Transactions are conserved per cell; VAMPs move
+    from the Split Go Live date. Transactions are conserved per profile; VAMPs move
     with the reallocated volume. The VAMP pipeline / actuarial engine is NOT run.
 
     prop_items: tuple of (Currency, BIN, vampMid, proposed_share) for the split.
@@ -453,9 +453,9 @@ def _vamp_post_core(pp, prop_items, excluded_mids=frozenset(), kill_eff=(), mont
 # [FN-253]
 def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
     """EXCESSIVE diagnostics for the tab-3 vs tab-5 back-fill gap. Writes two files next to the
-    pro-rata export: _proj_diag_rows.csv (every t0 sub-cell with all intermediates) and
-    _proj_diag_summary.txt (prop_sum-per-cell stats, coarse-fallback/back-fill counts, a per-
-    vampMid pre/post table, and a per-cell breakdown of every zero-baseline recipient). Never
+    pro-rata export: _proj_diag_rows.csv (every t0 profile with all intermediates) and
+    _proj_diag_summary.txt (prop_sum-per-profile stats, coarse-fallback/back-fill counts, a per-
+    vampMid pre/post table, and a per-profile breakdown of every zero-baseline recipient). Never
     raises — diagnostics must not break the projection. OFF by default (heavy: writes a ~170MB
     rows CSV + reads the routed export/rules/mapping); set env ROUTING_PROJ_DIAG=1 to enable."""
     import os as _os
@@ -573,7 +573,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                     for _, r in _cw.sort_values(["period", "post_txn"], ascending=[True, False]).iterrows():
                         _sl.append(f"    P{int(r['period'])} pmp={str(r.get('_pmp',''))[:9]:9s} "
                                    f"ctry={str(r.get('_ctry',''))[:8]:8s} base={r['VI_Txn_Count']:>8,.1f} "
-                                   f"cell={r['cell_tot']:>9,.1f} pshare={float(r.get('prop_share', 0) or 0):.4f} "
+                                   f"profile={r['profile_tot']:>9,.1f} pshare={float(r.get('prop_share', 0) or 0):.4f} "
                                    f"mov={float(r.get('_moved_tot', 0) or 0):.4f} post={r['post_txn']:>8,.1f} "
                                    f"bf={int(r.get('_bf_inj', 0) or 0)} coarse={int(r.get('_prop_from_coarse', 0) or 0)}")
             with open(_os.path.join(_dir, "_proj_diag_sample.txt"), "w") as _sf:
@@ -975,7 +975,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
         for _, r in g.iterrows():
             L.append(f"  {str(r['vampMid'])[:30]:30s} base={r['base_vi']:>12,.0f} post={r['post_vi']:>12,.0f}"
                      f"  d={r['post_vi'] - r['base_vi']:>+12,.0f}  Σprop={r['sum_prop_raw']:>8.3f}"
-                     f"  avgShare={r['avg_prop_share']:.3f}  cells={int(r['n_cells'])}"
+                     f"  avgShare={r['avg_prop_share']:.3f}  profiles={int(r['n_profiles'])}"
                      + (f"  bf={int(r['backfill_rows'])}" if "backfill_rows" in g.columns else "")
                      + (f"  coarse={int(r['coarse_rows'])}" if "coarse_rows" in g.columns else ""))
         L.append("")
@@ -1006,7 +1006,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                 _fill = (r["moved_in"] / r["reach"]) if r["reach"] > 1e-9 else 0.0
                 L.append(f"  {str(r['vampMid'])[:30]:30s} held={r['held']:>11,.0f} "
                          f"moved_out={r['moved_out']:>11,.0f} moved_in={r['moved_in']:>11,.0f} "
-                         f"reach={r['reach']:>12,.0f} fill={_fill:.2f} recip_cells={int(r['recip_cells']):>6}")
+                         f"reach={r['reach']:>12,.0f} fill={_fill:.2f} recip_profiles={int(r['recip_profiles']):>6}")
             L.append(f"  [conservation] Σmoved_in={_rd['moved_in'].sum():,.0f}  "
                      f"Σmoved_out={_rd['moved_out'].sum():,.0f}  (should match)")
             L.append("")
@@ -1041,7 +1041,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
                     distinct_bins=("BIN", "nunique")).sort_values("total_prop", ascending=False)
                 L.append("=== ENFORCED-PROP COVERAGE per vampMid (from the split feeding this projection) ===")
                 for _mid, r in _pc.iterrows():
-                    L.append(f"  {str(_mid)[:30]:30s} cells={int(r['cells']):>7}  "
+                    L.append(f"  {str(_mid)[:30]:30s} profiles={int(r['profiles']):>7}  "
                              f"distinct_BINs={int(r['distinct_bins']):>6}  Σprop%={r['total_prop']:>12,.0f}")
                 L.append("")
         except Exception as _e4:  # noqa: BLE001
@@ -1055,7 +1055,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
         for _, r in _rec.iterrows():
             L.append(f"  {str(r['vampMid'])[:22]:22s} {str(r.get('Currency',''))}/{str(r.get('BIN',''))}/"
                      f"{str(r['RPGT'])[:12]:12s} pmp={str(r.get('_pmp',''))[:8]:8s} ctry={str(r.get('_ctry',''))[:8]:8s}"
-                     f" P{int(r['period'])} cell={r['cell_tot']:>10,.0f} praw={r['prop_raw']:.4f}"
+                     f" P{int(r['period'])} profile={r['profile_tot']:>10,.0f} praw={r['prop_raw']:.4f}"
                      f" psum={r['prop_sum']:.4f} pshare={r['prop_share']:.4f} mov={r['_moved_tot']:.4f}"
                      f" post={r['post_txn']:>10,.0f} c={int(r.get('_prop_from_coarse', 0))} bf={int(r.get('_bf_inj', 0))}")
         with open(_os.path.join(_dir, "_proj_diag_summary.txt"), "w") as _f:
@@ -1075,13 +1075,13 @@ def _inject_backfill_rows(pp, prop, prop_name_map=None):
     """#3 ZERO-BASELINE ROW INJECTION. Nothing to do with the deleted <2-gateway share
     back-fill — this adds ROWS, never share.
 
-    The optimiser can route volume to a gateway that has NO baseline row in a cell (it has never
-    served that sub-cell, so the pro-rata export has nothing there). The LEFT merge drops it, and
+    The optimiser can route volume to a gateway that has NO baseline row in a profile (it has never
+    served that profile, so the pro-rata export has nothing there). The LEFT merge drops it, and
     its routed volume then wrongly redistributes to the MIDs that DO have rows. Re-inject those
     recipients into `pp` as zero-baseline t=0 rows (vampCount=0, VI=0) so they RECEIVE the routed
     volume; VAMP stays 0 for them (no historical VAMP to redistribute).
 
-    Scoped to the enforced (7-tuple) path, which is the only one carrying per-sub-cell shares.
+    Scoped to the enforced (7-tuple) path, which is the only one carrying per-profile shares.
     """
     # Presence is judged at the pmp/Country PROFILE grain (Currency, BIN, RPGT, pmp, Country),
     # NOT the coarse profile — because the enforced table routes per profile, and a MID present in
@@ -1217,12 +1217,12 @@ def _mid_row_fid(fid, brand_val, is_active, brand_key_wanted):
 def build_capability(mid_list_path=None, restrictions=None, brand=None):
     """Return `capable(cur, bin, rpgt, pmp, ctry) -> frozenset[vampMid]`, memoised.
 
-    A vampMid is CAPABLE in a cell when it has at least one gatewayFid that is
+    A vampMid is CAPABLE in a profile when it has at least one gatewayFid that is
       * IsActive in the Master MID List, of this brand, and not PayPal,
-      * of the cell's CURRENCY,
+      * of the profile's CURRENCY,
       * not hit by a routing_restrictions `rules` entry for that rpgt / currency / bin,
-      * wallet-capable (processWallet) when the cell's pmp is googlepay / applepay,
-      * not in `usa_only_gateways` unless the cell is USA.
+      * wallet-capable (processWallet) when the profile's pmp is googlepay / applepay,
+      * not in `usa_only_gateways` unless the profile is USA.
     That reproduces the engine's own capable-set line exactly (34 gateways -> 15 vampMids on the
     2026-08-28 run), which is the check that this is the SAME definition the router uses and not a
     second one that will drift away from it.
@@ -1399,24 +1399,24 @@ def inject_capable_rows(pp, capable, profile_cols, mid_col="vampMid",
 
 
 def _max_share_waterfill(shares, t0, grp, cap, live):
-    """Port of the search's per-cell max-share water-fill (`band_projection.py:317-347`).
+    """Port of the search's per-profile max-share water-fill (`band_projection.py:317-347`).
 
     Line-for-line the same algorithm, vectorised: everything over `cap` is cut back to it, and
-    the excess is handed to the under-cap rows of the SAME cell in proportion to the room each
+    the excess is handed to the under-cap rows of the SAME profile in proportion to the room each
     has left. Repeated up to 50 sweeps, because handing excess out can push a recipient over the
     cap in turn.
 
     THE THREE THINGS THAT MUST MATCH THE KERNEL, and each of which silently changes the answer:
 
       1. `_nzc` — the ">= 2 routed gateways" test — is computed ONCE, before the first sweep, and
-         is NOT refreshed as rows are capped. A cell with a single routed gateway is left alone
+         is NOT refreshed as rows are capped. A profile with a single routed gateway is left alone
          entirely (capping it would have nowhere to put the excess, so the kernel skips it).
       2. The excess is measured BEFORE the rows are cut to the cap, and the room is measured
          AFTER. Swapping either order changes the redistribution.
-      3. Accumulation is in row order within a cell, which is what `np.bincount` does, so the
+      3. Accumulation is in row order within a profile, which is what `np.bincount` does, so the
          floating-point summation order is the kernel's too.
 
-    `live` is the kernel's `_psum[c] > 0` — rows in an unrouted cell take no part.
+    `live` is the kernel's `_psum[c] > 0` — rows in an unrouted profile take no part.
     """
     _sh = np.asarray(shares, dtype=float).copy()
     if _sh.size == 0:
@@ -1454,7 +1454,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
                                   usa_only_pairs=frozenset()):
     """Per-ROW baseline vs proposed VAMP / VI-Txn from the pro-rata export.
 
-    Routes at the (vampMid, RPGT, BIN, Currency, pmp, Country) sub-cell grain when the
+    Routes at the (vampMid, RPGT, BIN, Currency, pmp, Country) profile grain when the
     export carries paymentMethodProvider / Country, applying the pipeline's static
     enforcement (wallet-incapable gateways can't serve wallet pmp; USA-only gateways can't
     serve Non-USA) so the projection tracks the pipeline more closely. Result is collapsed
@@ -2588,12 +2588,12 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     Enforcement applied to every row (so the template can't route in ways the engine
     forbids):
       * Wallet pmp (GOOGLEPAY/APPLEPAY): zero any wallet-incapable gateway, renorm.
-      * Country: each cell is split into USA and/or Non-USA rows from the attempts
+      * Country: each profile is split into USA and/or Non-USA rows from the attempts
         `country` field (country_pres). USA-only gateways (usa_only) appear in USA
         rows ONLY — zeroed and renormalised in Non-USA rows.
       * Max share: no gateway exceeds `max_share`; the excess is redistributed to the
         OTHER gateways ALREADY in the split (never activates a new gateway). Only
-        applied when ≥2 gateways are present — a genuinely single-gateway cell can't
+        applied when ≥2 gateways are present — a genuinely single-gateway profile can't
         be capped without a fallback, so it's left at 100% (and flagged by Check).
     """
     fid2vamp = fid2vamp or {}
@@ -2957,9 +2957,11 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
     # blend_cell_shares filters `> 0`, gets an empty `spec`, and takes the catch-all branch. With
     # no catch-all configured it returns dict(spec) == {} and the profile emits nothing, i.e. exactly
     # today's behaviour; and with no blend at all a prop_raw of 0.0 adds nothing to any per-profile
-    # sum and moves no volume. Kill-switch: ROUTING_CA_ZEROCELL=0.
+    # sum and moves no volume. Kill-switch: ROUTING_CA_ZEROPROFILE=0.
     _ph_n = 0
-    if os.environ.get("ROUTING_CA_ZEROCELL", "1") != "0":
+    # 19hm: renamed, old name still honoured (app_common.env_switch carries the alias table).
+    if os.environ.get("ROUTING_CA_ZEROPROFILE",
+                      os.environ.get("ROUTING_CA_ZEROCELL", "1")) != "0":
         try:
             _allc = allm[_subk].drop_duplicates()
             _posc = _pos[_subk].drop_duplicates()
@@ -2991,7 +2993,7 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
             if _ph_n > 2000:
                 _msg += ("   ⚠ FAR more than the ~176 measured on the scoped Aug baseline — this "
                          "looks like UNSCOPED (baseline-frozen) RPGTs leaking into the split. "
-                         "Those must NOT receive catch-all traffic; set ROUTING_CA_ZEROCELL=0 and "
+                         "Those must NOT receive catch-all traffic; set ROUTING_CA_ZEROPROFILE=0 and "
                          "check the RPGT scope before trusting any delivered number from this run.")
             print("   " + _msg)
         except Exception:  # noqa: BLE001
@@ -3031,8 +3033,8 @@ def enforced_split_frame(split, brand, go_live, wallet_incapable=frozenset(), fi
 
     ``bank`` holds the BIN from the export (collapsed to a parent bank downstream via
     bin_to_bank, exactly like the raw split). pmp / Country variants are pooled by MEAN share
-    per BIN cell (each variant already sums to 1, so the pooled shares sum to ~1). Share is
-    re-normalised per (rpgt, currency, bank) cell. Empty frame if the split yields no rows.
+    per BIN profile (each variant already sums to 1, so the pooled shares sum to ~1). Share is
+    re-normalised per (rpgt, currency, bank) profile. Empty frame if the split yields no rows.
     """
     cols = ["rpgt", "currency", "bin", "gateway", "share"]
     templates = build_split_exports(
@@ -3079,7 +3081,7 @@ def count_pools_for_split(split_long, brand_name, go_live, *, wallet_incapable=f
                           extra_priority_amount=200000, emit_generic=False):
     """Number of ConnectorPool configs build_split_exports -> generate_configs would
     produce for a given split. Used by the pool-count-targeting compression so it can
-    ask 'how many pools does this cell budget yield?' at each search step. Every arg
+    ask 'how many pools does this profile budget yield?' at each search step. Every arg
     that affects the pool count (brand, wallet/country context, mode, caps) is threaded
     through so the count matches what the real export/config-gen will output.
     """
@@ -3179,7 +3181,7 @@ def pool_targeted_compression(ss, split_ideal, *, target_pools, sig, wallet_ctx,
     count is <= target_pools (or the ideal split unchanged if target<=0 or it already
     fits). The result is cached in ss['_pool_comp'] keyed by `sig`, so the (expensive,
     multi-pass) search only runs when a build/generate button is clicked with settings
-    not seen before. `stats` carries raw_cells/raw_pools/cells/pools/global_accuracy/
+    not seen before. `stats` carries raw_cells/raw_pools/profiles/pools/global_accuracy/
     feasible for the cards.
     """
     _cache = ss.get("_pool_comp") or {}

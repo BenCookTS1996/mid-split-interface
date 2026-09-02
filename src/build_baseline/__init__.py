@@ -1,7 +1,7 @@
 """BUILD BASELINE — the two vendored forecast pipelines, one per card scheme.
 
 These produce the BASELINE the whole optimiser is measured against: how much volume and
-how much fraud each cell is expected to carry over months 0-5. Four phases each:
+how much fraud each profile is expected to carry over months 0-5. Four phases each:
 
     DataExtractor      pull from BigQuery (cached under
                        data/build_baseline_cached_input_data/)

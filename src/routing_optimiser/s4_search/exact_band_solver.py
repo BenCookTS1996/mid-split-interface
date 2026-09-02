@@ -17,9 +17,9 @@ APPROXIMATE / LOCAL (the honest ceiling):
   * The projector's movable-fraction gate `act[c] = 1{psum_c > 0}` is a STEP. Its derivative is 0
     almost everywhere, so we FIX `act` from the current iterate and differentiate the smooth piece. The
     solver re-evaluates the true (gated) breach every step and re-linearises, so `act` can change between
-    steps — but within one linearisation the active set is fixed. A candidate that ZEROES a whole cell is
+    steps — but within one linearisation the active set is fixed. A candidate that ZEROES a whole profile is
     a different active piece; exploring those is combinatorial (a MILP) and out of scope.
-  * TXN is affine in the per-cell shares, but VAMP is a linear-FRACTIONAL function (`vshare = vpr/vpsum`),
+  * TXN is affine in the per-profile shares, but VAMP is a linear-FRACTIONAL function (`vshare = vpr/vpsum`),
     so the feasible region is NONCONVEX. The successive-LP solver therefore converges to a KKT/LOCAL
     optimum of the true breach, not a certified global one. A breach of 0 is still a genuine feasibility
     CERTIFICATE (a compliant split provably exists); a positive floor is a strong — not proof — signal.
@@ -29,7 +29,7 @@ APPROXIMATE / LOCAL (the honest ceiling):
 
 THE DERIVATION (per band b, holding the active mask fixed)
 ----------------------------------------------------------
-Let `pr[r]` be the proposed share on reduced projector row r (0 if excl/emask), `c = gcode[r]` its cell,
+Let `pr[r]` be the proposed share on reduced projector row r (0 if excl/emask), `c = gcode[r]` its profile,
 `psum[c] = Σ_{r∈c} pr[r]`, `vpsum[c] = Σ_{r∈c} pr[r]·vcpos[r]`. The projector's per-row normalisations are
 
     pshare[r] = pr[r] / psum[c]                 (TXN uses this)
@@ -39,12 +39,12 @@ TXN(b) = Σ_{r∈T_b}  ctot[r]·( base[r]·(1−mv[r]) + moved_tot[c]·pshare[r]
 VAMP(b)= const_b + Σ_{j∈P_b}  pool[j]·vshare[o_j]                              — fractional in pr
 
 with `mv`, `moved_tot`, `const_b`, `base`, `ctot` all static given the fixed active mask. Differentiating
-the two normalisations (quotient rule, only same-cell columns couple):
+the two normalisations (quotient rule, only same-profile columns couple):
 
     ∂pshare[r]/∂pr[q] = (δ_rq − pshare[r]) / psum[c]            for q∈c
     ∂vshare[r]/∂pr[q] = vcpos[r]·(δ_rq − vshare[r]·vcpos[q]) / vpsum[c]   for q∈c
 
-gives the closed forms implemented in `_jac_pr` (A_b/C_b are per-cell reductions, G_b a per-origin sum):
+gives the closed forms implemented in `_jac_pr` (A_b/C_b are per-profile reductions, G_b a per-origin sum):
 
     ∂TXN(b)/∂pr[q]  = act[q]/psum[c_q] · ( 1[q∈T_b]·ctot[q]·moved_tot[c_q] − A_b[c_q] )
     ∂VAMP(b)/∂pr[q] = vcpos[q]/vpsum[c_q] · ( G_b[q] − C_b[c_q] )                    (vpsum[c_q]>0)
@@ -212,7 +212,7 @@ class ExactBandModel:
         Every band value is  held + movable  where:
           * HELD    = the baseline / FCP2+ / pre-go-live cohort that does NOT respond to the routing
                       decision (the `(1 − mv)` share of each cohort, mv = pro_rata × fcp1_frac);
-          * MOVABLE = the pool that IS redistributed by the candidate's per-cell share (responds to
+          * MOVABLE = the pool that IS redistributed by the candidate's per-profile share (responds to
                       routing).
         held + movable reproduces `spec_values` to float64. This is the quantity that answers "how much
         of a breached band can the optimiser actually move?": if HELD alone already exceeds the ceiling,
@@ -390,7 +390,7 @@ class ExactBandModel:
 # --------------------------------------------------------------------------- solver
 # [FN-388]
 def _project_capped_simplex_profiles(s, profile_starts, profile_counts, elig, cap, budget):
-    """Euclidean projection of each cell onto {0 ≤ x ≤ cap over eligible rows, Σ = budget[c]}.
+    """Euclidean projection of each profile onto {0 ≤ x ≤ cap over eligible rows, Σ = budget[c]}.
     Reused from the heuristic's closed-form bisection (kept local to avoid a hard import cycle)."""
     from routing_optimiser.s4_search.seed_search import _project_capped_simplex_profiles as _p
     return _p(s, profile_starts, profile_counts, elig, cap, budget)
@@ -400,7 +400,7 @@ def _project_capped_simplex_profiles(s, profile_starts, profile_counts, elig, ca
 # [FN-393b]
 def floor_catchall_shares(shares, floor_mask, share_floor, profile_starts, profile_counts):
     """DEPLOY-TRUTHFUL floor: bump every masked gateway sitting below ``share_floor`` UP to it, and
-    take the added mass proportionally from the cell's NON-masked gateways, so each cell still sums to
+    take the added mass proportionally from the profile's NON-masked gateways, so each profile still sums to
     its original total.
 
     WHY: the pipeline re-adds a catch-all incumbent that a split zeroed (~10.6 %), but ANY positive
@@ -410,7 +410,7 @@ def floor_catchall_shares(shares, floor_mask, share_floor, profile_starts, profi
     solver picking 0. Applied to the base AND to every candidate the solvers evaluate, so the projector
     breach they minimise EQUALS the deployed breach (no re-add can fire inside the feasible region).
 
-    Non-masked rows donate the mass; masked rows already ≥ floor are left untouched. A cell with no
+    Non-masked rows donate the mass; masked rows already ≥ floor are left untouched. A profile with no
     non-masked donor mass to give is left unchanged (can't floor without going negative — rare, floor
     is tiny). Pure; never raises for finite input. No-op when mask/floor is empty."""
     s = np.asarray(shares, float).copy()
@@ -440,7 +440,7 @@ def solve_least_breach(exact_bands, incidence, base_shares, profile_starts, prof
                        *, max_share=1.0, max_outer=40, tol=1e-7, tr_init=0.25, tr_min=1e-4,
                        weighted=False, verbose=False, log_fn=None,
                        floor_mask=None, share_floor=0.0, stall=None, deliver_fn=None):
-    """EXACT successive-LP solve of  min total band breach  s.t. per-cell simplex + max-share.
+    """EXACT successive-LP solve of  min total band breach  s.t. per-profile simplex + max-share.
 
     Uses `ExactBandModel` (true projector value + analytic Jacobian). Each outer step linearises the
     banded specs at the current split, solves an LP (HiGHS) for a trust-region step that minimises the
@@ -755,17 +755,17 @@ def colocation_report(split, exact_bands, incidence, *, mid_id, profile_starts, 
                       profile_cur=None, profile_bank=None, profile_rpgt=None, top_profiles=8):
     """READ-ONLY diagnostic: for every breached CEILING MID, is a headroom SIBLING co-located?
 
-    At the engine's cell grain (one cell = one contiguous [cell_starts[c], +cell_counts[c]) block of
-    gateway-rows), for each MID whose projected M5 value exceeds its ceiling this walks the cells where
+    At the engine's profile grain (one profile = one contiguous [cell_starts[c], +cell_counts[c]) block of
+    gateway-rows), for each MID whose projected M5 value exceeds its ceiling this walks the profiles where
     that MID actually carries share and checks whether an ELIGIBLE, co-located OTHER MID could absorb the
     excess WITHOUT breaching its own cap — i.e. a sibling with NO ceiling on that metric (unlimited room)
     or with positive headroom. It changes NO share; it only builds human-readable log lines.
 
     Returns a list of strings for the caller to log. Never raises (returns a one-line skip note instead).
 
-    Interpretation: many breaching cells WITH a co-located headroom sibling ⇒ the excess CAN move, so a
+    Interpretation: many breaching profiles WITH a co-located headroom sibling ⇒ the excess CAN move, so a
     seed that left the band breached failed to SEARCH (not a real infeasibility). Few/none ⇒ a genuine
-    cell-grain / RPGT-scope block (the headroom exists at MID level but not in the same cells)."""
+    profile-grain / RPGT-scope block (the headroom exists at MID level but not in the same profiles)."""
     try:
         from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         s = np.asarray(split, float)
@@ -952,15 +952,15 @@ def floor_min_report(split, exact_bands, incidence, *, mid_id, profile_starts, p
                      mid_names, whatif_floor=0.0, max_list=15):
     """READ-ONLY: the TRUE reachable minimum M5 each breached ceiling MID can reach.
 
-    The full-matrix engine decodes shares with a plain per-cell softmax and applies NO hard min-share
+    The full-matrix engine decodes shares with a plain per-profile softmax and applies NO hard min-share
     floor (the ``exploration_floor`` is honoured by the tilt/softmax engines, NOT by the full-matrix
     decode or delivery), so a MID can be routed arbitrarily close to 0 wherever an eligible sibling
-    can absorb its share. This pushes each breached MID toward 0 in those cells, re-projects, and reads
+    can absorb its share. This pushes each breached MID toward 0 in those profiles, re-projects, and reads
     its resulting M5 — the genuine reachable minimum (≈ the routing-invariant ``held`` cohort):
       * reachable-min < ceiling ⇒ compliance IS reachable → a stuck solver has a SEARCH bug;
       * reachable-min ≥ ceiling ⇒ genuinely UNREACHABLE (the held cohort alone exceeds the cap →
         structural: the lever is the cap / RPGT scope, not the optimiser).
-    Cells where the MID is the ONLY eligible gateway are irreducible (its share can't be reduced) and
+    Profiles where the MID is the ONLY eligible gateway are irreducible (its share can't be reduced) and
     are counted. ``whatif_floor`` > 0 adds a clearly-labelled hypothetical (min if a hard floor of that
     size WERE enforced — it is NOT, by this engine). Returns log lines; never raises."""
     try:
@@ -977,8 +977,8 @@ def floor_min_report(split, exact_bands, incidence, *, mid_id, profile_starts, p
         name2i = {n: i for i, n in enumerate(nm)}
 
         def _push_min(mi, fl):
-            """Push MID index `mi` to share `fl` in every cell with an eligible sibling; renormalise;
-            return (its projected M5, #irreducible-cells)."""
+            """Push MID index `mi` to share `fl` in every profile with an eligible sibling; renormalise;
+            return (its projected M5, #irreducible-profiles)."""
             is_m = (mid_id == mi) & el
             is_o = (mid_id != mi) & el
             m_cnt = np.bincount(profile_id[is_m], minlength=nprofile)
@@ -1052,9 +1052,9 @@ def vamp_sibling_report(split, exact_bands, incidence, *, max_list=15):
     `vshare` (and thus its VAMP) unchanged, and where it is the SOLE VAMP-positive gateway `vshare = 1`
     for any share > 0 (the softmax engine can only reduce it at EXACTLY 0, which it never reaches).
 
-    For each breached VAMP MID this reports, over the projector cells where it carries VAMP, how many
+    For each breached VAMP MID this reports, over the projector profiles where it carries VAMP, how many
     have a co-located VAMP-positive sibling. Few/none ⇒ the VAMP is STRUCTURALLY immovable by this
-    engine (not a solver bug). Works in the projector's own cell grain (`gcode`). Returns log lines;
+    engine (not a solver bug). Works in the projector's own profile grain (`gcode`). Returns log lines;
     never raises."""
     try:
         from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
@@ -1119,7 +1119,7 @@ def incidence_selfcheck_report(split, exact_bands, incidence, *, mid_id=None, mi
 
     When `mid_id` (per-column MID index) and `mid_names` (index→name) are supplied, also reports a
     PER-BANDED-MID breakdown: of each banded MID's routed share mass, how much maps vs is dropped.
-    A txn band whose share sits in no-baseline cells (which the baseline-anchored scaffold can't
+    A txn band whose share sits in no-baseline profiles (which the baseline-anchored scaffold can't
     represent) shows a HIGH dropped% here — localising the scored-vs-delivered under-count to that
     MID. Returns log lines; never raises."""
     try:
@@ -1251,11 +1251,11 @@ def seed_gradient_report(split, exact_bands, incidence, *, mid_id, mid_names, ma
 
 # [FN-398]
 def vpsum_report(split, exact_bands, incidence, *, near_zero=1e-6, max_list=15):
-    """READ-ONLY (#4): the VAMP denominator (vpsum = Σ pr·vcpos) in each breached VAMP MID's cells.
+    """READ-ONLY (#4): the VAMP denominator (vpsum = Σ pr·vcpos) in each breached VAMP MID's profiles.
 
-    A near-zero vpsum is the near-empty cell that makes ∂VAMP/∂share (∝ 1/vpsum) blow up (the 1,822
+    A near-zero vpsum is the near-empty profile that makes ∂VAMP/∂share (∝ 1/vpsum) blow up (the 1,822
     entries the conditioning guard had to zero). Reports the distribution of vpsum across each breached
-    VAMP MID's cells and how many are near-zero. Returns log lines; never raises."""
+    VAMP MID's profiles and how many are near-zero. Returns log lines; never raises."""
     try:
         from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
         model = ExactBandModel(exact_bands, incidence)
@@ -1298,7 +1298,7 @@ def vpsum_report(split, exact_bands, incidence, *, near_zero=1e-6, max_list=15):
 
 # [FN-399]
 def usable_recipient_report(split, exact_bands, incidence, *, max_list=15):
-    """READ-ONLY (#5): cells with a USABLE VAMP recipient = co-located, VAMP-positive, live, and its
+    """READ-ONLY (#5): profiles with a USABLE VAMP recipient = co-located, VAMP-positive, live, and its
     own MID has ceiling headroom (or no VAMP cap). This is the single decisive "is there any legal
     move" count — the intersection of the co-location, VAMP-positive and headroom conditions. Returns
     log lines; never raises."""
@@ -1362,13 +1362,13 @@ def usable_recipient_report(split, exact_bands, incidence, *, max_list=15):
 
 # [FN-400]
 def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mids=6):
-    """READ-ONLY: WHERE does a breached VAMP MID's excess come from, and do THOSE cells have a move?
+    """READ-ONLY: WHERE does a breached VAMP MID's excess come from, and do THOSE profiles have a move?
 
-    Since most of a breached MID's cells have vpsum≈0 (≈0 VAMP), the breach concentrates in a minority
-    of real-VAMP cells. This ranks the MID's projector cells by their actual VAMP contribution, then —
-    greedily taking the highest-VAMP cells until their cumulative VAMP covers the overshoot — reports
-    how many of those cells have a USABLE recipient (co-located, VAMP-positive, eligible, headroom).
-    Many ⇒ reachable (search failure); few ⇒ the high-VAMP cells are sole-VAMP (structural — a real
+    Since most of a breached MID's profiles have vpsum≈0 (≈0 VAMP), the breach concentrates in a minority
+    of real-VAMP profiles. This ranks the MID's projector profiles by their actual VAMP contribution, then —
+    greedily taking the highest-VAMP profiles until their cumulative VAMP covers the overshoot — reports
+    how many of those profiles have a USABLE recipient (co-located, VAMP-positive, eligible, headroom).
+    Many ⇒ reachable (search failure); few ⇒ the high-VAMP profiles are sole-VAMP (structural — a real
     recipient must be made eligible there). Returns log lines; never raises."""
     try:
         from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr
@@ -1472,11 +1472,11 @@ def breach_concentration_report(split, exact_bands, incidence, *, top=10, max_mi
 def scoped_frozen_report(split, exact_bands, incidence, *, scoped_rpgts, max_mids=6):
     """READ-ONLY: split each breached VAMP MID's M5 VAMP into what the engine CAN vs CANNOT move.
 
-    Buckets each MID's projected VAMP by the RPGT of its origin cell:
-      * scoped-movable  — scoped-RPGT cells, the POOL part (redistributed by share) → the engine can
+    Buckets each MID's projected VAMP by the RPGT of its origin profile:
+      * scoped-movable  — scoped-RPGT profiles, the POOL part (redistributed by share) → the engine can
                           route this toward 0 (onto sibling MIDs);
-      * scoped-held     — scoped-RPGT cells, the (1−mv) baseline part → NOT reducible by routing;
-      * frozen          — UNscoped-RPGT cells (held at baseline) → the engine can't touch;
+      * scoped-held     — scoped-RPGT profiles, the (1−mv) baseline part → NOT reducible by routing;
+      * frozen          — UNscoped-RPGT profiles (held at baseline) → the engine can't touch;
       * no-origin       — aged rows with no in-window origin → irreducible.
     True engine-reachable minimum = frozen + no-origin + scoped-held (drive scoped-movable → 0).
       * reachable-min < ceiling ⇒ the SCOPED movable VAMP is enough to comply → reachable, so a stuck
@@ -1627,17 +1627,17 @@ def solve_global_linear_lp(exact_bands, incidence, base_shares, profile_starts, 
     """ONE global MINIMAL-MOVE feasibility projection → a warm-start SEED candidate for the GA.
 
     It linearises every banded spec ONCE at ``base_shares`` (the band-aware seed) using the EXACT
-    projector value + analytic Jacobian (``ExactBandModel``), then solves one convex LP over ALL cells
+    projector value + analytic Jacobian (``ExactBandModel``), then solves one convex LP over ALL profiles
     and ALL movable/eligible gateways at once:
 
         minimise  W_SLACK · Σ slack  +  MU · Σ |Δs|     (W_SLACK ≫ MU)
-        s.t.      per-cell Σ Δs = 0,  0 ≤ base+Δs ≤ max_share,
+        s.t.      per-profile Σ Δs = 0,  0 ≤ base+Δs ≤ max_share,
                   linearised band caps (slack ≥ 0 absorbs any residual breach)
 
     Because W_SLACK ≫ MU the caps are satisfied WHENEVER linearly possible (slack → 0), and among all
     cap-satisfying splits it picks the one that MOVES THE LEAST share from the seed — the "nearest
     feasible split". This shaves each breached MID onto whatever eligible siblings have room in each
-    cell, derived purely from the constraint system (no bespoke "move-to-sibling" operator). Keeping
+    profile, derived purely from the constraint system (no bespoke "move-to-sibling" operator). Keeping
     the move minimal also keeps the linearisation valid near the seed, so the re-projected TRUE breach
     tracks the linear one (unlike the earlier "minimise breach, unbounded move" objective, whose full
     step overshot into a region where the linear model was wrong).
@@ -1837,7 +1837,7 @@ def _tmove_cost(cost, secs, log_fn, *, fastls):
     occupancy — which is therefore worth measuring rather than eyeballing.
 
     NOT a budget: the seconds here are the projections only. The stage also spends time in the
-    per-cell Python loops that BUILD each batch, and that remainder is stated rather than left as a
+    per-profile Python loops that BUILD each batch, and that remainder is stated rather than left as a
     silent gap."""
     try:
         _mv_s = float(cost.get("mv_s", 0.0))
@@ -1880,7 +1880,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
                          movable_frac=0.8, log_fn=None, deliver_fn=None):
     """TARGETED move operator → a WARM-START SEED that directly clears breached CEILINGS.
 
-    For every breached ceiling MID it sheds that MID's share, cell by cell (highest contribution to
+    For every breached ceiling MID it sheds that MID's share, profile by profile (highest contribution to
     whichever of its OWN metrics is worst over), onto co-located ELIGIBLE sibling gateways — but ONLY
     onto MIDs that have room under EVERY ceiling they hold, preferring the recipients with the most
     BINDING SHARE-CAPACITY. A running per-recipient PER-METRIC budget stops it from over-filling any
@@ -1907,8 +1907,8 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
     and every projection in this function — the ceiling report, the recipient headroom re-projection
     and the line-search accept test — reads the DELIVERED split. That FORCES the fast line-search
     OFF: it exists only because `shares_to_prop_raw` is linear, so `s2pr(s + f·δ) == s2pr(s) +
-    f·s2pr(δ)`, and delivery breaks that identity outright (renormalising a cell after zeroing a
-    door is not linear in the cell's shares). Four full projections per MID batch instead of one is
+    f·s2pr(δ)`, and delivery breaks that identity outright (renormalising a profile after zeroing a
+    door is not linear in the profile's shares). Four full projections per MID batch instead of one is
     the price of judging the stage on the basis that ships. `deliver_fn=None` restores the pre-19go
     RAW behaviour, fast line-search included, byte for byte (ROUTING_SEED_DELIV=0).
 
@@ -1923,7 +1923,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
     routing (the recipient pool lacks the collective headroom under its own ceilings). Never raises.
 
     Inputs mirror the co-location diagnostic: `mid_id` (per-row MID index into `mid_names`), `risk`
-    (per-row VAMP rate), `cell_vol` (per-cell forecast volume), `elig` (per-row eligibility).
+    (per-row VAMP rate), `cell_vol` (per-profile forecast volume), `elig` (per-row eligibility).
     `movable_frac` converts a share increment to approximate METRIC increments for the running
     recipient budgets — TXN share×vol×frac, VAMP share×vol×risk×frac. Approximate on purpose; the
     exact line-search is the guard."""

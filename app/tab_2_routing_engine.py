@@ -3752,15 +3752,18 @@ def render():
                         # row of its own): without them the profile is dropped from _P entirely, so the
                         # injection below has no profiles to hang a receiving row on and the
                         # incidence drops that share. Every MID of a kept profile is retained, so
-                        # psum/vpsum stay exact. Kill-switch: ROUTING_DOOR_COVER_CELLS=0.
-                        if _door_profiles and os.environ.get("ROUTING_DOOR_COVER_CELLS", "1") != "0":
+                        # psum/vpsum stay exact. Kill-switch: ROUTING_DOOR_COVER_PROFILES=0.
+                        # 19hm: renamed, old name still honoured.
+                        if _door_profiles and os.environ.get(
+                                "ROUTING_DOOR_COVER_PROFILES",
+                                os.environ.get("ROUTING_DOOR_COVER_CELLS", "1")) != "0":
                             _keep = _keep | (_door_profiles & set(_profilek.unique()))
                             if len(_keep) != _keep_base:
                                 log(f"   [door-cover] scaffold profiles {_keep_base:,} → {len(_keep):,} "
                                     f"(+{len(_keep) - _keep_base:,} candidate-door-only profile(s)). This is "
                                     "the COST of full coverage — the per-generation projection scales "
                                     "with scaffold rows, so expect a slower search. Kill-switch: "
-                                    "ROUTING_DOOR_COVER_CELLS=0.")
+                                    "ROUTING_DOOR_COVER_PROFILES=0.")
                         _P = _P[_profilek.isin(_keep)].copy()
                         _rc["scoped"] = int(len(_P))        # [scaffold-recon] step 3
                         _rc["profiles"] = int(len(_keep))
@@ -4687,7 +4690,7 @@ def render():
                     def _band_compress_probe():
                         """How far could the EXACT projection scaffold shrink losslessly? The candidate
                         only decides at (cur,bin,rpgt); the projection is carried ~15× finer (× pmp ×
-                        ctry). Rows/cells that respond IDENTICALLY to the candidate merge losslessly.
+                        ctry). Rows/profiles that respond IDENTICALLY to the candidate merge losslessly.
                         The exact merge key is (cur,bin,rpgt,per, active-MID signature) — the signature =
                         the set of MIDs that are active (not excl / not emask) and which carry VAMP
                         (vc>0), because the wallet/USA mask is what varies across pmp/ctry. This probe
@@ -4860,7 +4863,7 @@ def render():
                     # [FN-331]
                     def _band_enabler_probes(ref_prop_items, end_prop_items):
                         """Measure the two enablers of the 'near-exact + incredibly fast' path:
-                        (1) VOLUME PRUNING — drop the near-zero-volume cell tail, report the row shrink,
+                        (1) VOLUME PRUNING — drop the near-zero-volume profile tail, report the row shrink,
                             the project_pop speedup, and the per-band error vs the full exact projection.
                         (2) LOCAL-LINEAR — fit a linear model at the delivered endpoint from a tiny step
                             and test it over a few-generations-sized step; if it stays accurate LOCALLY
@@ -6129,7 +6132,7 @@ def render():
                                 return np.where(_has, _capd + _add, _X)            # no recipient → unchanged
 
                             def _fm_block_narrow(_X, _blk, _fl, _rows, _scs, _scc):
-                                """Same expression over the hit cells only; the rest copied
+                                """Same expression over the hit profiles only; the rest copied
                                 through. Returns a NEW array — callers rely on that."""
                                 _sub = np.ascontiguousarray(_X[:, _rows])
                                 _bm = np.asarray(_blk)[None, _rows]
@@ -6475,10 +6478,10 @@ def render():
                             def _fm_floor(_farr, _fl=_SFLOOR, _cs=_fm_bcs, _cc=_fm_bcc,
                                           _bs=_SF_BASE):
                                 """Lift every PRESENT-and-eligible row to at least `_fl`, then
-                                renormalise the cell.
+                                renormalise the profile.
 
-                                `min(_fl, 1/n_present)` per cell, exactly as delivery caps it, so
-                                a wide cell can never be made infeasible by the floor itself."""
+                                `min(_fl, 1/n_present)` per profile, exactly as delivery caps it, so
+                                a wide profile can never be made infeasible by the floor itself."""
                                 if _fl <= 0.0:
                                     return _farr
                                 _X = np.asarray(_farr, float)
@@ -8636,7 +8639,7 @@ def render():
                                         else:
                                             log(f"   [deliv-cap] the cap fired on "
                                                 f"{_DCAP['hit']:,} of {_DCAP['calls']:,} delivery "
-                                                f"call(s), repairing {_DCAP['cells']:,} "
+                                                f"call(s), repairing {_DCAP['profiles']:,} "
                                                 f"(candidate, profile) pair(s) that eligibility "
                                                 f"zeroing had lifted past {_DCAP['cap']:.4g}. "
                                                 f"Total share moved {_DCAP['moved']:.4g}; largest "
@@ -9887,7 +9890,7 @@ def render():
                                                     "and every ratio below it as a comparison "
                                                     "BETWEEN IDEAS on a common baseline, NOT as "
                                                     "this run's projector cost. "
-                                                    "ROUTING_PROJ_CELLBLOCK=0 makes A the shipped "
+                                                    "ROUTING_PROJ_PROFILEBLOCK=0 makes A the shipped "
                                                     "path again.")
                                         except Exception as _kbe:  # noqa: BLE001
                                             log(f"      NOTE: could not tell whether the shipped "
@@ -13123,8 +13126,8 @@ def render():
                                                 _cidS[_iC] = _jC
 
                                             def _cnormS(_v):
-                                                """Scale each cell to sum 1. Returns (normalised,
-                                                p50 budget, budget vector per cell)."""
+                                                """Scale each profile to sum 1. Returns (normalised,
+                                                p50 budget, budget vector per profile)."""
                                                 _s = np.bincount(_cidS, weights=_v,
                                                                  minlength=len(_cposS))
                                                 _nzc = _s[np.abs(_s) > 1e-9]
@@ -13135,11 +13138,11 @@ def render():
                                                                  0.0), _p50, _s)
 
                                             def _budS(_s):
-                                                """Describe a per-cell budget vector: is it ONE
+                                                """Describe a per-profile budget vector: is it ONE
                                                 value everywhere, or a spread? A single p50 cannot
                                                 tell a 50/50 injection RULE from a scattered
                                                 effect, and that distinction decides whether the
-                                                fix is a rule change or a per-cell one."""
+                                                fix is a rule change or a per-profile one."""
                                                 _nz = _s[np.abs(_s) > 1e-9]
                                                 if not _nz.size:
                                                     return "no non-empty cells"
@@ -13283,7 +13286,7 @@ def render():
                                                                 f"rows "
                                                                 f"{_EXKEEP.get('drop_rows', 0):,} "
                                                                 f"over "
-                                                                f"{_EXKEEP.get('drop_cells', 0):,} "
+                                                                f"{_EXKEEP.get('drop_profiles', 0):,} "
                                                                 f"distinct key(s), keyed on "
                                                                 f"{tuple(_dkcC)}")
                                                             log("   [inv-vs-drop]   sample INVENTED "

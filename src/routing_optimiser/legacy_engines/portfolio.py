@@ -25,10 +25,10 @@ gateways) is √(Σ xₘ²·dₘ²). The reference maximises
 subject to sum(x)=1 and the floor / max-share bounds. This diversifies and, in
 particular, trims gateways whose VAMP could spike (volatile or thinly-tested).
 
-γ is AUTO-CALIBRATED per cell — no user dial. It's scaled so a gateway with an
+γ is AUTO-CALIBRATED per profile — no user dial. It's scaled so a gateway with an
 average downside pays a fixed fraction of its return, which makes the trade-off
-mean the same thing in every cell regardless of the absolute risk scale or how
-much data a cell has. (Contrast with Thompson: Thompson *explores* thin gateways;
+mean the same thing in every profile regardless of the absolute risk scale or how
+much data a profile has. (Contrast with Thompson: Thompson *explores* thin gateways;
 this *avoids* them.) The MEAN VAMP cap is still enforced downstream by the shared
 compliance layer — this engine only prices risk *stability*. Deterministic.
 """
@@ -66,7 +66,7 @@ class PortfolioEngine(SoftmaxEngine):
     def _reference_split_impl(self, p: ProfileProblem) -> np.ndarray:
         """slider=100 reference: mean-CVaR optimal (conversion vs downside VAMP
         risk). Same contract as ``SoftmaxEngine._reference_split_impl``. Wrapped by
-        the base-class reference cache (computed once per cell, reused across dials).
+        the base-class reference cache (computed once per profile, reused across dials).
         NOTE: dormant engine — builds its own reference and does not apply the
         auto-explore share cap (that lives in the base softmax reference)."""
         gateway_count = p.n()

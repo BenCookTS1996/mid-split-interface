@@ -3,7 +3,7 @@
 Reuses the softmax engine's slider + compliance machinery wholesale and changes
 only the REFERENCE split (the slider=100, conversion-only allocation).
 
-Where softmax spreads a cell's volume by an exponential of each gateway's POINT
+Where softmax spreads a profile's volume by an exponential of each gateway's POINT
 success rate, Thompson models each gateway's success rate as a Beta posterior and
 allocates by each gateway's PROBABILITY OF BEING THE BEST — so a gateway we've
 barely tested (wide posterior) keeps a meaningful share (exploration), and a
@@ -20,7 +20,7 @@ Two things make this the "auto" version (no dials):
   * EMPIRICAL-BAYES prior. The Beta posterior is built from the SAME shrinkage
     the rest of the pipeline uses: prior Beta(κ·prior_rate, κ·(1−prior_rate))
     plus the observed (time-decayed) successes/attempts. Its mean is exactly the
-    shrunk success_rate softmax uses, so thin cells borrow strength automatically
+    shrunk success_rate softmax uses, so thin profiles borrow strength automatically
     — no "prior strength" knob. (Falls back to a weak flat prior if κ is absent.)
 
   * ANALYTIC probability-of-best. Instead of Monte-Carlo sampling (which jitters
@@ -52,7 +52,7 @@ _trapz = getattr(np, "trapezoid", getattr(np, "trapz"))   # trapezoid on numpy>=
 def _leggauss_cached(m: int):
     """Gauss–Legendre nodes/weights on [-1, 1] for m points. `leggauss` is a pure
     deterministic function of m (it solves a fixed eigenproblem), so caching returns
-    byte-identical arrays and hoists the cost out of the per-cell reference loop.
+    byte-identical arrays and hoists the cost out of the per-profile reference loop.
     The arrays are treated as read-only by callers (only used in fresh expressions)."""
     return np.polynomial.legendre.leggauss(int(m))
 
@@ -90,7 +90,7 @@ class ThompsonEngine(SoftmaxEngine):
         exploit; wide where thin → explore), and layering the pipeline's kappa on top
         (which can jump to 100k) collapses that width and flattens prob-of-best. The
         Beta prior is Thompson's own regulariser. Time-decay is kept (recency matters).
-        Gateways with no per-cell evidence fall back to a weak Beta at the pooled rate.
+        Gateways with no per-profile evidence fall back to a weak Beta at the pooled rate.
         """
         gateway_count = p.n()
         successes = (np.asarray(p.obs_success, float) if p.obs_success is not None
@@ -121,7 +121,7 @@ class ThompsonEngine(SoftmaxEngine):
     def _reference_split_impl(self, p: ProfileProblem) -> np.ndarray:
         """slider=100 reference: analytic probability-of-being-best over SUCCESS.
         Same contract as ``SoftmaxEngine._reference_split_impl``. Wrapped by the
-        base-class reference cache (computed once per cell, reused across dials)."""
+        base-class reference cache (computed once per profile, reused across dials)."""
         gateway_count = p.n()
         _, upper = self._bounds(p)
         eligible = upper > 0.0

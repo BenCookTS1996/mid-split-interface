@@ -8,7 +8,7 @@ The slider (``weight`` in [0, 1]) is a risk dial, read as slider=100 at
     no MID constraints.
   * below 100 (the RISK LAYER, "Option A" / compliance dial): ONLY when the
     reference breaches the VAMP cap, move the least volume needed to bring the
-    cell to a cap that interpolates from the reference's own risk (just below
+    profile to a cap that interpolates from the reference's own risk (just below
     100 → barely trim) down to exactly the hard VAMP cap (slider 0 → just
     compliant). It never minimises risk *below* the cap:
 
@@ -17,9 +17,9 @@ The slider (``weight`` in [0, 1]) is a risk dial, read as slider=100 at
         cap(w) = max(hard_cap, hard_cap + w * (r_ref - hard_cap))
 
     If the reference already meets the cap (the common case), the split is the
-    reference at every slider position — so the per-cell slider is inert for
-    already-compliant cells; the visible risk↔conversion gradient comes from the
-    cross-cell blend/enforcement layer, not this engine.
+    reference at every slider position — so the per-profile slider is inert for
+    already-compliant profiles; the visible risk↔conversion gradient comes from the
+    cross-profile blend/enforcement layer, not this engine.
 
 ANALOGY for the whole engine: first draw the "ideal" split that chases conversion
 (the reference). Then, only if that ideal is too risky, walk it back toward safety
@@ -27,8 +27,8 @@ JUST FAR ENOUGH to sit on the risk ceiling — like nudging an over-full glass b
 to the fill line, spilling as little as possible, and never pouring below the line.
 
 Per-gateway risk comes from bin_rpgt_impact_export (period 0), attached to the
-cell upstream. Cross-cell MID constraints are not expressible in this per-cell
-interface; they are applied by the slider sweep / cross-cell projection layer.
+profile upstream. Cross-profile MID constraints are not expressible in this per-profile
+interface; they are applied by the slider sweep / cross-profile projection layer.
 """
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ class SoftmaxEngine(BaseEngine):
 
     # [FN-418]
     def _solve(self, p: ProfileProblem) -> ProfileSolution:
-        """Return the cell's split: the reference, trimmed toward the risk cap if needed.
+        """Return the profile's split: the reference, trimmed toward the risk cap if needed.
 
         Uses guard clauses to bail early on the two common cases (slider at 100, or
         the reference already compliant) before doing the compliance projection.

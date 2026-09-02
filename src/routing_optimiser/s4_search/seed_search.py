@@ -11,10 +11,10 @@ offers exactly one engine (`genetic_fullmatrix`) and that path skips the tilt se
 WHAT THE LIVE SEARCH ACTUALLY CALLS FROM HERE:
 
     band_greedy_shares_multi      seed stage 1/3, the band-aware constrained projection
-                                  (per-cell simplex + max-share QP) -- the "band-aware seed"
+                                  (per-profile simplex + max-share QP) -- the "band-aware seed"
                                   in the run log
     band_greedy_shares            its single-start inner routine
-    _project_capped_simplex_cells the vectorised per-cell capped-simplex QP both use
+    _project_capped_simplex_cells the vectorised per-profile capped-simplex QP both use
     _build_mid_incidence          the (vampMid x row) incidence matrix
     _obj_viol                     the REFERENCE fitness. `numba_kernels._fused_eval` and
                                   `band_scoring` are written to match it and `verify()`
@@ -105,7 +105,7 @@ def _mid_viol_weights(ctx, M):
     tolerance and the breach_quad meaning — is preserved), while a high-volume MID's breach
     counts proportionally MORE than a tiny MID's. This stops the search wasting its gradient
     flattening hundreds of trivially-small breaches it cannot tell apart from the ones that
-    matter (see the 5-txn cad cells vs the 44,000-txn usd cells in the run profiles).
+    matter (see the 5-txn cad profiles vs the 44,000-txn usd profiles in the run cells).
 
     Returns ALL-ONES — i.e. behaviour byte-identical to the un-weighted violation — when
     ctx['viol_vol_weight'] is off or there is no baseline-volume basis. SINGLE SOURCE OF TRUTH:
@@ -244,13 +244,13 @@ def _obj_viol(shares, ctx):
 
 # [FN-122c]
 def _project_capped_simplex_profiles(s, profile_starts, profile_counts, elig, cap, total=1.0, iters=60):
-    """VECTORISED `_project_capped_simplex` over ALL cells at once (no Python per-cell loop).
+    """VECTORISED `_project_capped_simplex` over ALL profiles at once (no Python per-profile loop).
 
-    Projects each cell's ELIGIBLE entries onto {0 ≤ x ≤ cap, Σ = total}; ineligible rows → 0.
-    Uses ONE vectorised bisection on a per-cell shift τ, with segment sums via ``reduceat`` —
-    numerically identical to the closed-form per-cell QP (unit-tested). Falls back
-    to a proportional renormalise for cells the cap can't fill (e.g. a lone eligible gateway), and
-    to a uniform split for a (degenerate) all-ineligible cell."""
+    Projects each profile's ELIGIBLE entries onto {0 ≤ x ≤ cap, Σ = total}; ineligible rows → 0.
+    Uses ONE vectorised bisection on a per-profile shift τ, with segment sums via ``reduceat`` —
+    numerically identical to the closed-form per-profile QP (unit-tested). Falls back
+    to a proportional renormalise for profiles the cap can't fill (e.g. a lone eligible gateway), and
+    to a uniform split for a (degenerate) all-ineligible profile."""
     s = np.asarray(s, float)
     starts = np.asarray(profile_starts, np.intp)
     counts = np.asarray(profile_counts, np.intp)
@@ -298,10 +298,10 @@ def band_greedy_shares(base_shares, profile_starts, profile_counts, elig, mid_ro
 
     Each pass: (1) project the current split through the SAME exact-band projector the GA scores
     with; (2) for every band, build a band-correcting target by scaling that MID's rows toward its
-    violated ceiling (down) or floor (up), damped for stability; (3) project each cell's target
+    violated ceiling (down) or floor (up), damped for stability; (3) project each profile's target
     back onto its capped simplex `{0 ≤ x ≤ max_share, Σ = 1}` over the ELIGIBLE rows — the small
     QP `min ‖x − target‖²` solved in closed form. Step (3) is what
-    enforces the per-cell simplex AND the max-share cap exactly, every pass.
+    enforces the per-profile simplex AND the max-share cap exactly, every pass.
 
     STOPPING: there is NO fixed pass count — it keeps nudging until there is no meaningful
     improvement. Each pass it tracks the total RELATIVE band breach and stops on the first of:
@@ -312,8 +312,8 @@ def band_greedy_shares(base_shares, profile_starts, profile_counts, elig, mid_ro
     what stop it in practice — the cap is never expected to bind. Returns the LOWEST-breach split
     seen (never worse than the base), so a late oscillation can't hand back a worse result.
 
-    Returns a valid shares vector (each cell sums to 1 over eligible rows, no share > max_share
-    where the cell has ≥2 eligible gateways). Only ever HELPS — the GA ranks seeds feasibility-
+    Returns a valid shares vector (each profile sums to 1 over eligible rows, no share > max_share
+    where the profile has ≥2 eligible gateways). Only ever HELPS — the GA ranks seeds feasibility-
     first, so a band-closer start can be adopted, a worse one ignored. Pure / deterministic,
     unit-tested off the live pipeline; the caller wraps it and falls back to the base split on any
     error.

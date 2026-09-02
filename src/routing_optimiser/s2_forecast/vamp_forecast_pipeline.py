@@ -335,18 +335,18 @@ def _mm_kappa(vg, ng, fallback: float = 50.0, kmax: float = 5000.0) -> float:
 
 # [FN-075]
 def _hier_vamp_shrink(d: pd.DataFrame, fallback_kappa: float = 50.0, kmax: float = 5000.0):
-    """FULLY-AUTOMATIC hierarchical empirical-Bayes shrinkage of the per-cell VAMP rate.
+    """FULLY-AUTOMATIC hierarchical empirical-Bayes shrinkage of the per-profile VAMP rate.
 
     Walks a BANK-FIRST back-off chain (risk clusters by issuing BIN, not by MID — verified
     on bin_rpgt_impact_export: BIN explains ~16% of rate variance vs vampMid ~3%):
 
-        global → vampMid → RPGT → Bank → Bank×RPGT → Bank×RPGT×Currency → cell
+        global → vampMid → RPGT → Bank → Bank×RPGT → Bank×RPGT×Currency → profile
 
     At each level a method-of-moments kappa is fit from the spread of that level's group
     rates vs binomial sampling noise (no hand-tuning), and the level's pooled rate is shrunk
     toward the running (coarser) estimate: est = (pooled_vamps + kappa·est) / (pooled_n + kappa).
-    A thin/noisy cell (e.g. 0.74 VAMP on 1.2 txns → raw 61.55%) is pulled toward its BANK's
-    stable rate; a high-volume cell is essentially unchanged. Because kappa is fit in the SAME
+    A thin/noisy profile (e.g. 0.74 VAMP on 1.2 txns → raw 61.55%) is pulled toward its BANK's
+    stable rate; a high-volume profile is essentially unchanged. Because kappa is fit in the SAME
     units as the counts, the pro-rated Txn_Pre scale self-calibrates. Returns a (n,) array."""
     import numpy as _np
     n = len(d)
@@ -385,7 +385,7 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
 
     Deprecated `-x` gateways are collapsed into their canonical sibling
     (see `_canonical_gateway`), so downstream routing sees one row per
-    real gateway per cell.
+    real gateway per profile.
     """
     # Auto-detect a MASTERCARD export and delegate to the Mastercard normaliser.
     # MC exports carry chargeback columns (CB_Pre / Sim_CBs) and/or 'mastercardMid',

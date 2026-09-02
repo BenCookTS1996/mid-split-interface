@@ -2,7 +2,7 @@
 
 This is the LAST-MILE tab: it turns the chosen split variation into the actual
 ConnectorPool JSON files production deploys — optionally COMPRESSED to a target
-number of pools first (fewer, shared rules instead of one bespoke rule per cell),
+number of pools first (fewer, shared rules instead of one bespoke rule per profile),
 then zipped for download, with a search box to inspect a single config.
 
 ANALOGY: the split is the "recipe"; this tab prints the "shopping list" the kitchen

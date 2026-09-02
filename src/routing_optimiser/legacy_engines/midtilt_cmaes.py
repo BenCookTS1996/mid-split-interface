@@ -1,4 +1,4 @@
-"""RETIRED: the cross-cell per-vampMid tilt search (Active CMA-ES).
+"""RETIRED: the cross-profile per-vampMid tilt search (Active CMA-ES).
 
 19gd — SPLIT OUT OF `routing_optimiser.s4_search.seed_search`. This is the engine that used to
 produce the delivered split, and it is NOT reachable any more. Keeping it here rather than in
@@ -70,7 +70,7 @@ __build__ = "19gd-split-from-seed_search"
 # ---------------------------------------------------------------------------
 # [FN-106]
 def _z_per_mid(vals, mid_rows, n_mid, N):
-    """Standardise a per-cell quantity (risk OR revenue-efficiency) WITHIN each vampMid's own
+    """Standardise a per-profile quantity (risk OR revenue-efficiency) WITHIN each vampMid's own
     rows: z = (v − mean)/std per MID, 0 where std≈0. Shared by both tilt axes (θr on risk,
     θq on revenue) so the two use ONE definition."""
     z = np.zeros(N, dtype=float)
@@ -84,11 +84,11 @@ def _z_per_mid(vals, mid_rows, n_mid, N):
     return z
 # [FN-107]
 def _cap_floor_shares(X, profile_starts, profile_counts, elig, cap, floor):
-    """HARD per-cell max-share cap + exploration floor on shares X (P, N), vectorised.
-    Cells are contiguous segments (cell_starts / cell_counts). Applies the floor first
-    (lift eligible gateways to a per-cell-clamped floor, renormalise), then WATER-FILLS
-    any over-cap excess into the same cell's under-cap eligible gateways — enforced LAST,
-    so every row exits with share <= cap. Cells with < 2 eligible gateways can't be capped
+    """HARD per-profile max-share cap + exploration floor on shares X (P, N), vectorised.
+    Profiles are contiguous segments (cell_starts / cell_counts). Applies the floor first
+    (lift eligible gateways to a per-profile-clamped floor, renormalise), then WATER-FILLS
+    any over-cap excess into the same profile's under-cap eligible gateways — enforced LAST,
+    so every row exits with share <= cap. Profiles with < 2 eligible gateways can't be capped
     (a single gateway must be 1.0), matching the export's _cap_shares. Guarantees the GA
     only ever evaluates deployable splits (no search/output mismatch)."""
     elig_row = elig[None, :] > 0.5
@@ -229,7 +229,7 @@ def _leaned_ref(ref, risk, elig, profile_starts, profile_counts, gamma):
     """Lean the revenue reference gently toward LOWER global risk (γ ≥ 0): the θ=0
     base — and therefore where freed volume redistributes — starts a little compliant
     (improvements #6 and #8). γ is dimensionless (risk standardised across eligible
-    rows). γ=0 returns the reference unchanged. Result is renormalised per cell."""
+    rows). γ=0 returns the reference unchanged. Result is renormalised per profile."""
     gamma = float(gamma)
     if gamma <= 0.0:
         return np.asarray(ref, float)
@@ -248,7 +248,7 @@ def _leaned_ref(ref, risk, elig, profile_starts, profile_counts, gamma):
     return w / np.repeat(seg, profile_counts)
 # [FN-111]
 def _cap_floor_prep(profile_starts, profile_counts, elig, cap, floor):
-    """Precompute the per-cell CONSTANTS the max-share/floor water-fill needs, so they
+    """Precompute the per-profile CONSTANTS the max-share/floor water-fill needs, so they
     are built ONCE per problem instead of on every decode (bit-identical, pure saving).
     Returns None when neither cap nor floor binds. `elig_row`, `capN`, `fl`, `n_elig_cell`
     match the arrays `_cap_floor_shares` recomputes internally each call."""
@@ -268,9 +268,9 @@ def _cap_floor_prep(profile_starts, profile_counts, elig, cap, floor):
             "profile_starts": np.asarray(profile_starts), "profile_counts": np.asarray(profile_counts)}
 # [FN-112]
 def _cap_floor_apply(X, prep):
-    """HARD per-cell floor-then-cap water-fill using PRECOMPUTED constants (`prep` from
+    """HARD per-profile floor-then-cap water-fill using PRECOMPUTED constants (`prep` from
     `_cap_floor_prep`). Byte-identical to `_cap_floor_shares` — same order of operations,
-    only the per-cell constants are reused rather than rebuilt each call."""
+    only the per-profile constants are reused rather than rebuilt each call."""
     cs, ccnt = prep["profile_starts"], prep["profile_counts"]
     elig_row, fl, capN = prep["elig_row"], prep["fl"], prep["capN"]
     if fl is not None:
@@ -300,9 +300,9 @@ def _cap_floor_apply(X, prep):
     return X
 # [FN-113]
 def _risk_z_per_profile(risk, profile_starts, profile_counts, N):
-    """Standardise each CELL's per-gateway risk across ITS rows (mirror of `_z_per_mid`
-    but per cell), so a per-cell fine tilt can shift share within one cell toward its
-    lower-risk gateways. Vectorised via reduceat (no Python loop over cells)."""
+    """Standardise each PROFILE's per-gateway risk across ITS rows (mirror of `_z_per_mid`
+    but per profile), so a per-profile fine tilt can shift share within one profile toward its
+    lower-risk gateways. Vectorised via reduceat (no Python loop over profiles)."""
     cnt = np.maximum(profile_counts.astype(float), 1.0)
     smean = np.add.reduceat(risk, profile_starts) / cnt
     var = np.add.reduceat(risk * risk, profile_starts) / cnt - smean * smean
@@ -323,15 +323,15 @@ def _decode_midtilt3(genome, M, ref, zr, zq, mid_id, profile_starts, profile_cou
 
         share_g ∝ ref_g · exp(−θr·zr_g + θq·zq_g + g_mid − cellθ_cell·zr_cell_g) · elig
 
-    renormalised per cell, then the HARD max-share cap / exploration floor. θr (≥0) pulls a MID
-    toward its LOW-risk cells, θq (≥0) toward its HIGH-revenue cells, g moves its overall
-    presence, and the optional per-cell fine tilt cellθ (≥0, `n_fine` of them, on the top-K
-    risk-heavy cells via `fine_idx`/`zr_cell`) shifts share WITHIN one cell toward its low-risk
+    renormalised per profile, then the HARD max-share cap / exploration floor. θr (≥0) pulls a MID
+    toward its LOW-risk profiles, θq (≥0) toward its HIGH-revenue profiles, g moves its overall
+    presence, and the optional per-profile fine tilt cellθ (≥0, `n_fine` of them, on the top-K
+    risk-heavy profiles via `fine_idx`/`zr_cell`) shifts share WITHIN one profile toward its low-risk
     gateways — extra reach the coarse per-MID tilt can't provide. `n_fine`=0 (default) is the
     exact 3M-genome behaviour.
 
     ANALOGY: θr / θq / g are ~three knobs per MID. Turning θr up leans that MID's volume toward
-    its LOW-risk cells, θq toward its HIGH-revenue cells, and g raises/lowers its overall presence.
+    its LOW-risk profiles, θq toward its HIGH-revenue profiles, and g raises/lowers its overall presence.
     This function turns those ~20 knob settings into a full per-gateway split (then applies the
     hard floor/cap). That tiny genome is why the search is so fast.
 
@@ -387,11 +387,11 @@ def _violation_breakdown(shares, ctx, top_k=20):
     violation is actually made of, instead of inferring it:
         • vamp_cap      — the per-vampMid aggregate VAMP-rate cap (0.06)
         • bands         — the per-MID month bands, split BY PRIORITY TIER + top offenders
-        • max_share     — the structural per-cell max-gateway-share cap (0.97)
+        • max_share     — the structural per-profile max-gateway-share cap (0.97)
         • floor         — the structural exploration floor (0.01)
       plus how far the eligibility mask moved the split (L1 + rows zeroed), how many TERMS breach
       in each component (the fixed-hit count is what scales the total when breach_fixed is large),
-      and how many cells are structurally infeasible (floor can't be given to every gateway).
+      and how many profiles are structurally infeasible (floor can't be given to every gateway).
     Returns a plain dict (JSON-ish). Recomputed in NumPy; matches the ranked violation to ~1e-12."""
     import math
     shares = np.asarray(shares, float)
@@ -695,8 +695,8 @@ def run_midtilt_ga(ctx, *, pop_size=40, generations=80, seed=42,
                    archive_k=5, archive_min_dist=0.5, stop_check=None,
                    n_restarts=2, polish=True, ref_gamma=None, n_fine=0, progress_cb=None,
                    numba=False, restart_mode="lean", numba_trust=False):
-    """Active-CMA-ES cross-cell per-vampMid tilt search — the live engine (see the block
-    comment above for the full upgrade list). Genome = [θr | θq | g] + per-cell fine tilts
+    """Active-CMA-ES cross-profile per-vampMid tilt search — the live engine (see the block
+    comment above for the full upgrade list). Genome = [θr | θq | g] + per-profile fine tilts
     (3·n_mid + n_fine dims).
     Ranking is ε-relaxed feasibility-first (compliant always beats non-compliant at the end),
     so there is no penalty weight to pass.
@@ -713,7 +713,7 @@ def run_midtilt_ga(ctx, *, pop_size=40, generations=80, seed=42,
     mutation_sigma, elite_frac, auto, patience, sigma_min, sigma_max, success_window,
     breach_targeted, breach_mut_boost, smart_init, init_tries, adaptive_lambda,
     breach_lambda_boost. Every one was accepted and never read: they were the knobs of a
-    per-cell GA that this function replaced, kept "for interface compatibility" with callers
+    per-profile GA that this function replaced, kept "for interface compatibility" with callers
     that no longer exist. CMA-ES self-adapts its step size and population, so there was nothing
     for them to do. Verified by AST (33 params, 15 with zero reads in the body) before removal;
     three tab-2 call sites were passing lam=50.0, auto=True and patience=_ga_pat into the void

@@ -888,7 +888,7 @@ def render():
         def _fin_render_share_chart(_evframe, _target=None):
             """Before → after volume-share chart at vampMid grain, rendered inside Financial Impact.
             Three series per vampMid: current baseline (grey), proposed split (red) and a
-            max-approval-rate hypothetical (green). The hypothetical routes each cell 100% to its
+            max-approval-rate hypothetical (green). The hypothetical routes each profile 100% to its
             highest-success ELIGIBLE gateway — it respects eligibility (wallet/USA/bans, i.e. the
             candidate set already present in the split) but ignores the VAMP and max-share caps."""
             _tc = _target or st

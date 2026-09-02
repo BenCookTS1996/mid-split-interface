@@ -268,6 +268,41 @@ class StreamlitLogHandler(logging.Handler):
             pass
 
 
+# [FN-235c] 19hm — RENAMED KILL SWITCHES, WITH THEIR OLD NAMES STILL ACCEPTED.
+_SWITCH_ALIASES = {
+    "ROUTING_PROJ_PROFILEBLOCK": "ROUTING_PROJ_CELLBLOCK",
+    "ROUTING_DOOR_COVER_PROFILES": "ROUTING_DOOR_COVER_CELLS",
+    "ROUTING_ROW_PARALLEL_MIN_PROFILES": "ROUTING_ROW_PARALLEL_MIN_CELLS",
+    "ROUTING_CA_ZEROPROFILE": "ROUTING_CA_ZEROCELL",
+}
+_SWITCH_LEGACY_USED: dict = {}
+
+
+def env_switch(name, default=None):
+    """Read a ROUTING_* switch by its CURRENT name, falling back to its old one.
+
+    The profile->cell rename (19hk/19hl/19hm) reaches these four switch names too, and a
+    switch name is a USER CONTRACT: it gets typed at a shell prompt and written down in
+    notes and tickets. Renaming it outright would silently stop honouring an instruction
+    someone had already recorded — the switch would read as unset and the run would look
+    fine while doing the opposite of what was asked.
+
+    So both spellings work, the new one wins, and `_SWITCH_LEGACY_USED` records any old
+    spelling that was actually honoured so the run log can say so rather than leaving the
+    reader to wonder which name took effect.
+    """
+    v = os.environ.get(name)
+    if v is not None:
+        return v
+    legacy = _SWITCH_ALIASES.get(name)
+    if legacy:
+        lv = os.environ.get(legacy)
+        if lv is not None:
+            _SWITCH_LEGACY_USED[legacy] = (name, lv)
+            return lv
+    return default
+
+
 # [FN-235b] 19hh
 _CAP_PAIRS_MEMO: dict = {}
 
@@ -283,7 +318,7 @@ def capability_pairs(mid_list_path, restrictions_path=None):
     capability mask keyed on the vampMid ALONE is only well defined when every fid of that
     vampMid agrees. They do not always agree: PaySafe - Total AV is wallet-capable on
     paysafe-usd-tav but NOT on paysafe-eur-tav / -gbp-tav, so a vampMid-only mask barred
-    PaySafe from wallet sub-cells in USD too. Currency IS on the scaffold and every fid is
+    PaySafe from wallet profiles in USD too. Currency IS on the scaffold and every fid is
     currency-specific, so (vampMid, currency) resolves it exactly.
 
     A pair counts as WALLET-INCAPABLE only when every ACTIVE fid for it is incapable — if any
@@ -540,12 +575,12 @@ def _variance_gap_temp(agg_sr, anchor=0.17, t_ceiling=0.30, n_cap=500.0):
     """Per-Bank×Currency softmax temperature from the STATISTICAL SIGNIFICANCE of
     the best-vs-second-best success-rate gap (variance-of-the-gap method).
 
-    For each cell: z = (p1 - p2) / sqrt(se1^2 + se2^2), where p1/p2 are the top two
+    For each profile: z = (p1 - p2) / sqrt(se1^2 + se2^2), where p1/p2 are the top two
     gateways' success rates and se_i = sqrt(p_i(1-p_i)/n_i) on effective attempts.
     Big z (a confidently-real gap) → sharpen; z≈0 (overlapping error bars) → flat.
-    Auto-calibrated: scale so the MEDIAN cell's temperature == `anchor` (the current
+    Auto-calibrated: scale so the MEDIAN profile's temperature == `anchor` (the current
     0.17 default), so overall aggressiveness is unchanged and only the distribution
-    across cells is data-driven. No user input. Returns (temps_by_cell, median_z, scale).
+    across profiles is data-driven. No user input. Returns (temps_by_cell, median_z, scale).
     """
     g = agg_sr.copy()
     g["_c"] = g["currency"].astype(str).str.strip().str.lower()
@@ -662,7 +697,7 @@ def _physical_cpu_count(default=4):
 # [FN-242]
 def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_keys=None):
     """Cap the share of any BANK-BLOCKED (bank, gateway) to the exploration floor and redistribute
-    the freed share to the OTHER (non-blocked) gateways in the same cell, proportionally. Cells with
+    the freed share to the OTHER (non-blocked) gateways in the same profile, proportionally. Profiles with
     no non-blocked recipient are left unchanged (nowhere to move the volume). Matches on
     lower/stripped (bank, gateway) — and, when `bin_to_bank` is given, ALSO on the parent-bank grain,
     so a BIN-vs-parent grain mismatch can't silently cap nothing here while the pre-GA auto-block
@@ -1109,7 +1144,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
 
 # [FN-243]
 def _ensure_base_30d_metrics():
-    """Compute & cache the 30-day baseline metrics (cell/gateway success rates,
+    """Compute & cache the 30-day baseline metrics (profile/gateway success rates,
     avg ticket, base totals) that the impact views rely on. Idempotent and shared
     by the Routing-engine tab (pre/post visuals) and the Impact tab, so both report
     identical pre/post revenue. Returns the cache dict, or None if no attempts data."""
@@ -1350,7 +1385,7 @@ def _locked_panel(step_html):
 def _split_df_to_xlsx_bytes(rdf):
     """Serialise one split DataFrame to .xlsx bytes for the export ZIP. Primary path uses
     xlsxwriter, which writes large sheets fast and applies the GO LIVE date format ONCE at the
-    workbook level (no per-cell number_format loop). Falls back to openpyxl if xlsxwriter is
+    workbook level (no per-profile number_format loop). Falls back to openpyxl if xlsxwriter is
     unavailable. Module-level so joblib/loky can pickle it for the parallel export writes."""
     import io as _io
     _rdf = rdf.copy()

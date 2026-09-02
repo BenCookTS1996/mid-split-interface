@@ -1,4 +1,4 @@
-"""Numba-accelerated fused decode+objective for the cross-cell tilt GA (OPT-IN).
+"""Numba-accelerated fused decode+objective for the cross-profile tilt GA (OPT-IN).
 
 This module powers the **"GA - Numba"** engine ONLY. The production "Genetic algorithm"
 engine never imports or touches it. Importing this file has no side effects and never
@@ -8,7 +8,7 @@ Why it exists
 -------------
 The per-generation hot loop is `_obj_viol(_decode(genome))` in `seed_search.py`. In
 NumPy that materialises several (population × gateways) intermediates per generation
-(the exp array, the per-cell reduceat sums, the water-fill temporaries, the per-MID
+(the exp array, the per-profile reduceat sums, the water-fill temporaries, the per-MID
 sparse sums). This kernel FUSES the whole decode+objective into a single pass over one
 candidate at a time, so the big intermediates never exist — that (not a smaller float)
 is where the speed-up comes from. It keeps full **float64** maths and sums in the SAME
@@ -100,9 +100,9 @@ def _fused_eval(G, M, ref, zr, zq, mid_id, cs, cc, elig, fine_idx, zr_profile, n
                 e_has_u, e_u_incap, e_u_wf):
     """One fused pass: ACTUAL genome batch G (P, 3M[+K]) -> (obj (P,), viol (P,)).
 
-    Mirrors `_decode_midtilt3` (softmax tilt -> per-cell renorm -> floor-then-cap water-fill),
+    Mirrors `_decode_midtilt3` (softmax tilt -> per-profile renorm -> floor-then-cap water-fill),
     then — when `has_elig` — `eligibility.apply_elig_pop` (bans->0+renorm, wallet blend+renorm,
-    USA blend+renorm, IN THAT ORDER, using the operator's OWN cell segments ecs/ecc), then
+    USA blend+renorm, IN THAT ORDER, using the operator's OWN profile segments ecs/ecc), then
     `_obj_viol` (revenue [- risk-min], VAMP-rate / volume / band / cap / floor violations),
     summing in the same index order as the NumPy versions so the two agree to float64 rounding.
     The eligibility stage is what lets the Numba engine STAY ON when ctx['elig_op'] is active

@@ -1,5 +1,5 @@
-"""STEP 3 - PROBLEM. Turn the forecast into the object the search moves: sub-cells, who is
-allowed to serve what (eligibility), the hard/soft constraints, and the per-cell solvers.
+"""STEP 3 - PROBLEM. Turn the forecast into the object the search moves: profiles, who is
+allowed to serve what (eligibility), the hard/soft constraints, and the per-profile solvers.
 
 The sN_ prefix is the order the PIPELINE runs, as a reading aid - not a claim that a
 module is used only in that step (band_projection, for one, is read by delivery too).

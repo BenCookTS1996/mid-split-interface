@@ -33,7 +33,7 @@ cross the limit, plus a fast-growing surcharge the further over you are).
 Two pieces, both pure-NumPy/scipy and fully unit-testable off the live pipeline:
 
   1. `build_col_incidence` / `shares_to_prop_raw` — aggregate the GA's per-column decoded shares
-     (N = cell×gateway rows) onto the projector's prop-keys ((cur,bank,[rpgt],vampMid)),
+     (N = profile×gateway rows) onto the projector's prop-keys ((cur,bank,[rpgt],vampMid)),
      i.e. the same grouping `_prop_items_from_gran` does, as a sparse (K×N) matmul.
   2. `ExactBandPenalty` — from per-band specs (midl, months, metric, ceil, floor, weight) it
      projects the population and returns the exact band violation per candidate, using the
@@ -175,7 +175,7 @@ class ExactBandPenalty:
                                      value, split out instead of discarded.
             detail_out["specs"]    : the spec list, so a caller can map columns → midl.
         Added 2026-08-19ab for BREACH-TARGETED MUTATION: the GA needs to know WHICH bands are
-        still breached in order to aim mutation at the cells feeding them, and this loop already
+        still breached in order to aim mutation at the profiles feeding them, and this loop already
         computes exactly that before throwing it away. The projection is the expensive part and has
         already run, so the detail is free.
 

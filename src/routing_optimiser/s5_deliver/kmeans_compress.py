@@ -2,10 +2,10 @@
 Volume-weighted k-means compression of a proposed split.
 
 Adapted from your k_means_compression.py, made self-contained. The idea:
-your ideal split has one bespoke rule per cell, which is far too many JSON
-configs to operate. Cells with near-identical gateway splits can share one
-representative rule. We cluster the per-cell share vectors (weighted by
-transaction volume, so high-volume cells pull the representative towards
+your ideal split has one bespoke rule per profile, which is far too many JSON
+configs to operate. Profiles with near-identical gateway splits can share one
+representative rule. We cluster the per-profile share vectors (weighted by
+transaction volume, so high-volume profiles pull the representative towards
 themselves) and keep just enough clusters to stay faithful to the ideal
 split, per a target accuracy you set per RPGT.
 """
@@ -34,9 +34,9 @@ def wallet_segment_split(split: pd.DataFrame, wallet_incapable, wallet_frac=None
     """Add a `pmp` (paymentMethodProvider) dimension so wallet traffic routes only
     to capable gateways.
 
-    Each (rpgt, currency, bank) cell is split into a NON-WALLET segment (shares
+    Each (rpgt, currency, bank) profile is split into a NON-WALLET segment (shares
     unchanged) and a WALLET segment (wallet-incapable gateways zeroed + renormalised),
-    with the cell volume divided by the cell's wallet fraction. If no gateway is
+    with the profile volume divided by the profile's wallet fraction. If no gateway is
     wallet-incapable, the split is returned unchanged (no pmp dimension), so configs
     keep matching all payment methods.
 
@@ -136,7 +136,7 @@ def compress_split(
 
     compressed_rules: one row per representative rule with the gateway share
                       columns, the covered banks, volume, and how many raw
-                      cells it stands in for.
+                      profiles it stands in for.
     elbow:            per (group) the k chosen and accuracy achieved.
     stats:            headline counts (raw rules vs compressed rules).
     """
@@ -236,30 +236,30 @@ def compress_to_pool_budget(split: pd.DataFrame, target_pools: int, count_pools_
                             k_max: int = 60, seed: int = 42,
                             method: str = "kmeans", allocation: str = "greedy",
                             parallel: int = 1, count_backend: str = "loky"):
-    """Compress so the GENERATED POOL count is <= target_pools, using as large a cell
+    """Compress so the GENERATED POOL count is <= target_pools, using as large a profile
     budget as possible under that ceiling.
 
     The pool count only exists after the full expand-and-merge pipeline
-    (build_split_exports -> generate_configs), so this binary-searches the cell budget
+    (build_split_exports -> generate_configs), so this binary-searches the profile budget
     fed to `compress_to_budget` and asks `count_pools_fn` for the resulting pool count
-    at each step, keeping the largest cell budget whose pools <= target.
+    at each step, keeping the largest profile budget whose pools <= target.
 
     Parameters
     ----------
-    split : per-cell long split (rpgt, currency, bank[, pmp], gateway, share, cell_volume).
+    split : per-profile long split (rpgt, currency, bank[, pmp], gateway, share, cell_volume).
     target_pools : desired MAX number of generated pools (hard ceiling).
     count_pools_fn : callable(compressed_long_df) -> int. Runs the caller's
         build_split_exports + generate_configs on a split and returns the pool count.
         Supplied by the caller because pool generation needs brand/wallet/country context.
 
     Returns (compressed_long, stats) where stats has:
-      raw_cells, raw_pools, cells, pools, target_pools, global_accuracy,
+      raw_cells, raw_pools, profiles, pools, target_pools, global_accuracy,
       feasible (bool; False = even the smallest split exceeds target),
-      curve [(cells, pools), ...] over the evaluated budgets, evals (int).
+      curve [(profiles, pools), ...] over the evaluated budgets, evals (int).
 
     Notes
     -----
-    * Pool count is (near-)monotonic in the cell budget: more clusters -> more distinct
+    * Pool count is (near-)monotonic in the profile budget: more clusters -> more distinct
       routing signatures -> fewer merges -> more pools. Binary search relies on this; the
       RETURNED budget is always verified to satisfy pools <= target, so the ceiling holds
       even if k-means wobble makes the curve slightly non-monotonic.
@@ -751,18 +751,18 @@ def compress_to_budget(split: pd.DataFrame, n_configs: int,
                        max_gateway_cap: float = MAX_GATEWAY_CAP,
                        k_max: int = 60, seed: int = 42,
                        method: str = "kmeans", allocation: str = "greedy"):
-    """Compress a per-cell split to ~n_configs representative rules TOTAL by greedily
+    """Compress a per-profile split to ~n_configs representative rules TOTAL by greedily
     allocating clusters across the (group_keys) groups to maximise ONE global,
-    VOLUME-WEIGHTED fidelity across every cell — so high-volume RPGTs (e.g. Monthly
+    VOLUME-WEIGHTED fidelity across every profile — so high-volume RPGTs (e.g. Monthly
     Initial) get clusters first (95% there is worth ~20× a low-volume RPGT).
 
-    Faithful by construction: each cell's shares are replaced by its cluster centroid
+    Faithful by construction: each profile's shares are replaced by its cluster centroid
     (capped at max_gateway_cap), and the reported accuracy is the volume-weighted
     fraction of traffic still routed as the uncompressed split intended.
 
     Returns (compressed_long, stats):
       compressed_long : long-format split (rpgt, currency, bank[, pmp], gateway, share,
-                        cell_volume) with each cell set to its centroid — feed to the
+                        cell_volume) with each profile set to its centroid — feed to the
                         exporter so identical centroids collapse into one config each.
       stats           : {raw_rules, compressed_rules, global_accuracy, per_group,
                          per_rpgt, curve, n_groups, budget}. `curve` = [(total_clusters,

@@ -460,12 +460,12 @@ class ExportManager:
         return pd.DataFrame(rows, columns=["is_mr", "orig_period", "pro_rata"])
 
     def _compute_fcp1_frac(self) -> pd.DataFrame:
-        """Fraction of each cell's volume the AllocationEngine will actually reroute:
+        """Fraction of each profile's volume the AllocationEngine will actually reroute:
         fcpNumber == 1, AND attemptNumber == 1 for the restricted RPGTs (monthly initial /
         annual sub sale / upgrades). Mirrors allocation_engine._map_and_filter_cohorts.
         Computed at the FULL (vampMid, RPGT, BIN, Currency, paymentMethodProvider, Country)
-        sub-cell grain when those columns exist — so each sub-cell moves EXACTLY its own
-        eligible volume (matching the pipeline's per-row gating) rather than a cell average.
+        profile grain when those columns exist — so each profile moves EXACTLY its own
+        eligible volume (matching the pipeline's per-row gating) rather than a profile average.
         Returns empty if the attempts frame lacks fcp data (projection defaults fcp1_frac=1.0).
         """
         _EMPTY = pd.DataFrame(columns=["vampMid", "RPGT", "BIN", "Currency", "fcp1_frac"])
@@ -491,8 +491,8 @@ class ExportManager:
                      if c in _fd.columns]
             a = _fd[_keep + _vi_cols].copy()
             # Total forecast volume over M0..M5. The true fraction was measured per month and is
-            # flat to within 0.1pt, so one value per sub-cell (what this column already is) is
-            # enough; the six-month total just steadies thin sub-cells.
+            # flat to within 0.1pt, so one value per profile (what this column already is) is
+            # enough; the six-month total just steadies thin profiles.
             a["_fc_total"] = a[_vi_cols].sum(axis=1)
             _pre_cnt = "_fc_total"
             _src = f"FORECAST ({len(_vi_cols)} x fc_vi_trx_m*)"
@@ -514,7 +514,7 @@ class ExportManager:
         if cnt is None:
             logger.info("   > fcp1_frac skipped (no volume column in attempts frame); export gets fcp1_frac=1.0.")
             return _EMPTY
-        # Optional finer sub-cell dims (present in the export → gate exactly per sub-cell).
+        # Optional finer profile dims (present in the export → gate exactly per profile).
         pmp_c = next((c for c in ("paymentMethodProvider", "paymentmethodprovider") if c in a.columns), None)
         ctry_c = next((c for c in ("Country", "country") if c in a.columns), None)
         g2v = {}
@@ -551,7 +551,7 @@ class ExportManager:
             _ren[ctry_c] = "Country"
         g = g.rename(columns=_ren)
         _tot_v = float(g["_tot"].sum())
-        logger.info(f"   > fcp1_frac source: {_src} · {len(g):,} sub-cell(s) · volume-weighted "
+        logger.info(f"   > fcp1_frac source: {_src} · {len(g):,} profile(s) · volume-weighted "
                     f"mean {(float(g['_el'].sum()) / _tot_v if _tot_v > 0 else 1.0):.4f}"
                     + ("" if _from_fcast else "  <- ROUTING_FCP1_FROM_FORECAST=0 or no forecast "
                                               "frame passed; tab 3 and the GA will disagree with "
@@ -592,14 +592,14 @@ class ExportManager:
         df['pro_rata'] = np.where(df['orig_period'] < 0, 0.0, df['pro_rata'].fillna(0.0))
         df = df.drop(columns=['orig_period', 'is_mr'])
 
-        # ADDITIVE: fcp1_frac = fraction of each (RPGT, BIN, Currency) cell that the
+        # ADDITIVE: fcp1_frac = fraction of each (RPGT, BIN, Currency) profile that the
         # AllocationEngine actually reroutes (fcpNumber==1, attemptNumber==1 for restricted
         # RPGTs). The routing optimiser multiplies pro_rata × fcp1_frac so its pre/post
         # impact only moves the same cohort the pipeline forecasts; the rest stays baseline.
         _ff = self._compute_fcp1_frac()
         if not _ff.empty:
             # Join on whatever grain fcp1_frac was computed at — including pmp / Country when
-            # present, so each sub-cell gets its EXACT eligible fraction (not a cell average).
+            # present, so each profile gets its EXACT eligible fraction (not a profile average).
             _keys = [k for k in ["vampMid", "RPGT", "BIN", "Currency",
                                  "paymentMethodProvider", "Country"]
                      if k in _ff.columns and k in df.columns]

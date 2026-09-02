@@ -38,20 +38,20 @@ Key structural facts verified in `_project_capped`:
   * An aged row seen in month `per` at age `t` ORIGINATED in month `om = per − t`, and its
     movement is governed by the ORIGIN t0 row's movable fraction and share
     (`_Pc → _T0` join on `om == per`).
-  * The moved-VAMP POOL is already aggregated to CELL grain (vampMid summed out):
+  * The moved-VAMP POOL is already aggregated to PROFILE grain (vampMid summed out):
     `pool(cell,per,t) = Σ_all-mids vc·pro_rata·fcp1` (the app's static `_Pc_movedvpool_a`),
     then re-split by the proposed share.
   * Caps are NOT applied inside the projection — the ceiling/floor is compared afterwards.
-    So the forward map is LINEAR in the (per-cell-normalised) share.
-  * **The movable fraction is GATED on the cell's proposed-share sum** (line 3951 of the app):
+    So the forward map is LINEAR in the (per-profile-normalised) share.
+  * **The movable fraction is GATED on the profile's proposed-share sum** (line 3951 of the app):
     `mv = where(psum > 0 AND vpsum > 0, pr·fcp, 0)` as of 2026-08-19aq — the vpsum test is the
-    CONSERVATION guard: a cell that is routed but has no VAMP-positive door has vshare == 0
+    CONSERVATION guard: a profile that is routed but has no VAMP-positive door has vshare == 0
     everywhere, so moving the VAMP out would destroy it (delivery has always held it instead).
-    ROUTING_VAMP_CONSERVE=0 restores the psum-only gate. In a cell where the candidate assigns ZERO to every
-    gateway (zero-volume historical cell, or every gateway zeroed by the wallet/USA `emask`),
+    ROUTING_VAMP_CONSERVE=0 restores the psum-only gate. In a profile where the candidate assigns ZERO to every
+    gateway (zero-volume historical profile, or every gateway zeroed by the wallet/USA `emask`),
     NOTHING moves — each MID holds 100 % of its own VAMP. This gate is candidate-dependent,
     so the VAMP held-cohort is NOT a single static offset: it is `Σvc` (constant) MINUS a
-    movement term `vc·mv` that is subtracted only when the origin cell is active (psum>0).
+    movement term `vc·mv` that is subtracted only when the origin profile is active (psum>0).
 
 Therefore, for the count metrics:
     VAMP(mid,P) = Σ_pc vc                                    (static constant)
@@ -60,12 +60,12 @@ Therefore, for the count metrics:
     Txn (mid,P) = Σ_{t0 cap rows}  ctot·base                         if psum_cell==0
                 = Σ_{t0 cap rows}  ctot·(base·(1−mv) + moved_tot·pshare)  if psum_cell>0
 where the per-row constants (`ctot`, `base`, `mv=pr·fcp`, `moved_tot`, `pool_sum`, `Σvc`) are
-STATIC (precomputed once) and the only per-candidate inputs are the per-cell shares and the
-`psum>0` active mask. `vshare`/`pshare` are the exact per-cell normalisations `_project_capped`
+STATIC (precomputed once) and the only per-candidate inputs are the per-profile shares and the
+`psum>0` active mask. `vshare`/`pshare` are the exact per-profile normalisations `_project_capped`
 uses. This module precomputes the static pieces and evaluates the (piecewise-)linear form.
 
 `BandProjector` precomputes the static collapse of `_project_capped` and evaluates it; the
-collapse is exact for the VAMP/Txn COUNT metrics — including a cell whose candidate share is
+collapse is exact for the VAMP/Txn COUNT metrics — including a profile whose candidate share is
 entirely zero (the psum==0 path). (The `vamp_pct` RATE metric is out of scope: project VAMP
 and volume separately and divide at the end.)
 
@@ -74,9 +74,9 @@ Inputs (both frames use lower-cased helper columns):
          (`_av` = per-row non-excluded VI used for the baseline share; `iscap`=MID has a band;
           `bf`=injected back-fill row; `excl`=switched-off; `emask`=wallet/USA-only masked)
   Pc   : cur, bin, rpgt, pmp, ctry, mid, midl, per, t, vc
-  pool : Pc-aligned static array = cell-grain moved-VAMP pool (`_Pc_movedvpool_a`).
+  pool : Pc-aligned static array = profile-grain moved-VAMP pool (`_Pc_movedvpool_a`).
 `prop` is a dict keyed (cur,bin,mid) — or (cur,bin,rpgt,mid) when by_rpgt — → proposed share.
-Cell (`grpk`) = (cur,bin,rpgt,pmp,ctry,per); `ctot` = cell total VI at t0.
+Profile (`grpk`) = (cur,bin,rpgt,pmp,ctry,per); `ctot` = profile total VI at t0.
 """
 from __future__ import annotations
 
@@ -187,10 +187,10 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                           vamp, txn, psum, vpsum, moved, pr, pshare, vshare, mvrow, nzc, exc,
                           rsum, gks):
     """Bit-identical numba equivalent of PopulationBandProjector.project_pop: flat passes over
-    the reduced scaffold with per-cell scratch (ncell), no dense (P × nR) arrays. ~7× faster on
+    the reduced scaffold with per-profile scratch (ncell), no dense (P × nR) arrays. ~7× faster on
     the real scaffold. cap_row is pre-filtered to non-excl rows (excl txn contributions are 0).
 
-    `cap` (max_share) < 1.0 folds in the per-sub-cell max-share water-fill (matches
+    `cap` (max_share) < 1.0 folds in the per-profile max-share water-fill (matches
     build_split_exports); cap >= 1.0 is a no-op. vshare is (re)derived from the capped routed
     share so the cap flows into VAMP exactly as the delivered projection does.
 
@@ -212,7 +212,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
     nlane == 1.
 
     FROZEN-SCAFFOLD LIFT (2026-08-19ae). The flat passes walk `live_rows` / `live_cells` instead
-    of every row and cell. A scaffold cell whose every row is masked or sits on a prop-key that no
+    of every row and profile. A scaffold profile whose every row is masked or sits on a prop-key that no
     GA column maps to has psum == 0 for EVERY candidate, so all ten flat passes over its rows are
     provably no-ops: `psum += v` adds exactly 0.0 (exact in floating point), and moved / nzc /
     vpsum / the water-fill are every one guarded on psum > 0. Skipping them is therefore
@@ -583,7 +583,11 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
 
 _cb_kernel = _njit(cache=False)(_cb_kernel_impl)
 _cb_kernel_par = _njit(cache=False, parallel=True)(_cb_kernel_impl)
-_PROJ_CB_ON = os.environ.get("ROUTING_PROJ_CELLBLOCK", "1") != "0"
+# 19hm: renamed with the OLD NAME STILL HONOURED. A switch name is a user contract — it is
+# typed at a prompt and written into notes — so renaming it outright would silently stop
+# obeying an instruction someone had already recorded. New name wins; old name still works.
+_PROJ_CB_ON = (os.environ.get("ROUTING_PROJ_PROFILEBLOCK",
+                              os.environ.get("ROUTING_PROJ_CELLBLOCK", "1")) != "0")
 # 19bz: FLOAT32, OPT-IN. See the module patch note. This is the ONE setting in the projector that
 # changes the answer, so it defaults OFF, it announces itself in the run log, and it measures its
 # own drift on the live scaffold every run instead of quoting a remembered figure.
@@ -778,7 +782,7 @@ def proj_config():
     # import. Setting one after the app has started does nothing at all, and there was no way to
     # see that from the log.
     for _nm, _im in (("ROUTING_PROJ_FLOAT32", _PROJ_F32),
-                     ("ROUTING_PROJ_CELLBLOCK", _PROJ_CB_ON),
+                     ("ROUTING_PROJ_PROFILEBLOCK", _PROJ_CB_ON),
                      ("ROUTING_PROJ_CHUNK", _PROJ_CHUNK_ON),
                      ("ROUTING_PROJ_PARALLEL", _PROJ_PAR_ON)):
         _raw = os.environ.get(_nm)
@@ -952,14 +956,14 @@ def _bitview(a):
 # [FN-011]
 def _prop_key(df: pd.DataFrame, by_rpgt: bool, by_profile: bool = False) -> np.ndarray:
     """Build each row's bucket address:
-      by_profile → 'cur|bin|rpgt|pmp|ctry|mid'  (CELL decision grain)
+      by_profile → 'cur|bin|rpgt|pmp|ctry|mid'  (PROFILE decision grain)
       by_rpgt    → 'cur|bin|rpgt|mid'
       else       → 'cur|bin|mid'
 
     This is the key a proposed share is looked up by — the SAME string format the projector's
     `prop_keys` use, so a candidate's shares line up with the right rows (like a postcode that
-    routes each share to the correct bucket). The sub-cell key includes pmp/ctry so a per-sub-cell
-    share maps to exactly one scaffold row (no broadcast across sub-cells).
+    routes each share to the correct bucket). The profile key includes pmp/ctry so a per-profile
+    share maps to exactly one scaffold row (no broadcast across profiles).
     """
     _cur = df["cur"].astype(str).str.strip().str.lower()
     _bin = df["bin"].astype(str).str.strip()
@@ -1122,8 +1126,8 @@ def _grp_codes(df, cols):
     first-appearance order -- therefore the same integer labels, row for row.
 
     THAT IDENTITY IS THE WHOLE POINT, and it is not cosmetic. `gcode`'s labels set the order the
-    numba kernels visit cells in, and a band value is a float sum ACROSS cells. Float addition is
-    not associative, so re-labelling the cells -- even into a perfectly valid partition -- could
+    numba kernels visit profiles in, and a band value is a float sum ACROSS profiles. Float addition is
+    not associative, so re-labelling the profiles -- even into a perfectly valid partition -- could
     move the last bits of every band value. Preserving the labels is what makes this a speedup with
     nothing to verify downstream rather than a change needing a bit-identity argument.
 
@@ -1192,12 +1196,12 @@ def _static(T0: pd.DataFrame):
     """Precompute the per-row pieces that DON'T depend on the candidate (done once).
 
     Returns (gcode, ngc, base, ctot, mv_static):
-      * gcode / ngc — an integer code per cell (grpk) + the number of cells, so cell-wise
-        sums become fast bincounts (grouping rows into their cell "bins");
-      * base        — each row's baseline share of its cell (non-excluded VI ÷ cell VI);
-      * ctot        — the cell's total VI at t0, broadcast onto each of its rows;
+      * gcode / ngc — an integer code per profile (grpk) + the number of profiles, so profile-wise
+        sums become fast bincounts (grouping rows into their profile "bins");
+      * base        — each row's baseline share of its profile (non-excluded VI ÷ profile VI);
+      * ctot        — the profile's total VI at t0, broadcast onto each of its rows;
       * mv_static   — the UNGATED movable fraction pr·fcp. The psum>0 gate ("did the
-        candidate put any volume in this cell?") is applied per-candidate at eval time,
+        candidate put any volume in this profile?") is applied per-candidate at eval time,
         matching `_project_capped` line 3951.
     """
     # 19fy: identical codes, ~11.7x faster -- see _grp_codes. None ⇒ it declined, so run the
@@ -1429,7 +1433,7 @@ def _vok_rows(T0):
 
 def _shares(T0, prop, by_rpgt, gcode, ngc, base, by_profile=False):
     """Return (pshare, vshare, psum) for the candidate. `psum` is the per-row (broadcast
-    per-cell) proposed-share sum; `psum>0` is the active mask that gates `mv`."""
+    per-profile) proposed-share sum; `psum>0` is the active mask that gates `mv`."""
     prop_raw = _prop_raw(T0, prop, by_rpgt, by_profile)
     psum = np.bincount(gcode, weights=prop_raw, minlength=ngc)[gcode]
     pshare = np.array(base, dtype=float)
@@ -1453,7 +1457,7 @@ def _shares(T0, prop, by_rpgt, gcode, ngc, base, by_profile=False):
 class BandProjector:
     """Precompute the static collapse of `_project_capped` for a set of banded (midl,period)
     pairs; `project(prop)` then evaluates the exact VAMP/Txn projection as a small
-    (piecewise-)linear form. The only per-candidate inputs are the per-cell shares and the
+    (piecewise-)linear form. The only per-candidate inputs are the per-profile shares and the
     `psum>0` active mask that gates the movable fraction."""
 
     # [FN-017]
@@ -1660,14 +1664,14 @@ def _ix32(arr, _stats=None):
 
 class PopulationBandProjector:
     """Exact `_project_capped` band values for a WHOLE population of candidate splits at once,
-    restricted to just the sub-cells that feed the banded (midl,period) pairs.
+    restricted to just the profiles that feed the banded (midl,period) pairs.
 
     Same math as `BandProjector` (two-cohort held/moved, psum-gated
-    movable fraction, per-sub-cell pshare/vshare renormalisation) but vectorised over P
+    movable fraction, per-profile pshare/vshare renormalisation) but vectorised over P
     candidates with dense NumPy so it can be called inside the GA worker's fitness in place
-    of the volume-ratio proxy. Only cells that are (a) a capped banded t0 cell or (b) an
-    origin cell of a banded aged row are kept — but ALL MIDs of those cells are retained so
-    the per-sub-cell normalisation (psum/vpsum) is exact.
+    of the volume-ratio proxy. Only profiles that are (a) a capped banded t0 profile or (b) an
+    origin profile of a banded aged row are kept — but ALL MIDs of those profiles are retained so
+    the per-profile normalisation (psum/vpsum) is exact.
 
     Interface
     ---------
@@ -2306,18 +2310,18 @@ class PopulationBandProjector:
     def _lift_arrays(self, lanes, buffers=None):
         """(live_rows, live_cells) for the frozen-scaffold lift, and PRIME the frozen scratch.
 
-        A scaffold cell is FROZEN when every one of its rows is either masked (excl|emask) or sits
+        A scaffold profile is FROZEN when every one of its rows is either masked (excl|emask) or sits
         on a prop-key with an all-zero incidence row — i.e. a prop-key no GA share column maps to,
-        so prop_raw is 0 there for every candidate. Such a cell has psum == 0 always, which makes
+        so prop_raw is 0 there for every candidate. Such a profile has psum == 0 always, which makes
         every flat pass over its rows a provable no-op (see the kernel docstring). Measured on the
-        2026-08-21 21:24 scaffold: 95,174 of 174,827 cells (54.4%) carrying 298,841 of 1,128,484
+        2026-08-21 21:24 scaffold: 95,174 of 174,827 profiles (54.4%) carrying 298,841 of 1,128,484
         rows (26.5%).
 
         THE PRIMING IS THE DANGEROUS PART, not the index arrays. The nC/nA loops still read
         `pshare[r]`, `mvrow[r]` and `vshare[r]` for frozen cap/pool rows. In the unlifted kernel
         those were rewritten every candidate; under the lift nothing writes them, so they must be
         set to the values the unlifted kernel would have produced — pshare[r] = base[r],
-        mvrow[r] = 0, vshare[r] = 0, pr[r] = 0 — and the frozen CELLS' psum/moved/nzc/vpsum/exc/
+        mvrow[r] = 0, vshare[r] = 0, pr[r] = 0 — and the frozen PROFILES' psum/moved/nzc/vpsum/exc/
         rsum must be 0. Prime once (they are candidate- AND call-independent); leave them stale and
         the answer is silently wrong with nothing to see.
 
@@ -2380,14 +2384,14 @@ class PopulationBandProjector:
 
     # [FN-022b2]
     def _frozen_profile_mask(self, invert=False):
-        """Which scaffold cells are FROZEN — psum == 0 for every candidate, for ever.
+        """Which scaffold profiles are FROZEN — psum == 0 for every candidate, for ever.
 
         ONE DEFINITION, two callers: the lift (which skips their rows in the flat passes) and
         the 19fs aged-row hoist (which folds their aged rows into `vconst`). It was inline in
         `_lift_arrays` until 19fs; a second private copy is how the two would come to disagree
-        about which cells are frozen, and they must not.
+        about which profiles are frozen, and they must not.
 
-        A cell is frozen when EVERY one of its rows is either masked (excl | emask) or sits on a
+        A profile is frozen when EVERY one of its rows is either masked (excl | emask) or sits on a
         prop-key with an all-zero incidence row — a prop-key no GA share column maps to.
         Returns the FROZEN mask, or the live mask when `invert`. None if the incidence is absent.
         """
@@ -2414,7 +2418,7 @@ class PopulationBandProjector:
 
     # [FN-022c]
     def set_lift_incidence(self, incidence):
-        """Give the projector the GA's column→prop-key incidence so it can find frozen cells.
+        """Give the projector the GA's column→prop-key incidence so it can find frozen profiles.
 
         Called by the app once the incidence exists. Without it the lift stays OFF (the projector
         cannot know which prop-keys are reachable), and the kernel runs the full ranges — the
@@ -2599,7 +2603,7 @@ class PopulationBandProjector:
                 nlane = 1
         # 19bt: PROFILE-BLOCKED FIRST. It declines (returns None) if the layout cannot be built or
         # the lift's profile-granularity invariant does not hold, in which case everything below runs
-        # exactly as before — the flat path is the revert, untouched, and ROUTING_PROJ_CELLBLOCK=0
+        # exactly as before — the flat path is the revert, untouched, and ROUTING_PROJ_PROFILEBLOCK=0
         # forces it.
         # hasattr, not a bare call: `project_pop_numba` is borrowed by lightweight stand-in
         # objects (the test suite's projector stubs, and any future diagnostic that wants the
@@ -2624,15 +2628,15 @@ class PopulationBandProjector:
 
     # [FN-023c]
     def _cb_arrays(self, a):
-        """The cell-major layout, built ONCE per lift (returns None if it cannot be trusted).
+        """The profile-major layout, built ONCE per lift (returns None if it cannot be trusted).
 
-        Layout: [live rows, cell-major, stable within a cell | frozen rows]. `pos` maps an original
+        Layout: [live rows, profile-major, stable within a profile | frozen rows]. `pos` maps an original
         row index to its slot, so cap_row / pc_org are remapped statically and the nC / nA loops
         keep their exact order.
 
-        THE INVARIANT. The frozen-scaffold lift is at CELL granularity — live_rows is exactly the
-        rows of live cells — and the derived `mvrow` / `vshare` (see the kernel) lean on that: a
-        frozen row must always sit in a cell with psum == 0 so the gate returns 0.0. If that ever
+        THE INVARIANT. The frozen-scaffold lift is at PROFILE granularity — live_rows is exactly the
+        rows of live profiles — and the derived `mvrow` / `vshare` (see the kernel) lean on that: a
+        frozen row must always sit in a profile with psum == 0 so the gate returns 0.0. If that ever
         stops holding, this returns None and the flat kernel runs instead. It is checked, not
         assumed, because the failure would be a silently wrong answer rather than a crash."""
         _lr, _lc = self._lift_arrays(1, None)
@@ -2691,7 +2695,7 @@ class PopulationBandProjector:
                   "whole scaffold, and mvrow / vshare are derived in their only reader instead of "
                   "being materialised. Bit-identical — stable permutation, so every per-profile sum "
                   "keeps its order — and self-checked against the flat kernel on this scaffold "
-                  "before any result is used. ROUTING_PROJ_CELLBLOCK=0 reverts.")
+                  "before any result is used. ROUTING_PROJ_PROFILEBLOCK=0 reverts.")
             return cb
         except Exception as _cbe:                  # noqa: BLE001
             self._cb = {"key": key, "ok": False}
@@ -2703,7 +2707,7 @@ class PopulationBandProjector:
     def _f32_arrays(self, a, cb):
         """float32 twins of every FLOAT input, plus float32 scratch. Index arrays stay int32.
 
-        Cached on the cell-blocked layout, so it is built once per layout and dies with it. Only
+        Cached on the profile-blocked layout, so it is built once per layout and dies with it. Only
         float64 arrays are narrowed — casting an index array would be a correctness change, not a
         precision one."""
         _f = cb.get("_f32")
@@ -2754,7 +2758,7 @@ class PopulationBandProjector:
 
     # [FN-023d]
     def _cb_prime(self, cb, buf, lanes):
-        """Frozen rows keep the values the lift primes; frozen cells keep zero.
+        """Frozen rows keep the values the lift primes; frozen profiles keep zero.
 
         Idempotent per (buffer identity, lane count) — the frozen slots are candidate- AND
         call-independent, and the kernel never writes them, so priming once is enough. Leave them
@@ -2783,7 +2787,7 @@ class PopulationBandProjector:
         out by 12 between them", and that distinction is the whole basis on which the drift was
         accepted, so both are measured.
 
-        Lane count changes the order the per-cell sums accumulate in, so a drift measured at P=1 is
+        Lane count changes the order the per-profile sums accumulate in, so a drift measured at P=1 is
         not a statement about a search running at P=35. The caller measures at both.
         """
         _nR = len(self._gcode); _B = int(self._B)
@@ -2808,7 +2812,7 @@ class PopulationBandProjector:
 
     # [FN-023e]
     def _project_cb(self, prop_raw, a, P, par, chunk, lanes, nlane, buf):
-        """Cell-blocked projection. Returns None to decline, in which case the flat path runs."""
+        """Profile-blocked projection. Returns None to decline, in which case the flat path runs."""
         cb = self._cb_arrays(a)
         if cb is None:
             return None
@@ -3014,7 +3018,7 @@ class PopulationBandProjector:
             _CB_OK["shouted"] = True
             _pnote("*** cell-blocked water-fill hit the 50-sweep cap. That is the one case where "
                    "per-cell convergence is NOT provably identical to the flat kernel's global "
-                   "loop. Re-run with ROUTING_PROJ_CELLBLOCK=0 and compare before trusting these "
+                   "loop. Re-run with ROUTING_PROJ_PROFILEBLOCK=0 and compare before trusting these "
                    "numbers.")
         _CB_OK["sweeps"] = max(int(_CB_OK.get("sweeps", 0)), int(sw.max()))
         return _v, _t
@@ -3050,16 +3054,16 @@ class PopulationBandProjector:
 
     # [FN-024]
     def _profilesum(self, x):
-        """(P, nR) -> (P, ngc) segment sum over cell codes via sparse matmul (C-fast)."""
+        """(P, nR) -> (P, ngc) segment sum over profile codes via sparse matmul (C-fast)."""
         return np.asarray((self._S @ x.T).T)
 
     # [FN-024b]
     def _cap_pshare(self, pshare, act):
-        """Per-sub-cell max-share water-fill on the (P, nR) normalised routed share `pshare`
-        (sums to 1 per active cell). Bit-faithful to build_split_exports._cap_rows: only cells
+        """Per-profile max-share water-fill on the (P, nR) normalised routed share `pshare`
+        (sums to 1 per active profile). Bit-faithful to build_split_exports._cap_rows: only profiles
         with >=2 non-zero routed gateways are capped; excess over `self._cap` is redistributed to
         the OTHER present gateways proportional to their remaining room, up to 50 sweeps. Inactive
-        cells (act=False) are never touched. Returns a new capped array (input unmodified)."""
+        profiles (act=False) are never touched. Returns a new capped array (input unmodified)."""
         cap = self._cap
         if cap >= 1.0:
             return pshare

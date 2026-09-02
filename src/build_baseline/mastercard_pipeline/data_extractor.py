@@ -632,20 +632,20 @@ class DataExtractor:
         if 'STICKY' in split_df.columns:
             dedup_cols.append('STICKY')
 
-        # CELL-LEVEL CATCH-ALL: the 'Other'/'All' fallback is a safety net for profiles that have NO
-        # specific rule — it must NOT be injected into a cell that is already explicitly routed.
-        # Drop every Expanded (catch-all) row whose full-grain cell already has >=1 Specific row, so
+        # PROFILE-LEVEL CATCH-ALL: the 'Other'/'All' fallback is a safety net for profiles that have NO
+        # specific rule — it must NOT be injected into a profile that is already explicitly routed.
+        # Drop every Expanded (catch-all) row whose full-grain profile already has >=1 Specific row, so
         # the catch-all only fires where the profile is genuinely undefined. (Mirrors the same fix in
         # vamp_pipeline/data_extractor.py — see that build marker.)
         if 'Rule_Source' in split_df.columns and (split_df['Rule_Source'] == 'Expanded').any():
-            _spec_cells = split_df.loc[split_df['Rule_Source'] == 'Specific', dedup_cols].drop_duplicates()
-            if not _spec_cells.empty:
-                _spec_cells = _spec_cells.assign(_has_specific=1)
-                split_df = split_df.merge(_spec_cells, on=dedup_cols, how='left')
+            _spec_profiles = split_df.loc[split_df['Rule_Source'] == 'Specific', dedup_cols].drop_duplicates()
+            if not _spec_profiles.empty:
+                _spec_profiles = _spec_profiles.assign(_has_specific=1)
+                split_df = split_df.merge(_spec_profiles, on=dedup_cols, how='left')
                 _drop_expanded = (split_df['Rule_Source'] == 'Expanded') & (split_df['_has_specific'] == 1)
                 _n_dropped = int(_drop_expanded.sum())
                 split_df = split_df.loc[~_drop_expanded].drop(columns=['_has_specific']).reset_index(drop=True)
-                logger.info("cell-level catch-all: dropped %d Expanded catch-all row(s) in cells that "
+                logger.info("profile-level catch-all: dropped %d Expanded catch-all row(s) in profiles that "
                             "already carry a Specific rule.", _n_dropped)
 
         if not split_df.empty:

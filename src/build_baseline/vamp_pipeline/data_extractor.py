@@ -697,22 +697,22 @@ class DataExtractor:
         dedup_cols = ['Brand', 'RPGT', 'Currency', 'BIN', 'paymentMethodProvider', 'Country']
         if 'STICKY' in split_df.columns: dedup_cols.append('STICKY')
 
-        # CELL-LEVEL CATCH-ALL: the 'Other'/'All' fallback is a safety net for profiles that have NO
-        # specific rule — it must NOT be injected into a cell that is already explicitly routed.
+        # PROFILE-LEVEL CATCH-ALL: the 'Other'/'All' fallback is a safety net for profiles that have NO
+        # specific rule — it must NOT be injected into a profile that is already explicitly routed.
         # Previously the catch-all was exploded per-BIN and de-duplicated per gatewayFid, so a gateway
         # the sheet set to 0 (dropped by the `Share > 0` filter in _load_split_sheet) was re-added at
-        # its catch-all share EVEN in cells carrying other specific shares (e.g. a zeroed Braintree
-        # coming back at ~10%). Fix: drop every Expanded (catch-all) row whose full-grain cell already
+        # its catch-all share EVEN in profiles carrying other specific shares (e.g. a zeroed Braintree
+        # coming back at ~10%). Fix: drop every Expanded (catch-all) row whose full-grain profile already
         # has >=1 Specific row, so the catch-all only fires where the profile is genuinely undefined.
         if 'Rule_Source' in split_df.columns and (split_df['Rule_Source'] == 'Expanded').any():
-            _spec_cells = split_df.loc[split_df['Rule_Source'] == 'Specific', dedup_cols].drop_duplicates()
-            if not _spec_cells.empty:
-                _spec_cells = _spec_cells.assign(_has_specific=1)
-                split_df = split_df.merge(_spec_cells, on=dedup_cols, how='left')
+            _spec_profiles = split_df.loc[split_df['Rule_Source'] == 'Specific', dedup_cols].drop_duplicates()
+            if not _spec_profiles.empty:
+                _spec_profiles = _spec_profiles.assign(_has_specific=1)
+                split_df = split_df.merge(_spec_profiles, on=dedup_cols, how='left')
                 _drop_expanded = (split_df['Rule_Source'] == 'Expanded') & (split_df['_has_specific'] == 1)
                 _n_dropped = int(_drop_expanded.sum())
                 split_df = split_df.loc[~_drop_expanded].drop(columns=['_has_specific']).reset_index(drop=True)
-                logger.info("cell-level catch-all: dropped %d Expanded catch-all row(s) in cells that "
+                logger.info("profile-level catch-all: dropped %d Expanded catch-all row(s) in profiles that "
                             "already carry a Specific rule (catch-all now fires only where no specific "
                             "profile exists).", _n_dropped)
 

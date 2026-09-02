@@ -260,7 +260,7 @@ class AllocationEngine:
         bit-identical to the pre-vp02 engine. `ctx` carries only what the log-only accounting
         needs.
 
-        Only origins 0..5 are built: the mover runs on `t <= m` cells only, and there
+        Only origins 0..5 are built: the mover runs on `t <= m` profiles only, and there
         `origin = m - t` is always in [0, m] and so in [0, 5].
         """
         import os as _os_vo
@@ -281,7 +281,7 @@ class AllocationEngine:
         off = np.where(aff, off, np.inf)
         frc = np.where(aff, np.nan_to_num(frc), 0.0)
 
-        # Renormalisation group = one source cell x one timeline slice, i.e. exactly the set of
+        # Renormalisation group = one source profile x one timeline slice, i.e. exactly the set of
         # destination rules `_normalize_shares` normalised over.
         gcols = [c for c in (idx_src + ['GO LIVE']) if c in chunk_merged_df.columns]
         gid = chunk_merged_df.groupby(gcols, observed=True, sort=False).ngroup().to_numpy()
@@ -353,7 +353,7 @@ class AllocationEngine:
                     elif _vo_share is None:
                         vamp_move_ratio = share_vamp
                     else:
-                        # vp02: origin month of this cell is m - t, always in [0, 5] when t <= m
+                        # vp02: origin month of this profile is m - t, always in [0, 5] when t <= m
                         vamp_move_ratio = _vo_share[m - t]
                     # 🟢 UPGRADED TO FLOAT64
                     _vamp_vals = chunk_merged_df[f't{t}_fcast_m{m}'].values.astype(np.float64)
@@ -598,7 +598,7 @@ class AllocationEngine:
         logger.info("   > VAMP ORIGIN SHARE (vp02): a gateway switched off for transactions "
                     "cannot be the destination for VAMP whose ORIGIN transaction post-dates the "
                     "switch-off. Withheld below and renormalised onto the live destinations in "
-                    "the same profile - each cell's VAMP TOTAL IS UNCHANGED, only who holds it:")
+                    "the same profile - each profile's VAMP TOTAL IS UNCHANGED, only who holds it:")
         for _pre in (True, False):
             rows = [(k[0], v) for k, v in rep.items() if k[1] is _pre and abs(sum(v)) > 1e-9]
             if not rows:
@@ -795,7 +795,7 @@ class AllocationEngine:
         logger.info("Initializing Allocation Matrix (Data Cleaning & Setup)...")
 
         # DIAGNOSTIC (log-only): dump the RAW parsed routing rules (self.split_df) for the
-        # focus cell, straight from data_extractor and BEFORE any engine processing — each
+        # focus profile, straight from data_extractor and BEFORE any engine processing — each
         # gateway's parsed Share + Rule_Source. This pinpoints where a gateway the exported
         # rule scored 0% / omitted (e.g. braintree, bancard) actually enters the split.
         try:
@@ -843,7 +843,7 @@ class AllocationEngine:
         mapped_agg, unmapped_agg = self._map_and_filter_cohorts(df_in, split_work)
 
         # DIAGNOSTIC (log-only): dump the engine's OWN normalised routing shares (Share_Norm)
-        # per gateway for the focus cell, BEFORE any allocation. This is the decisive test:
+        # per gateway for the focus profile, BEFORE any allocation. This is the decisive test:
         # if a gateway the exported rule scores at 0% (e.g. braintree) shows Share_Norm>0 here,
         # the divergence is in rule parsing / normalisation (data_extractor / snapshots); if it
         # is 0 here yet still receives volume in POST, the divergence is a later redistribution.
@@ -872,7 +872,7 @@ class AllocationEngine:
 
         # DIAGNOSTIC (log-only, never changes results): env ROUTING_ALLOC_TRACE="cur|bin|rpgt"
         # dumps each gateway's MAPPED (rerouted) vs UNMAPPED (held with incumbent) VI for that
-        # cell, so the tab-3-vs-tab-5 held-cohort gap (e.g. Braintree) can be localised exactly —
+        # profile, so the tab-3-vs-tab-5 held-cohort gap (e.g. Braintree) can be localised exactly —
         # is the incumbent's retained volume the unmapped cohort, or something the projection can't
         # see? Gated so it costs nothing unless enabled.
         import os as _os
@@ -950,7 +950,7 @@ class AllocationEngine:
         pre_df, post_df = self._apply_death_syncs(pre_df, post_df)
 
         # DIAGNOSTIC (log-only): if ROUTING_ALLOC_TRACE="cur|bin|rpgt" is set, dump the FINAL
-        # pre→post VI per finalGateway for that cell (after death-syncs), broken down by
+        # pre→post VI per finalGateway for that profile (after death-syncs), broken down by
         # paymentMethodProvider × Country when present. Paired with the MAPPED/UNMAPPED dump
         # above, this shows EXACTLY where an incumbent's post volume comes from — held (unmapped)
         # vs received-as-destination vs death-sync — i.e. the source of the tab3-vs-tab5 gap
@@ -1006,10 +1006,10 @@ class AllocationEngine:
                     _qg = post_df.groupby(_pcols + ["finalGateway"], observed=True)[_vq].sum().rename("post")
                     _m = pd.concat([_pg, _qg], axis=1).fillna(0.0).reset_index()
                     _m["absd"] = (_m["post"] - _m["pre"]).abs()
-                    _cellst = _m.groupby(_pcols).agg(vol=("post", "sum"), move=("absd", "sum"))
+                    _profilest = _m.groupby(_pcols).agg(vol=("post", "sum"), move=("absd", "sum"))
                     _pick, _seen = [], set()
-                    for _k in list(_cellst.sort_values("vol", ascending=False).head(3).index) + \
-                              list(_cellst.sort_values("move", ascending=False).head(4).index):
+                    for _k in list(_profilest.sort_values("vol", ascending=False).head(3).index) + \
+                              list(_profilest.sort_values("move", ascending=False).head(4).index):
                         _kk = _k if isinstance(_k, tuple) else (_k,)
                         if _kk not in _seen:
                             _seen.add(_kk); _pick.append(_kk)
@@ -1017,7 +1017,7 @@ class AllocationEngine:
                             break
                     _mg = _m.groupby(_pcols)
                     logger.info(f"── GRANULAR PROFILE SAMPLES (tab-5 actual) · {len(_pick)} of "
-                                f"{len(_cellst):,} profiles ({' × '.join(_pcols)}) · M1 VI ──")
+                                f"{len(_profilest):,} profiles ({' × '.join(_pcols)}) · M1 VI ──")
                     logger.info("   each row: gateway · PRE → POST · Δ")
                     for _kk in _pick:
                         _rows = _mg.get_group(_kk if len(_kk) > 1 else _kk[0]).copy()

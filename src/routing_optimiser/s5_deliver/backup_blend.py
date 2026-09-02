@@ -10,7 +10,7 @@ incumbent gateways (e.g. braintree-usd-tav = 12/16, bancard-usd-tav = 1) a fixed
 share. The pipeline's data_extractor._expand_dynamic_bins EXPANDS that catch-all onto
 every historical BIN, and its rule parser DROPS any gateway the split set to exactly 0
 (``Share > 0`` filter) — so an explicit 0 cannot override the catch-all. Net effect for
-a cell whose split zeroed such a gateway:
+a profile whose split zeroed such a gateway:
 
     effective = (split shares, summing to 1)  +  (catch-all gateways, as fractions)
                                                   all renormalised
@@ -117,22 +117,22 @@ def parse_backup_catchall(backup_dir: str, rpgt_filter: str | None = None) -> Di
 
 # [FN-003]
 def blend_profile_shares(specific: Dict[str, float], catchall: Dict[str, float]) -> Dict[str, float]:
-    """Reproduce the pipeline's effective per-cell routing shares.
+    """Reproduce the pipeline's effective per-profile routing shares.
 
-    ``specific``  : the optimiser/exported split for ONE cell {gatewayFid: share} (any
+    ``specific``  : the optimiser/exported split for ONE profile {gatewayFid: share} (any
                     scale; only strictly-positive shares survive, mirroring the parser's
                     ``Share > 0`` drop).
-    ``catchall``  : the backup catch-all for that cell {gatewayFid: pct} on the 0–100
+    ``catchall``  : the backup catch-all for that profile {gatewayFid: pct} on the 0–100
                     scale (from parse_backup_catchall).
 
     Returns {gatewayFid: effective_share} summing to 1.0.
 
-    CELL-LEVEL catch-all (2026-08-16): a cell that carries ANY specific positive share is a DEFINED
-    profile, so the catch-all does NOT fire for it — only its specific shares ship (renormalised).
+    PROFILE-LEVEL catch-all (2026-08-16): a profile that carries ANY specific positive share is a DEFINED
+    cell, so the catch-all does NOT fire for it — only its specific shares ship (renormalised).
     This mirrors data_extractor._apply_chronological_deduplication, which drops Expanded catch-all
-    rows in any full-grain cell that already has a Specific rule. The catch-all is injected ONLY when
-    the cell has no specific share at all (a genuinely undefined profile). (Previously the catch-all
-    was injected per-gateway even into routed cells — re-adding a zeroed gateway at ~10% — which is
+    rows in any full-grain profile that already has a Specific rule. The catch-all is injected ONLY when
+    the profile has no specific share at all (a genuinely undefined cell). (Previously the catch-all
+    was injected per-gateway even into routed profiles — re-adding a zeroed gateway at ~10% — which is
     the behaviour that was corrected.)
     """
     spec = {g: float(v) for g, v in (specific or {}).items() if float(v) > 0}
@@ -148,7 +148,7 @@ def blend_profile_shares(specific: Dict[str, float], catchall: Dict[str, float])
 
 # [FN-004]
 def _catchall_by_vampmid(catchall_profile: Dict[str, float], fid2vamp: Dict[str, str]) -> Dict[str, float]:
-    """Map a cell's catch-all {gatewayFid: pct} onto {vampMid: pct} (summing fids that
+    """Map a profile's catch-all {gatewayFid: pct} onto {vampMid: pct} (summing fids that
     share a vampMid), using fid2vamp (lower-cased keys). Fids with no vampMid are dropped."""
     out: Dict[str, float] = {}
     for fid, pct in (catchall_profile or {}).items():
@@ -173,7 +173,7 @@ def blend_prop_items(prop_items, catchall, fid2vamp, by_rpgt=None):
     fid2vamp   : {gatewayFid(lower): vampMid} to map catch-all fids onto vampMids.
 
     Returns a NEW list of tuples at the SAME arity, with catch-all vampMids injected per
-    cell (incl. cells where the split gave them 0/none) and every cell renormalised. If
+    profile (incl. profiles where the split gave them 0/none) and every profile renormalised. If
     catchall is empty the input is returned unchanged (no-op). Only the 7-tuple grain can
     match the catch-all's pmp/Country exactly; coarser grains pool the catch-all (cur,rpgt)
     over pmp/Country using an equal blend — a documented approximation for those callers.
@@ -245,7 +245,7 @@ def parse_rules_to_split(rules_dir: str) -> pd.DataFrame:
 
     Reads every wide rule sheet (Currency / RPGT / BIN columns + one weight column per
     gateway), melts the gateway weight columns into rows, and normalises the weights to a
-    SHARE summing to 1 within each (rpgt, currency, bank) cell — the shape the Impact tab's
+    SHARE summing to 1 within each (rpgt, currency, bank) profile — the shape the Impact tab's
     ``_impact_eval_frame`` expects.
 
     Returns columns ``[rpgt, currency, bank, gateway, share]``. ``bank`` holds the BIN from
