@@ -25,7 +25,7 @@ from __future__ import annotations
 # module had NONE — so it printed "(no __build__)" on every run and a stale in-memory copy of it was
 # undetectable. That is the failure mode that wasted the 2026-08-22 16:13 run on band_projection.
 __build__ = ("2026-08-19bn-baseline-recon-wrong-frame"
-             "+2026-08-19au-baseline-recon-missing-column+2026-09-02-19gz-baseline-row-counts-and-excel-note")
+             "+2026-08-19au-baseline-recon-missing-column+2026-09-02-19gz-baseline-row-counts-and-excel-note+2026-09-02-19ha-baseline-reconciliation-table")
 
 
 import logging
@@ -536,19 +536,35 @@ def _reconcile_pre_against_bin_rpgt(pre: pd.DataFrame, out_dir: str) -> None:
                         "exports share no baseline column, so this guard cannot verify the "
                         "single-source claim. That is a schema problem, not a pass.)")
             return
+        # ── 19ha: A TABLE, and it prints WHETHER OR NOT the two agree ────────────────────
+        # This was one dense sentence that buried the two figures it exists to compare and
+        # showed the variance only when it was non-zero — so on a healthy run the reader
+        # could not see that the check had actually compared anything. Both sources and the
+        # variance now sit in columns, every run, and the verdict is a separate line.
         _bad = []
         for _lbl, (_px, _bx) in _pairs.items():
             if abs(_bx - _px) > max(1.0, 0.005 * abs(_bx)):
                 _bad.append(f"{_lbl} {_px:,.1f} vs {_bx:,.1f}")
+        logger.info("      BASELINE RECONCILIATION — the routing baseline must come from ONE "
+                    "source. These are the same two totals read off both exports:")
+        logger.info("      %-10s%18s%18s%14s", "metric", "pro-rata export", "bin_rpgt",
+                    "variance")
+        logger.info("      %s", "-" * 10 + "-" * 18 + "-" * 18 + "-" * 14)
+        for _lbl in sorted(_pairs):
+            _px, _bx = _pairs[_lbl]
+            logger.info("      %-10s%18s%18s%14s", _lbl, f"{_px:,.1f}", f"{_bx:,.1f}",
+                        f"{_px - _bx:+,.1f}")
         if _bad:
-            logger.warning("      ⚠️ baseline reconciliation: pro-rata export vs bin_rpgt DIVERGE "
-                           "(%s) — expected identical; using pro-rata.", "; ".join(_bad))
+            logger.warning("      ⚠️ THE TWO EXPORTS DIVERGE (%s) — they are expected to be "
+                           "identical, so one of them is stale or built from a different run. "
+                           "The pro-rata export is what gets used; every band figure below "
+                           "inherits whichever of the two is wrong.", "; ".join(_bad))
         else:
-            logger.info("      ✓ baseline reconciliation: pro-rata export == bin_rpgt (%s)%s "
-                        "— single source consistent.",
-                        "; ".join(f"{_l} {_v[0]:,.1f}" for _l, _v in sorted(_pairs.items())),
+            logger.info("      ✓ variance is 0 on %s — single source consistent.%s",
+                        " and ".join(sorted(_pairs)),
                         "" if len(_pairs) == 2 else
-                        f" — NOTE only {sorted(_pairs)} compared, the other is missing")
+                        f" NOTE only {sorted(_pairs)} could be compared; the other metric is "
+                        "missing from one of the exports, so it is UNCHECKED.")
     except Exception as exc:  # noqa: BLE001 — a cross-check must never break the run
         logger.info("      (baseline reconciliation skipped: %s: %s)", type(exc).__name__, exc)
 
