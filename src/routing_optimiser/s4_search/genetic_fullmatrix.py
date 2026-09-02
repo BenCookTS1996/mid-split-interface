@@ -85,7 +85,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -722,6 +722,29 @@ def _fx_selfcheck(a, b, rate, strength, profile_start, profile_len, rng, profile
 # `_segment_softmax(..., max_share=None)` still decodes UNCAPPED; that path is what the
 # [decode-cap] self-check compares against, and it is the only thing that ever needed it.
 _DECODE_CAP = True
+
+# ── 19ia: STEP 2 OF docs/scope_decode_side_delivery.md. DEFAULT OFF. ────────────────────────────
+# THE SEARCH SCORES ONE ARRAY AND RETURNS ANOTHER. `_eval_with_bands` computes the band penalty on
+# `_deliver_full(_segment_softmax(logits))` — blocked-caps, eligibility and the cap, in delivery's
+# own order — but the function RETURNS the bare `_segment_softmax(best_logits)` (line ~2557). So
+# the GA is judged on the delivered split and hands over the undelivered one.
+#
+# THAT IS THE 6,428 KEYS. tab_2's [profiles] PART B has reported it on every run: "6,428
+# prop-key(s) differ between the split the GA SCORED and the one it SHIPS, Sigma|Delta prop|
+# 24.4448", with the worst values all at ~0.03 — which is exactly [deliv-cap]'s "largest single-row
+# move 0.03", i.e. the cap repairing what eligibility renormalisation lifted. Returning the
+# delivered array removes the whole discrepancy AT SOURCE, because then the scored array and the
+# returned array are the same object.
+#
+# WHY IT IS NOT FREE. This CHANGES WHAT SHIPS: the split handed to enforced_prop_items is a
+# different array, so tab 3's PRE/POST and the delivered M5 can move. It is also NOT the whole
+# fold — `eval_pop` still computes the SUCCESS RATE from its own internal softmax with no block or
+# eligibility, so the objective is still measured on the undelivered split while the constraints
+# are measured on the delivered one. That asymmetry is step 2b and is deliberately not touched
+# here; one axis per run.
+#
+# ROUTING_DECODE_DELIV=1 arms it. Read [decode-deliv] for what actually happened, not this comment.
+_DECODE_DELIV = os.environ.get("ROUTING_DECODE_DELIV", "0") != "0"
 _DC_EPS = 1e-12
 _DC_BACKOFF = 1.0 - 1e-9        # target back-off: the engineering key needs an exact 0.0
 
@@ -2554,8 +2577,42 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         log("[ga-census]    Read-only measurement; nothing above changed what the search did. "
             "ROUTING_GA_CENSUS=0 removes it, ROUTING_GA_CENSUS_DECOMP=0 just the decomposition.")
 
-    best_shares_sorted = _segment_softmax(best_logits[None, :], p.profile_start, p.profile_len,
-                                          p.max_share)[0]
+    _bss = _segment_softmax(best_logits[None, :], p.profile_start, p.profile_len, p.max_share)
+    # ── 19ia: RETURN WHAT WAS SCORED. `_deliver_kept(sh, _deliver_full(sh))` is the same pair of
+    # calls `_eval_with_bands` makes every generation, so this is not a new transform — it is the
+    # one the fitness already used, applied to the winner before it leaves.
+    _dd_stat = None
+    if _DECODE_DELIV and _have_full:
+        try:
+            _bkd = np.asarray(_deliver_kept(_bss, _deliver_full(_bss)), float)
+            if _bkd.shape != _bss.shape:
+                raise ValueError(f"delivered shape {_bkd.shape} != decoded {_bss.shape}")
+            _dif = np.abs(_bkd - _bss)
+            _dd_stat = (int(np.count_nonzero(_dif > 1e-12)), float(_dif.max()),
+                        float(_dif.sum()))
+            _bss = _bkd
+            log(f"[decode-deliv] the returned split IS the delivered split now "
+                f"(ROUTING_DECODE_DELIV=1): {_dd_stat[0]:,} of {_bss.shape[1]:,} row(s) moved, "
+                f"worst |\u0394| {_dd_stat[1]:.4g}, \u03a3|\u0394| {_dd_stat[2]:.4g}. THAT IS THE "
+                "[profiles] PART B DISCREPANCY, removed at source - the GA scored this array and "
+                "now ships it, so scored == shipped by construction rather than by tolerance. "
+                "THIS CHANGES WHAT SHIPS: tab 3's PRE/POST and the delivered M5 read off a "
+                "different array than an unarmed run. NOT the whole fold - eval_pop still scores "
+                "the SUCCESS RATE on its own softmax with no block or eligibility, so the "
+                "objective is still on the undelivered split (step 2b). "
+                "ROUTING_DECODE_DELIV=0 reverts.")
+        except Exception as _dde:  # noqa: BLE001
+            _dd_stat = None
+            log(f"[decode-deliv] \u26a0 ARMED AND NOT APPLIED ({type(_dde).__name__}: {_dde}) - "
+                "the RAW decode is being returned, exactly as an unarmed run. The split is "
+                "correct; it is simply not the change you asked for, so do not read this run as "
+                "a measurement of it.")
+    elif _DECODE_DELIV:
+        log("[decode-deliv] \u26a0 ROUTING_DECODE_DELIV=1 WAS REQUESTED AND IS NOT IN EFFECT: no "
+            "deduped delivery hook was supplied (deliver_full_fn / gather_fn), so there is no "
+            "delivered array to return and the raw decode ships. This run is NOT a measurement "
+            "of the switch.")
+    best_shares_sorted = _bss[0]
     # restore original row order
     inv = np.empty_like(p.order)
     inv[p.order] = np.arange(len(p.order))
@@ -2563,6 +2620,9 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
 
     info = {
         "__build__": __build__,
+        # 19ia: None = the raw decode was returned (switch off, or armed and not applied);
+        # a triple = (rows moved, worst |delta|, sum |delta|) when the delivered split shipped.
+        "decode_deliv": _dd_stat,
         "success_rate": float(best_success_rate),
         "violation": float(best_band + best_other),
         "band_breach": float(best_band),

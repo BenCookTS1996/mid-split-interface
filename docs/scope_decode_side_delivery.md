@@ -99,12 +99,26 @@ moves the two passes that precede it to the other side of the decode boundary.
 1. **Make `[elig-grain]` a refusal, not a report.** If any row's wallet or USA fraction is not a
    hard 0/1, decode-side eligibility is not equivalent and must not arm. No behaviour today
    (it reads 100%/100%), and it is the guard everything else rests on.
-2. **`ROUTING_DECODE_DELIV`, default OFF.** Move `block` and `elig` inside the decode, in their
-   current order, in front of the decode's existing cap.
-3. **Keep `_fm_deliv` in the chain and PROVE it is a no-op.** With the decode doing the work,
-   `_fm_deliv(decode(z))` must equal `decode(z)`. Assert it on the live population, the same
-   discipline `[deliv-fuse]` and `[decode-cap]` already use. This is the acceptance test, and it
-   is what turns "should be equivalent" into a number.
+2. **`ROUTING_DECODE_DELIV`, default OFF — SHIPPED as 19ia, and it turned out to be one line.**
+   The fold does not need the transform physically relocated into `_segment_softmax`. The search
+   ALREADY scores `_deliver_full(_segment_softmax(logits))`; it just **returns the bare
+   `_segment_softmax(best_logits)`** (genetic_fullmatrix ~2557). Returning the delivered array
+   instead makes scored == shipped with no change to the hot loop and no reordering of anything.
+   That is the whole of the 6,428 keys.
+   - `[decode-deliv]` reports rows moved / worst |Δ| / Σ|Δ| — the discrepancy measured at source.
+   - It is a change to WHAT SHIPS, so tab 3's PRE/POST and the delivered M5 can move.
+   - **Step 2b, NOT done:** `eval_pop` still computes the SUCCESS RATE from its own internal
+     softmax with no block and no eligibility. So the objective is measured on the undelivered
+     split while the constraints are measured on the delivered one. Closing that changes what the
+     GA optimises and therefore the success rate itself — one axis per run.
+3. **Keep `_fm_deliv` in the chain and measure it against a KNOWN FLOOR — not against zero.**
+   `[deliv-fixed]` settled this on the 2026-09-02 20:20 run: the transform is **not idempotent**,
+   and applying it twice moves **12 of 154,405 rows, worst |Δ| 6.212e-04**. So
+   `_fm_deliv(decode(z)) == decode(z)` is the wrong assertion — it can never hold. The right one
+   is **≤ ~12 rows and worst |Δ| ≤ ~1e-3, with the actual figures printed**, so a real regression
+   stands out against that floor instead of hiding behind a tolerance nobody can see.
+   "Reconcile exactly" is unreachable; **12 rows and 6e-04 is what is on offer**, and that is ~0
+   in band terms.
 4. **Only then remove `_fm_deliv` from `_eval_with_bands`** — and the 147.5s with it.
 5. Re-read the 6,428 keys / Σ|Δprop| 24.4448 off the next log. **The target is 0 keys.**
 
