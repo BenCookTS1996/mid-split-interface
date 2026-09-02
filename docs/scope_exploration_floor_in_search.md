@@ -416,3 +416,62 @@ which is the same class of failure as 19gw and would look like a tab 3 bug.
 `ROUTING_EMASK_PAIRS=1` and the floor still OFF everywhere, reconciliation error must stay
 inside the float32 noise floor and tab 3's PRE must still agree exactly with the baseline. That
 isolates the mask change from the floor change — one variable, as the 10:17 run was.
+
+---
+
+## 15. The acceptance test ran, and it exercised nothing (2026-09-02, 16:19)
+
+`ROUTING_EMASK_PAIRS=1 ./run.command` came back **byte-identical to the unarmed 15:22 run**:
+all 15 delivered band values, success rate 0.615322, reconciliation error 1, `[rung]` VAMP 1
+(100%) / TXN Σ 0.322, `[forensic]` 1.11 units, 11,840 splits, and `[profiles]` 6,428 keys with
+Σ|Δprop| 24.4448 and the same 8 sample keys.
+
+That is not the test passing. **The test could not have failed**, because on tab_2's reconcile
+path the mask has no consumer:
+
+| gate | line | on this path | consequence |
+|---|---|---|---|
+| `_enforced = (_n == 7)` | `impact_calcs.py:1521` | **True** — tab_2 passes `_ep` from `enforced_prop_items` | … |
+| `if (_wc_s or _uo_s or _use_pairs) and not _enforced:` | `impact_calcs.py:1650` | **skipped** | the `prop_raw` zeroing never runs |
+| `if _efloor > 0.0:` | `impact_calcs.py:1675` | **skipped** — `ROUTING_PROJ_FLOOR` unset, so `_pj_floor` is 0.0 | the floor's eligibility mask never runs |
+
+`_cap_emask()` is therefore never called, and the grain it would have used is irrelevant.
+`ROUTING_EMASK_PAIRS` is a **no-op on this path by construction**, not by coincidence. It can
+only bite where the frame is RAW (tab 3's three `_c_prepost_granular` calls, 4- and 5-tuple
+`prop_items`) or where the exploration floor is non-zero.
+
+The prediction written before the run — "expect the delivered split to move… with 89,955 rows
+differing, some band values will shift" — was wrong for this reason, not because the pair grain
+does nothing. The 89,955-row figure came from `[ef-mask]`, which compares the two masks
+directly; it is still correct, and it is still the size of the disagreement. It just does not
+reach the delivered number from here.
+
+### What the log now says (19hr)
+
+`_LAST_EMASK_GRAIN` existed but was never printed, and it recorded the **armed** grain — intent
+wearing a fact's clothes, which is exactly what the 19df comment in the same file warns against.
+It now records the consumers that actually ran, and tab_2 prints it once beside the projection:
+
+```
+[emask-grain] FACT: (vampMid, currency) pairs - NOT APPLIED, no consumer ran: frame is
+ENFORCED (7-tuple), so the prop_raw zeroing is skipped; exploration_floor=0 so the floor block
+is skipped. ROUTING_EMASK_PAIRS cannot change this call's output.
+```
+
+So a run can no longer arm a switch, print a paragraph about how it changes the delivered
+number, and change nothing, without saying so on the same page.
+
+### The corrected acceptance test
+
+The floor block is the **only** consumer of the mask on the reconcile path, so isolating the
+mask there is not possible — the two have to move together:
+
+- `ROUTING_PROJ_FLOOR=1` alone → baseline for the floor at the coarse name-set grain.
+- `ROUTING_EMASK_PAIRS=1 ROUTING_PROJ_FLOOR=1` → the same floor at the pair grain.
+
+The **difference between those two runs** is the pair grain's effect, one variable, with the
+floor held fixed. That is two runs, not one, and it needs agreement before it is spent.
+
+Tab 3 is the other route: its three `_c_prepost_granular` calls are on RAW frames, so
+`ROUTING_EMASK_PAIRS=1` bites there today with no floor involved. Opening tab 3 after an armed
+run tests the mask in isolation for free.

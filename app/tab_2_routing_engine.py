@@ -5704,27 +5704,12 @@ def render():
                                             f"{_pw:>12.6g}{_cnt:>8,}")
                                     log(f"      {'-' * 34}{'-' * 12}{'-' * 8}")
                                     log(f"      {'TOTAL bands':<34}{'':>12}{len(_specs):>8,}")
-                                    log("      Volume is NOT in the weight — a big band and a "
-                                        "small one at the same priority cost the same.")
-                                    if _bf_now > 0:
-                                        # 19dv: a CONFIGURATION statement, not a warning — it
-                                        # fired on every healthy run, and a ⚠ that always fires
-                                        # teaches the reader to skip ⚠.
-                                        # 19gs: the "not comparable with runs before
-                                        # 2026-08-19aa" paragraph is gone. That was a migration
-                                        # note for a fortnight-old change; every run in the
-                                        # archive now uses the same scale.
-                                        log(f"   [breach-scale] a band merely CROSSING its limit "
-                                            f"costs {_bf_now:g} × its priority weight before any "
-                                            "overshoot term, so the search prefers clearing a "
-                                            "band outright to shaving several. Judge the run on "
-                                            "SEARCH SHORTFALL (M5 units) and the met/unmet "
-                                            "counts, not on the breach scalar.")
-                                    else:
-                                        log("   [breach-scale] breach_fixed is 0 — crossing a limit "
-                                            "is free and only the squared overshoot is charged, so "
-                                            "the search is indifferent between clearing one band "
-                                            "and shaving several.")
+                                    log("")
+                                    log("")
+                                    # 19hr: the two prose readings under this table are DELETED.
+                                    # The table already gives breach_fixed and the per-priority
+                                    # weights, which is the whole content — the sentences restated
+                                    # them and then editorialised.
                                 except Exception as _bse:  # noqa: BLE001
                                     log(f"   [breach-scale] banner skipped ({type(_bse).__name__}: "
                                         f"{_bse}) — the penalty itself is unaffected.")
@@ -5735,9 +5720,17 @@ def render():
                                 # line would have raised NameError INSIDE this try/except — which
                                 # catches it, logs a skip, and silently turns EXACT BAND SCORING
                                 # OFF. A caught exception is the worst kind of leftover.
-                                log(f"   GA fitness: EXACT per-generation band scoring ON — {len(_specs)} band(s), "
-                                    f"pre-clustering OFF, incidence {_inc.shape[0]}×{_inc.shape[1]} ({_inc.nnz} nnz). "
-                                    "Delivered split gets an incidence self-check (must read ~0 to trust).")
+                                # 19hr: line DELETED, clause by clause:
+                                #   * "pre-clustering OFF" names a module that no longer exists —
+                                #     19fk deleted routing_optimiser.precluster along with
+                                #     ss['ga_precluster'] and ROUTING_GA_PRECLUSTER. It could
+                                #     never read anything but OFF.
+                                #   * "EXACT per-generation band scoring ON" is not a choice: the
+                                #     `except` below aborts the run rather than falling back to a
+                                #     proxy, so OFF is unreachable.
+                                #   * the band count is in PER-MID BAND CONSTRAINTS at the top.
+                                #   * the incidence shape and nnz are [inc-build]'s own line.
+                                #   * the self-check has its own INCIDENCE SELF-CHECK block.
                             except Exception as _ebe:  # noqa: BLE001
                                 # NO proxy fallback (removed per config): exact band scoring is mandatory.
                                 # Crash loudly so a broken setup is never silently downgraded to the proxy.
@@ -5764,8 +5757,13 @@ def render():
                             # 3-part profiles.
                             _fm_grain_lbl = ("rpgt×currency×bank×pmp×ctry PROFILES"
                                              if _opt_profile else "rpgt×currency×bank")
-                            log(f"   full-matrix problem size: {_n_profiles} profiles ({_fm_grain_lbl}), "
-                                f"{int(len(G))} profile×gateway rows, {_n_mid} vampMids.")
+                            # 19hr: one figure per line, and the 154,405 is named for what it IS
+                            # — a CELL is one gateway inside a profile (CLAUDE.md), so
+                            # "profile×gateway rows" was the long way of saying cells.
+                            log(f"   full-matrix problem size: {_n_profiles:,} profiles")
+                            log(f"                             {int(len(G)):,} cells "
+                                f"(one gateway within a profile)")
+                            log(f"                             {_n_mid} vampMids")
                         else:
                             log(f"   GA problem size: {_n_profiles} profiles (rpgt×currency×bank), {int(len(G))} "
                                 f"profile×gateway rows, {_n_mid} vampMids → genome D = {_ga_D}. "
@@ -5784,8 +5782,10 @@ def render():
                             # legacy_engines.midtilt_cmaes in 19gd). These cosmetic pop/gen values feed
                             # only the perf/ETA readouts.
                             _ga_pop, _ga_gen = 4, 1
-                            log("   [full-matrix] the full-matrix GA is the delivered search; it starts from "
-                                "the band-aware warm-start seed. No preliminary endpoint search is run.")
+                            # 19hr: line DELETED. genetic_fullmatrix is the ONLY selectable engine
+                            # (`choices` has held one entry since 19gb), so "the full-matrix GA is
+                            # the delivered search" cannot be false, and ④·2's own heading already
+                            # says the seed is a warm start.
                         # multi-seed: keep the fittest of N parallel CMA-ES starts. N is the tab-2
                         # "Number of seeds" control (defaults to core count); _GA_N_SEED is the fallback.
                         _N_SEED = max(1, int(ss.get("ga_n_seeds", _GA_N_SEED) or _GA_N_SEED))
@@ -6779,6 +6779,11 @@ def render():
                                 # breach s.t. per-profile simplex + max-share) and report the verdict.
                                 # Reaching 0 breach is a genuine feasibility CERTIFICATE (a compliant
                                 # split exists); non-zero is a strong — not proof — infeasibility signal.
+                                # 19hr: OPEN ④·2 HERE, not 30 lines further down. The substep used
+                                # to be opened AFTER stage 1's summary had already printed, so
+                                # stage 1 — the first thing the seed chain does — appeared outside
+                                # the section titled "BUILD THE WARM-START SEED".
+                                _substep("④·2  BUILD THE WARM-START SEED")
                                 try:
                                     from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr_seed
                                     _inc_seed = ctx["_exact_bands_selfcheck"]["inc"]
@@ -6794,13 +6799,12 @@ def render():
                                         _s2pr_seed(_sb(_comp_share_G), _inc_seed))[0])
                                     _v1 = float(ctx["exact_bands"].penalty(
                                         _s2pr_seed(_sb(_band_greedy_G), _inc_seed))[0])
-                                    log(f"   seed stage 1/3 BAND-AWARE constrained projection "
-                                        f"(per-profile simplex + max-share QP, "
-                                        f"{'DELIVERED' if _seed_dlv is not None else 'RAW'} basis): "
-                                        f"band breach "
-                                        f"{_v0:.4g} (revenue-greedy start) → {_v1:.4g}. Stage 2 is "
-                                        "the exact projector, stage 3 the targeted move — see "
-                                        "[seed-chain] for the whole chain and which stage was used.")
+                                    log("   ── seed stage 1 of 3 · BAND-AWARE CONSTRAINED "
+                                        "PROJECTION (per-profile simplex + max-share QP) ──")
+                                    log(f"      basis: "
+                                        f"{'DELIVERED' if _seed_dlv is not None else 'RAW'}")
+                                    log(f"      band breach {_v0:.4g} (revenue-greedy start) "
+                                        f"→ {_v1:.4g}")
                                     # Per-band verdict from the exact projector on the seed.
                                     _pretty = {str(_r.get("vampMid")).strip().lower(): str(_r.get("vampMid"))
                                                for _r in (params.get("mid_constraints", []) or [])}
@@ -6813,9 +6817,6 @@ def render():
                                                 or (_r["floor"] is not None and _nw < float(_r["floor"]) - 1e-6)):
                                             _unmet.append(_pretty.get(str(_r["midl"]), str(_r["midl"])))
                                     _nb = len(_rep_s)
-                                    _substep("④·2  BUILD THE WARM-START SEED")
-                                    log("   ── FEASIBILITY CHECK (constrained projection: min band breach "
-                                        "s.t. per-profile simplex + max-share) ──")
                                     if not _unmet:
                                         log(f"      verdict: ✓ a COMPLIANT split EXISTS — all {_nb} band(s) "
                                             "satisfiable (feasibility certificate); seeded into the search.")
@@ -6872,6 +6873,15 @@ def render():
                                     and isinstance(ctx.get("_exact_bands_selfcheck"), dict)
                                     and ctx["_exact_bands_selfcheck"].get("inc") is not None):
                                 try:
+                                    # 19hr: TITLE FIRST. The solver logs ~15 "exact projector:
+                                    # step N/40" lines from inside `solve_least_breach`, and they
+                                    # used to land between the FEASIBILITY CHECK rule and the
+                                    # summary rule that belongs to them — so a reader saw a wall
+                                    # of LP steps under the wrong heading. Opening the section
+                                    # before the call puts them under their own.
+                                    log("")
+                                    log("   ── seed stage 2 of 3 · EXACT PROJECTOR (successive-LP "
+                                        "on the TRUE band values + analytic Jacobian) ──")
                                     from routing_optimiser.s4_search.exact_band_solver import solve_least_breach as _slb
                                     _inc_x = ctx["_exact_bands_selfcheck"]["inc"]
                                     # Start the successive-LP from the BAND-AWARE seed (the greedy
@@ -6893,8 +6903,9 @@ def render():
                                         _verd = ("✓ COMPLIANT certificate (a feasible split provably exists)"
                                                  if _xinfo.get("feasible")
                                                  else "local min > 0 → appears INFEASIBLE under this scope (not a proof)")
-                                        log("   ── EXACT projector seed (successive-LP on the TRUE band values "
-                                            "+ analytic Jacobian; started from the band-aware seed) ──")
+                                        # 19hr: the rule that used to sit here is now the section
+                                        # heading above, opened before the solver ran. What is left
+                                        # is the verdict, which is what this point in the run knows.
                                         log(f"      breach {_xinfo['breach0']:.4g} → {_xinfo['breach']:.4g} "
                                             f"in {_xinfo['outer']} LP step(s); {_xinfo['n_free']} band-feeding "
                                             f"gateways free. Verdict: {_verd}.")
@@ -6933,7 +6944,7 @@ def render():
                                 except Exception as _xe:  # noqa: BLE001
                                     _exact_G = None
                                     log(f"   exact projector seed skipped: {type(_xe).__name__}: {_xe}")
-                                # ── TARGETED MOVE-OPERATOR SEED ─────────────────────────────────────
+                                # ── SEED STAGE 3 OF 3 · TARGETED MOVE-OPERATOR ──────────────────────
                                 # Directly shed each breached CEILING MID's share onto co-located
                                 # lower-risk eligible siblings (with headroom) until it clears its ceiling
                                 # — sidestepping the softmax search that can't coordinate the moves.
@@ -6947,7 +6958,8 @@ def render():
                                     _stm_base = np.asarray(
                                         locals().get("_exact_G") if locals().get("_exact_G") is not None
                                         else locals().get("_risk_greedy_G", _comp_share_G), float)
-                                    log("   ── TARGETED MOVE-OPERATOR seed (shed breached-ceiling MIDs onto "
+                                    log("")
+                                    log("   ── seed stage 3 of 3 · TARGETED MOVE-OPERATOR (shed breached-ceiling MIDs onto "
                                         "co-located lower-risk siblings; exact projector = truth) ──")
                                     _move_G, _minfo = _stm(
                                         ctx["exact_bands"], ctx["_exact_bands_selfcheck"]["inc"],
@@ -6985,6 +6997,11 @@ def render():
                                 # breached". They come back in full the moment a band breaches,
                                 # which is the only time they have ever been read.
                                 _sd_breach = None
+                                _sd_breach_vamp = None      # 19hr: None ⇒ unknown, so run them
+                                # 19hr: `_sd_vamp_on` gates the six VAMP-ONLY probes
+                                # (vamp-sibling, vpsum, usable-recipient, breach-concentration,
+                                # scoped-vs-frozen, in-search RPGT breakdown). Set below.
+                                _sd_vamp_on = True
                                 if _sd_on:
                                     try:
                                         _sdv = np.asarray(
@@ -6997,14 +7014,37 @@ def render():
                                              if locals().get("_fm_deliv") is not None
                                              else _sdv[None, :]),
                                             ctx["_exact_bands_selfcheck"]["inc"]))
-                                        _sd_breach = [
-                                            str(_r.get("midl")) for _r in _sd_rep
+                                        _sd_over = [
+                                            _r for _r in _sd_rep
                                             if (_r.get("ceil") is not None
                                                 and float(_r["now"]) > float(_r["ceil"]) + 1e-6)
                                             or (_r.get("floor") is not None
                                                 and float(_r["now"]) < float(_r["floor"]) - 1e-6)]
+                                        _sd_breach = [str(_r.get("midl")) for _r in _sd_over]
+                                        # 19hr: AND PER METRIC. Six of the nine probes can only
+                                        # analyse a VAMP band; gating them on ANY breach is what
+                                        # made all six run for a TXN band that was over by one.
+                                        _sd_met = {str(getattr(_sp, "midl", "")).strip().lower():
+                                                   str(getattr(_sp, "metric", "")).strip().lower()
+                                                   for _sp in getattr(ctx["exact_bands"],
+                                                                      "specs", [])}
+                                        _sd_breach_vamp = [
+                                            str(_r.get("midl")) for _r in _sd_over
+                                            if _sd_met.get(str(_r.get("midl")).strip().lower())
+                                            == "vamp"]
                                     except Exception:  # noqa: BLE001
                                         _sd_breach = None   # unknown ⇒ run them, don't guess
+                                if _sd_on and _sd_breach_vamp == [] and _sd_breach != []:
+                                    # A breach exists but NOT on a VAMP band, so the six VAMP-only
+                                    # probes have nothing to analyse. Say it once instead of six
+                                    # rules + six "(no breached VAMP ceiling bands)" + explainers.
+                                    _sd_vamp_on = False
+                                    log("   [seed-diag] the breached band(s) at the seed are "
+                                        "TXN-only, so the six VAMP-only probes did not run — "
+                                        "VAMP-positive sibling, vpsum, usable-recipient, breach "
+                                        "concentration, scoped-vs-frozen and the in-search RPGT "
+                                        "breakdown. Each explains a breached VAMP band; there is "
+                                        "none. They return the moment a VAMP band breaches.")
                                 if _sd_on and _sd_breach == []:
                                     _sd_on = False
                                     log("   [seed-diag] all bands are met at the seed, so the nine "
@@ -8939,6 +8979,16 @@ def render():
                                         _t2 = _pjt.perf_counter()
                                         _pj["t_epi"] += _t1 - _t0
                                         _pj["t_cvp"] += _t2 - _t1
+                                        # 19hr: [emask-grain] far above announces the ARMED
+                                        # grain; this is the FACT of whether the mask reached a
+                                        # consumer. On this path it usually does NOT — the frame
+                                        # is ENFORCED and the floor is off — so arming
+                                        # ROUTING_EMASK_PAIRS here is a no-op and the run is
+                                        # byte-identical to an unarmed one. Say it once.
+                                        if not _pj.get("emask_fact_said"):
+                                            _pj["emask_fact_said"] = True
+                                            log("   [emask-grain] FACT: " + str(getattr(
+                                                _pj_ic, "_LAST_EMASK_GRAIN", "not recorded")))
                                         log(f"   [proj-memo] '{_tag}' projected in {_t2 - _t0:.1f}s "
                                             f"= {_t1 - _t0:.1f}s enforced_prop_items/build_split_exports "
                                             f"+ {_t2 - _t1:.1f}s compute_vamp_prepost_granular.")

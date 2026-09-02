@@ -1644,12 +1644,22 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
             return (_wallet & _wc_hit) | (_nonusa & _uo_hit)
         return (_wallet & _ml.isin(_wc_s)) | (_nonusa & _ml.isin(_uo_s))
 
-    globals()["_LAST_EMASK_GRAIN"] = (
-        "(vampMid, currency) pairs" if _use_pairs else
-        ("vampMid name sets" if (_wc_s or _uo_s) else "none — no capability data supplied"))
+    # 19hr: this global is FACT (19df), and until now it recorded only which grain was ARMED —
+    # which is intent wearing a fact's clothes. The mask has exactly TWO consumers in this
+    # function, and BOTH can be closed at once: the `prop_raw` zeroing is skipped for an ENFORCED
+    # 7-tuple frame (the shares already have the masks baked in), and the exploration-floor block
+    # is skipped when `exploration_floor` is 0. tab_2's reconcile path hits both, so arming
+    # ROUTING_EMASK_PAIRS there changes NOTHING and the run comes out byte-identical to an
+    # unarmed one. That is what the 2026-09-02 16:19 run was, and nothing in the log could say
+    # so. Record the consumers that actually ran.
+    _emask_grain = ("(vampMid, currency) pairs" if _use_pairs else
+                    "vampMid name sets" if (_wc_s or _uo_s) else
+                    "none - no capability data supplied")
+    _emask_applied = []
     if (_wc_s or _uo_s or _use_pairs) and not _enforced:
         _emask = _cap_emask()
         t0["prop_raw"] = np.where(_emask, 0.0, t0["prop_raw"])
+        _emask_applied.append("prop_raw zeroing")
     t0["_av"] = t0["VI_Txn_Count"] * t0["_keep"]
     _g = t0.groupby(grp)   # group profile keys ONCE, reuse for all three sums (bit-identical)
     t0["profile_tot"] = _g["VI_Txn_Count"].transform("sum")
@@ -1677,6 +1687,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         # the `prop_raw` zeroing above uses, so the floor's eligibility set and the zeroing's
         # can no longer disagree — and both move to the pair grain together under one switch.
         _emask_f = _cap_emask()
+        _emask_applied.append("exploration-floor eligibility")
         _elig_f = (((t0["base_share"] > 0) | (t0["prop_raw"] > 0)) & (t0["_keep"] > 0)
                    & (~_emask_f) & (t0["prop_sum"] > 0))
         _nef = t0.assign(_ef=_elig_f.astype(float)).groupby(grp)["_ef"].transform("sum")
@@ -1685,6 +1696,16 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         _psh_sum = t0.groupby(grp)["prop_share"].transform("sum")   # renormalise profiles we floored
         _do_renorm = (t0["prop_sum"] > 0) & (_psh_sum > 0)
         t0["prop_share"] = np.where(_do_renorm, t0["prop_share"] / _psh_sum, t0["prop_share"])
+    if _emask_applied:
+        globals()["_LAST_EMASK_GRAIN"] = (
+            _emask_grain + " - applied at: " + ", ".join(_emask_applied))
+    else:
+        _why = ("frame is ENFORCED (7-tuple), so the prop_raw zeroing is skipped" if _enforced
+                else "no wallet/USA capability data was supplied")
+        globals()["_LAST_EMASK_GRAIN"] = (
+            _emask_grain + " - NOT APPLIED, no consumer ran: " + _why
+            + f"; exploration_floor={_efloor:g} so the floor block is skipped"
+            + ". ROUTING_EMASK_PAIRS cannot change this call's output.")
     # Movable fraction = go-live pro-rata × fcp1 cohort fraction (see _vamp_post_core).
     _p = t0["pro_rata"] * t0["fcp1_frac"]
     t0["post_txn"] = t0["profile_tot"] * ((1 - _p) * t0["base_share"] + _p * t0["prop_share"])

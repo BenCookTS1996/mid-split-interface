@@ -797,6 +797,10 @@ def colocation_report(split, exact_bands, incidence, *, mid_id, profile_starts, 
         def _room(sib, metric):
             return ceil_map.get((sib, metric), (float("inf"), None, None))[0]
 
+        # 19hr: `max_profiles` caps the per-profile sample. On the 2026-09-02 15:22 run this block
+        # printed 8 sample profiles to explain woodforest being over a 24,000 ceiling by ONE unit
+        # — 0.004% — which the GA then cleared. The verdict is the "N of N have a headroom
+        # sibling" count; the samples matter when the gap is real.
         out = ["   ── CO-LOCATION DIAGNOSTIC (read-only): can each stuck band's excess move to a "
                "co-located, eligible sibling? ──"]
         for bm, me, h, nw, cl in breached:
@@ -1135,11 +1139,21 @@ def incidence_selfcheck_report(split, exact_bands, incidence, *, mid_id=None, mi
         cov = int(_mapped.sum())
         pr = _s2pr(s[None, :], incidence)[0]
         mass_prop = float(pr.sum()); mass_share = float(s.sum())
-        out = ["   ── INCIDENCE SELF-CHECK (does the search's column→prop-key map cover the split?) ──",
-               f"      {cov:,}/{N:,} share columns map to a prop-key ({(cov / max(N, 1)) * 100:.1f}%) · "
-               f"{K:,} prop-keys · Σprop_raw {mass_prop:,.1f} vs Σshare {mass_share:,.1f} "
-               f"(dropped {mass_share - mass_prop:,.1f} of share mass)",
-               ]
+        # 19hr: ONE LINE WHEN CLEAN, full detail when not. This guard is NOT deletable — a
+        # column that maps to no prop-key is invisible to every band figure in the run, and it
+        # caught a real 9,018-profile gap on 2026-08-31 (closed by [require-forecast] in 19em).
+        # But two lines of "100.0% · dropped 0.0" on every healthy run is exactly the noise that
+        # buries the day it does not.
+        _clean = (cov >= N) and abs(mass_share - mass_prop) <= 1e-6
+        if _clean:
+            out = [f"   ── INCIDENCE SELF-CHECK ✓ all {N:,} share column(s) map to a prop-key "
+                   f"({K:,} prop-keys); no share mass dropped ──"]
+        else:
+            out = ["   ── INCIDENCE SELF-CHECK (does the search's column→prop-key map cover the split?) ──",
+                   f"      {cov:,}/{N:,} share columns map to a prop-key ({(cov / max(N, 1)) * 100:.1f}%) · "
+                   f"{K:,} prop-keys · Σprop_raw {mass_prop:,.1f} vs Σshare {mass_share:,.1f} "
+                   f"(dropped {mass_share - mass_prop:,.1f} of share mass)",
+                   ]
         # 19gs: FOUR PARAGRAPHS DELETED. They were the write-up of the 2026-08-31 investigation
         # into a 9,018-profile coverage gap — how to read Σshare as a profile count, why those profiles
         # cannot reach a band, why [profiles] was not a contradiction, and what the note used to
@@ -1158,7 +1172,12 @@ def incidence_selfcheck_report(split, exact_bands, incidence, *, mid_id=None, mi
         # PER-BANDED-MID coverage (needs the per-column MID map). Uses ExactBandModel's specs +
         # labels — the SAME naming seed_gradient_report aligns to mid_names — so it lines up with the
         # per-column mid_id. metric is cross-referenced from exact_bands.specs (band_scoring BandSpec).
-        if mid_id is not None and mid_names is not None:
+        # 19hr: the per-MID table is SUPPRESSED when coverage is complete, and that is provable
+        # rather than a judgement: `_map = s[_cols & _mapped].sum()` with `_mapped` all-True gives
+        # `_map == _tot` for EVERY MID, so every row necessarily reads 100% / dropped 0.0. Fifteen
+        # lines that cannot say anything else. It prints in full the moment a column is uncovered,
+        # which is the only time it carries information.
+        if mid_id is not None and mid_names is not None and not _clean:
             try:
                 _mid = np.asarray(mid_id, int)
                 if _mid.size == N:
