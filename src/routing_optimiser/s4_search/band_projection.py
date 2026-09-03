@@ -132,7 +132,7 @@ except Exception:  # noqa: BLE001 - no rule available is a refusal, never a brok
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
+__build__ = ("2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -2108,16 +2108,19 @@ class PopulationBandProjector:
                 self._ef_delivery_like = _ef_dl
                 _mm = int(np.count_nonzero(_ef_dl != self._ef_ok))
                 self._ef_mismatch = _mm
-                # 19iv: NOTHING IS PRINTED HERE, and 19iu's version was a false alarm of my
-                # own making. `_ef_dl` is a vampMid-only RECONSTRUCTION of the mask delivery
-                # used BEFORE 19ht - not the mask it uses now - so `_mm` is the size of the
-                # over-blocking that old test would cause. It is 89,955 rows on this book and
-                # it is non-zero by construction, for ever. 19iu gated the line on `_mm != 0`
-                # in the belief that 0 was the expected reading, which put a ⚠ in front of a
-                # permanent historical fact. The comparison is still COMPUTED, and both halves
-                # are stashed on the projector (`_ef_delivery_like`, `_ef_mismatch`) for
-                # anything that wants them.
-                pass
+                # 19iw: ONE LINE, and only the half that is still a fact about THIS run.
+                # What went: the comparison against `_ef_dl`, a vampMid-only reconstruction of
+                # the mask delivery used BEFORE 19ht. That is not the mask delivery uses now,
+                # so its 89,955-row difference is the size of the over-blocking the OLD test
+                # would cause - permanent history, and 19iu wrongly gated a ⚠ on it being 0.
+                # What stays: how many rows the floor would actually reach, which is a live
+                # number that moves with the book. The comparison is still computed and both
+                # halves are stashed (`_ef_delivery_like`, `_ef_mismatch`).
+                if self._efloor > 0.0:
+                    _bnote(f"[ef-mask] exploration floor {self._efloor:.2%} carried into the "
+                           f"projector (stored, not applied): "
+                           f"{int(self._ef_ok.sum()):,} of {len(self._ef_ok):,} scaffold row(s) "
+                           "are floor-eligible.")
             elif self._efloor > 0.0:
                 _bnote(f"[ef-mask] exploration floor {self._efloor:.2%} carried into the "
                        f"projector (STEP 1: stored, not applied). Floor-eligible rows: "

@@ -192,8 +192,9 @@ except Exception as _e:
     check("proj_config() runs with a float32 drift measurement present (19iv: NameError)",
           False, f"{type(_e).__name__}: {_e}")
 
-check("[ef-mask] prints NOTHING - the count it compared is permanently non-zero (19iv)",
-      "[ef-mask] \u26a0 exploration floor" not in BP
+check("[ef-mask] is ONE line, with no comparison against the pre-19ht mask (19iv/19iw)",
+      "are floor-eligible." in BP
+      and "\u26a0 exploration floor" not in BP
       and "floor-eligible rows differ between" not in BP
       and "_ef_mismatch = _mm" in BP)
 check("the WITHIN-band table's band column fits a range band",
