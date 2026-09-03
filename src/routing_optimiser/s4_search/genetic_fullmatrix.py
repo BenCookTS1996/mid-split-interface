@@ -87,7 +87,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -809,6 +809,31 @@ _DECODE_DELIV = True
 _DECODE_OBJ = os.environ.get("ROUTING_DECODE_OBJ", "0") != "0"
 _OBJ_FACT = {"armed": bool(_DECODE_OBJ), "applied": False, "said": False}
 _DC_EPS = 1e-12
+# ── 19io: THE ENGINEERING KEY'S UNREACHABLE FLOOR ─────────────────────────────────────────
+# `viol` read a flat 6.18557 for all 320 generations of the 2026-09-03 12:32 run. That is not
+# a coincidence and it is not a search failure:
+#
+#     one row at share 1.0 contributes 1/0.97 - 1 = 0.030927835...
+#     6.18557 / 0.030927835 = 200.00
+#
+# EXACTLY 200 rows sitting at 1.0 - profiles whose ONLY eligible gateway must therefore hold
+# 100% of the volume. The granular samples show them ("adyen-usd-tsc-x-tav ... 0.0% -> 100.0%").
+# There is nowhere else for that share to go, `_cap_rows` leaves such rows alone (its ">= 2
+# present gateways" test), `_cap_shares_ref` leaves them alone ("a profile that cannot absorb
+# its own excess is left ALONE"), and [deliv-cap] counts them as "unsatisfiable".
+#
+# So the key carried a term NO CANDIDATE COULD EVER REDUCE - and `_key_of` ranks on
+# (-band, -viol, success_rate), which puts that unreachable term ABOVE conversion. It happened
+# to be constant, so it never actually decided anything; but "happened to be" is not a
+# guarantee, and a key whose 0 is unreachable cannot be read as "compliant".
+#
+# Exempting them makes the key mean what it says. It should also be ANSWER-IDENTICAL, because a
+# constant subtracted from a lexicographic key changes no ordering - and [viol-forced] prints
+# the decomposition every run so that "should" is checked rather than assumed: if the remaining
+# share_over is non-zero, that is a REAL violation the flat 6.18557 was masking.
+# ROUTING_VIOL_FORCED=0 restores the old key.
+_VIOL_FORCED = os.environ.get("ROUTING_VIOL_FORCED", "1") != "0"
+_VF_FACT = {"n": 0, "rows": 0, "forced": 0.0, "kept": 0.0, "said": False}
 _DC_BACKOFF = 1.0 - 1e-9        # target back-off: the engineering key needs an exact 0.0
 
 
@@ -1016,7 +1041,26 @@ def _violation(shares, p: "FullMatrixProblem"):
                                           where=soft > 0) - 1.0)
     vamp_viol = np.minimum(over_hard, over_soft).sum(axis=1)          # (P,)
 
-    share_over = np.maximum(0.0, shares / p.max_share - 1.0).sum(axis=1)
+    _so_row = np.maximum(0.0, shares / p.max_share - 1.0)
+    if _VIOL_FORCED:
+        _vf_st = getattr(p, "profile_start", None)
+        _vf_ln = getattr(p, "profile_len", None)
+        if _vf_st is not None and _vf_ln is not None:
+            _vf_cap = np.asarray(p.max_share, float)
+            _vf_live = (np.asarray(shares, float) > _DC_EPS).astype(float)
+            _vf_n = np.repeat(np.add.reduceat(_vf_live, np.asarray(_vf_st, np.intp), axis=1),
+                              np.asarray(_vf_ln, np.intp), axis=1)
+            # the cap cannot be met in this profile: its live rows cannot hold 1.0 between
+            # them at `cap`, so a row above the cap is FORCED there, not chosen.
+            _vf_forced = (_vf_n * _vf_cap[None, :]) <= 1.0 + _DC_EPS
+            _vf_ex = np.where(_vf_forced, _so_row, 0.0)
+            if not _VF_FACT["said"]:
+                _VF_FACT["n"] += 1
+                _VF_FACT["rows"] = int(np.count_nonzero(_vf_ex[0] > 0.0))
+                _VF_FACT["forced"] = float(_vf_ex[0].sum())
+                _VF_FACT["kept"] = float(_so_row[0].sum() - _vf_ex[0].sum())
+            _so_row = np.where(_vf_forced, 0.0, _so_row)
+    share_over = _so_row.sum(axis=1)
     band_viol = _band_violation(num, den, rate, p)                   # (P,)
 
     # GLOBAL aggregate VAMP-rate cap: Σ vol·share·risk / Σ vol·share ≤ cap.
@@ -2209,11 +2253,21 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     f"closing: {_cs_w2:.3e}"
                     + (" - i.e. ULP DUST, which is irreducible and which the decode's cap "
                        "absorbs." if _cs_w2 <= _cs_tol else "."))
+                # 19io: the 0 -> 0 case fell through every branch to "PARTLY", so the run
+                # printed "explains most of them but not all" immediately followed by "nothing
+                # is over the cap on either side". Contradictory, and exactly the kind of line
+                # this series exists to delete. Nothing over the cap is its own verdict.
+                _cs_none = (_cs_n_d == 0 and _cs_over_2 == 0)
                 _cs_fixed = (_cs_n_d > 0 and _cs_over_2 == 0)
                 _cs_sr_fixed = (abs(_cs_r_dec - _cs_r_seed) > 1e-9
                                 and abs(_cs_r_cl - _cs_r_seed) <= 0.05
                                 * abs(_cs_r_dec - _cs_r_seed))
-                if _cs_fixed and _cs_sr_fixed:
+                if _cs_none:
+                    log("[fullmatrix-ga] [cap-source]    \u21d2 NOTHING TO EXPLAIN. No row is "
+                        "over the cap before OR after closing, so there is no closure deficit "
+                        "and no seed defect to attribute. See [decode-cap] for what its own "
+                        "'share moved' figure actually counts.")
+                elif _cs_fixed and _cs_sr_fixed:
                     log("[fullmatrix-ga] [cap-source]    \u21d2 PROVEN, AND IT ANSWERS BOTH. "
                         "Closing the profiles removes every over-cap row AND collapses the "
                         "seed-vs-decoded success-rate gap to under 5% of what it was. The seed "
@@ -2301,13 +2355,31 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             _dc_ref = _cap_shares_ref(_dc_raw, p.profile_start, p.profile_len, p.max_share)
             _dc_cap = np.asarray(p.max_share, float)
             _dc_liv = np.isfinite(_dc_cap) & (_dc_cap > 0.0) & (_dc_cap < 1.0)
+            # 19io: TWO DIFFERENT POPULATIONS, and stating them in one sentence is what sent
+            # 19im/19in chasing a seed defect that does not exist. `_dc_over_before` counts rows
+            # above the CAP. But the capped decode targets `cap * _DC_BACKOFF` = cap - 9.7e-10,
+            # so what it actually MOVES is every row above THAT - and there are thousands of
+            # rows sitting at the cap. On the 12:32 run: 9 rows above the cap, and 6.253e-06 of
+            # share moved, which at 9.7e-10 per row is ~3,200 rows. Dividing the second number
+            # by the first gave 3.5e-07 "per row" and a mechanism that was never there.
+            _dc_tgt = np.where(_dc_liv, _dc_cap * _DC_BACKOFF, np.inf)
             _dc_over_before = int(((_dc_raw[0] > _dc_cap) & _dc_liv).sum())
+            _dc_over_tgt = int(((_dc_raw[0] > _dc_tgt) & _dc_liv).sum())
             _dc_over_after = int(((_dc_got[0] > _dc_cap) & _dc_liv).sum())
             _dc_moved = float(np.abs(_dc_got - _dc_raw).sum())
             _dc_same = _fx_same(_dc_ref, _dc_got)
             _dc_sums = float(np.abs(
                 np.add.reduceat(_dc_got[0], np.asarray(p.profile_start, np.intp)) - 1.0).max())
             if _dc_over_after == 0 and _dc_same:
+                log(f"[fullmatrix-ga] [decode-cap] the capped decode targets cap \u00d7 "
+                    f"(1 - 1e-9), NOT cap, so it pulls down every row above "
+                    f"{float(np.min(np.where(_dc_liv, _dc_tgt, np.inf))):.12g} - "
+                    f"{_dc_over_tgt:,} row(s) - while only {_dc_over_before:,} are above the cap "
+                    f"itself. The share moved below is the FORMER population's; do not divide it "
+                    f"by the latter's count (19im did, and invented a 3.5e-07 defect). The "
+                    f"back-off exists so the engineering key can read an exact 0.0 - which "
+                    f"ROUTING_DECODE_OBJ no longer needs, since it measures the key on the "
+                    f"DELIVERED split.")
                 log(f"[fullmatrix-ga] [decode-cap] ✓ SELF-CHECK PASSED on the live seed: the "
                     f"uncapped decode held {_dc_over_before:,} row(s) above the cap, the capped "
                     f"decode holds 0, and it is BIT-IDENTICAL to the reference water-fill applied "
@@ -2333,6 +2405,22 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     s0 = _segment_softmax(seed_logits[None, :], p.profile_start, p.profile_len, p.max_share)
     seed_success_rate = _success_rate(s0, p.vol, p.succ, total_vol)[0]
     seed_other = _violation(s0, p)[0]           # engineering viol (global cap + max-share) — secondary
+    if _VIOL_FORCED and _VF_FACT["n"] and not _VF_FACT["said"]:
+        _VF_FACT["said"] = True
+        _vf_tot = _VF_FACT["forced"] + _VF_FACT["kept"]
+        log(f"   [viol-forced] the engineering key's MAX-SHARE term on the seed: "
+            f"{_vf_tot:.6g} total, of which {_VF_FACT['forced']:.6g} comes from "
+            f"{_VF_FACT['rows']:,} row(s) in profiles whose only eligible gateway MUST hold "
+            f"100% - there is nowhere else for that share to go, and `_cap_rows` leaves those "
+            f"rows alone. EXEMPTED (19io), leaving {_VF_FACT['kept']:.6g}"
+            + (" \u2014 so the key's 0 is now REACHABLE and 'viol 0' means compliant. The old "
+               "key read a flat, unreachable floor for the whole run and ranked it ABOVE "
+               "conversion."
+               if _VF_FACT["kept"] <= 1e-9 else
+               " \u2014 \u26a0 THE REMAINDER IS NON-ZERO: that is a REAL max-share violation "
+               "the old flat figure was masking, on rows where the cap COULD have been met. "
+               "Worth investigating.")
+            + " ROUTING_VIOL_FORCED=0 restores the old key.")
     if _VIOL_FACT.get("msg"):   # 19ig: the line above is the run's FIRST _violation call
         log("   " + _VIOL_FACT["msg"])
     seed_band = 0.0                              # exact M5 band breach — strict primary key

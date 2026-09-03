@@ -71,7 +71,7 @@ import numpy as np
 from scipy.optimize import linprog as _linprog
 import scipy.sparse as _sparse
 
-__build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+global-linear-lp-seed+minimal-move-projection+colocation-report+held-movable-report+movable-provenance+reachable-minimum-no-floor+vamp-positive-sibling+selfcheck+seedgrad+vpsum+usable-recipient+degenerate-gradient-flag+breach-concentration+scoped-frozen-split+gradient-vpsum-regularisation+insearch-rpgt-breakdown+catchall-eps-floor+targeted-move-headroom+2026-08-19bd-raw-basis-claim-labelled+2026-08-19be-recipient-headroom-per-metric+2026-09-01-19go-delivery-faithful-seed-accept-tests+2026-09-03-19ik-log-trim"
+__build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+global-linear-lp-seed+minimal-move-projection+colocation-report+held-movable-report+movable-provenance+reachable-minimum-no-floor+vamp-positive-sibling+selfcheck+seedgrad+vpsum+usable-recipient+degenerate-gradient-flag+breach-concentration+scoped-frozen-split+gradient-vpsum-regularisation+insearch-rpgt-breakdown+catchall-eps-floor+targeted-move-headroom+2026-08-19bd-raw-basis-claim-labelled+2026-08-19be-recipient-headroom-per-metric+2026-09-01-19go-delivery-faithful-seed-accept-tests+2026-09-03-19ik-log-trim+2026-09-03-19io-lp-stall-armed"
 
 # Gradient-only vpsum/psum floor used by the SEED SOLVERS (not the diagnostics, not the forward
 # values). Share-scale denominators: real high-VAMP profiles sit well above this, near-empty profiles
@@ -525,10 +525,31 @@ def solve_least_breach(exact_bands, incidence, base_shares, profile_starts, prof
         # acceptance justified — the smallest K that would have cost this run nothing. Everything
         # here is recording; with `stall == 0` the control flow is exactly the pre-19ck loop.
         if stall is None:
+            # ── 19io: ARMED AT K=4, on the evidence the ledger was built to collect ──────
+            # THREE unarmed runs have now recorded `stall_min_safe` - the longest run of
+            # consecutive rejections that a LATER step then justified:
+            #     2026-09-02 23:01   stall_min_safe = 3   (14 of 18 rejected, 55.1s trailing)
+            #     2026-09-03 00:23   stall_min_safe = 0   (12 of 13 rejected, 159.5s trailing)
+            #     2026-09-03 12:32   stall_min_safe = 0   (12 of 13 rejected, 77.4s trailing)
+            # K must exceed the largest of those, so K = 4. At K=4 every step any of those runs
+            # went on to accept would still have been reached, and the trailing rejections -
+            # 55-160s of large sparse LPs per run - stop.
+            #
+            # WHY THE REJECTIONS ARE SAFE TO STOP ON, from [lp-why]: every rejected step had the
+            # LP predicting FULL COMPLIANCE (objective 0) and the exact breach then came back no
+            # better. With far more free shares than constraints the linearised model can always
+            # satisfy every band to first order, and the true 1/vpsum response does not follow
+            # it. Halving the trust region cannot rescue a model that is not predictive - the
+            # incumbent is a genuine local minimum the model cannot see.
+            #
+            # THIS IS ANSWER-AFFECTING and it is meant to be: a run that WOULD have accepted a
+            # 5th-consecutive-rejection step now stops instead. The ledger keeps recording
+            # `stall_min_safe` every run, so a future run that needs K>4 says so.
+            # ROUTING_SEED_LP_STALL=0 restores the pre-19ck behaviour exactly.
             try:
-                stall = int(_os.environ.get("ROUTING_SEED_LP_STALL", "0") or 0)
+                stall = int(_os.environ.get("ROUTING_SEED_LP_STALL", "4") or 4)
             except Exception:  # noqa: BLE001 — a bad env value must not fail the seed
-                stall = 0
+                stall = 4
         stall = max(0, int(stall))
         info["stall_k"] = stall
         _steps = info["steps"]

@@ -919,3 +919,72 @@ and assuming the other is done is exactly the error 19gu made.
 Gated on there being a handicap. With `ROUTING_SEED_ZEROS` on the encode reproduces the seed's
 zeros exactly, so it has read `0 → 0 (+0)` every run — three lines of reading instructions for a
 zero. The measurement and the loud branch are untouched.
+
+---
+
+## §22 — 19io: the run disproved me twice, and both corrections are in
+
+### The seed was never broken
+
+`[seed-cap]`: all three stages, **0 over cap, 0 forced, 0 defect**. `[cap-source]`: profiles closed
+to **5.551e-16**, and **0 rows over the cap in the seed or its decode**. 19gu was right; the
+"profiles don't close to 1" hypothesis is dead.
+
+### Where my 3.5e-07 came from — and why the fix Ben approved is NOT being applied
+
+`[decode-cap]` prints two numbers in one sentence: *"held 9 row(s) above the cap … Total share
+moved 6.253e-06"*. I divided the second by the first. **They are different populations.**
+
+The capped decode targets `cap × _DC_BACKOFF` = `cap − 9.7e-10`, not `cap`. So it pulls down every
+row above **0.96999999903**, and thousands of rows sit at the cap:
+
+```
+6.253e-06 / 2 / 9.7e-10  ≈  3,223 rows
+```
+
+Nine rows are above the *cap*; ~3,200 are above the *target*. The share moved belongs to the
+second group. Dividing it by the first group's count produced a 3.5e-07 "per-row excess" and a
+mechanism that never existed — twice (19im proposed it, 19in tried to prove it).
+
+**So the dust-tolerance fix is not applied.** It was approved on the strength of my explanation,
+and the explanation is wrong: the movement is a deliberate 1e-9 back-off, not 1-ulp wobble. The
+back-off's stated purpose — *"the engineering key needs an exact 0.0"* — is also obsolete under
+`ROUTING_DECODE_OBJ`, which measures the key on the **delivered** split. That is worth revisiting,
+but on its own evidence. `[decode-cap]` now states both populations and says outright not to
+divide one by the other.
+
+### `viol 6.18557` — an unreachable floor ranked above conversion
+
+```
+one row at share 1.0  →  1/0.97 − 1 = 0.030927835…
+6.18557 / 0.030927835 = 200.00   EXACTLY
+```
+
+**200 rows at share 1.0** — profiles whose only eligible gateway must hold 100%. The granular
+samples show them (`adyen-usd-tsc-x-tav … 0.0% → 100.0%`). There is nowhere else for that share to
+go: `_cap_rows` leaves such rows alone, `_cap_shares_ref` leaves them alone, and `[deliv-cap]`
+counts them as "unsatisfiable".
+
+So the engineering key carried a term **no candidate could ever reduce**, and `_key_of` ranks
+`(-band, -viol, success_rate)` — putting it **above conversion**. It happened to be constant, so it
+never actually decided anything; but "happened to be" is not a guarantee, and a key whose 0 is
+unreachable cannot be read as "compliant".
+
+Exempted (`ROUTING_VIOL_FORCED`, default on). It should be answer-identical — a constant subtracted
+from a lexicographic key changes no ordering, and the test verifies that on a three-candidate
+ranking — and `[viol-forced]` prints the decomposition every run so a **non-zero remainder**, which
+would be a real max-share violation the flat 6.18557 was masking, shows up rather than hiding.
+
+### `[lp-stall]` armed at K=4
+
+Three unarmed runs recorded `stall_min_safe`: **3, 0, 0**. K must exceed the largest, so K = 4 —
+every step those runs went on to accept is still reached, and the trailing rejections stop.
+`[lp-why]` is why they are safe to stop on: every rejected step had the LP predicting **full
+compliance** and the exact breach came back no better. Answer-affecting, and named as such.
+Reclaims 55–160s a run.
+
+### `[cap-source]`'s contradictory verdict
+
+The `0 → 0` case fell through every branch to *"PARTLY … explains most of them but not all"*,
+immediately followed by *"✓ nothing is over the cap on either side"*. Nothing over the cap is now
+its own verdict.
