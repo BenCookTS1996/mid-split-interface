@@ -132,7 +132,7 @@ except Exception:  # noqa: BLE001 - no rule available is a refusal, never a brok
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
+__build__ = ("2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -197,7 +197,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                           cap_c, cap_ctot, cap_base, pc_gc, pc_gk, vconst,
                           nprofile, nband, cap, nlane, live_rows, live_profiles,
                           vamp, txn, psum, vpsum, moved, pr, pshare, vshare, mvrow, nzc, exc,
-                          rsum, gks):
+                          rsum, gks, rsp, rsb, blk, blkuse):
     """Bit-identical numba equivalent of PopulationBandProjector.project_pop: flat passes over
     the reduced scaffold with per-profile scratch (nprofile), no dense (P × nR) arrays. ~7× faster on
     the real scaffold. cap_row is pre-filtered to non-excl rows (excl txn contributions are 0).
@@ -273,6 +273,9 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
         for _b in range(nband):
             vamp[p, _b] += vconst[_b]
         _nzc = nzc[q]; _exc = exc[q]; _rsum = rsum[q]
+        # 19it: the blocked-row rule's two extra per-profile pools. Indexed unconditionally
+        # (numba types the whole body), used only when blkuse > 0.
+        _rsp = rsp[q]; _rsb = rsb[q]
         for _ci in range(nLC):
             c = live_profiles[_ci]
             _psum[c] = 0.0; _moved[c] = 0.0
@@ -327,17 +330,47 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                 for _ci in range(nLC):
                     c = live_profiles[_ci]
                     _rsum[c] = 0.0
+                    if blkuse > 0:
+                        _rsp[c] = 0.0
+                        _rsb[c] = 0.0
                 for _ri in range(nLR):
                     r = live_rows[_ri]
                     c = gcode[r]
                     if _psum[c] > 0.0 and _nzc[c] >= 2.0 and _pshare[r] > 1e-12 and _pshare[r] < cap - 1e-12:
                         _rsum[c] += cap - _pshare[r]
+                        # 19it: the SAME room, split by whether the recipient is bank-blocked.
+                        # `_rsum` keeps accumulating everything, so the unarmed path below is
+                        # byte-for-byte the pre-19it kernel. The two pools are accumulated in
+                        # the same ROW ORDER as the numpy reference's masked profile sums
+                        # (`_profilesum(where(blk, 0, room))`), because adding 0.0 is exact -
+                        # which is what lets _cap_pshare stay the bit-identical reference the
+                        # self-checks diff against.
+                        if blkuse > 0:
+                            if blk[r]:
+                                _rsb[c] += cap - _pshare[r]
+                            else:
+                                _rsp[c] += cap - _pshare[r]
                 for _ri in range(nLR):
                     r = live_rows[_ri]
                     c = gcode[r]
                     if (_psum[c] > 0.0 and _nzc[c] >= 2.0 and _pshare[r] > 1e-12
                             and _pshare[r] < cap - 1e-12 and _rsum[c] > 1e-12):
-                        _pshare[r] += (cap - _pshare[r]) / _rsum[c] * _exc[c]
+                        if blkuse > 0 and _rsb[c] > 1e-12:
+                            # THE RULE. Non-blocked recipients take min(excess, their room);
+                            # blocked ones take only the shortfall - which is exactly the case
+                            # where the cap could not otherwise hold. Same factor-then-multiply
+                            # association as blocked_fill._factors, so the numpy reference and
+                            # this kernel agree bit for bit.
+                            _ep = _exc[c] if _exc[c] < _rsp[c] else _rsp[c]
+                            _ef = _exc[c] - _rsp[c]
+                            if _ef < 0.0:
+                                _ef = 0.0
+                            if blk[r]:
+                                _pshare[r] += (cap - _pshare[r]) * (_ef / _rsb[c])
+                            elif _rsp[c] > 1e-12:
+                                _pshare[r] += (cap - _pshare[r]) * (_ep / _rsp[c])
+                        else:
+                            _pshare[r] += (cap - _pshare[r]) / _rsum[c] * _exc[c]
         # ---- vshare from the (capped) ROUTED share (0 in inactive profiles) ----
         for _ci in range(nLC):
             c = live_profiles[_ci]
@@ -478,7 +511,7 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
                     cap_rowc, cap_band, cap_c, cap_ctot, cap_base,
                     pc_orgc, pc_vc, pc_pool, pc_band, pc_heldfac, pc_gc, pc_gkc, vconst,
                     cap, nlane, vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks,
-                    ef_c, efloor, usefloor, pshf):
+                    ef_c, efloor, usefloor, pshf, blk_c, blkuse):
     P = prop_raw.shape[0]
     nCl = profiles.shape[0]; nC = cap_rowc.shape[0]; nA = pc_orgc.shape[0]
     vamp[:, :] = 0.0; txn[:, :] = 0.0
@@ -537,13 +570,40 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
                             if _pshare[i] > cap + 1e-12:
                                 _pshare[i] = cap
                         rs = 0.0
+                        rsp = 0.0
+                        rsb = 0.0
                         for i in range(s, e):
                             if _pshare[i] > 1e-12 and _pshare[i] < cap - 1e-12:
                                 rs += cap - _pshare[i]
+                                # 19it: the blocked-row rule. This kernel walks a profile's rows
+                                # contiguously, so the two pools are plain scalars - no extra
+                                # buffer, and the accumulation order is the profile's own row
+                                # order, which is what keeps it equal to the flat kernel.
+                                if blkuse > 0:
+                                    if blk_c[i]:
+                                        rsb += cap - _pshare[i]
+                                    else:
+                                        rsp += cap - _pshare[i]
                         if rs > 1e-12:
-                            for i in range(s, e):
-                                if _pshare[i] > 1e-12 and _pshare[i] < cap - 1e-12:
-                                    _pshare[i] += (cap - _pshare[i]) / rs * exc
+                            if blkuse > 0 and rsb > 1e-12:
+                                ep = exc if exc < rsp else rsp
+                                ef = exc - rsp
+                                if ef < 0.0:
+                                    ef = 0.0
+                                fp = 0.0
+                                if rsp > 1e-12:
+                                    fp = ep / rsp
+                                ff = ef / rsb
+                                for i in range(s, e):
+                                    if _pshare[i] > 1e-12 and _pshare[i] < cap - 1e-12:
+                                        if blk_c[i]:
+                                            _pshare[i] += (cap - _pshare[i]) * ff
+                                        else:
+                                            _pshare[i] += (cap - _pshare[i]) * fp
+                            else:
+                                for i in range(s, e):
+                                    if _pshare[i] > 1e-12 and _pshare[i] < cap - 1e-12:
+                                        _pshare[i] += (cap - _pshare[i]) / rs * exc
                 # ---- 19hv: the TXN share, delivery's rule, into its OWN buffer ----
                 # Eligible = present in the profile (base>0 or a proposal) AND not masked
                 # (`ef_c` is `pw > 0`, i.e. keep & ~emask & ~excl). Delivery's `_elig_f` omits
@@ -644,6 +704,15 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
 
 _cb_kernel = _njit(cache=False)(_cb_kernel_impl)
 _cb_kernel_par = _njit(cache=False, parallel=True)(_cb_kernel_impl)
+
+# 19it: BOTH kernels now carry the blocked mask, so this build claims both sites. Registered
+# here, below the compiles, because that is where the claim becomes true. With these two,
+# blocked_fill.arming_verdict can reach 5 of 5 and ROUTING_BLOCK_NOFILL=1 actually arms the
+# rule - `_cap_pshare` (the numpy reference the self-checks diff against) moved in 19is, so
+# there is no path left where one of these three disagrees with the other two.
+if _BFM is not None:
+    _BFM.register("band_kernel_flat")
+    _BFM.register("band_kernel_profile")
 # 19hm: renamed with the OLD NAME STILL HONOURED. A switch name is a user contract — it is
 # typed at a prompt and written into notes — so renaming it outright would silently stop
 # obeying an instruction someone had already recorded. New name wins; old name still works.
@@ -2501,7 +2570,12 @@ class PopulationBandProjector:
                      # and zeroed per candidate only at the codes the scaffold touches — see the
                      # kernel note. max(1, ...) so a scaffold with no aged rows still allocates a
                      # valid array rather than a zero-length one numba would have to type.
-                     np.zeros((lanes, max(1, int(getattr(self, "_n_gk", 0) or 0)))))
+                     np.zeros((lanes, max(1, int(getattr(self, "_n_gk", 0) or 0)))),
+                     # 19it: the blocked-row rule's two per-profile pools (non-blocked room,
+                     # blocked room). float64 like every other pool here - the rule adds no
+                     # dtype of its own, so float32 (which lives in the profile-blocked path,
+                     # where these are plain scalars) is untouched by it.
+                     np.zeros((lanes, nprofile)), np.zeros((lanes, nprofile)))
             self._nbbuf_fixed = fixed
             self._nbbuf_lanes = lanes
         vt = getattr(self, "_nbbuf_vt", None)
@@ -2795,10 +2869,11 @@ class PopulationBandProjector:
                        + tuple(np.zeros((1, _nc)) for _ in range(3))
                        + tuple(np.zeros((1, _nR)) for _ in range(4))
                        + tuple(np.zeros((1, _nc)) for _ in range(3))
-                       + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),))   # 19cy gks
+                       + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),)   # 19cy gks
+                       + tuple(np.zeros((1, _nc)) for _ in range(2)))    # 19it rsp, rsb
                 _lrv, _lcv = self._lift_arrays(1, _vb)
                 _vv, _vt = _pop_band_kernel(prop_raw, *a, _nc, _B, float(self._cap), 1,
-                                            _lrv, _lcv, *_vb)
+                                            _lrv, _lcv, *_vb, *self._blk_args())
                 _vv, _vt = _vv.copy(), _vt.copy()
                 if chunk:
                     # Verify the path that will ACTUALLY run, not a stand-in for it. The chunked
@@ -2808,7 +2883,7 @@ class PopulationBandProjector:
                 else:
                     _lrp, _lcp = self._lift_arrays(P, buf)
                     _pv, _pt = _pop_band_kernel_par(prop_raw, *a, _nc, _B, float(self._cap), P,
-                                                    _lrp, _lcp, *buf)
+                                                    _lrp, _lcp, *buf, *self._blk_args())
                 _match = np.array_equal(_vv, _pv) and np.array_equal(_vt, _pt)
                 del _vb
                 if _match:
@@ -2863,7 +2938,7 @@ class PopulationBandProjector:
         _lr, _lc = self._lift_arrays(nlane, buf)
         _kern = _pop_band_kernel_par if par else _pop_band_kernel
         return _kern(prop_raw, *a, int(self._ngc), int(self._B), float(self._cap), nlane,
-                     _lr, _lc, *buf)
+                     _lr, _lc, *buf, *self._blk_args())
 
     # [FN-023c]
     def _cb_arrays(self, a):
@@ -2915,6 +2990,15 @@ class PopulationBandProjector:
             cb = {
                 "key": key, "ok": True, "nLR": int(cm.size), "perm": perm, "pos": pos,
                 "profiles": _ix32(profiles), "cstart": _ix32(cstart[profiles]), "ccnt": _ix32(cnt[profiles]),
+                # 19it: the blocked mask, PERMUTED into this layout. Built from `perm` here
+                # rather than by the caller, for the same reason every other _c array is: a
+                # second place that permutes is a second place that can permute wrongly, and a
+                # mis-permuted mask would apply the rule to the wrong rows silently.
+                "blk_c": np.ascontiguousarray(
+                    (getattr(self, "_pblk", None)
+                     if getattr(self, "_pblk", None) is not None
+                     and len(getattr(self, "_pblk")) == nR
+                     else np.zeros(nR, bool))[perm]),
                 "propidx_c": _ix32(np.asarray(a[0], np.int64)[perm]),
                 "pw_c": np.ascontiguousarray(np.asarray(a[1], np.float64)[perm]),
                 "base_c": np.ascontiguousarray(np.asarray(a[3], np.float64)[perm]),
@@ -3065,9 +3149,11 @@ class PopulationBandProjector:
                + tuple(np.zeros((1, nprofile)) for _ in range(3))
                + tuple(np.zeros((1, _nR)) for _ in range(4))
                + tuple(np.zeros((1, nprofile)) for _ in range(3))
-               + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),))   # 19cy gks
+               + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),)   # 19cy gks
+               + tuple(np.zeros((1, nprofile)) for _ in range(2)))    # 19it rsp, rsb
         _lr, _lc = self._lift_arrays(1, _vb)
-        _rv, _rt = _pop_band_kernel(prop_raw, *a, nprofile, _B, float(self._cap), 1, _lr, _lc, *_vb)
+        _rv, _rt = _pop_band_kernel(prop_raw, *a, nprofile, _B, float(self._cap), 1, _lr, _lc,
+                                    *_vb, *self._blk_args())
         out = {"at_P": int(P), "nb": int(_B)}
         for _nm, _ref, _got in (("v", _rv, v32), ("t", _rt, t32)):
             _ad = np.abs(np.asarray(_ref, np.float64) - np.asarray(_got, np.float64))
@@ -3143,6 +3229,10 @@ class PopulationBandProjector:
         _SFLOOR_FACT.update(armed=bool(_SFLOOR_ON), applied=bool(_sfl_armed),
                             floor=float(_sfl_flo),
                             rows=int(np.count_nonzero(np.asarray(cb["ef_c"]) > 0.0)))
+        # 19it: the blocked-row rule. `blk_c` is a bool array, so it never joins the float
+        # dtype unification the note above is about; `_blk_use` is the only switch.
+        _blk_c = cb["blk_c"]
+        _blk_use = 1 if getattr(self, "_blk_armed", False) else 0
 
         def _run():
             if chunk:
@@ -3152,12 +3242,12 @@ class PopulationBandProjector:
                     _k = _cb_kernel if _n == 1 else _cb_kernel_par
                     _k(np.ascontiguousarray(_pr_in[_s0:_s1]), *_args, cap, _n,
                        vamp[_s0:_s1], txn[_s0:_s1], psum, vpsum, moved, pr, pshare, sw, gks,
-                       _ef_in, _sfl_efl, _sfl_use, _sfl_pshf)
+                       _ef_in, _sfl_efl, _sfl_use, _sfl_pshf, _blk_c, _blk_use)
                 return vamp, txn
             _k = _cb_kernel_par if par else _cb_kernel
             return _k(_pr_in, *_args, cap, (P if par else 1),
                       vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks,
-                      _ef_in, _sfl_efl, _sfl_use, _sfl_pshf)
+                      _ef_in, _sfl_efl, _sfl_use, _sfl_pshf, _blk_c, _blk_use)
 
         try:
             _v, _t = _run()
@@ -3191,9 +3281,11 @@ class PopulationBandProjector:
                        + tuple(np.zeros((1, nprofile)) for _ in range(3))
                        + tuple(np.zeros((1, _nR)) for _ in range(4))
                        + tuple(np.zeros((1, nprofile)) for _ in range(3))
-                       + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),))   # 19cy gks
+                       + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),)   # 19cy gks
+                       + tuple(np.zeros((1, nprofile)) for _ in range(2)))    # 19it rsp, rsb
                 _lrv, _lcv = self._lift_arrays(1, _vb)
-                _rv, _rt = _pop_band_kernel(prop_raw, *a, nprofile, _B, cap, 1, _lrv, _lcv, *_vb)
+                _rv, _rt = _pop_band_kernel(prop_raw, *a, nprofile, _B, cap, 1, _lrv, _lcv,
+                                            *_vb, *self._blk_args())
                 del _vb                      # the tuple name only; _rv/_rt still hold its arrays
                 # 19cd: THE FLOAT32 BRANCH COMES FIRST. It used to come after the bit comparison
                 # below, and that comparison hard-coded `.view(np.int64)` on arrays that are
@@ -3363,8 +3455,20 @@ class PopulationBandProjector:
             _n = _s1 - _s0
             _kern = _pop_band_kernel if _n == 1 else _pop_band_kernel_par
             _kern(np.ascontiguousarray(prop_raw[_s0:_s1]), *a, nprofile, B, cap, _n,
-                  _lr, _lc, vamp[_s0:_s1], txn[_s0:_s1], *buf[2:])
+                  _lr, _lc, vamp[_s0:_s1], txn[_s0:_s1], *buf[2:], *self._blk_args())
         return vamp, txn
+
+    # [FN-19it]
+    def _blk_args(self):
+        """(blk, blkuse) for the kernels. `blk` is ALWAYS a real (nR,) bool array - all-False
+        when nothing is blocked - so numba types one signature either way; `blkuse` is the only
+        thing that changes, and it is 0 unless the rule is armed at every site AND this
+        projector actually holds a mask. One accessor, because six call sites passing their own
+        idea of the mask is how a rule ends up applied at four water-fills out of five."""
+        _b = getattr(self, "_pblk", None)
+        if _b is None or len(_b) != len(self._gcode):
+            _b = np.zeros(len(self._gcode), bool)
+        return _b, (1 if getattr(self, "_blk_armed", False) else 0)
 
     # [FN-024]
     def _profilesum(self, x):

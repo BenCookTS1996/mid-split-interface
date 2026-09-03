@@ -79,8 +79,17 @@ check("...and keeps the unmodified add verbatim where the rule cannot reach",
 check("band_projection imports blocked_fill at MODULE level (a build-time capability claim)",
       "from routing_optimiser.s4_search import blocked_fill as _BFM" in BP
       and BP.index("import blocked_fill as _BFM") < BP.index("def _pop_band_kernel_impl"))
-check("the two kernels are NOT registered yet, so the rule is still refused",
-      set(bf.missing()) >= {"band_kernel_profile", "band_kernel_flat"}, str(bf.missing()))
+# 19it registered both kernels, so this check became "every site is wired". Kept rather than
+# deleted: what it guards is that _cap_pshare and the kernels are wired TOGETHER, and the day
+# one of them is unwired again this is the line that says so.
+# Importing band_projection registers BOTH kernels (19it), which is what pairs them with
+# _cap_pshare: the numpy reference and the two compiles are wired together or not at all. The
+# other three sites live in impact_calcs and tab_2 and register when THOSE import - this test
+# does not import them, so `missing` naming them here is correct, not a failure.
+check("importing band_projection wires both kernels alongside _cap_pshare",
+      {"band_kernel_flat", "band_kernel_profile"} <= set(bf.wired()), str(bf.wired()))
+check("...and the sites it does NOT own are the ones it does not register",
+      set(bf.missing()) <= {"_fm_cap", "_cap_rows", "_max_share_waterfill"}, str(bf.missing()))
 
 # ── 4. _cap_pshare, behaviourally, on a real projector ──────────────────────────────────
 # Minimal scaffold: one currency, three BINs, three MIDs each, one period.
