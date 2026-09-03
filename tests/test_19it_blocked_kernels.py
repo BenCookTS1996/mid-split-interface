@@ -142,6 +142,25 @@ check("the PARALLEL compile takes the two new arguments and agrees with numpy",
       _ident(pa["numpy"], pa["numba"]),
       f"max|dtxn| {float(np.abs(pa['numpy'][1] - pa['numba'][1]).max()):.3e}")
 
+# ── 4b. importing tab_2 is enough to reach 5/5 ──────────────────────────────────────────
+# band_projection registers the two kernel sites when it IMPORTS, and tab_2 imported it lazily
+# inside `_get_pbp` - so an arming verdict read before the first projector build said "the band
+# kernels are not wired" when they were, merely not yet imported. tab_2 imports it at module
+# level from 19it, which makes registration deterministic.
+try:
+    sys.path.insert(0, str(ROOT / "app"))
+    for _m in [k for k in list(sys.modules) if k.startswith("routing_optimiser")]:
+        del sys.modules[_m]
+    import tab_2_routing_engine as _t2   # noqa: F401
+    from routing_optimiser.s4_search import blocked_fill as _bf2
+    check("importing tab_2 alone registers all five sites",
+          not _bf2.missing(), f"missing: {_bf2.missing()}")
+    check("...so a verdict read before the first projector build can actually arm",
+          _bf2.arming_verdict(True)[0] is True, _bf2.arming_verdict(True)[1][:90])
+except Exception as _e:  # noqa: BLE001
+    check("importing tab_2 alone registers all five sites", False,
+          f"{type(_e).__name__}: {_e}")
+
 # ── 5. no blocked row anywhere => armed is indistinguishable from refused ───────────────
 bp4, bf4 = _fresh({"ROUTING_PROJ_PROFILEBLOCK": "1"})
 z_un = _run(bp4, frozenset(), armed=False)

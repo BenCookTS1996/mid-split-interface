@@ -27,6 +27,12 @@ try:    # 19is: the search's own water-fill (`_fm_cap`) implements the blocked-r
         # them all. Whether this site got a MASK is recorded separately, per run (`saw_mask`).
     from routing_optimiser.s4_search import blocked_fill as _BFM_T2
     _BFM_T2.register("_fm_cap")
+    # 19it: band_projection registers the two KERNEL sites when it imports, and tab_2 imports it
+    # lazily inside `_get_pbp` - so the arming verdict read anywhere before the first projector
+    # build would say "the band kernels are not wired" when they are, merely not yet imported.
+    # Importing it here makes registration deterministic; every real run imports it anyway, and
+    # the numba compiles are lazy so this costs nothing but the module body.
+    from routing_optimiser.s4_search import band_projection as _BP_T2   # noqa: F401
 except Exception:  # noqa: BLE001 - no rule available is a refusal, never a broken import
     _BFM_T2 = None
 from impact_calcs import _mtime, pool_targeted_compression, process_wallet_incapable
