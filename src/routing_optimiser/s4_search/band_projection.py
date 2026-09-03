@@ -1411,6 +1411,121 @@ def _grp_codes(df, cols):
     return pd.factorize(key, use_na_sentinel=False)[0]
 
 
+# ── 19jb: THE OTHER HALF OF THE INT-KEY TRICK ────────────────────────────────────────────────
+# `_grp_codes` above answers "which rows of THIS frame share a tuple". The three functions
+# below answer the other half - "which row of frame A carries the same tuple as this row of
+# frame B" - which is what every `.set_index([...]).to_dict()` + `.get(tuple)` and every
+# `a + "|" + b + ...` join key in tab_2's scaffold build is really asking. [cap-timing] put
+# those at 39.9s of a 51.7s table: a tuple-keyed dict pays a Python tuple construction and a
+# hash per row, and a 7-part string key pays a ~60-character concatenation per row before
+# pandas starts hashing. An int64 key pays neither.
+#
+# NOTHING DOWNSTREAM NEEDS A BIT-IDENTITY ARGUMENT, and that is the point. The key decides
+# only WHICH source row a destination row reads; the value it then reads is the same float,
+# gathered instead of hashed. No arithmetic changes and no float sum is reassociated - the
+# difference between this and re-labelling a groupby, which does need the argument.
+def joint_col_codes(frames, cols, *, stringify=False, sep=None):
+    """Per-column integer codes for several frames at once, COMPARABLE ACROSS THEM.
+
+    `frames` is a list of mappings (DataFrames or plain dicts of arrays) each providing every
+    name in `cols`; a mapping rather than a frame is what lets one table's `_per` line up with
+    another's `_om`. Returns `(percol, rads, lens)` - `percol[i][j]` the int64 codes of frame
+    i, column `cols[j]`; `rads[j]` the number of distinct values of that column over ALL the
+    frames; `lens[i]` each frame's row count. None when it cannot promise the identity below.
+
+    THE PROMISE. Two rows - in the same frame or in different ones - get the same code in
+    column j IFF their values there are equal (`stringify=False`, which is TUPLE equality,
+    what `set_index(...).to_dict()` uses) or stringify alike (`stringify=True`, what a
+    `"|"`-join uses, where int 403163 and str "403163" are one key). A caller replacing a
+    join should also pass `sep="|"`: a value CONTAINING the separator makes that join
+    ambiguous and MERGES tuples this does not, so this declines rather than quietly fixing
+    what ships.
+
+    Each frame's RAW values are factorized first (cheap - a categorical column is already
+    codes), only the UNIQUES are stringified when asked, and the CONCATENATED uniques are
+    re-factorized so every frame's codes land in one shared namespace.
+
+    A column holding nulls takes an exact per-column `astype(str)`, because pd.factorize
+    collapses None and NaN into ONE missing value while `astype(str)` renders them "None" and
+    "nan" - the trap `_grp_codes` documents.
+    """
+    if not frames:
+        return [], [], []
+    lens = [int(len(np.asarray(pd.Series(_f[cols[0]])))) for _f in frames] if cols else \
+        [0 for _f in frames]
+    percol = [[] for _ in frames]
+    rads = []
+    for _c in cols:
+        _raw, _uniq = [], []
+        for _f in frames:
+            _col = pd.Series(np.asarray(_f[_c]))
+            if stringify or bool(_col.isna().any()):
+                _sc, _su = pd.factorize(_col.astype(str), use_na_sentinel=False)
+            else:
+                _sc, _su = pd.factorize(_col, use_na_sentinel=False)
+            _raw.append(np.asarray(_sc, np.int64))
+            _uniq.append(np.asarray(_su, object))
+        _allu = np.concatenate(_uniq) if _uniq else np.zeros(0, object)
+        if sep is not None and any(str(sep) in str(_x) for _x in _allu):
+            return None
+        _g, _gu = pd.factorize(pd.Series(_allu), use_na_sentinel=False)
+        _g = np.asarray(_g, np.int64)
+        _off = 0
+        for _i, _u in enumerate(_uniq):
+            _m = _g[_off:_off + _u.size]
+            _off += _u.size
+            percol[_i].append(_m[_raw[_i]] if _raw[_i].size else np.zeros(0, np.int64))
+        rads.append(max(int(_gu.size), 1))
+    return percol, rads, lens
+
+
+def mix_codes(parts, rads, n=None):
+    """Mixed-radix combine per-column codes into ONE int64 key. None on overflow past 2**62.
+
+    `parts[j]` must already be in 0 .. rads[j]-1 - `joint_col_codes` guarantees that, and an
+    integer column can be offset by its own minimum to join in. The combination is a bijection
+    on the code tuples, so two rows share a key IFF they share every code."""
+    _tot = 1
+    for _k in rads:
+        _k = int(_k)
+        if _k < 1 or _tot > (2 ** 62) // _k:
+            return None
+        _tot *= _k
+    _n = int(n if n is not None else (len(parts[0]) if parts else 0))
+    _key = np.zeros(_n, np.int64)
+    for _p, _k in zip(parts, rads):
+        _key = _key * int(_k) + np.asarray(_p, np.int64)
+    return _key
+
+
+def joint_lookup(src_key, src_val, dst_key, *, default=0.0, keep="last"):
+    """`{k: v for k, v in zip(src_key, src_val)}` then `[m.get(k, default) for k in dst_key]`,
+    without the Python loop.
+
+    `keep` says which source row wins a duplicate key, and it is not a detail: a dict built by
+    `set_index(...).to_dict()` keeps the LAST, while a `drop_duplicates()` before it keeps the
+    FIRST. Both patterns are in tab_2's scaffold build, so both are spelled out here rather
+    than assumed.
+
+    Values are GATHERED, never combined, so the result is bit-identical to the dict version
+    wherever the two keys induce the same equivalence - which is `joint_col_codes`' promise.
+
+    MISSING IS NOT NaN. `reindex(...).fillna(default)` would also overwrite a value that IS
+    NaN in the source, which the dict version returns untouched. So the miss is taken from the
+    INDEXER, not from the value."""
+    _sv = np.asarray(src_val)
+    _s = pd.Series(np.arange(_sv.shape[0]), index=np.asarray(src_key, np.int64))
+    _s = _s[~_s.index.duplicated(keep=keep)]
+    _pos = _s.index.get_indexer(np.asarray(dst_key, np.int64))
+    _src_pos = _s.to_numpy()
+    _out = np.full(int(np.asarray(dst_key).shape[0]), default,
+                   dtype=np.result_type(_sv.dtype, np.asarray(default).dtype))
+    _hit = _pos >= 0
+    if _hit.any():
+        _out[_hit] = _sv[_src_pos[_pos[_hit]]]
+    return _out
+
+
 # [FN-012]
 def _prop_raw(T0: pd.DataFrame, prop: dict, by_rpgt: bool, by_profile: bool = False) -> np.ndarray:
     """Look up each t0 row's proposed share from the `prop` dict by its bucket key.

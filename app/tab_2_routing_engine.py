@@ -4179,79 +4179,257 @@ def render():
                         _T0_vi_a = _T0["_vi"].to_numpy(float)
                         _cap_mark("factorise the _T0 keys + pull the per-row arrays")
                         _T0_capidx = np.where(_T0["_midl"].isin(_capped_l).to_numpy())[0]
-                        # _Pc → _T0 row index by (cur,bin,rpgt,midl, _Pc._om == _T0._per)
-                        _t0_join = (_T0["_cur"] + "|" + _T0["_bin"] + "|" + _T0["_rpgt"] + "|"
-                                    + _T0["_pmp"] + "|" + _T0["_ctry"] + "|"
-                                    + _T0["_midl"] + "|" + _T0["_per"].astype(str)).to_numpy()
-                        # Exclude injected back-fill rows as VAMP join targets: they carry zero
-                        # baseline VAMP, so mapping a _Pc row onto one would move VAMP out of the
-                        # cohort without redistributing any back. Keeping them out leaves the VAMP
-                        # projection (and every VAMP-band decision) byte-identical to pre-back-fill;
-                        # the injection only corrects the TXN share normalisation.
-                        _bf_mask = (_T0["_bf"].to_numpy() > 0) if "_bf" in _T0.columns else np.zeros(len(_T0), bool)
-                        _pc_join = (_Pc["_cur"] + "|" + _Pc["_bin"] + "|" + _Pc["_rpgt"] + "|"
-                                    + _Pc["_pmp"] + "|" + _Pc["_ctry"] + "|"
-                                    + _Pc["_midl"] + "|" + _Pc["_om"].astype(str)).to_numpy()
-                        _cap_mark("  join keys: two 7-part strings, over _T0 and over _Pc")
-                        # Vectorised _Pc -> _T0 row-index map (replaces a per-row dict build + fromiter
-                        # over ~1.3M rows). A Series indexed by the non-back-fill t0 keys, reindexed to
-                        # the _Pc keys, gives each _Pc row its t0 position or -1 — identical to the
-                        # {k:i ...}.get(k,-1) it replaces (keep-last on any duplicate key, no arithmetic).
-                        _valid = ~_bf_mask
-                        _t0_pos = pd.Series(np.where(_valid)[0], index=_t0_join[_valid])
-                        _t0_pos = _t0_pos[~_t0_pos.index.duplicated(keep="last")]
-                        _Pc_to_t0 = _t0_pos.reindex(_pc_join).fillna(-1).to_numpy().astype(np.int64)
-                        _cap_mark("  _Pc -> _T0 map: hash those strings + de-dup + reindex")
-                        _Pc_vc_a = _Pc["_vc"].to_numpy(float)
-                        # Moved-VAMP pool per (cur,bin,rpgt,pmp,ctry,period,t), APPEARANCE-MONTH timed
-                        # to match the tab-3 DELIVERED projection (compute_vamp_prepost_granular):
-                        #   pool = pro_rata[APPEARANCE profile (sub,per)] × Σ_MID vampCount × fcp1_frac[ORIGIN
-                        #          profile (sub, per−t)]
-                        # (was Σ vc·pro_rata·fcp1 using each aged row's OWN pro_rata — origination timing).
-                        # go-live pro_rata is applied by the month the VAMP APPEARS, while fcp1_frac (the
-                        # first-attempt reroutable slice) stays at ORIGINATION. _P holds every MID in the
-                        # kept profiles, so the sum is complete; split-independent → precomputed once.
-                        # Verified bit-exact vs compute_vamp_prepost_granular (tests/test_band_timing_reconcile).
-                        _P0 = _P[_P["_t"] == 0]
-                        _fcp_orig_map = _P0.set_index(
-                            ["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_midl", "_per"])["_fcp"].to_dict()
-                        _prapp_map = (_P0.drop_duplicates(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per"])
-                                      .set_index(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per"])["_pr"].to_dict())
-                        _cap_mark("  the two _P0 tuple-key dicts (fcp[origin], pro_rata[appearance])")
-                        _P_origin = (_P["_per"] - _P["_t"]).to_numpy()
-                        _fcp_o_P = np.fromiter(
-                            (_fcp_orig_map.get((_c, _b, _r, _pm, _ct, _ml, _o), 0.0)
-                             for _c, _b, _r, _pm, _ct, _ml, _o in
-                             zip(_P["_cur"], _P["_bin"], _P["_rpgt"], _P["_pmp"], _P["_ctry"],
-                                 _P["_midl"], _P_origin)),
-                            dtype=float, count=len(_P))
-                        _cap_mark("  fcp[origin] per _P row (np.fromiter over the tuple-key dict)")
-                        _P["_mvraw"] = _P["_vc"].to_numpy(float) * _fcp_o_P   # vc × fcp[origin] (no pro_rata yet)
-                        _mvp_map = _P.groupby(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per", "_t"],
-                                              observed=True)["_mvraw"].sum().to_dict()
-                        _cap_mark("  moved-pool per group (7-column groupby + to_dict)")
-                        # per-_Pc appearance pro_rata (static) — reused by _project_capped's held term.
-                        # 19cw was tried here (key on `_per - _tt`) and is WRONG — see the
-                        # long note in band_projection._pc_prapp. Delivery takes fcp from the
-                        # ORIGIN and pro_rata from the APPEARANCE period, so this is correct as
-                        # written; the origin keying measured a 1.72 divergence where this
-                        # measures 0.000000. t > period is frozen by the missing origin row, not
-                        # by pro_rata.
-                        _pc_prapp_a = np.fromiter(
-                            (_prapp_map.get((_c, _b, _r, _pm, _ct, _p), 0.0)
-                             for _c, _b, _r, _pm, _ct, _p in
-                             zip(_Pc["_cur"], _Pc["_bin"], _Pc["_rpgt"], _Pc["_pmp"], _Pc["_ctry"], _Pc["_per"])),
-                            dtype=float, count=len(_Pc))
-                        _Pc_movedvpool_a = np.fromiter(
-                            (_mvp_map.get((_c, _b, _r, _pm, _ct, _p, _t), 0.0)
-                             for _c, _b, _r, _pm, _ct, _p, _t in
-                             zip(_Pc["_cur"], _Pc["_bin"], _Pc["_rpgt"], _Pc["_pmp"], _Pc["_ctry"],
-                                 _Pc["_per"], _Pc["_t"])),
-                            dtype=float, count=len(_Pc)) * _pc_prapp_a
-                        _cap_mark("  pro_rata + moved-pool per _Pc row (two np.fromiter loops)")
-                        # Aggregation group codes + (midl, period) labels — VAMP over _Pc rows,
-                        # TXN over capped _T0 rows. Same groups as the old (_midl,_per) group-by.
-                        _SEP = ""
+
+                        # ── 19jb: ONE INT64 CODEBOOK FOR THE SCAFFOLD'S CROSS-FRAME LOOKUPS ──
+                        # [cap-timing] 19ja put two steps at 39.9s of a 51.7s table, and both are
+                        # the same mechanism seen twice. `_Pc -> _T0` builds a 7-part string per
+                        # row of _T0 AND of _Pc before pandas hashes either; the three maps over
+                        # _P build tuple-keyed dicts and then walk them with np.fromiter, one
+                        # Python tuple construction and one hash per row of a multi-million-row
+                        # frame. Both are the pattern [gk-code] already replaced with an int64
+                        # key elsewhere, verified bit-identical.
+                        #
+                        # WHY THIS ONE NEEDS NO BIT-IDENTITY ARGUMENT. The key decides only WHICH
+                        # source row a destination row reads. The value read is the same float,
+                        # gathered instead of hashed - no arithmetic changes, no float sum is
+                        # reassociated. That is what separates it from re-labelling a groupby,
+                        # where the sum order IS the answer. The one groupby here keeps its own
+                        # rows in their own order for exactly that reason.
+                        #
+                        # It VERIFIES itself against the code it replaces on the first run and
+                        # says so; ROUTING_CAPKEY_VERIFY=0 turns that off once a run has printed
+                        # the verdict, and ROUTING_CAP_INTKEY=0 reverts the whole thing.
+                        _CKEY = {"used": False, "why": "", "verified": None, "verify_secs": 0.0}
+                        _CK_NEW = None
+                        if os.environ.get("ROUTING_CAP_INTKEY", "1") != "0":
+                            try:
+                                from routing_optimiser.s4_search.band_projection import (
+                                    joint_col_codes as _jcc, mix_codes as _jmix,
+                                    joint_lookup as _jlk)
+                                _CKC = ["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_midl"]
+                                _ckf = [{_n: _df[_n] for _n in _CKC} for _df in (_T0, _P, _Pc)]
+                                # sep="|" because the _Pc -> _T0 half replaces a "|"-join: a
+                                # value CONTAINING "|" makes that join merge tuples an int key
+                                # would keep apart, and what ships today is the join.
+                                _ckr = _jcc(_ckf, _CKC, sep="|")
+                                if _ckr is None:
+                                    _CKEY["why"] = ("a key value contains '|', so the string "
+                                                    "join being replaced merges tuples an "
+                                                    "integer key would keep apart")
+                                else:
+                                    _ckp, _ckrad, _cklen = _ckr
+                                    _ck_T0, _ck_P, _ck_Pc = _ckp
+                                    _ck_org = (_P["_per"] - _P["_t"]).to_numpy()
+                                    def _ck_off(_arrs):
+                                        _lo = min(int(np.min(_a)) for _a in _arrs if len(_a))
+                                        _hi = max(int(np.max(_a)) for _a in _arrs if len(_a))
+                                        return _lo, int(_hi - _lo + 1)
+                                    _pmn, _prd = _ck_off([
+                                        np.asarray(_T0["_per"]), np.asarray(_P["_per"]), _ck_org,
+                                        np.asarray(_Pc["_per"]), np.asarray(_Pc["_om"])])
+                                    _tmn, _trd = _ck_off([np.asarray(_P["_t"]),
+                                                          np.asarray(_Pc["_t"])])
+                                    def _ckP(_v, _m=None, _r=None):
+                                        return np.asarray(_v, np.int64) - (_pmn if _m is None else _m)
+                                    _K_T0 = _jmix(_ck_T0 + [_ckP(_T0["_per"])],
+                                                  _ckrad + [_prd], n=_cklen[0])
+                                    _K_Pcom = _jmix(_ck_Pc + [_ckP(_Pc["_om"])],
+                                                    _ckrad + [_prd], n=_cklen[2])
+                                    _K_Pper = _jmix(_ck_P + [_ckP(_P["_per"])],
+                                                    _ckrad + [_prd], n=_cklen[1])
+                                    _K_Porg = _jmix(_ck_P + [_ckP(_ck_org)],
+                                                    _ckrad + [_prd], n=_cklen[1])
+                                    _K5_P = _jmix(_ck_P[:5] + [_ckP(_P["_per"])],
+                                                  _ckrad[:5] + [_prd], n=_cklen[1])
+                                    _K5_Pc = _jmix(_ck_Pc[:5] + [_ckP(_Pc["_per"])],
+                                                   _ckrad[:5] + [_prd], n=_cklen[2])
+                                    _K6_P = _jmix(_ck_P[:5] + [_ckP(_P["_per"]),
+                                                               _ckP(_P["_t"], _tmn)],
+                                                  _ckrad[:5] + [_prd, _trd], n=_cklen[1])
+                                    _K6_Pc = _jmix(_ck_Pc[:5] + [_ckP(_Pc["_per"]),
+                                                                 _ckP(_Pc["_t"], _tmn)],
+                                                   _ckrad[:5] + [_prd, _trd], n=_cklen[2])
+                                    if any(_k is None for _k in (_K_T0, _K_Pcom, _K_Pper,
+                                                                 _K_Porg, _K5_P, _K5_Pc,
+                                                                 _K6_P, _K6_Pc)):
+                                        _CKEY["why"] = ("mixed-radix overflow past 2**62 at "
+                                                        "these cardinalities")
+                                    else:
+                                        _ck_bf = ((_T0["_bf"].to_numpy() > 0)
+                                                  if "_bf" in _T0.columns
+                                                  else np.zeros(len(_T0), bool))
+                                        _ck_val = ~_ck_bf
+                                        # keep="last": the dict this replaces was built by
+                                        # `{k: i}` over the valid rows in order.
+                                        _n_Pc_to_t0 = _jlk(_K_T0[_ck_val],
+                                                           np.where(_ck_val)[0],
+                                                           _K_Pcom, default=-1,
+                                                           keep="last").astype(np.int64)
+                                        _ck_p0 = (_P["_t"].to_numpy() == 0)
+                                        # keep="last" - `.set_index(...).to_dict()` keeps the
+                                        # LAST row of a duplicated key.
+                                        _n_fcp_o_P = _jlk(_K_Pper[_ck_p0],
+                                                          _P["_fcp"].to_numpy(float)[_ck_p0],
+                                                          _K_Porg, default=0.0, keep="last")
+                                        # keep="first" - this one had a `drop_duplicates()`
+                                        # in front of the dict, which keeps the FIRST.
+                                        _n_pc_prapp_a = _jlk(_K5_P[_ck_p0],
+                                                             _P["_pr"].to_numpy(float)[_ck_p0],
+                                                             _K5_Pc, default=0.0, keep="first")
+                                        _n_mvraw = _P["_vc"].to_numpy(float) * _n_fcp_o_P
+                                        # THE GROUPBY KEEPS ITS OWN ROWS IN THEIR OWN ORDER.
+                                        # Only the group LABEL changes; pandas still accumulates
+                                        # each group's rows in frame order, so every float sum is
+                                        # the same additions in the same order. Re-labelling that
+                                        # merged or split one group would move the last bits.
+                                        _n_mv = pd.Series(_n_mvraw, index=_P.index).groupby(
+                                            pd.Series(_K6_P, index=_P.index),
+                                            observed=True).sum()
+                                        _n_movedvpool = _jlk(
+                                            _n_mv.index.to_numpy(), _n_mv.to_numpy(float),
+                                            _K6_Pc, default=0.0,
+                                            keep="last") * _n_pc_prapp_a
+                                        _CK_NEW = {"Pc_to_t0": _n_Pc_to_t0,
+                                                   "fcp_o_P": _n_fcp_o_P,
+                                                   "mvraw": _n_mvraw,
+                                                   "pc_prapp_a": _n_pc_prapp_a,
+                                                   "Pc_movedvpool_a": _n_movedvpool}
+                            except Exception as _cke:  # noqa: BLE001
+                                _CK_NEW = None
+                                _CKEY["why"] = f"{type(_cke).__name__}: {_cke}"
+                        _cap_mark("  [cap-key] int64 codebook + the five cross-frame lookups")
+                        _CK_VERIFY = os.environ.get("ROUTING_CAPKEY_VERIFY", "1") != "0"
+                        if _CK_NEW is None or _CK_VERIFY:
+                            # _Pc → _T0 row index by (cur,bin,rpgt,midl, _Pc._om == _T0._per)
+                            _t0_join = (_T0["_cur"] + "|" + _T0["_bin"] + "|" + _T0["_rpgt"] + "|"
+                                        + _T0["_pmp"] + "|" + _T0["_ctry"] + "|"
+                                        + _T0["_midl"] + "|" + _T0["_per"].astype(str)).to_numpy()
+                            # Exclude injected back-fill rows as VAMP join targets: they carry zero
+                            # baseline VAMP, so mapping a _Pc row onto one would move VAMP out of the
+                            # cohort without redistributing any back. Keeping them out leaves the VAMP
+                            # projection (and every VAMP-band decision) byte-identical to pre-back-fill;
+                            # the injection only corrects the TXN share normalisation.
+                            _bf_mask = (_T0["_bf"].to_numpy() > 0) if "_bf" in _T0.columns else np.zeros(len(_T0), bool)
+                            _pc_join = (_Pc["_cur"] + "|" + _Pc["_bin"] + "|" + _Pc["_rpgt"] + "|"
+                                        + _Pc["_pmp"] + "|" + _Pc["_ctry"] + "|"
+                                        + _Pc["_midl"] + "|" + _Pc["_om"].astype(str)).to_numpy()
+                            _cap_mark("  join keys: two 7-part strings, over _T0 and over _Pc")
+                            # Vectorised _Pc -> _T0 row-index map (replaces a per-row dict build + fromiter
+                            # over ~1.3M rows). A Series indexed by the non-back-fill t0 keys, reindexed to
+                            # the _Pc keys, gives each _Pc row its t0 position or -1 — identical to the
+                            # {k:i ...}.get(k,-1) it replaces (keep-last on any duplicate key, no arithmetic).
+                            _valid = ~_bf_mask
+                            _t0_pos = pd.Series(np.where(_valid)[0], index=_t0_join[_valid])
+                            _t0_pos = _t0_pos[~_t0_pos.index.duplicated(keep="last")]
+                            _Pc_to_t0 = _t0_pos.reindex(_pc_join).fillna(-1).to_numpy().astype(np.int64)
+                            _cap_mark("  _Pc -> _T0 map: hash those strings + de-dup + reindex")
+                            _Pc_vc_a = _Pc["_vc"].to_numpy(float)
+                            # Moved-VAMP pool per (cur,bin,rpgt,pmp,ctry,period,t), APPEARANCE-MONTH timed
+                            # to match the tab-3 DELIVERED projection (compute_vamp_prepost_granular):
+                            #   pool = pro_rata[APPEARANCE profile (sub,per)] × Σ_MID vampCount × fcp1_frac[ORIGIN
+                            #          profile (sub, per−t)]
+                            # (was Σ vc·pro_rata·fcp1 using each aged row's OWN pro_rata — origination timing).
+                            # go-live pro_rata is applied by the month the VAMP APPEARS, while fcp1_frac (the
+                            # first-attempt reroutable slice) stays at ORIGINATION. _P holds every MID in the
+                            # kept profiles, so the sum is complete; split-independent → precomputed once.
+                            # Verified bit-exact vs compute_vamp_prepost_granular (tests/test_band_timing_reconcile).
+                            _P0 = _P[_P["_t"] == 0]
+                            _fcp_orig_map = _P0.set_index(
+                                ["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_midl", "_per"])["_fcp"].to_dict()
+                            _prapp_map = (_P0.drop_duplicates(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per"])
+                                          .set_index(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per"])["_pr"].to_dict())
+                            _cap_mark("  the two _P0 tuple-key dicts (fcp[origin], pro_rata[appearance])")
+                            _P_origin = (_P["_per"] - _P["_t"]).to_numpy()
+                            _fcp_o_P = np.fromiter(
+                                (_fcp_orig_map.get((_c, _b, _r, _pm, _ct, _ml, _o), 0.0)
+                                 for _c, _b, _r, _pm, _ct, _ml, _o in
+                                 zip(_P["_cur"], _P["_bin"], _P["_rpgt"], _P["_pmp"], _P["_ctry"],
+                                     _P["_midl"], _P_origin)),
+                                dtype=float, count=len(_P))
+                            _cap_mark("  fcp[origin] per _P row (np.fromiter over the tuple-key dict)")
+                            _P["_mvraw"] = _P["_vc"].to_numpy(float) * _fcp_o_P   # vc × fcp[origin] (no pro_rata yet)
+                            _mvp_map = _P.groupby(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per", "_t"],
+                                                  observed=True)["_mvraw"].sum().to_dict()
+                            _cap_mark("  moved-pool per group (7-column groupby + to_dict)")
+                            # per-_Pc appearance pro_rata (static) — reused by _project_capped's held term.
+                            # 19cw was tried here (key on `_per - _tt`) and is WRONG — see the
+                            # long note in band_projection._pc_prapp. Delivery takes fcp from the
+                            # ORIGIN and pro_rata from the APPEARANCE period, so this is correct as
+                            # written; the origin keying measured a 1.72 divergence where this
+                            # measures 0.000000. t > period is frozen by the missing origin row, not
+                            # by pro_rata.
+                            _pc_prapp_a = np.fromiter(
+                                (_prapp_map.get((_c, _b, _r, _pm, _ct, _p), 0.0)
+                                 for _c, _b, _r, _pm, _ct, _p in
+                                 zip(_Pc["_cur"], _Pc["_bin"], _Pc["_rpgt"], _Pc["_pmp"], _Pc["_ctry"], _Pc["_per"])),
+                                dtype=float, count=len(_Pc))
+                            _Pc_movedvpool_a = np.fromiter(
+                                (_mvp_map.get((_c, _b, _r, _pm, _ct, _p, _t), 0.0)
+                                 for _c, _b, _r, _pm, _ct, _p, _t in
+                                 zip(_Pc["_cur"], _Pc["_bin"], _Pc["_rpgt"], _Pc["_pmp"], _Pc["_ctry"],
+                                     _Pc["_per"], _Pc["_t"])),
+                                dtype=float, count=len(_Pc)) * _pc_prapp_a
+                            _cap_mark("  pro_rata + moved-pool per _Pc row (two np.fromiter loops)")
+                            # Aggregation group codes + (midl, period) labels — VAMP over _Pc rows,
+                            # TXN over capped _T0 rows. Same groups as the old (_midl,_per) group-by.
+                            _SEP = ""
+                        if _CK_NEW is not None:
+                            if _CK_VERIFY:
+                                # BIT PATTERNS, not `==`: two float arrays differing in the last
+                                # ulp compare equal under allclose and would let a mis-keyed
+                                # gather through. Costs the very seconds being removed, so it is
+                                # paid once - ROUTING_CAPKEY_VERIFY=0 after a run prints PASSED.
+                                _ckv0 = _cap_time.perf_counter()
+                                _ckbad = []
+                                for _nm, _ref in (("Pc_to_t0", _Pc_to_t0),
+                                                  ("fcp_o_P", _fcp_o_P),
+                                                  ("pc_prapp_a", _pc_prapp_a),
+                                                  ("Pc_movedvpool_a", _Pc_movedvpool_a)):
+                                    _got = np.asarray(_CK_NEW[_nm])
+                                    _r = np.asarray(_ref)
+                                    _ok = (_got.shape == _r.shape and np.array_equal(
+                                        _got.astype(np.float64).view(np.int64),
+                                        _r.astype(np.float64).view(np.int64)))
+                                    if not _ok:
+                                        _ckbad.append(_nm)
+                                _CKEY["verify_secs"] = float(_cap_time.perf_counter() - _ckv0)
+                                _CKEY["verified"] = not _ckbad
+                                if _ckbad:
+                                    # NOT a silent fallback. The string/tuple keys are what
+                                    # ships and they stay shipped; this says which array the
+                                    # int key got wrong.
+                                    _CK_NEW = None
+                                    _CKEY["why"] = ("VERIFY FAILED on " + ", ".join(_ckbad)
+                                                    + " - the int64 key did not reproduce the "
+                                                    "string/tuple key's gather bit for bit")
+                            if _CK_NEW is not None:
+                                _Pc_to_t0 = _CK_NEW["Pc_to_t0"]
+                                _fcp_o_P = _CK_NEW["fcp_o_P"]
+                                _P["_mvraw"] = _CK_NEW["mvraw"]
+                                _pc_prapp_a = _CK_NEW["pc_prapp_a"]
+                                _Pc_movedvpool_a = _CK_NEW["Pc_movedvpool_a"]
+                                _CKEY["used"] = True
+                        _cap_mark("  [cap-key] verify the int64 key against the string/tuple keys")
+                        if _CKEY["used"]:
+                            log("      [cap-key] ON - the scaffold's five cross-frame lookups run "
+                                "on ONE int64 codebook instead of two 7-part string joins and "
+                                "three tuple-keyed dicts walked by np.fromiter. Only WHICH source "
+                                "row each destination row reads is decided by the key; the value "
+                                "is the same float, gathered rather than hashed, so no arithmetic "
+                                "changes."
+                                + ("" if _CKEY["verified"] is None else
+                                   (f" VERIFIED bit for bit against the code it replaces in "
+                                    f"{_CKEY['verify_secs']:.1f}s - set ROUTING_CAPKEY_VERIFY=0 "
+                                    "to stop paying for that."
+                                    if _CKEY["verified"] else ""))
+                                + (" NOT verified this run (ROUTING_CAPKEY_VERIFY=0)."
+                                   if _CKEY["verified"] is None else ""))
+                        else:
+                            log("      [cap-key] OFF - "
+                                + (_CKEY["why"] or "ROUTING_CAP_INTKEY=0")
+                                + ". The string and tuple keys ran, which is what ships."
+                                + (" \u26a0 READ THIS: a VERIFY FAILURE is not cosmetic - report it."
+                                   if str(_CKEY["why"]).startswith("VERIFY FAILED") else ""))
                         _cap_mark("  the rest of the _P / _Pc map build")
                         _pc_aggcodes, _pc_agguniq = pd.factorize(
                             _Pc["_midl"].astype(str) + _SEP + _Pc["_per"].astype(str))
