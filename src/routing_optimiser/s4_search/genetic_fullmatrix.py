@@ -87,7 +87,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -2071,10 +2071,112 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             "into nan centroids. The seed is encoded the old way; [decode-loss] below still "
             "prices what that costs. Turn the regulariser off to use it.")
 
-    # 19gu/19gv: with the cap in the decode the seed needs no special treatment. Its float-dust
-    # violation (rows sitting at exactly 97.0000%) is capped when it is decoded, like every other
-    # candidate, so it cannot be out-ranked on the engineering key by children that repaired to an
-    # exact 0.0 — which was the whole reason the seed had to be repaired separately.
+    # 19gu/19gv: with the cap in the decode the seed needs no special treatment. It is capped
+    # when it is decoded, like every other candidate, so it cannot be out-ranked on the
+    # engineering key by children that repaired to an exact 0.0 — which was the whole reason the
+    # seed had to be repaired separately. THAT part still holds.
+    #
+    # 19im: what did NOT hold is the explanation. This said the seed's violation was "float-dust
+    # (rows sitting at exactly 97.0000%)", which was never measured. On the 2026-09-03 00:23 run
+    # [decode-cap] moved 6.253e-06 over 9 rows — about 3.5e-07 of excess each once the recipients
+    # are netted off — against float64 dust of ~1e-16 on 0.97. Nine orders of magnitude. The
+    # [cap-source] block below now measures which side is actually at fault instead of asserting
+    # it, because the two possibilities need opposite fixes.
+
+    # ── 19im [cap-source]: IS IT THE SEED, OR IS IT THE ROUND TRIP? ───────────────────────
+    # [decode-cap] measures the DECODE of the seed, not the seed. Those are different objects,
+    # and which one is over the cap decides what the fix is:
+    #
+    #   the SEED is over          -> a seed stage emitted an illegal share. A logic defect.
+    #                                Aiming the stage below the cap would MASK it.
+    #   only the DECODE is over   -> the encode/decode round trip pushed a legal share over.
+    #                                That is a representation question, and aiming the stage a
+    #                                hair below the cap is a legitimate answer to it.
+    #
+    # 19gu assumed the second ("rows sitting at exactly 97.0000%") and never measured it. This
+    # measures it: the round trip's own worst movement, in the same units as the excess. If that
+    # movement is ~1e-16 the round trip is clean and the seed is at fault; if it is ~1e-07 the
+    # round trip is the source.
+    #
+    # It also prints the excess DISTRIBUTION rather than a count and a total. [decode-cap]'s
+    # "9 rows / 6.253e-06 moved" averages to ~3.5e-07 per row, but the same aggregate fits one
+    # row over by 3e-06 and eight over by nothing - and those are different bugs. min/median/max
+    # separates them in one run.
+    try:
+        _cs_cap = np.asarray(p.max_share, float)
+        _cs_liv = np.isfinite(_cs_cap) & (_cs_cap > 0.0) & (_cs_cap < 1.0)
+        if _cs_liv.any():
+            _cs_seed = np.asarray(seed_shares, float)
+            _cs_dec = _segment_softmax(np.asarray(seed_logits, float)[None, :],
+                                       p.profile_start, p.profile_len)[0]
+            _cs_rt = np.abs(_cs_dec - _cs_seed)
+            _cs_over_s = _cs_liv & (_cs_seed > _cs_cap)
+            _cs_over_d = _cs_liv & (_cs_dec > _cs_cap)
+            _cs_made = _cs_over_d & ~_cs_over_s          # the round trip pushed these over
+            _cs_ex_s = (_cs_seed - _cs_cap)[_cs_over_s]
+            _cs_ex_d = (_cs_dec - _cs_cap)[_cs_over_d]
+            # THE MECHANISM MOST LIKELY TO PRODUCE A ~1e-07 LIFT, measured directly.
+            # `_segment_softmax` RENORMALISES each profile to sum 1. If the seed hands over a
+            # profile summing to 1 - d, every share in it is scaled UP by 1/(1-d) - and a row
+            # sitting at the cap goes over it by cap*d. So d ~ 3e-07 would produce exactly the
+            # excess [decode-cap] reported, from a seed that is itself legal. That makes the
+            # profile-sum error the single most diagnostic number here, and it was never printed.
+            _cs_st = np.asarray(p.profile_start, np.intp)
+            _cs_ps = np.add.reduceat(_cs_seed, _cs_st)
+            _cs_ps_live = _cs_ps[_cs_ps > 1e-12]
+            _cs_sum_err = (float(np.abs(_cs_ps_live - 1.0).max())
+                           if _cs_ps_live.size else 0.0)
+            log(f"[fullmatrix-ga] [cap-source] the seed's per-profile sums: worst deviation from "
+                f"1.0 is {_cs_sum_err:.3e} over {_cs_ps_live.size:,} routed profile(s). The "
+                f"decode renormalises every profile to 1, so a deviation d scales every share in "
+                f"that profile by 1/(1-d) and lifts a row AT the cap over it by about cap*d "
+                f"(= {0.97 * _cs_sum_err:.3e} here)."
+                + (" ⇒ THAT ALONE ACCOUNTS FOR THE OBSERVED EXCESS, and the fix is to make "
+                   "the stage close its profiles to 1 exactly, not to aim below the cap."
+                   if _cs_sum_err > 1e-9 else
+                   " The profiles are closed to within float64 dust, so this is NOT the "
+                   "mechanism and the excess comes from somewhere else."))
+            log(f"[fullmatrix-ga] [cap-source] rows above the max-share cap, in the SEED "
+                f"{int(_cs_over_s.sum()):,} vs in its DECODE {int(_cs_over_d.sum()):,}; the "
+                f"round trip PUSHED {int(_cs_made.sum()):,} legal row(s) over. Encode/decode's "
+                f"own worst movement on any row: {float(_cs_rt.max()):.3e} "
+                f"(median {float(np.median(_cs_rt)):.3e}).")
+            if _cs_over_s.any():
+                log(f"[fullmatrix-ga] [cap-source]    SEED excess over the cap: min "
+                    f"{float(_cs_ex_s.min()):.3e} / median "
+                    f"{float(np.median(_cs_ex_s)):.3e} / max {float(_cs_ex_s.max()):.3e}.")
+            if _cs_over_d.any():
+                log(f"[fullmatrix-ga] [cap-source]    DECODE excess over the cap: min "
+                    f"{float(_cs_ex_d.min()):.3e} / median "
+                    f"{float(np.median(_cs_ex_d)):.3e} / max {float(_cs_ex_d.max()):.3e}.")
+            # THE VERDICT, stated rather than left to be inferred.
+            _cs_rtw = float(_cs_rt.max())
+            if not _cs_over_d.any():
+                log("[fullmatrix-ga] [cap-source]    \u2713 nothing is over the cap on either "
+                    "side. Nothing to explain this run.")
+            elif not _cs_over_s.any():
+                log("[fullmatrix-ga] [cap-source]    \u21d2 THE SEED IS CLEAN AND THE ROUND TRIP "
+                    "IS THE SOURCE. Every over-cap row is legal in the seed and illegal only "
+                    "after softmax(log(clip(share))). That is a REPRESENTATION artefact, not a "
+                    "seed defect, and the fix belongs in the encode: either encode the cap "
+                    "exactly, or have the stages target cap-\u03b5 with \u03b5 above this "
+                    f"round trip's worst movement ({_cs_rtw:.3e}). Note the cost of the second "
+                    "option - every profile that wants the full cap would ship slightly under "
+                    "it, and the residual goes to a worse-converting gateway, on every row.")
+            elif _cs_rtw < 1e-12:
+                log("[fullmatrix-ga] [cap-source]    \u26a0\u26a0 A SEED STAGE IS AT FAULT, and "
+                    "rounding is ruled out: the round trip moves no row by more than "
+                    f"{_cs_rtw:.3e}, so it cannot have created these. The shares handed over "
+                    "were ALREADY above the cap. Read [seed-cap] for which stage. Aiming a "
+                    "stage below the cap would hide this, not fix it.")
+            else:
+                log(f"[fullmatrix-ga] [cap-source]    BOTH: {int(_cs_over_s.sum()):,} row(s) are "
+                    f"over the cap in the seed itself AND the round trip moves rows by up to "
+                    f"{_cs_rtw:.3e}. Fix the stage first ([seed-cap] names it); re-read this "
+                    "line afterwards to see what the round trip alone accounts for.")
+    except Exception as _cse:  # noqa: BLE001 - measurement only, never break a run
+        log(f"[fullmatrix-ga] [cap-source] skipped ({type(_cse).__name__}: {_cse}) - the decode "
+            "still caps, so the split is unaffected; only the explanation is missing.")
 
     # ── [decode-cap] SELF-CHECK ON THE LIVE SEED (19gu) ───────────────────────────────────
     # Two claims, both checked on this run's own data rather than asserted: the capped decode

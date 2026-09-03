@@ -810,3 +810,58 @@ The guard that matters: if the parent-bank collapse branch (tab_2:2221) ever bec
 `bin_to_bank` stops being the identity and the key **silently coarsens** to bank grain.
 `bin_grain_note` takes the live map and states which grain the key was built at, with the count
 of BINs that collapse and what it changes — so a run cannot coarsen without saying so.
+
+---
+
+## §20 — 19im: is it rounding? Yes — but not the kind "aim below the cap" fixes
+
+Ben asked whether the seed's over-cap rows are float rounding, and if so whether the seed could
+just target slightly below the cap. The first half looks right. The second half is the wrong fix,
+and the reason is worth writing down.
+
+### `[decode-cap]` measures the decode. `[seed-cap]` measures the seed. They are different objects.
+
+| which is over the cap | what it means | the fix |
+|---|---|---|
+| the **seed** | a stage emitted an illegal share | a logic defect in that stage — aiming below the cap would **mask** it |
+| only the **decode** | a legal share was pushed over by `softmax(log(clip(s)))` | a representation artefact — aiming below the cap is a legitimate answer |
+
+19gu assumed the second (*"rows sitting at exactly 97.0000%"*) and never measured it. `[cap-source]`
+now measures both sides, prints the excess **distribution** rather than a count and a total —
+"9 rows / 6.253e-06" fits *nine rows at 3.5e-07* and *one row at 3e-06* equally, and those are
+different bugs — and states a verdict for each of the three cases.
+
+### The mechanism, reproduced to the digit
+
+`_segment_softmax` **renormalises every profile to sum 1**. So if a seed stage hands over a
+profile summing to `1 − δ`, every share in it is scaled up by `1/(1−δ)`, and a row sitting *at*
+the cap goes over it by about `cap·δ`.
+
+Measured in `tests/test_19im_cap_source.py`:
+
+| profile shortfall δ | lift on the 0.97 row |
+|---|---|
+| 1e-08 | 9.700e-09 |
+| **3.5e-07** | **3.395e-07** |
+| 1e-06 | 9.700e-07 |
+
+A shortfall of **3.5e-07 reproduces the 00:23 run's ~3.5e-07 per-row excess exactly.** And a
+profile that *does* close to 1 round-trips to **1.110e-16** — float64 dust — with the cap row
+staying legal. So the hypothesis is quantitative, not hand-waving: the seed's profiles are
+probably short by ~3e-07 and the decode's renormalisation is what puts the cap rows over.
+
+### Why "aim below the cap" is the wrong fix even so
+
+1. **It leaves the real defect in place.** If profiles are short by 3.5e-07, then *every seed-stage
+   breach figure in the log was measured on a split whose profiles do not sum to 1* — a small but
+   systematic bias in all of the seed reporting, and one that lowering the cap target does nothing
+   about.
+2. **It costs conversion on every row, permanently.** Every profile that wants the full 0.97 would
+   ship slightly under it, and the residual goes to a worse-converting gateway. That is a real
+   price paid on 154,405 rows to silence a diagnostic.
+3. **The correct fix is one line in the stage** — close each profile to 1 exactly before handing it
+   over. Cheaper, removes the cause, and the cap target stays where it belongs.
+
+`[cap-source]` prints the worst per-profile sum deviation and says outright whether it accounts
+for the observed excess. One run decides it, and if it does, the fix is a renormalise in the named
+stage rather than a moved goalpost.
