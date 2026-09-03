@@ -2466,6 +2466,7 @@ class PopulationBandProjector:
         _ofull = pc_to_t0[pc_keep]
         self._pc_org = np.where(_ofull >= 0, full2red[np.where(_ofull >= 0, _ofull, 0)], -1)
         pc_mid_k = pc_mid[pc_keep]; pc_per_k = pc_per[pc_keep]
+        _pbp_mark("  reduced Pc: slice the banded aged rows + remap origin")
 
         # ---- APPEARANCE-MONTH TIMING (#3 scored==delivered) -------------------------------------
         # The tab-3 DELIVERED projection (compute_vamp_prepost_granular) applies the go-live pro_rata
@@ -2533,6 +2534,7 @@ class PopulationBandProjector:
                            + Pc["per"].astype(str)).to_numpy()[pc_keep]
         self._pc_prapp = (_pr_by_profile.reindex(_pc_profilekey).fillna(0.0).to_numpy(float)
                           if len(pc_keep) else np.zeros(0, float))
+        _pbp_mark("  reduced Pc: appearance pro_rata per aged row (the reindex)")
 
         # 19cx — the AGED GROUP: (profile, APPEARANCE period, age). This is delivery's `_gk`
         # (_sub + ["period", "t"]) and NOT the origin key above — the renormalise is taken across
@@ -2620,7 +2622,7 @@ class PopulationBandProjector:
             self._pc_gk_keys = np.zeros(0, dtype=object)
 
         # band order + per-band groupings (vectorised map to band index)
-        _pbp_mark("reduced Pc (aged rows, origin remap)")
+        _pbp_mark("  reduced Pc: the aged-group key + its distinct-group names")
         self.band_order = sorted(bandset)
         self._B = len(self.band_order)
         _bpos = {b: k for k, b in enumerate(self.band_order)}
