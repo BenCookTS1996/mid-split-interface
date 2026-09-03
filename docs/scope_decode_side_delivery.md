@@ -539,3 +539,75 @@ changes.
 `[recon-breakdown]` was ⚠ UNAVAILABLE again. `[profiles]` PART B read 240 keys / Σ|Δprop| 3.7405
 rather than 19ia's 20 / 0.0302 — expected, because the **seed** shipped and only the GA's return
 path goes through `_deliver_kept`; it is not a regression, and it disappears if the GA ships.
+
+---
+
+## §16 — 19ih: the three parked items, closed
+
+### 1. `[recon-breakdown]` — the message was inverted, not merely unhelpful
+
+`impact_calcs.py` wrote the 19gt sentinel and then **clobbered it three lines later**:
+
+```python
+if not FORENSIC:
+    globals()["_LAST_VAMP_TERMS"] = "skipped"     # 19gt's sentinel
+if FORENSIC:
+    try:    ...
+    except: globals()["_LAST_VAMP_TERMS"] = None
+else:
+    globals()["_LAST_VAMP_TERMS"] = None          # <- pre-19gt branch, never removed
+```
+
+19gt added the sentinel so a **deliberate skip** could be told from a **genuine absence**, and
+19hw taught `[recon-breakdown]` to read it. But the `if FORENSIC: … else:` still carried its
+pre-19gt `else`, which fired on exactly the runs the sentinel existed for. So every clean run
+printed *"⚠ UNAVAILABLE, **and not by the forensic gate**: the delivered VAMP-terms stash is
+missing"* — when the forensic gate is precisely what skipped it. That sent the reader hunting a
+defect on every run that had none.
+
+One `if/else` now, so there is no second writer. `_LAST_VAMP_CF_SKIPPED` gets the sentinel too,
+and tab_2 no longer iterates it when it is a string (that would have printed one line per
+*character*).
+
+### 2. `[lift-ab]` — a blocked A/B against a guessed floor
+
+It timed **all `reps` ON, then all `reps` OFF**, took the mean of each, and compared against a
+hard-coded 5%. Two faults compounding:
+
+* **Blocked, not interleaved** — any machine drift *between* the two blocks lands entirely on the
+  lift. That is how the same unchanged code printed 0.915x, 1.137x and 1.287x.
+* **`_real = abs(_sp - 1.0) > _floor`** — direction was never constrained. The lift only ever
+  *skips* passes that are provable no-ops, and the outputs are checked bit-identical, so its true
+  speedup **cannot be below 1.0x**. The old test would call **0.915x "a real difference"**.
+
+Now: **interleaved** ON/OFF/ON/OFF so drift is shared between the arms; compared on the **per-arm
+minimum** (the least-contaminated sample either arm produced); and the bar is **this machine's own
+noise, measured on the same rounds** — the within-arm spread, which is identical code and is
+therefore noise by construction. A sub-1.0x reading is now named as a contaminated **clock**, and
+reported as UNMEASURED rather than as a lift. Costs ~3× the projections, once per run.
+
+### 3. §12 — the water-fill recipient rule: **do not fix this**
+
+The parked question was whether the live engine excludes a blocked row sitting at the exploration
+floor from receiving 0.97 water-fill. It does not:
+
+```python
+# impact_calcs._cap_rows — THE LIVE ENGINE
+recip = (W > 1e-12) & (~over) & (W < _cap - 1e-12)
+```
+
+No blocked-row clause, and `_apply_blocked_caps` runs **before** `build_split_exports` reaches
+`_cap_rows` (stage ≥ 3). So the live engine lifts a floored blocked row off the floor exactly as
+the search's `block → elig → cap` does.
+
+**The non-idempotence `[deliv-fixed]` reports is faithful to delivery.** Excluding blocked rows in
+the search would make it *diverge* from what ships — the opposite of the goal. §12 closes with no
+code change, and `[deliv-fixed]` now says so instead of leaving it open.
+
+The residual question is a product one, not a search one: the live engine floors a gateway with
+≥100 consecutive failures to 0.01 and then water-fills it back above 0.01. If that is wrong it is
+wrong in `_cap_rows`, and that is where it would change.
+
+`tests/test_19ih_parked_items.py` — 16 checks, including a fake-clock drive of `lift_ab_report`
+that asserts min/min (not mean/mean), that a 13% difference inside a 40% noise bar is not called
+real, and that 0.909x comes back `above_floor=False, impossible=True`.

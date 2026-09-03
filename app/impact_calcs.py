@@ -73,7 +73,7 @@ class _Skip(Exception):
     must not be recorded as a failure. Each handler re-checks the flag."""
 
 __build__ = ("2026-08-17b-count-only-pool-search+profile-exporter+staged-enforcement"
-             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zeroprofile+vamp-term-stash+2026-09-01-19gq-gk-int-key+cvp-submarks+19gt-forensic-on-demand")
+             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zeroprofile+vamp-term-stash+2026-09-01-19gq-gk-int-key+cvp-submarks+19gt-forensic-on-demand+2026-09-03-19ih-sentinel-unclobbered")
 
 
 # [FN-246b]
@@ -2232,10 +2232,21 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     _cv_mark("[pshare-why] recipient-share stash")
     # 19fq: ROUTING_VTERMS DELETED, same reason. _LAST_VAMP_TERMS / _LAST_VAMP_PSUM feed the
     # Search-vs-Delivery Reconciliation Breakdown, the [nw-attrib] table and the move-gate ladder.
+    # 19ih: THE SENTINEL WAS WRITTEN AND THEN CLOBBERED THREE LINES LATER.
+    # 19gt added the "skipped" sentinel so [recon-breakdown] could tell a DELIBERATE skip from a
+    # genuine absence, and 19hw taught it to read the sentinel. But the `if FORENSIC: ... else:`
+    # below still carried its pre-19gt `else` branch, which set the same globals back to None on
+    # exactly the runs the sentinel was for. So the sentinel never survived to a reader, and
+    # every non-forensic run printed "\u26a0 [recon-breakdown] UNAVAILABLE, and NOT BY THE
+    # FORENSIC GATE: the delivered VAMP-terms stash is missing" - when the forensic gate is
+    # precisely what skipped it. The message was inverted, not merely unhelpful: it sent the
+    # reader looking for a defect on every clean run.
+    # One if/else now, so there is no second writer.
     if not FORENSIC:
         globals()["_LAST_VAMP_TERMS"] = "skipped"
         globals()["_LAST_VAMP_PSUM"] = "skipped"
-    if FORENSIC:
+        globals()["_LAST_VAMP_CF_SKIPPED"] = "skipped"
+    else:
         try:
             _vt_vc = pd.to_numeric(pp["vampCount"], errors="coerce").fillna(0.0)
             _vt_mv = pd.to_numeric(pp["_move"], errors="coerce").fillna(0.0)
@@ -2368,9 +2379,6 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
             globals()["_LAST_VAMP_TERMS"] = None
             globals()["_LAST_VAMP_PSUM"] = None
             globals()["_LAST_VAMP_CF_SKIPPED"] = None
-    else:
-        globals()["_LAST_VAMP_TERMS"] = None
-        globals()["_LAST_VAMP_PSUM"] = None
 
     _tp = t0[_sub + ["vampMid", "period", "post_txn"]]
     pp = pp.merge(_tp, on=_sub + ["vampMid", "period"], how="left")

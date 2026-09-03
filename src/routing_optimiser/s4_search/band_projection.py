@@ -120,7 +120,7 @@ import pandas as pd
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on"
+__build__ = ("2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -1467,10 +1467,25 @@ def lift_ab_report(proj, reps=3):
     where [kernel-ab] measured 1.276x on the same run), so the honest options were to measure it
     or to say nothing. This measures it, in about 6 projections.
 
-    HOW. Time `reps` projections with the lift ON, then `reps` with `_PROJ_LIFT_ON` forced off and
-    the lift's caches invalidated so the flag actually takes effect, then restore both. Compare
-    the two OUTPUTS bit-for-bit: the lift's whole claim is that the passes it skips are provable
-    no-ops, so a single differing bit is a defect, not a rounding difference.
+    HOW (19ih). INTERLEAVED: ON, OFF, ON, OFF, ... one timed projection each, `reps` rounds, with
+    the lift's caches invalidated on every switch so the flag actually takes effect. The arms are
+    compared on their per-arm MINIMUM, and the bar for "this is a real difference" is THIS
+    machine's own noise, measured as the within-arm spread on the same rounds.
+
+    WHY IT CHANGED. It used to time all `reps` ON and then all `reps` OFF - a blocked design, so
+    any drift BETWEEN the two blocks was attributed entirely to the lift, and it was compared
+    against a hard-coded 5% floor. The lift strictly SKIPS provable no-op passes, so its true
+    speedup cannot be below 1.0x; this block has printed 0.915x, 1.137x and 1.287x on the same
+    unchanged code. A blocked A/B against a constant floor cannot tell a 13.7% lift from a 13.7%
+    machine. Interleaving shares the drift between the arms instead of loading it onto one, the
+    minimum is the least-contaminated sample either arm produced, and a floor measured on the
+    same rounds is a bar this machine has to clear rather than one somebody guessed.
+
+    COST: ~3x the projections of the blocked version (three per timed sample: one to re-prime the
+    dropped caches, one to settle, one timed), once per run.
+
+    Compare the two OUTPUTS bit-for-bit: the lift's whole claim is that the passes it skips are
+    provable no-ops, so a single differing bit is a defect, not a rounding difference.
 
     Returns a dict, or None when there is nothing to measure. Never raises -- it is a report.
     """
@@ -1490,22 +1505,30 @@ def lift_ab_report(proj, reps=3):
         proj._lift_primed = None
         proj._lift_full_nR = -1
 
-    def _time(n):
-        proj.project_pop_numba(pr)                     # warm: numba compile + scratch priming
-        _v, _t = proj.project_pop_numba(pr)
+    def _time_one():
+        """ONE timed projection, with the priming the `_drop()` above forces kept OUT of it."""
+        proj.project_pop_numba(pr)                     # re-prime the dropped caches + numba
+        _v, _t = proj.project_pop_numba(pr)            # settle
         _v, _t = np.array(_v, copy=True), np.array(_t, copy=True)
         _t0 = _time_mod.perf_counter()
-        for _ in range(max(1, int(n))):
-            proj.project_pop_numba(pr)
-        return (_time_mod.perf_counter() - _t0) / max(1, int(n)) * 1e3, _v, _t
+        proj.project_pop_numba(pr)
+        return (_time_mod.perf_counter() - _t0) * 1e3, _v, _t
 
+    _rounds = max(2, int(reps))
+    _ms = {True: [], False: []}
+    _out = {True: None, False: None}
     try:
-        _PROJ_LIFT_ON = True
-        _drop()
-        ms_on, v_on, t_on = _time(reps)
-        _PROJ_LIFT_ON = False
-        _drop()
-        ms_off, v_off, t_off = _time(reps)
+        for _r in range(_rounds):
+            for _flag in (True, False):                # INTERLEAVED, not blocked
+                _PROJ_LIFT_ON = _flag
+                _drop()
+                _one, _v1, _t1 = _time_one()
+                _ms[_flag].append(_one)
+                if _out[_flag] is None:
+                    _out[_flag] = (_v1, _t1)
+        ms_on, ms_off = min(_ms[True]), min(_ms[False])
+        v_on, t_on = _out[True]
+        v_off, t_off = _out[False]
     except Exception as _e:            # noqa: BLE001 -- a report must not break a run
         _PROJ_LIFT_ON = _was
         _drop()
@@ -1524,17 +1547,39 @@ def lift_ab_report(proj, reps=3):
     _same = bool(np.array_equal(v_on, v_off) and np.array_equal(t_on, t_off))
     _P = int(np.asarray(pr).shape[0]) if np.asarray(pr).ndim == 2 else 1
     _sp = ms_off / ms_on if ms_on > 0 else float("nan")
-    # RESOLUTION FLOOR. Two timings this short are not separable below a few percent, so say what
-    # the measurement can and cannot support instead of quoting a ratio to three decimals.
-    _floor = 0.05
-    _real = abs(_sp - 1.0) > _floor
+    # RESOLUTION FLOOR, MEASURED (19ih). The within-arm spread is the same machine running the
+    # same code on the same rounds, so whatever it moves by is noise BY CONSTRUCTION. A
+    # between-arm difference has to beat that to mean anything. The 2% is only a floor on the
+    # floor - two timings this short are not separable below a few percent however quiet the box.
+    _spr_on = (max(_ms[True]) - min(_ms[True])) / max(min(_ms[True]), 1e-9)
+    _spr_off = (max(_ms[False]) - min(_ms[False])) / max(min(_ms[False]), 1e-9)
+    _noise = max(_spr_on, _spr_off)
+    _floor = max(0.02, _noise)
+    # DIRECTION IS A CONSTRAINT, NOT A RESULT. The lift only ever SKIPS passes that are provable
+    # no-ops, and the bit-identity check below proves the outputs did not move, so its true
+    # speedup CANNOT be below 1.0x. A sub-1.0x reading is therefore a statement about the CLOCK,
+    # never about the lift - and the old test, `abs(_sp - 1.0) > _floor`, would happily call
+    # 0.915x "a real difference". `_real` now requires the ratio to be on the possible side, and
+    # a reading off it is named as a contaminated measurement instead.
+    _impossible = _sp < 1.0 - _floor
+    _real = (_sp - 1.0) > _floor
     _pnote(f"[lift-ab] frozen-scaffold LIFT measured on THIS run's scaffold at P={_P}: "
            f"ON {ms_on:.1f} ms/call vs OFF {ms_off:.1f} ms/call ⇒ {_sp:.3f}x "
-           f"({(ms_off - ms_on):+.1f} ms per call, {reps} rep(s) each after a warm-up). "
-           + ("ABOVE the 5% resolution floor, so this is a real difference. "
-              if _real else
-              "INSIDE the 5% resolution floor — this run cannot tell the two apart, so treat the "
-              "ratio as 1.0x and do not quote it. ")
+           f"({(ms_off - ms_on):+.1f} ms per call; best of {_rounds} INTERLEAVED round(s), "
+           f"ON/OFF/ON/OFF, so machine drift is shared between the arms instead of landing on "
+           f"one). "
+           + (f"MACHINE NOISE on these same rounds: the within-arm spread is {_noise:.1%} "
+              f"(ON {_spr_on:.1%}, OFF {_spr_off:.1%}) - identical code, so that much movement is "
+              f"noise by construction. The bar is therefore {_floor:.1%}, not a fixed 5%. ")
+           + (f"The +{_sp - 1.0:.1%} difference CLEARS it, so this is real. " if _real else
+              f"\u26a0 THE MEASUREMENT SAYS THE LIFT MADE IT {1.0 - _sp:.1%} SLOWER, WHICH CANNOT "
+              "HAPPEN: it only skips passes that are provable no-ops, and the outputs are checked "
+              "bit-identical below, so there is no work it could have added. This is the CLOCK, "
+              "not the lift - something else on the machine moved across the rounds. Treat this "
+              "run's ratio as UNMEASURED and do not quote it in either direction. "
+              if _impossible else
+              f"The {abs(_sp - 1.0):.1%} difference does NOT clear it \u2014 this run cannot tell "
+              "the two apart, so treat the ratio as 1.0x and do not quote it. ")
            + ("Outputs are BIT-IDENTICAL (np.array_equal on vamp AND txn), which is the lift's "
               "whole claim: the passes it skips are provable no-ops. "
               if _same else
@@ -1544,7 +1589,8 @@ def lift_ab_report(proj, reps=3):
            + "It scales with candidate width, because the flat passes it skips are per-candidate, "
              "so this number is this run's, not a constant. ROUTING_PROJ_LIFT=0 reverts.")
     return {"P": _P, "ms_on": ms_on, "ms_off": ms_off, "speedup": _sp,
-            "identical": _same, "above_floor": _real, "reps": int(reps)}
+            "identical": _same, "above_floor": _real, "impossible": _impossible,
+            "noise": _noise, "floor": _floor, "reps": int(_rounds)}
 
 
 # [FN-015]

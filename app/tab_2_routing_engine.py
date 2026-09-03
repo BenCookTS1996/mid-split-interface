@@ -8134,11 +8134,25 @@ def render():
                                                             "exploration floor and the 0.97 "
                                                             "water-fill that runs after it lifts "
                                                             "them off it again ([deliv-cap] counts "
-                                                            "the same effect). Closing this means "
-                                                            "excluding blocked rows from receiving "
-                                                            "water-fill - a change to what SHIPS, "
-                                                            "and only correct if the live engine "
-                                                            "excludes them too.")
+                                                            "the same effect). "
+                                                            "19ih ANSWERED THE OPEN QUESTION AND "
+                                                            "THE ANSWER IS 'DO NOT FIX THIS': "
+                                                            "impact_calcs._cap_rows - the LIVE "
+                                                            "engine's water-fill - picks recipients "
+                                                            "with (W > 1e-12) & (~over) & "
+                                                            "(W < cap - 1e-12) and has NO "
+                                                            "blocked-row clause, and "
+                                                            "_apply_blocked_caps runs BEFORE it, so "
+                                                            "the live engine lifts a floored "
+                                                            "blocked row exactly as the search "
+                                                            "does. This non-idempotence is "
+                                                            "FAITHFUL TO DELIVERY. Excluding "
+                                                            "blocked rows here would make the "
+                                                            "search DIVERGE from what ships - the "
+                                                            "opposite of the goal. If the lift is "
+                                                            "wrong it is wrong in the live engine "
+                                                            "first, and _cap_rows is where to "
+                                                            "change it.")
                                                 except Exception as _fxe:  # noqa: BLE001
                                                     log("   [deliv-fixed] idempotence probe skipped "
                                                         f"({type(_fxe).__name__}: {_fxe}) - "
@@ -12918,6 +12932,11 @@ def render():
                                                         # a measured zero when it is an inferred one.
                                                         try:
                                                             _cfs = getattr(_ic_t, "_LAST_VAMP_CF_SKIPPED", None)
+                                                            # 19ih: the stash can be the "skipped"
+                                                            # string sentinel; iterating a str
+                                                            # would print one line per CHARACTER.
+                                                            if isinstance(_cfs, str):
+                                                                _cfs = None
                                                             for _cfl in (_cfs or ()):
                                                                 log(f"      not computed, and equal to "
                                                                     f"the shipped value by construction: {_cfl}")
