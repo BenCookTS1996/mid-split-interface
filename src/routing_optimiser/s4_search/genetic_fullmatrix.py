@@ -87,7 +87,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim+2026-09-03-19iu-log-batch+2026-09-03-19ix-eval-delta"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim+2026-09-03-19iu-log-batch+2026-09-03-19ix-eval-delta+2026-09-03-19iy-delta-default-on"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -1925,7 +1925,13 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # BOTH ways and compared on bit patterns - about 1.6% of the decode, every generation, not
     # once. On any mismatch the delta turns itself off for the process and the run continues on
     # the full decode.
-    _EVAL_DELTA = os.environ.get("ROUTING_EVAL_DELTA", "0") != "0"
+    # 19iy: DEFAULT ON. The 2026-09-03 19:38 run armed it against the 16:43 baseline and came
+    # back with the SAME shipped split: success rate 0.615322 to six figures, breach 0,
+    # reconciliation error 1, all fifteen bands reading the same delivered value. 11,165 of
+    # 11,840 candidates were gathered, 0.6% of profile-decodes were redone, and the per-generation
+    # self-check passed on all 319 generations that gathered. The decode went 225.3 -> 69.5
+    # ms/call and the search 413.1s -> 321.8s. ROUTING_EVAL_DELTA=0 reverts to full decodes.
+    _EVAL_DELTA = os.environ.get("ROUTING_EVAL_DELTA", "1") != "0"
     _DLT = {"dec": None, "prov": None, "on": _EVAL_DELTA, "gathered": 0, "full": 0,
             "prof_re": 0, "prof_tot": 0, "checks": 0, "why": "", "t_gather": 0.0,
             "t_full_est": 0.0, "said": False}

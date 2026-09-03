@@ -61,10 +61,9 @@ def hooks(colmap, n_row):
     return deliver_full
 
 def run(delta, gens=8, pop=16, seed=4):
-    if delta:
-        os.environ["ROUTING_EVAL_DELTA"] = "1"
-    else:
-        os.environ.pop("ROUTING_EVAL_DELTA", None)
+    # 19iy made the delta DEFAULT ON, so "off" now has to be set explicitly - popping the
+    # variable would leave it on and the A/B would compare a run against itself.
+    os.environ["ROUTING_EVAL_DELTA"] = "1" if delta else "0"
     m = load("ga_delta_" + ("on" if delta else "off"))
     p, meta = m.problem_from_ctx(ctx, soft_cap_mult=1.0)
     colmap = np.asarray(meta["keep_idx"])[p.order]
@@ -148,7 +147,7 @@ except Exception as _e:
     check("a one-ulp cache corruption is CAUGHT and the delta disables itself", False,
           f"the run raised instead: {type(_e).__name__}: {_e}")
 finally:
-    os.environ.pop("ROUTING_EVAL_DELTA", None)
+    os.environ["ROUTING_EVAL_DELTA"] = "0"
 
 # ── 4. the masks that make it possible cost no extra draws ──────────────────────────────
 m4 = load("ga_delta_masks")
