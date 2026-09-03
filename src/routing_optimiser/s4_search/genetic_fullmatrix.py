@@ -87,7 +87,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -2110,8 +2110,19 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             _cs_dec = _segment_softmax(np.asarray(seed_logits, float)[None, :],
                                        p.profile_start, p.profile_len)[0]
             _cs_rt = np.abs(_cs_dec - _cs_seed)
-            _cs_over_s = _cs_liv & (_cs_seed > _cs_cap)
-            _cs_over_d = _cs_liv & (_cs_dec > _cs_cap)
+            # DUST TOLERANCE, and it is what separates the two effects stacked here.
+            # A row sitting at EXACTLY the cap comes back from log -> exp -> renormalise within
+            # +-1 ulp, and half of those land ABOVE it - 0.96999999999999997 decodes to
+            # 0.97000000000000008. That is 1.1e-16, it is irreducible, and the decode's own cap
+            # absorbs it. THIS is what 19gu meant by "float dust"; the mistake was applying the
+            # phrase to a 3.4e-07 excess, which is 3 million times larger and not dust at all.
+            # Counting with a strict `>` conflates the two, so the counts below are of rows
+            # genuinely over the cap and the dust is reported separately.
+            _cs_tol = max(8.0 * float(np.finfo(float).eps) * float(np.max(_cs_cap[_cs_liv])),
+                          1e-15)
+            _cs_over_s = _cs_liv & (_cs_seed > _cs_cap + _cs_tol)
+            _cs_over_d = _cs_liv & (_cs_dec > _cs_cap + _cs_tol)
+            _cs_dust_d = int((_cs_liv & (_cs_dec > _cs_cap) & ~_cs_over_d).sum())
             _cs_made = _cs_over_d & ~_cs_over_s          # the round trip pushed these over
             _cs_ex_s = (_cs_seed - _cs_cap)[_cs_over_s]
             _cs_ex_d = (_cs_dec - _cs_cap)[_cs_over_d]
@@ -2136,10 +2147,109 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                    if _cs_sum_err > 1e-9 else
                    " The profiles are closed to within float64 dust, so this is NOT the "
                    "mechanism and the excess comes from somewhere else."))
+            # ── THE COUNTERFACTUAL, which is what turns this from a matching pair of
+            # magnitudes into a PROOF. Two numbers both reading ~3e-07 is a coincidence until
+            # you remove one of them and watch the other go. So: close every profile to exactly
+            # 1, re-encode through the SAME `_shares_to_logits`, decode again, and count what is
+            # still over the cap. 9 -> 0 proves the closure deficit was the cause. 9 -> 9 proves
+            # it was not, and the excess is in the seed itself.
+            #
+            # It also re-scores the success rate, because the same deficit is the only candidate
+            # explanation for [decode-loss]'s "seed 0.598328 -> decoded 0.598312 (-0.000016)":
+            # a profile scaled by 1/(1-d) moves EVERY row in it, not just the 9 at the cap, and
+            # 154,405 small movements are the right shape for a 1.6e-05 gap that capping 9 rows
+            # (6.253e-06 of share) cannot produce. If closing the profiles collapses BOTH
+            # numbers, one fix answers both - and that is a far better reason to make it than
+            # nine rows.
+            _cs_closed = None
+            try:
+                # CLOSING IT CAP-RESPECTINGLY, and this is not a detail. A PLAIN
+                # RENORMALISE DOES NOT WORK: s/(1-d) scales the row sitting AT the cap to
+                # cap/(1-d), which is over it - so dividing by the segment sum recreates the
+                # very symptom it is supposed to remove (0.97 -> 0.97000034 at d=3.5e-07,
+                # caught by tests/test_19im_cap_source.py). The deficit has to go to rows
+                # that have ROOM under the cap, in proportion to that room. A surplus is the
+                # easy direction - scaling down cannot lift anything over the cap - so the
+                # two are handled separately.
+                _cs_pl = np.asarray(p.profile_len, np.intp)
+                _cs_seg = np.repeat(_cs_ps, _cs_pl)
+                _cs_ok = _cs_seg > 1e-12
+                _cs_def = np.repeat(1.0 - _cs_ps, _cs_pl)          # + = short, - = over
+                _cs_room = np.where(_cs_liv & (_cs_seed < _cs_cap), _cs_cap - _cs_seed, 0.0)
+                _cs_pool = np.repeat(np.add.reduceat(_cs_room, _cs_st), _cs_pl)
+                _cs_fill = np.where((_cs_def > 0.0) & (_cs_pool > 1e-15),
+                                    _cs_room * (_cs_def / np.where(_cs_pool > 1e-15,
+                                                                   _cs_pool, 1.0)), 0.0)
+                _cs_down = np.where(_cs_ok, _cs_seed / np.where(_cs_ok, _cs_seg, 1.0),
+                                    _cs_seed)
+                _cs_closed = np.where(_cs_def > 0.0, _cs_seed + _cs_fill, _cs_down)
+                _cs_lg2 = _shares_to_logits(
+                    _cs_closed, hard_zero=_hz_on, profile_start=p.profile_start,
+                    profile_len=p.profile_len)
+                _cs_dec2 = _segment_softmax(np.asarray(_cs_lg2, float)[None, :],
+                                            p.profile_start, p.profile_len)[0]
+                _cs_over_2 = int((_cs_liv & (_cs_dec2 > _cs_cap + _cs_tol)).sum())
+                _cs_ex2 = (_cs_dec2 - _cs_cap)[_cs_liv & (_cs_dec2 > _cs_cap)]
+                _cs_w2 = float(_cs_ex2.max()) if _cs_ex2.size else 0.0
+                _cs_n_d = int(_cs_over_d.sum())
+                # success rate on the RAW basis for all three, so the comparison is
+                # self-contained. ([decode-loss]'s figure is the DELIVERED one when the
+                # objective switch is armed; delivery is a deterministic function of the
+                # split, so a raw gap that closes closes there too.)
+                _cs_sr = (lambda _v: float(_success_rate(
+                    np.asarray(_v, float)[None, :], p.vol, p.succ, total_vol)[0]))
+                _cs_r_seed, _cs_r_dec = _cs_sr(_cs_seed), _cs_sr(_cs_dec)
+                _cs_r_cl = _cs_sr(_cs_dec2)
+                log(f"[fullmatrix-ga] [cap-source] COUNTERFACTUAL - close every profile to "
+                    f"exactly 1, re-encode, decode again: rows over the cap "
+                    f"{_cs_n_d:,} \u2192 {_cs_over_2:,}; success rate (raw) seed "
+                    f"{_cs_r_seed:.6f} \u2192 decoded {_cs_r_dec:.6f} "
+                    f"({_cs_r_dec - _cs_r_seed:+.6f}) \u2192 decoded-after-closing "
+                    f"{_cs_r_cl:.6f} ({_cs_r_cl - _cs_r_seed:+.6f}). Worst excess left after "
+                    f"closing: {_cs_w2:.3e}"
+                    + (" - i.e. ULP DUST, which is irreducible and which the decode's cap "
+                       "absorbs." if _cs_w2 <= _cs_tol else "."))
+                _cs_fixed = (_cs_n_d > 0 and _cs_over_2 == 0)
+                _cs_sr_fixed = (abs(_cs_r_dec - _cs_r_seed) > 1e-9
+                                and abs(_cs_r_cl - _cs_r_seed) <= 0.05
+                                * abs(_cs_r_dec - _cs_r_seed))
+                if _cs_fixed and _cs_sr_fixed:
+                    log("[fullmatrix-ga] [cap-source]    \u21d2 PROVEN, AND IT ANSWERS BOTH. "
+                        "Closing the profiles removes every over-cap row AND collapses the "
+                        "seed-vs-decoded success-rate gap to under 5% of what it was. The seed "
+                        "chain is handing over profiles that do not sum to 1; the decode's "
+                        "renormalise is what turns that into both symptoms. THE FIX is to "
+                        "close each profile in the stage [seed-cap] names - and it must be "
+                        "closed CAP-RESPECTINGLY, giving the deficit to rows with room under "
+                        "the cap. A plain s/sum renormalise does NOT work: it scales the row at "
+                        "the cap to cap/(1-d), which is over it, recreating the symptom. Not by "
+                        "moving the cap target and not by widening a tolerance.")
+                elif _cs_fixed:
+                    log("[fullmatrix-ga] [cap-source]    \u21d2 PROVEN FOR THE CAP. Closing the "
+                        "profiles removes every over-cap row, so the closure deficit IS what "
+                        "put them over. It does NOT account for the success-rate gap, which has "
+                        "a separate cause - do not close this one and assume both are done.")
+                elif _cs_over_2 >= max(_cs_n_d, 1):
+                    log("[fullmatrix-ga] [cap-source]    \u21d2 NOT THE CAUSE. The rows are "
+                        "still over the cap with every profile closed to exactly 1, so the "
+                        "excess is IN THE SEED and the closure deficit is a separate (and "
+                        "smaller) matter. A stage emitted an illegal share; [seed-cap] names "
+                        "it. Aiming below the cap would mask it.")
+                else:
+                    log(f"[fullmatrix-ga] [cap-source]    \u21d2 PARTLY. Closing the profiles "
+                        f"takes {_cs_n_d:,} over-cap row(s) to {_cs_over_2:,}, so the closure "
+                        "deficit explains most of them but not all. The remainder is in the "
+                        "seed; fix the closure first, then re-read this line.")
+            except Exception as _cfe:  # noqa: BLE001 - counterfactual only
+                log(f"[fullmatrix-ga] [cap-source] counterfactual skipped "
+                    f"({type(_cfe).__name__}: {_cfe}) - the two magnitudes above still stand, "
+                    "but nothing here PROVES which way the causation runs.")
             log(f"[fullmatrix-ga] [cap-source] rows above the max-share cap, in the SEED "
                 f"{int(_cs_over_s.sum()):,} vs in its DECODE {int(_cs_over_d.sum()):,}; the "
-                f"round trip PUSHED {int(_cs_made.sum()):,} legal row(s) over. Encode/decode's "
-                f"own worst movement on any row: {float(_cs_rt.max()):.3e} "
+                f"round trip PUSHED {int(_cs_made.sum()):,} legal row(s) over - counted "
+                f"against cap + {_cs_tol:.1e}, so 1-ulp dust is not counted as a violation "
+                f"({_cs_dust_d:,} row(s) sit within that dust band and are excluded). "
+                f"Encode/decode's own worst movement on any row: {float(_cs_rt.max()):.3e} "
                 f"(median {float(np.median(_cs_rt)):.3e}).")
             if _cs_over_s.any():
                 log(f"[fullmatrix-ga] [cap-source]    SEED excess over the cap: min "
@@ -2343,10 +2453,16 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             "one.")
         if _dl_bd is not None:
             _dl_gap = seed_band - _dl_bd
-            log(f"[fullmatrix-ga]    EXACT M5 BREACH: the seed itself {_dl_bd:.6g} \u2192 the "
-                f"decoded seed the GA actually starts from {seed_band:.6g} "
-                f"({_dl_gap:+.6g}). THIS IS THE HANDICAP THE SEARCH BEGINS WITH \u2014 compare it "
-                "with how much the whole search then gains, in the final success rate/breach line.")
+            # 19in: printed only when there IS a handicap. With ROUTING_SEED_ZEROS on the encode
+            # reproduces the seed's zeros exactly, so this has read "0 -> 0 (+0)" every run -
+            # three lines of reading instructions for a number that is zero. The measurement is
+            # unchanged and the loud branch below is untouched; only the healthy case is quiet.
+            if abs(_dl_gap) > 1e-12 or _dl_bd > 1e-12 or seed_band > 1e-12:
+                log(f"[fullmatrix-ga]    EXACT M5 BREACH: the seed itself {_dl_bd:.6g} \u2192 the "
+                    f"decoded seed the GA actually starts from {seed_band:.6g} "
+                    f"({_dl_gap:+.6g}). THIS IS THE HANDICAP THE SEARCH BEGINS WITH \u2014 compare "
+                    "it with how much the whole search then gains, in the final success "
+                    "rate/breach line.")
             if _dl_gap > 0:
                 log("[fullmatrix-ga]    \u26a0 THE ENCODING MADE THE SEED WORSE BEFORE A SINGLE "
                     "GENERATION RAN. Whatever the search gains has to cover this first. This is "

@@ -865,3 +865,57 @@ probably short by ~3e-07 and the decode's renormalisation is what puts the cap r
 `[cap-source]` prints the worst per-profile sum deviation and says outright whether it accounts
 for the observed excess. One run decides it, and if it does, the fix is a renormalise in the named
 stage rather than a moved goalpost.
+
+---
+
+## §21 — 19in: proving it, and the two effects that were stacked
+
+Ben: *"prove if this is the cause in the next run."* Two magnitudes both reading ~3e-07 is a
+coincidence until you remove one and watch the other go. So `[cap-source]` now runs a
+**counterfactual**: close every profile to exactly 1, re-encode through the same
+`_shares_to_logits`, decode again, and recount. 9 → 0 proves it; 9 → 9 disproves it.
+
+Writing the test corrected me twice.
+
+### 1. My proposed fix was wrong
+
+I said the fix was *"one renormalise"*. It isn't. `s / sum` scales the row sitting **at** the cap
+to `cap / (1 − δ)`, which is **over** it — measured, `0.97 → 0.97000033950011877` at δ = 3.5e-07.
+A plain renormalise **recreates the symptom it is meant to remove.**
+
+The deficit has to go to rows with **room under the cap**, in proportion to that room. (A surplus
+is the easy direction — scaling down cannot lift anything over.) That is the same
+proportional-to-room shape as `blocked_fill.split_room`. Cap-respecting closure gives
+`0.96999999999999997` with the profile summing to exactly 1.
+
+### 2. There are two effects stacked, not one
+
+| effect | size | verdict |
+|---|---|---|
+| profile closure deficit | **~3.4e-07** | a real defect, fixable |
+| log→exp→renormalise round trip | **~1.1e-16** (1 ulp) | irreducible |
+
+A row at exactly the cap round-trips to within ±1 ulp and **half of those land above it** —
+`0.96999999999999997` decodes to `0.97000000000000008`. That residue is genuine float dust, the
+decode's cap absorbs it, and **this is where 19gu's phrase actually belongs.** The mistake was
+applying "float dust" to a 3.4e-07 excess: three million times larger, and not dust at all.
+
+Counting with a strict `>` conflates the two, so `[cap-source]` now counts against
+`cap + 8·eps·cap` and reports the dust-band rows separately. Closing the profiles takes the worst
+excess from 3.4e-07 to ≤ 1 ulp — a **3-million-fold** reduction — and the block says so in those
+words.
+
+### The success-rate gap gets the same test
+
+`[decode-loss]`'s `seed 0.598328 → decoded 0.598312 (−0.000016)` cannot come from capping 9 rows:
+that moved 6.253e-06 of share, and no success differential in [0,1] turns that into 1.6e-05. But a
+closure deficit scales **every row in every short profile** — 154,405 small movements, which is
+the right shape. So the counterfactual re-scores the success rate too, and the verdict
+distinguishes *"PROVEN, AND IT ANSWERS BOTH"* from *"PROVEN FOR THE CAP"* — because closing one
+and assuming the other is done is exactly the error 19gu made.
+
+### `[decode-loss]`'s M5-breach handicap line
+
+Gated on there being a handicap. With `ROUTING_SEED_ZEROS` on the encode reproduces the seed's
+zeros exactly, so it has read `0 → 0 (+0)` every run — three lines of reading instructions for a
+zero. The measurement and the loud branch are untouched.
