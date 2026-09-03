@@ -7729,6 +7729,87 @@ def render():
                                               ("band-aware", locals().get("_risk_greedy_G")),
                                               ("exact-proj", locals().get("_exact_G")),
                                               ) if _c is not None]
+                                # ── 19il [seed-cap]: WHICH SEED STAGE BREAKS THE MAX-SHARE CAP ──
+                                # 19gu found the seed carrying rows above max_share and DECIDED IT
+                                # WAS FLOAT DUST: "its float-dust violation (rows sitting at exactly
+                                # 97.0000%) is capped when it is decoded, like every other
+                                # candidate". The 00:23 run says otherwise. [decode-cap] counted 9
+                                # row(s) above the cap and moved 6.253e-06 of share to fix them -
+                                # about 3.5e-07 of excess per row once the recipients are netted
+                                # off. float64 dust on 0.97 is ~1e-16. Nine orders of magnitude
+                                # apart: something in the seed chain is producing shares genuinely
+                                # over the cap, and the decode has been papering over it.
+                                #
+                                # Reading the stages did not settle it - stage 1's projection ends
+                                # in np.clip(..., 0, cap) so it cannot exceed it, and stage 3's
+                                # line-search factors are all <= 1 over a delta already bounded by
+                                # `room = max_share - (s + delta)`. So this AUDITS EVERY STAGE'S
+                                # OUTPUT instead of arguing about it.
+                                #
+                                # A row over the cap is only a DEFECT where the cap is satisfiable.
+                                # A profile with one eligible gateway must hold 1.0 - there is
+                                # nowhere else for the share to go - and both _cap_rows (">= 2
+                                # present gateways") and the projection's own `infeas` fallback
+                                # leave those alone. So the count is split, and only the
+                                # satisfiable half is a bug.
+                                try:
+                                    _sc_cap = float(ctx.get("max_share", 1.0) or 1.0)
+                                    if _sc_cap < 1.0 and _fm_cands:
+                                        _sc_cs = np.asarray(ctx["profile_starts"], np.intp)
+                                        _sc_cc = np.asarray(ctx["profile_counts"], np.intp)
+                                        _sc_el = np.asarray(ctx.get("elig", 1.0), float) > 0.5
+                                        _sc_ne = np.add.reduceat(_sc_el.astype(float), _sc_cs)
+                                        # the cap cannot be met in this profile: forced, not a bug
+                                        _sc_forced = np.repeat(
+                                            _sc_ne * _sc_cap <= 1.0 + 1e-12, _sc_cc)
+                                        _sc_rows = []
+                                        for _scn, _scv in _fm_cands:
+                                            _sv = np.asarray(_scv, float)
+                                            _ov = _sv > _sc_cap + 1e-12
+                                            _bad = _ov & ~_sc_forced
+                                            _sc_rows.append((
+                                                _scn, int(_ov.sum()), int(_bad.sum()),
+                                                float((_sv - _sc_cap)[_bad].max()) if _bad.any()
+                                                else 0.0,
+                                                float((_sv - _sc_cap)[_ov].max()) if _ov.any()
+                                                else 0.0))
+                                        _sc_any = any(_r[2] for _r in _sc_rows)
+                                        log(f"   [seed-cap] every seed stage's output against the "
+                                            f"max-share cap {_sc_cap:.4g} \u2014 which stage, if "
+                                            f"any, emits a share above it")
+                                        log(f"      {'stage':<24}{'over cap':>10}"
+                                            f"{'FORCED':>9}{'DEFECT':>9}{'worst defect':>15}")
+                                        log(f"      {'-' * 67}")
+                                        for _scn, _n_ov, _n_bad, _w_bad, _w_ov in _sc_rows:
+                                            log(f"      {str(_scn):<24}{_n_ov:>10,}"
+                                                f"{_n_ov - _n_bad:>9,}{_n_bad:>9,}"
+                                                + (f"{_w_bad:>15.3e}" if _n_bad
+                                                   else f"{'-':>15}"))
+                                        log(f"      {'-' * 67}")
+                                        if _sc_any:
+                                            log("      \u26a0\u26a0 A SEED STAGE IS EMITTING SHARES "
+                                                "ABOVE THE CAP IN PROFILES WHERE THE CAP CAN BE "
+                                                "MET. That is a defect in the stage named above, "
+                                                "not float noise: the DEFECT column counts only "
+                                                "profiles with enough eligible gateways to hold "
+                                                "the share legally, and the worst excess is "
+                                                "printed beside it. [decode-cap] repairs this "
+                                                "downstream, which is why it has never surfaced "
+                                                "here - but the split the stage HANDS OVER is "
+                                                "already invalid, and the exact-projector breach "
+                                                "reported for that stage was measured on it.")
+                                        else:
+                                            log("      \u2713 no stage emits a share above the cap "
+                                                "where the cap can be met. Every 'over cap' row "
+                                                "above sits in a profile whose eligible gateways "
+                                                "cannot hold 1.0 between them at this cap, so the "
+                                                "row is FORCED there - the same rows _cap_rows "
+                                                "leaves alone for having fewer than two present "
+                                                "gateways. [decode-cap]'s count is those rows, and "
+                                                "capping them in the decode is correct.")
+                                except Exception as _sce:  # noqa: BLE001 - audit only
+                                    log(f"   [seed-cap] audit skipped ({type(_sce).__name__}: "
+                                        f"{_sce}) \u2014 measurement only, the seed is unaffected.")
                                 if not _fm_cands:
                                     # NO fallback: the full-matrix engine MUST seed from a band-aware split.
                                     # If neither the band-aware constrained-projection nor the exact-projector

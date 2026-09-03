@@ -747,3 +747,66 @@ inactive sibling creates no ambiguity; and arming refuses at 0/5 and at 4/5, nam
 `_fm_cap` and `_cap_rows` (the fine-grain pair, one of which ships) then the two coarse sites.
 Until all five register, `ROUTING_BLOCK_NOFILL=1` refuses and the run is unchanged — so the
 sequence is safe to land in pieces.
+
+---
+
+## §19 — 19il: the seed's over-cap rows, and the key's first element
+
+### `[seed-cap]` — 19gu called it float dust; the arithmetic says otherwise
+
+19gu found the seed carrying rows above `max_share` and decided it was noise:
+
+> *"Its float-dust violation (rows sitting at exactly 97.0000%) is capped when it is decoded,
+> like every other candidate"*
+
+The 00:23 run contradicts that. `[decode-cap]` counted **9 rows above the cap** and moved
+**6.253e-06** of share to fix them — about **3.5e-07** of excess per row once the recipients are
+netted off. float64 dust on 0.97 is **~1e-16**. Nine orders of magnitude apart. Something in the
+seed chain emits shares genuinely over the cap and the decode has been papering over it.
+
+**Reading the stages did not settle which one.** Stage 1's projection ends in
+`np.clip(..., 0, cap)`, so it cannot exceed the cap. Stage 3's line-search factors are all
+`≤ 1.0` over a delta already bounded by `room = max_share - (s + delta)`. Both look correct, so
+the answer is not in the code I can see.
+
+So `[seed-cap]` audits **every stage's output** at the point the candidates are collected, and
+splits the count in two:
+
+* **FORCED** — the profile's eligible gateways cannot hold 1.0 between them at this cap, so a row
+  above it has nowhere else to go. `_cap_rows` leaves those alone (its `>= 2 present gateways`
+  test) and so does the projection's own `infeas` fallback. Not a defect.
+* **DEFECT** — the cap *is* satisfiable in that profile and the stage went over anyway. That is a
+  bug in the named stage, and the split it hands over is already invalid — including for the
+  exact-projector breach reported *for that stage*.
+
+The next run names the offender, or shows every over-cap row is forced and the decode's repair
+was right all along. No behaviour changed: this is the diagnosis, not another plaster.
+
+### The key's first element is the **BIN**, and it always was
+
+Ben asked whether keying on bank is right or whether it should be BIN. It should be BIN — and it
+already is, for a reason worth writing down. `detect_blocked_gateways` documents itself as
+flagging *"(bank, gateway) pairs"*, and tab_2 maps the attempts frame's `bin` column through
+`bin_to_bank` before calling it. On the face of it: parent-bank grain, which would over-block —
+one dead BIN killing every BIN under the same bank.
+
+But `tab_2_routing_engine.py:2209`:
+
+```python
+bin_to_bank = {b: b for b in agg_adf["bin"].unique()}
+```
+
+an **identity map**, with the comment *"TRUE BIN GRAIN: the full-matrix engine decides each BIN
+independently, so DON'T collapse BINs into their issuing parent bank."* `genetic_fullmatrix` is
+the only engine `choices` has offered since 19gb, so that is the only reachable branch: the
+pre-mapping is a no-op, the detector groups on raw BINs, and the pairs are **already
+(BIN, gateway)**. It also explains why `_fm_blk_row`'s belt-and-braces
+`(bin, gw) in pairs or (parent, gw) in pairs` has never mattered — both operands are the same
+string.
+
+**The grain was right and the name was wrong.** Keyed and documented as `bin` from 19il.
+
+The guard that matters: if the parent-bank collapse branch (tab_2:2221) ever becomes reachable,
+`bin_to_bank` stops being the identity and the key **silently coarsens** to bank grain.
+`bin_grain_note` takes the live map and states which grain the key was built at, with the count
+of BINs that collapse and what it changes — so a run cannot coarsen without saying so.

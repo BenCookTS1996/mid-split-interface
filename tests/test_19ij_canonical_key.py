@@ -86,6 +86,18 @@ except ValueError:
     ok = True
 check("an unknown site cannot register itself into the gate", ok)
 
+# ── 19il: the first key element is the BIN, and a coarsening must announce itself ────────
+ok, msg = bf.bin_grain_note({"403163": "403163", "473702": "473702"})
+check("an identity bin->bank map reads as BIN grain",
+      ok is True and "IDENTITY" in msg and "per-BIN" in msg)
+ok, msg = bf.bin_grain_note({"403163": "BANK-A", "473702": "BANK-A", "485097": "485097"})
+check("a collapsing map is flagged, with the count and what it changes",
+      ok is False and "NOT the identity" in msg and "ONE dead BIN blocks every BIN" in msg
+      and "2 of 3" in msg)
+ok, msg = bf.bin_grain_note({})
+check("an empty map is taken at BIN grain rather than guessed", ok is True)
+
+
 print()
 print("FAILURES: " + (", ".join(FAIL) if FAIL else "none"))
 sys.exit(1 if FAIL else 0)

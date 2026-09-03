@@ -165,18 +165,71 @@ def waterfill_once(shares, cap, blocked, starts, counts):
 # currency) pins down a unique ACTIVE gatewayFid. Measured on Master_MID_List: 37 (vampMid,
 # currency) groups over 37 active TotalAV fids, ZERO ambiguous. So
 #
-#       (bank, vampMid, currency)   ==   (bank, gatewayFid)
+#       (bin, vampMid, currency)   ==   (bin, gatewayFid)
 #
 # is an identity on the active set, and it is expressible at every one of the five sites. Every
 # site builds its mask from that key, so they agree by construction rather than by inspection.
+#
+# ── WHY THE FIRST ELEMENT IS THE BIN, NOT THE BANK (19il) ─────────────────────────────────
+# `detect_blocked_gateways` documents itself as flagging "(bank, gateway) pairs", and
+# tab_2_routing_engine maps the attempts frame's `bin` column THROUGH `bin_to_bank` before
+# calling it - so on the face of it the pairs are at parent-bank grain, and a bank-grain key
+# would over-block (one dead BIN killing every BIN under the same bank).
+#
+# It is not, on this engine. tab_2_routing_engine.py:2209:
+#
+#     bin_to_bank = {b: b for b in agg_adf["bin"].unique()}
+#
+# an IDENTITY MAP, with the comment "TRUE BIN GRAIN: the full-matrix engine decides each BIN
+# independently, so DON'T collapse BINs into their issuing parent bank. Identity map =>
+# parent_bank == bank == BIN". `genetic_fullmatrix` is the only engine `choices` has offered
+# since 19gb, so that branch is the only reachable one: the pre-mapping is a no-op, the
+# detector groups on raw BINs, and the pairs are ALREADY (BIN, gateway). It also explains why
+# `_fm_blk_row`'s belt-and-braces test `(bin, gw) in pairs or (parent, gw) in pairs` has never
+# mattered - the two operands are the same string.
+#
+# So the grain is right and the NAME was wrong. Keyed and documented as `bin` from 19il.
+#
+# THE GUARD THAT MATTERS: if the parent-bank collapse branch (tab_2:2221) ever becomes
+# reachable again, `bin_to_bank` stops being the identity and this key SILENTLY coarsens to
+# bank grain - blocking every BIN under a bank because one of them died. `bin_grain_note`
+# takes the live map and says which grain the key was actually built at, so a run cannot
+# coarsen without saying so.
 #
 # `equivalence_report` PROVES it per run rather than trusting the paragraph above - if a future
 # mid list gives one (vampMid, currency) two active fids, the identity breaks and the run has to
 # say so before anything ships on it.
 
 
+def bin_grain_note(bin_to_bank):
+    """Is the blocked key at BIN grain, or has it silently coarsened to parent-bank?
+
+    Returns (is_bin_grain, message). `bin_to_bank` is the live map. On genetic_fullmatrix it is
+    the identity (tab_2:2209) and the key is per-BIN, which is what the rule wants. A
+    non-identity map means several BINs now share one key, so one dead BIN would block its
+    siblings - the caller must log that rather than let it pass.
+    """
+    _m = dict(bin_to_bank or {})
+    if not _m:
+        return True, ("[blk-grain] no bin->bank map supplied, so the blocked key is taken at BIN "
+                      "grain as-is.")
+    _coarse = {_k: _v for _k, _v in _m.items() if str(_k) != str(_v)}
+    if not _coarse:
+        return True, (f"[blk-grain] bin->bank is the IDENTITY over {len(_m):,} BIN(s), so the "
+                      "blocked key is per-BIN - each BIN is blocked on its own evidence and a "
+                      "dead BIN cannot take its siblings with it. This is what "
+                      "genetic_fullmatrix sets (tab_2:2209, 'TRUE BIN GRAIN').")
+    _nb = len(set(str(_v) for _v in _m.values()))
+    return False, (f"[blk-grain] \u26a0 bin->bank is NOT the identity: {len(_coarse):,} of "
+                   f"{len(_m):,} BIN(s) collapse into {_nb:,} parent bank(s). The blocked key is "
+                   "therefore at BANK grain, so ONE dead BIN blocks every BIN under the same "
+                   "bank on that gateway. That may be what you want - a bank-level block is a "
+                   "bank-level action - but it is a DIFFERENT rule from the per-BIN one this "
+                   "engine has been running, and the difference is not visible anywhere else.")
+
+
 def canonical_keys(blocked_pairs, mid_rows):
-    """(bank, gatewayFid) pairs -> {(bank, vampMid_lower, currency_lower)}.
+    """(bin, gatewayFid) pairs -> {(bin, vampMid_lower, currency_lower)}.
 
     `mid_rows` is an iterable of mappings with `gatewayFid`, `vampMid`, `currency` and
     `IsActive` (the Master_MID_List rows). Inactive rows are ignored: they cannot carry share.
