@@ -87,7 +87,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim+2026-09-03-19iu-log-batch"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim+2026-09-03-19iu-log-batch+2026-09-03-19ix-eval-delta"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -644,33 +644,46 @@ def _segment_softmax_fast(logits, profile_start, profile_len):
     return _fx_div(_ex, _ss, _co, np.empty_like(_lg))
 
 
-def _mutate_fused(logits, rate, strength, profile_start, profile_len, rng, profile_w=None):
-    """`_mutate_fast` in one pass. IDENTICAL draws: random(n_profiles), then standard_normal(n_hit)."""
+def _mutate_fused(logits, rate, strength, profile_start, profile_len, rng, profile_w=None,
+                  want_masks=False):
+    """`_mutate_fast` in one pass. IDENTICAL draws: random(n_profiles), then standard_normal(n_hit).
+
+    19ix: `want_masks` also returns the hit mask (see `_child_fused`). No draw changes."""
     _n = len(profile_start)
     _thr = rate if profile_w is None else np.minimum(np.asarray(profile_w, float) * rate, 1.0)
     _hit = rng.random(_n) < _thr
     if not _hit.any():
-        return logits.copy()
+        _out = logits.copy()
+        return (_out, _hit) if want_masks else _out
     _rh = np.repeat(_hit, profile_len)
     _nh = int(_rh.sum())
     _nz = rng.standard_normal(_nh)
     _, _cs32, _cc32 = _fx_layout(profile_start, profile_len)
-    return _fx_mut(logits, _hit, _nz, float(strength), _cs32, _cc32, np.empty_like(logits))
+    _out = _fx_mut(logits, _hit, _nz, float(strength), _cs32, _cc32, np.empty_like(logits))
+    return (_out, _hit) if want_masks else _out
 
 
-def _child_fused(a, b, rate, strength, profile_start, profile_len, rng, profile_w=None):
-    """`_crossover` then `_mutate_fast` in one pass. IDENTICAL draws, in the same order."""
+def _child_fused(a, b, rate, strength, profile_start, profile_len, rng, profile_w=None,
+                 want_masks=False):
+    """`_crossover` then `_mutate_fast` in one pass. IDENTICAL draws, in the same order.
+
+    19ix: `want_masks` returns (child, pick, hit) as well. It changes NO draw and no arithmetic -
+    the masks already exist, they were simply not visible to the caller. They are what makes the
+    delta decode possible: `pick[i]` says which parent profile i came from, `hit[i]` says whether
+    it was then mutated."""
     _n = len(profile_start)
     _pk = rng.random(_n) < 0.5
     _thr = rate if profile_w is None else np.minimum(np.asarray(profile_w, float) * rate, 1.0)
     _hit = rng.random(_n) < _thr
     if not _hit.any():
-        return np.where(np.repeat(_pk, profile_len), a, b)
+        _out = np.where(np.repeat(_pk, profile_len), a, b)
+        return (_out, _pk, _hit) if want_masks else _out
     _rh = np.repeat(_hit, profile_len)
     _nh = int(_rh.sum())
     _nz = rng.standard_normal(_nh)
     _, _cs32, _cc32 = _fx_layout(profile_start, profile_len)
-    return _fx_child(a, b, _pk, _hit, _nz, float(strength), _cs32, _cc32, np.empty_like(a))
+    _out = _fx_child(a, b, _pk, _hit, _nz, float(strength), _cs32, _cc32, np.empty_like(a))
+    return (_out, _pk, _hit) if want_masks else _out
 
 
 def _fx_selfcheck(a, b, rate, strength, profile_start, profile_len, rng, profile_w, refine):
@@ -1607,13 +1620,17 @@ def _greedy_reference(p: "FullMatrixProblem"):
     return _segment_softmax(logits[None, :], p.profile_start, p.profile_len, p.max_share)[0]
 
 
-def _crossover(a, b, profile_start, profile_len, rng):
+def _crossover(a, b, profile_start, profile_len, rng, want_masks=False):
     """Uniform per-PROFILE crossover: each profile's whole logit segment comes from one
-    parent (keeps within-profile simplex structure intact)."""
+    parent (keeps within-profile simplex structure intact).
+
+    19ix: `want_masks` also returns `pick`. No draw and no arithmetic changes - the mask is
+    already computed, it was simply not visible to the caller."""
     n_profiles = len(profile_start)
     pick = rng.random(n_profiles) < 0.5
     row_pick = np.repeat(pick, profile_len)
-    return np.where(row_pick, a, b)
+    out = np.where(row_pick, a, b)
+    return (out, pick) if want_masks else out
 
 
 def _mutate(logits, rate, strength, profile_start, profile_len, rng, profile_w=None):
@@ -1659,7 +1676,8 @@ def _mutate(logits, rate, strength, profile_start, profile_len, rng, profile_w=N
 #
 # The SHAPE of the perturbation is identical: the same per-profile selection at the same probability,
 # the same Gaussian scale, applied to the same whole-profile segments.
-def _mutate_fast(logits, rate, strength, profile_start, profile_len, rng, profile_w=None):
+def _mutate_fast(logits, rate, strength, profile_start, profile_len, rng, profile_w=None,
+                 want_masks=False):
     """`_mutate`'s twin, drawing Gaussians only for the rows it perturbs.
 
     NOT bit-identical to `_mutate` and not intended to be — see the note above. Same distribution,
@@ -1668,14 +1686,15 @@ def _mutate_fast(logits, rate, strength, profile_start, profile_len, rng, profil
     _thr = rate if profile_w is None else np.minimum(np.asarray(profile_w, float) * rate, 1.0)
     hit = rng.random(n_profiles) < _thr
     if not hit.any():
-        return logits.copy()
+        out = logits.copy()
+        return (out, hit) if want_masks else out
     row_hit = np.repeat(hit, profile_len)
     n_hit = int(row_hit.sum())
     out = logits.copy()
     # `out[row_hit] += noise` — a masked add over the selected rows only. The non-selected rows are
     # copied through untouched, where `_mutate` added an exact 0.0 to them.
     out[row_hit] += rng.standard_normal(n_hit) * strength
-    return out
+    return (out, hit) if want_masks else out
 
 
 def _child_streams(base_seed, s_idx, r_idx, gen, n):
@@ -1884,12 +1903,81 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     _ev = {"pop": 0.0, "decode": 0.0, "deliver": 0.0, "band": 0.0, "comp": 0.0,
            "obj": 0.0, "n": 0}
 
+    # ══ 19ix: DELTA DECODE ═══════════════════════════════════════════════════════════════
+    # [eval-cost] on the 16:43 run: the numpy decode is 225 ms of every 1,107 ms evaluation,
+    # 20% of the search. It re-decodes 14,852 profiles per child, and a child differs from its
+    # parents in about 1% of them.
+    #
+    # WHY THAT IS EXACT AND NOT AN APPROXIMATION. Crossover is uniform PER PROFILE (`_crossover`:
+    # "each profile's whole logit segment comes from one parent"), and the softmax is per
+    # segment - row p of the output depends only on segment p's own logits, as
+    # `_segment_softmax_serial`'s docstring states. So an unmutated profile's decoded shares are
+    # not merely close to the parent's, they are the same operations on the same inputs. Copying
+    # them is bit-identical BY CONSTRUCTION, not to a tolerance.
+    #
+    # WHAT IS NOT DONE HERE. `_deliver_full` is 423 ms and the same argument applies to it, but
+    # it is tab_2's closure over full-width arrays and cannot be asked for a subset of profiles
+    # from in here. Doing it needs a subset-capable delivery transform - a bigger change, in a
+    # more delicate file, and worth doing only once this one has proven itself on a real run.
+    #
+    # THE GUARD. A gather is only correct while the cache and the population stay in step, and a
+    # desync would be SILENTLY WRONG rather than loud. So one child per generation is decoded
+    # BOTH ways and compared on bit patterns - about 1.6% of the decode, every generation, not
+    # once. On any mismatch the delta turns itself off for the process and the run continues on
+    # the full decode.
+    _EVAL_DELTA = os.environ.get("ROUTING_EVAL_DELTA", "0") != "0"
+    _DLT = {"dec": None, "prov": None, "on": _EVAL_DELTA, "gathered": 0, "full": 0,
+            "prof_re": 0, "prof_tot": 0, "checks": 0, "why": "", "t_gather": 0.0,
+            "t_full_est": 0.0, "said": False}
+
+    def _delta_dec(logits, prov):
+        """The decoded population, gathered from the parents' decodes. None if not possible."""
+        _D = _DLT["dec"]
+        if _D is None or prov is None or len(prov) != np.asarray(logits).shape[0]:
+            return None
+        _pl = np.asarray(p.profile_len, np.intp)
+        _ps = np.asarray(p.profile_start, np.intp)
+        _ms = getattr(p, "max_share", None)
+        _out = np.empty((len(prov), _D.shape[1]), dtype=float)
+        for _c, _pv in enumerate(prov):
+            _ia, _ib, _pick, _hit = _pv
+            if _ia is None or _ia >= _D.shape[0] or (_ib is not None and _ib >= _D.shape[0]):
+                return None
+            if _ib is None:
+                _out[_c] = _D[_ia]
+            else:
+                _out[_c] = np.where(np.repeat(_pick, _pl), _D[_ia], _D[_ib])
+            _DLT["prof_tot"] += int(_pl.shape[0])
+            if _hit is None or not _hit.any():
+                continue
+            # RE-DECODE ONLY THE MUTATED PROFILES. Their rows are gathered into a contiguous
+            # sub-problem with its own segment layout; the softmax of a segment does not depend
+            # on any other segment, so the sub-decode equals the full decode on those rows.
+            _rows = np.where(np.repeat(_hit, _pl))[0]
+            _sl = _pl[_hit]
+            _ss = np.zeros(_sl.shape[0], np.intp)
+            np.cumsum(_sl[:-1], out=_ss[1:])
+            _sub = _segment_softmax(np.asarray(logits)[_c][_rows][None, :], _ss, _sl,
+                                    None if _ms is None else np.asarray(_ms, float)[_rows])
+            _out[_c, _rows] = np.asarray(_sub)[0]
+            _DLT["prof_re"] += int(_sl.shape[0])
+        return _out
+
+    def _delta_check(logits, got):
+        """One child, decoded BOTH ways, compared on bit patterns. Returns True if it holds."""
+        _c = 0
+        _ref = _segment_softmax(np.asarray(logits)[_c][None, :], p.profile_start, p.profile_len,
+                                getattr(p, "max_share", None))
+        _DLT["checks"] += 1
+        return bool(_fx_same(np.asarray(_ref), np.asarray(got)[_c][None, :]))
+
     def _eval_with_bands(logits):
         # Returns (success rate, other_viol, band_breach) as THREE separate arrays so the ranking can treat
         # the EXACT M5 band breach as the strict primary key (see _rank). `other_viol` is the
         # engineering violation (global VAMP cap + max-share) from eval_pop; `band_breach` is the
         # exact per-MID M5 penalty. They are NO LONGER summed — the ranking orders on band first.
         _ev["n"] += 1
+        _DLT["last"] = None          # 19ix: only THIS call's decode may be cached
         _t = time.perf_counter()
         v, x = eval_pop(logits)
         _ev["pop"] += time.perf_counter() - _t
@@ -1908,8 +1996,30 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     "split. Nothing here is a measurement of the switch.")
             return v, x, _band
         _t = time.perf_counter()
-        _sh = _segment_softmax(logits, p.profile_start, p.profile_len, p.max_share)
+        _sh = None
+        _prov = _DLT["prov"] if _DLT["on"] else None
+        if _prov is not None:
+            _sh = _delta_dec(logits, _prov)
+            if _sh is not None and not _delta_check(logits, _sh):
+                # SILENT WRONGNESS IS THE FAILURE MODE, so this is loud and it stops using the
+                # gather for the rest of the process rather than for this call.
+                _DLT["on"] = False
+                _DLT["why"] = ("the gathered decode did NOT match a full decode of the same "
+                               "child, bit for bit")
+                log("[fullmatrix-ga] \u26a0\u26a0 [eval-delta] SELF-CHECK FAILED - the delta "
+                    "decode disagrees with the full decode on this generation's first child. "
+                    "The delta is DISABLED for the rest of this process and every candidate "
+                    "from here is decoded in full, so the run is correct. Report this: it means "
+                    "the parent cache and the population are out of step, which is the one way "
+                    "this optimisation can be wrong.")
+                _sh = None
+            elif _sh is not None:
+                _DLT["gathered"] += np.asarray(logits).shape[0]
+        if _sh is None:
+            _sh = _segment_softmax(logits, p.profile_start, p.profile_len, p.max_share)
+            _DLT["full"] += np.asarray(logits).shape[0]
         _ev["decode"] += time.perf_counter() - _t
+        _DLT["last"] = _sh
         _t = time.perf_counter()
         _fd = _deliver_full(_sh)                                  # shared delivery — computed ONCE
         _ev["deliver"] += time.perf_counter() - _t
@@ -2874,6 +2984,9 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             # timing slot is kept at 0 so [gen-gap]'s init split still sums.
             _gg_i2 = time.perf_counter()
             success_rate, other, band = _eval_with_bands(pop)
+            # 19ix: the restart's own population is the first cache. A restart that cannot
+            # produce one (no band penalty wired, so no decode is built) simply never gathers.
+            _DLT["dec"] = _DLT["last"] if _DLT["on"] else None
             _gg_i3 = time.perf_counter()
             # 19fn: the three parts of `init`, timed separately. `i_rest` is picked up at the
             # end of the block as (total - these three), so it cannot silently absorb anything.
@@ -2984,7 +3097,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     _gg["gen"].append(_gg_tb - _gg_g0)
                     break
                 # elitism + local refinement + exploration
-                elites = pop[order[:_el]].copy()
+                _el_idx = np.asarray(order[:_el], np.intp)   # 19ix: the cache's rows too
+                elites = pop[_el_idx].copy()
                 elite_success_rate = success_rate[order[:_el]].copy()
                 elite_other = other[order[:_el]].copy()
                 elite_band = band[order[:_el]].copy()
@@ -3055,37 +3169,70 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 # full-width one and the fused twin is not its equivalent, so the fusion turns
                 # itself off rather than quietly changing what that revert reverts to.
                 _fuse = bool(_FX_OK["use"] and _MUT_FAST)
+                _prov, _prov_ok = [], bool(_DLT["on"] and _DLT["dec"] is not None)
                 for c in range(children.shape[0]):
                     _crng = _kid[c] if _kid is not None else _rng
+                    # 19ix: the PARENT INDEX, not just the row. `_crng.choice(pool)` is
+                    # called exactly as before and consumes the same draw; naming its result is
+                    # what lets the decode be gathered from that parent's cached decode.
+                    _pv = None
                     if c < _n_refine:
-                        base = pop[order[_crng.integers(0, max(1, _el))]]
+                        _bi = int(order[_crng.integers(0, max(1, _el))])
+                        base = pop[_bi]
                         if _fuse:
-                            child = (_fx_selfcheck(base, None, _base_rate * 0.25,
-                                                   mutation_strength * 0.6, p.profile_start,
-                                                   p.profile_len, _crng, _cw, True)
-                                     if not _FX_OK["checked"] else
-                                     _mutate_fused(base, _base_rate * 0.25,
-                                                   mutation_strength * 0.6, p.profile_start,
-                                                   p.profile_len, _crng, profile_w=_cw))
+                            if not _FX_OK["checked"]:
+                                child = _fx_selfcheck(base, None, _base_rate * 0.25,
+                                                      mutation_strength * 0.6, p.profile_start,
+                                                      p.profile_len, _crng, _cw, True)
+                            else:
+                                child, _hit = _mutate_fused(
+                                    base, _base_rate * 0.25, mutation_strength * 0.6,
+                                    p.profile_start, p.profile_len, _crng, profile_w=_cw,
+                                    want_masks=True)
+                                _pv = (_bi, None, None, _hit)
                             _fuse = bool(_FX_OK["use"])
+                        elif _mut is _mutate_fast:
+                            child, _hit = _mut(base, _base_rate * 0.25,
+                                               mutation_strength * 0.6, p.profile_start,
+                                               p.profile_len, _crng, profile_w=_cw,
+                                               want_masks=True)
+                            _pv = (_bi, None, None, _hit)
                         else:
                             child = _mut(base, _base_rate * 0.25, mutation_strength * 0.6,
                                          p.profile_start, p.profile_len, _crng, profile_w=_cw)
                     else:
-                        pa = pop[_crng.choice(pool)]
-                        pb = pop[_crng.choice(pool)]
+                        _ai = int(_crng.choice(pool))
+                        _bi = int(_crng.choice(pool))
+                        pa = pop[_ai]
+                        pb = pop[_bi]
                         if _fuse:
-                            child = (_fx_selfcheck(pa, pb, _base_rate, mutation_strength,
-                                                   p.profile_start, p.profile_len, _crng, _cw, False)
-                                     if not _FX_OK["checked"] else
-                                     _child_fused(pa, pb, _base_rate, mutation_strength,
-                                                  p.profile_start, p.profile_len, _crng, profile_w=_cw))
+                            if not _FX_OK["checked"]:
+                                child = _fx_selfcheck(pa, pb, _base_rate, mutation_strength,
+                                                      p.profile_start, p.profile_len, _crng,
+                                                      _cw, False)
+                            else:
+                                child, _pk, _hit = _child_fused(
+                                    pa, pb, _base_rate, mutation_strength, p.profile_start,
+                                    p.profile_len, _crng, profile_w=_cw, want_masks=True)
+                                _pv = (_ai, _bi, _pk, _hit)
                             _fuse = bool(_FX_OK["use"])
+                        elif _mut is _mutate_fast:
+                            child, _pk = _crossover(pa, pb, p.profile_start, p.profile_len,
+                                                    _crng, want_masks=True)
+                            child, _hit = _mut(child, _base_rate, mutation_strength,
+                                               p.profile_start, p.profile_len, _crng,
+                                               profile_w=_cw, want_masks=True)
+                            _pv = (_ai, _bi, _pk, _hit)
                         else:
                             child = _crossover(pa, pb, p.profile_start, p.profile_len, _crng)
                             child = _mut(child, _base_rate, mutation_strength,
                                          p.profile_start, p.profile_len, _crng, profile_w=_cw)
                     children[c] = child
+                    if _prov_ok:
+                        if _pv is None:
+                            _prov_ok = False          # one unprovenanced child voids the batch
+                        else:
+                            _prov.append(_pv)
                 # 19bx: the two self-check verdicts belong in the RUN LOG, not the terminal. Each
                 # says whether the fused path is bit-identical on THIS run's population; a verdict
                 # only Ben's terminal saw is a verdict he cannot check later.
@@ -3097,7 +3244,11 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 # 2026-09-01 22:09 search. Deleted — the decode caps, so what is scored is what
                 # the genome decodes to and what ships, with no second pass to make it true.
                 _gg_t3 = time.perf_counter()
+                _DLT["prov"] = (_prov if (_prov_ok and len(_prov) == children.shape[0])
+                                else None)
                 child_success_rate, child_other, child_band = _eval_with_bands(children)
+                _DLT["prov"] = None                  # never let a later call inherit it
+                _dec_new = _DLT["last"]
                 # [ga-census] against the incumbent AS OF THIS GENERATION (best_* was updated at the
                 # top of the loop). Comparison on arrays that already exist; the run total is the copy
                 # that keeps the magnitudes, so nothing is double-counted.
@@ -3133,6 +3284,13 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                                 pass
                 _gg_t4 = time.perf_counter()
                 evaluated += children.shape[0]
+                # 19ix: the decode cache follows the SAME permutation as the population, or
+                # a gather would read a parent's decode from the wrong row. If either half is
+                # missing the cache is dropped, which costs a generation of full decodes and
+                # cannot be wrong.
+                if _DLT["on"]:
+                    _DLT["dec"] = (None if (_dec_new is None or _DLT["dec"] is None)
+                                   else np.vstack([_DLT["dec"][_el_idx], _dec_new]))
                 pop = np.vstack([elites, children])
                 success_rate = np.concatenate([elite_success_rate, child_success_rate])
                 other = np.concatenate([elite_other, child_other])
@@ -3511,6 +3669,29 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         log("")
     # 19iu: two dense one-liners become two labelled sections. These are the numbers most
     # often quoted out of a run log, and they were the hardest two lines in it to read.
+    # 19ix: the delta's own report, and the stash the test reads. `gathered` vs `full` is the
+    # fact that matters - a delta that quietly fell back to the full decode would otherwise look
+    # exactly like one that worked.
+    globals()["_LAST_DELTA"] = dict(_DLT, dec=None, prov=None, last=None)
+    if _DLT["gathered"] or _DLT["why"]:
+        _dl_pc = 100.0 * _DLT["prof_re"] / max(_DLT["prof_tot"], 1)
+        log("")
+        log(f"[fullmatrix-ga] [eval-delta] {_DLT['gathered']:,} candidate(s) had their decode "
+            f"GATHERED from their parents' and {_DLT['full']:,} were decoded in full. Crossover "
+            "is per-profile and the softmax is per-segment, so a profile a child inherited "
+            "unchanged decodes to the parent's own bits - only the mutated ones are re-decoded: "
+            f"{_DLT['prof_re']:,} of {_DLT['prof_tot']:,} profile-decodes ({_dl_pc:.1f}%).")
+        log("      MEASURED at the live shape (14,852 profiles x 154,405 rows, P=35) before "
+            "this shipped: the gather is 2.9x the full decode, not 20x - it still writes every "
+            "row of every child once, and the softmax it replaces is about five passes over the "
+            "same memory. So it takes roughly a third off the decode, which is ~12% of the "
+            "search, not the ~20% the [eval-cost] share suggests.")
+        log(f"      verified on {_DLT['checks']:,} generation(s) - one child per generation is "
+            "decoded BOTH ways and compared on bit patterns, because a cache out of step with "
+            "the population would be silently wrong rather than loud."
+            + ("" if _DLT["on"] else
+               f" \u26a0 DISABLED MID-RUN: {_DLT['why']}. Every candidate after that point was "
+               "decoded in full, so this run is correct."))
     log("")
     log("[fullmatrix-ga] SEARCH")
     log(f"      candidates      {evaluated:,} split(s) over {len(history):,} generation(s)")

@@ -2378,17 +2378,21 @@ class PopulationBandProjector:
                     _tag = (f"  ⚠ EXPECTED ~{_after:.1f}s at this row count (was ~{_before:.1f}s) — "
                             "this step did NOT speed up: the fast path declined (a value containing "
                             "'|', or a radix overflow), or this module is stale")
-                else:
-                    _tag = f"  ✓ vs ~{_before:.1f}s before 19fy/19fz, scaled to this run's rows"
-            _lines.append(f"{str(_lbl)[:52]:<52}{_d:>7.1f}s"
-                          f"{100.0 * _d / max(_pbp_tot, 1e-9):>7.1f}%   {_tag.strip()}")
+                # 19ix: the ✓ half is gone. "this step is as fast as 19fy/19fz made it" was
+                # true on every run for weeks, so the column was a tick beside four of ten rows
+                # and blank beside the rest. The ⚠ stays: a step that did NOT speed up is the
+                # only thing the comparison can tell anyone, and it is still computed for all
+                # four - the guard is intact, it just says nothing when there is nothing wrong.
+            _lines.append(f"{str(_lbl)[:56]:<56}{_d:>7.1f}s"
+                          f"{100.0 * _d / max(_pbp_tot, 1e-9):>7.1f}%"
+                          + (f"   {_tag.strip()}" if _tag.strip() else ""))
         _bnote("[pbp-inside] PopulationBandProjector.__init__ = "
                f"{_pbp_tot:.1f}s, largest first (these SUM to the constructor, no residual)"
                + "\n"
-               + "\n      " + f"{'step':<52}{'time':>8}{'share':>7}   vs the 19fy/19fz baseline"
-               + "\n      " + "-" * 110
+               + "\n      " + f"{'step':<56}{'time':>8}{'share':>7}"
+               + "\n      " + "-" * 71
                + "\n      " + "\n      ".join(_lines)
-               + "\n      " + "-" * 110
+               + "\n      " + "-" * 71
                + "\n")
 
     # [FN-020]

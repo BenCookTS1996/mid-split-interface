@@ -120,8 +120,13 @@ check("the 'settled diagnostic(s) NOT RUN' flush no longer prints",
 check("the [ef-mask] comparison is still COMPUTED, it just says nothing",
       "_mm = int(np.count_nonzero(_ef_dl != self._ef_ok))" in BP
       and "READ THIS AS HISTORY" not in BP)
-check("[pbp-inside] is a table", "vs the 19fy/19fz baseline" in BP
+# 19ix dropped the "vs the 19fy/19fz baseline" column: the ✓ half said "still as fast as it was
+# made" on every run. The ⚠ half - a step that did NOT speed up - is still computed and still
+# printed, which is the only thing that column could ever tell anyone.
+check("[pbp-inside] is a table", "f\"{'step':<56}{'time':>8}{'share':>7}\"" in BP
       and "Ordered largest-first" not in BP)
+check("...without the per-row baseline tick, but still able to warn",
+      "\u2713 vs ~" not in BP and "EXPECTED ~" in BP)
 check("the [band-build] index-width line only prints on a REFUSAL",
       "if _n_ref:" in BP
       and "array(s) narrowed to int32" not in "".join(
