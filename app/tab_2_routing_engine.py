@@ -9553,6 +9553,26 @@ def render():
                                             log(f"      [proj-inside] skipped "
                                                 f"({type(_piE).__name__}: {_piE}) - MEASUREMENT "
                                                 "ONLY, the run is unaffected.")
+                                        # 19jp: [stash-q]. Printed in EVERY state, including
+                                        # OFF - a switch that says nothing when it does nothing
+                                        # reads exactly like a switch that is wired wrong, which
+                                        # is what [lift-ab] was for weeks.
+                                        try:
+                                            from routing_optimiser.s4_search import (
+                                                band_projection as _bpm_sq)
+                                            _sqr = getattr(_bpm_sq, "stashq_report", None)
+                                            if _sqr is None:
+                                                log("      [stash-q] unavailable - this "
+                                                    "band_projection predates 19jp, so the nA "
+                                                    "pass is re-deriving the age-renormalise "
+                                                    "quotient with no way to measure it.")
+                                            else:
+                                                for _sl in _sqr():
+                                                    log(("      " + _sl) if _sl else "")
+                                        except Exception as _sqE:  # noqa: BLE001
+                                            log(f"      [stash-q] skipped "
+                                                f"({type(_sqE).__name__}: {_sqE}) - MEASUREMENT "
+                                                "ONLY, the run is unaffected.")
                                         try:
                                             # 19gf: `_bpm` is imported ~266 lines BELOW this point
                                             # (the [proj-par] drain). Using it here raised NameError

@@ -76,7 +76,8 @@ def bufs():
     return (np.zeros((P, B)), np.zeros((P, B)), np.zeros((1, NPROF)), np.zeros((1, NPROF)),
             np.zeros((1, NPROF)), np.zeros((1, NR)), np.zeros((1, NR)),
             np.zeros(1, np.int64), np.zeros((1, 3)))
-TAIL = (np.ones(NR), 0.0, 0, np.zeros((1, 1)), np.zeros(NR, bool), 0)
+# 19jp: the kernel gained `qst, usestash`; the (1, 1) dummy + 0 is the OFF path.
+TAIL = (np.ones(NR), 0.0, 0, np.zeros((1, 1)), np.zeros(NR, bool), 0, np.zeros((1, 1)), 0)
 PROP = rng.random((P, 6))
 
 K = bp._cb_kernel

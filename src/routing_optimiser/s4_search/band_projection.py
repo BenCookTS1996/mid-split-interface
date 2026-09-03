@@ -132,7 +132,7 @@ except Exception:  # noqa: BLE001 - no rule available is a refusal, never a brok
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-09-03-19jn-gks-zero-by-slot+2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
+__build__ = ("2026-09-03-19jp-stash-quotient+2026-09-03-19jn-gks-zero-by-slot+2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -187,6 +187,37 @@ _VSHARE_ALLROWS = os.environ.get("ROUTING_VSHARE_ALLROWS", "1") != "0"
 # absent MID's share. Removing it from DELIVERY is not an option: test_recon616 measures the leak
 # it prevents, so the pass is load-bearing and belongs in both. ROUTING_AGE_RENORM=0 reverts.
 _AGE_RENORM = os.environ.get("ROUTING_AGE_RENORM", "1") != "0"
+
+# -- 19jp: STASHED QUOTIENT (the profile-blocked kernel's nA phase) ----------------------------
+# The age renormalise and the nA accumulation compute THE SAME QUOTIENT twice. Pass 2 evaluates
+# `_pshare[o] / _vpsum[_cg0]` to build `_gks`; pass 3 evaluates it again, under the same guard,
+# to build `psh`. Each evaluation costs three RANDOM gathers - `_pshare[o]`, `vcpos_c[o]` and
+# `_vpsum[_cg]` - and [proj-inside] puts the nA phase at ~44% of a projection, of which ~92% is
+# gathers rather than bandwidth (measured, 19jl). Stashing pass 2's answer in a j-indexed array
+# turns pass 3's three random gathers into one SEQUENTIAL read.
+#
+# BIT-IDENTICAL BY CONSTRUCTION, and the reason is worth stating: the stash holds the SAME
+# EXPRESSION, in the SAME dtype as `pshare`, and the reader divides it by `_gks[...]` exactly as
+# the original divided `(_pshare[o] / _vpsum[_cg])` by `_gsum`. No operand, no order and no
+# intermediate precision changes. The one assumption is that a stashed quotient is never
+# negative (it is a share over a positive denominator), which is what makes the two negative
+# SENTINELS unambiguous - and that assumption is TESTED on the live scaffold on the first armed
+# call, not asserted.
+#
+# COST: one float array of (lanes x nA) in `pshare`'s dtype. `[stash-q]` prints the actual bytes.
+#
+# ROUTING_STASH_Q=0   (default) OFF - the original nA pass, untouched, is what ships.
+# ROUTING_STASH_Q=1   ON.
+# ROUTING_STASH_Q=ab  INTERLEAVED A/B - the arm alternates call by call and both are timed, so
+#                     the ratio is measured on this run's real data on one machine rather than
+#                     quoted from a mock. Safe to ship an alternating answer ONLY because the
+#                     self-check proves the two arms bit-identical before either is used.
+_STASH_Q_RAW = (os.environ.get("ROUTING_STASH_Q", "0") or "0").strip().lower()
+_STASH_Q_ON = _STASH_Q_RAW in ("1", "on", "true", "yes")
+_STASH_Q_AB = _STASH_Q_RAW in ("ab", "a/b", "2")
+_STASH_FACT = {"armed": False, "checked": False, "ok": None, "bad": 0, "calls": 0,
+               "on_ms": 0.0, "on_n": 0, "off_ms": 0.0, "off_n": 0,
+               "nA": 0, "bytes": 0, "dtype": "", "lanes": 0, "why": ""}
 _BP_COLLAPSE_SAID = {}
 
 
@@ -526,7 +557,7 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
                     cap_rowc, cap_band, cap_c, cap_ctot, cap_base,
                     pc_orgc, pc_vc, pc_pool, pc_band, pc_heldfac, pc_gc, pc_gkc, vconst,
                     cap, nlane, vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks,
-                    ef_c, efloor, usefloor, pshf, blk_c, blkuse):
+                    ef_c, efloor, usefloor, pshf, blk_c, blkuse, qst, usestash):
     P = prop_raw.shape[0]
     nCl = profiles.shape[0]; nC = cap_rowc.shape[0]; nA = pc_orgc.shape[0]
     vamp[:, :] = 0.0; txn[:, :] = 0.0
@@ -544,6 +575,11 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
         # and write of `_pshf` below is inside an `if usefloor > 0`.
         qf = q if usefloor > 0 else 0
         _pshf = pshf[qf]
+        # 19jp: same INT-ternary discipline as `qf` above - never an array ternary. When the
+        # stash is off, `qst` is the (1, 1) dummy and `qs` is 0, so this is a valid 1-element
+        # row that nothing indexes: every read and write of `_qst` sits inside `usestash > 0`.
+        qs = q if usestash > 0 else 0
+        _qst = qst[qs]
         _gks = gks[q]
         for _b in range(vconst.shape[0]):        # 19cz — see the flat kernel
             vamp[p, _b] += vconst[_b]
@@ -700,35 +736,99 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
             # codes never name changes nothing, which is the same claim from the other side.
             for _z in range(_gks.shape[0]):
                 _gks[_z] = 0.0
-            for j in range(nA):
-                o = pc_orgc[j]
-                if o >= 0:
-                    _cg0 = pc_gc[j]
-                    if _psum[_cg0] > 0.0 and vcpos_c[o] > 0.5 and _vpsum[_cg0] > 0.0:
-                        _gks[pc_gkc[j]] += _pshare[o] / _vpsum[_cg0]
+            if usestash > 0:
+                # 19jp: THE SAME SUM, WITH THE QUOTIENT KEPT. `_qst[j]` carries either the
+                # quotient itself (>= 0) or one of exactly two sentinels:
+                #   -1.0  no aged origin, or the held-move guard is false  -> mpc 0, psh 0
+                #   -2.0  the held-move guard holds but this row is not VAMP-eligible
+                #         (vcpos <= 0.5)                                   -> mpc heldfac, psh 0
+                # Note the implication that makes two sentinels enough: the psh guard is the mpc
+                # guard AND `vcpos_c[o] > 0.5`, so a row that passes the psh guard always passes
+                # the mpc guard, and the nonnegative branch needs no extra state.
+                #
+                # THE SENTINELS ARE SAFE BECAUSE THE QUOTIENT IS A SHARE OVER A POSITIVE
+                # DENOMINATOR - `_vpsum[_cg0] > 0.0` is in the guard and `_pshare` is built from
+                # proposals, caps and floors that are all nonnegative. That is the ONE assumption
+                # in this change, so it is not left as a comment: the first armed call counts
+                # stashed values that are negative and are neither exactly -1.0 nor exactly -2.0,
+                # and disarms the whole path if it finds any.
+                for j in range(nA):
+                    o = pc_orgc[j]
+                    if o >= 0:
+                        _cg0 = pc_gc[j]
+                        _ps0 = _psum[_cg0]; _vp0 = _vpsum[_cg0]
+                        if _ps0 > 0.0 and vcpos_c[o] > 0.5 and _vp0 > 0.0:
+                            _qv = _pshare[o] / _vp0
+                            _gks[pc_gkc[j]] += _qv
+                            _qst[j] = _qv
+                        else:
+                            # the held-move guard, spelled exactly as the nA loop spells it
+                            if _VAMP_CONSERVE:
+                                _mok = _ps0 > 0.0 and _vp0 > 0.0
+                            else:
+                                _mok = _ps0 > 0.0
+                            if _mok:
+                                _qst[j] = -2.0
+                            else:
+                                _qst[j] = -1.0
+                    else:
+                        _qst[j] = -1.0
+            else:
+                for j in range(nA):
+                    o = pc_orgc[j]
+                    if o >= 0:
+                        _cg0 = pc_gc[j]
+                        if _psum[_cg0] > 0.0 and vcpos_c[o] > 0.5 and _vpsum[_cg0] > 0.0:
+                            _gks[pc_gkc[j]] += _pshare[o] / _vpsum[_cg0]
         # ---- nA: vshare derived instead of read, under the SAME two guards ----
-        for j in range(nA):
-            o = pc_orgc[j]
-            if _AGE_RENORM:
+        # 19jp: TWO BODIES, DELIBERATELY SIDE BY SIDE. The `else` below is the original loop,
+        # character for character, so the OFF path is the revert rather than a re-derivation of
+        # it. `_AGE_RENORM` is a module constant numba folds, so with the renormalise off this
+        # whole branch disappears and the original runs - which it must, because the stash is
+        # WRITTEN by the renormalise pass and would be stale without it.
+        if _AGE_RENORM and usestash > 0:
+            for j in range(nA):
+                _sv = _qst[j]
                 _gsum = _gks[pc_gkc[j]]
                 if _gsum <= 1e-12:
-                    o = -1
-            else:
-                _gsum = 1.0
-            if o >= 0:
-                _cg = pc_gc[j]
-                if _VAMP_CONSERVE:
-                    mpc = (pc_heldfac[j] if (_psum[_cg] > 0.0 and _vpsum[_cg] > 0.0) else 0.0)
-                else:
-                    mpc = pc_heldfac[j] if _psum[_cg] > 0.0 else 0.0
-                if _psum[_cg] > 0.0 and vcpos_c[o] > 0.5 and _vpsum[_cg] > 0.0:
-                    psh = _pshare[o] / _vpsum[_cg] / _gsum
-                else:
+                    # no live recipient at this age -> PASS THROUGH, exactly what `o = -1` did.
+                    # This test comes FIRST because it overrides the stash: `_gks` is only
+                    # complete after pass 2 has walked every row, so pass 2 cannot know it.
+                    mpc = 0.0
                     psh = 0.0
-            else:
-                mpc = 0.0
-                psh = 0.0
-            vamp[p, pc_band[j]] += pc_vc[j] * (1.0 - mpc) + pc_pool[j] * psh
+                elif _sv >= 0.0:
+                    mpc = pc_heldfac[j]
+                    psh = _sv / _gsum
+                elif _sv > -1.5:                 # -1.0
+                    mpc = 0.0
+                    psh = 0.0
+                else:                            # -2.0
+                    mpc = pc_heldfac[j]
+                    psh = 0.0
+                vamp[p, pc_band[j]] += pc_vc[j] * (1.0 - mpc) + pc_pool[j] * psh
+        else:
+            for j in range(nA):
+                o = pc_orgc[j]
+                if _AGE_RENORM:
+                    _gsum = _gks[pc_gkc[j]]
+                    if _gsum <= 1e-12:
+                        o = -1
+                else:
+                    _gsum = 1.0
+                if o >= 0:
+                    _cg = pc_gc[j]
+                    if _VAMP_CONSERVE:
+                        mpc = (pc_heldfac[j] if (_psum[_cg] > 0.0 and _vpsum[_cg] > 0.0) else 0.0)
+                    else:
+                        mpc = pc_heldfac[j] if _psum[_cg] > 0.0 else 0.0
+                    if _psum[_cg] > 0.0 and vcpos_c[o] > 0.5 and _vpsum[_cg] > 0.0:
+                        psh = _pshare[o] / _vpsum[_cg] / _gsum
+                    else:
+                        psh = 0.0
+                else:
+                    mpc = 0.0
+                    psh = 0.0
+                vamp[p, pc_band[j]] += pc_vc[j] * (1.0 - mpc) + pc_pool[j] * psh
     return vamp, txn
 
 
@@ -1850,6 +1950,75 @@ def lift_ab_report(proj, reps=3):
 # References, not copies - the buffers already belong to the projector and the proposal is the
 # one `[lift-ab]` already holds. ROUTING_PROJ_INSIDE=0 stops the stash and the report with it.
 _PI_ON = os.environ.get("ROUTING_PROJ_INSIDE", "1") != "0"
+
+
+def stashq_report():
+    """`[stash-q]` - what the 19jp stashed quotient did on THIS run. Returns lines; never raises.
+
+    Returns a line in EVERY state, including off and including armed-but-never-run. A switch
+    that prints nothing when it does nothing is indistinguishable from a switch that is wired
+    wrong, and this file has already paid for that once ([lift-ab] printed a skip every run for
+    weeks because of a scope error nobody could see in the log).
+    """
+    try:
+        f = _STASH_FACT
+        raw = _STASH_Q_RAW or "0"
+        if not (_STASH_Q_ON or _STASH_Q_AB):
+            return ["[stash-q] OFF (ROUTING_STASH_Q=%s). The nA pass re-derives "
+                    "`_pshare[o]/_vpsum[c]` that the age-renormalise pass one loop earlier "
+                    "already computed - three random gathers per aged row, twice. "
+                    "ROUTING_STASH_Q=1 ships the stash; ROUTING_STASH_Q=ab alternates the two "
+                    "arms call by call and times both." % raw]
+        if not f.get("armed"):
+            if not _AGE_RENORM:
+                _why = ("the age renormalise is OFF (ROUTING_AGE_RENORM=0), and that pass is "
+                        "where the quotient is computed - there is nothing to stash")
+            elif f.get("ok") is False:
+                _why = "the self-check failed earlier in this process and disarmed it"
+            else:
+                _why = ("the profile-blocked kernel never ran (ROUTING_PROJ_PROFILEBLOCK=0, or "
+                        "it declined), or this scaffold has no aged rows")
+            return [f"[stash-q] ARMED BUT NOT RUNNING (ROUTING_STASH_Q={raw}): {_why}. "
+                    "Nothing was stashed and the answer is the untouched one."]
+        out = []
+        _mb = f.get("bytes", 0) / 1e6
+        out.append(f"[stash-q] ON (ROUTING_STASH_Q={raw}) - {f.get('nA', 0):,} aged row(s) x "
+                   f"{f.get('lanes', 0)} lane(s) of {f.get('dtype', '?')} = {_mb:,.1f} MB of "
+                   "stash, holding the quotient the age-renormalise pass already computed so "
+                   "the nA pass reads it SEQUENTIALLY instead of re-gathering `_pshare[o]`, "
+                   "`vcpos_c[o]` and `_vpsum[c]`.")
+        _ok = f.get("ok")
+        if _ok is True:
+            out.append("[stash-q] bit-identity: SELF-CHECK PASSED on the live scaffold (both "
+                       "arms run, np.array_equal on vamp and txn, and every negative stashed "
+                       "value exactly one of the two sentinels).")
+        elif _ok is False:
+            out.append("[stash-q] bit-identity: *** SELF-CHECK FAILED - the stash is DISABLED "
+                       "for this process and the original nA pass is what ran"
+                       + (f" ({f.get('why')})" if f.get("why") else
+                          f", {f.get('bad', 0):,} sentinel collision(s)") + ".")
+        else:
+            out.append("[stash-q] bit-identity: NOT YET CHECKED - the armed path has not "
+                       "completed a call, so no result here came from it.")
+        _on, _off = f.get("on_n", 0), f.get("off_n", 0)
+        if _on and _off:
+            _a = f["on_ms"] / _on
+            _b = f["off_ms"] / _off
+            out.append(f"[stash-q] INTERLEAVED A/B over {_on:,} ON call(s) and {_off:,} OFF "
+                       f"call(s), alternating so machine drift is shared between the arms: "
+                       f"ON {_a:,.1f} ms/call vs OFF {_b:,.1f} ms/call -> "
+                       f"{(_b / _a) if _a > 0 else 0.0:.3f}x.")
+            out.append("[stash-q] the arms alternate CALLS, so the two means are over different "
+                       "populations - read the RATIO, not either number on its own. Shipping an "
+                       "alternating answer is only safe because the self-check above proved the "
+                       "two arms bit-identical before either was used.")
+        elif _STASH_Q_AB:
+            out.append(f"[stash-q] INTERLEAVED A/B requested but only one arm has timings "
+                       f"(ON {_on:,}, OFF {_off:,}) - too few projections to compare.")
+        return out
+    except Exception as _e:                        # noqa: BLE001
+        return [f"[stash-q] NOT REPORTED ({type(_e).__name__}: {_e}) - MEASUREMENT ONLY, the "
+                "run and the projector are unaffected."]
 
 
 def proj_inside_report(proj, reps=3):
@@ -3468,6 +3637,78 @@ class PopulationBandProjector:
         self._sfl_buf = buf
         return buf
 
+    # [FN-023d3]
+    def _stashq_buf(self, lanes, nA, dtype, armed):
+        """The `qst` lane buffer for the 19jp stashed quotient, or a typing-only dummy.
+
+        THE DTYPE IS NOT COSMETIC. The stashed value is `_pshare[o] / _vpsum[c]` and its reader
+        divides it by `_gks[...]`. On a float32 run that first division is float32; widening the
+        stash to float64 would store a float32 result in a float64 slot (exact) and then divide
+        in float64 (NOT the same rounding), and the answer would move. Same dtype as `pshare`,
+        always.
+
+        Not primed, and that is the one way this differs from `_sfloor_buf`: every slot is
+        written by the renormalise pass before any slot is read - the two loops walk the same
+        `range(nA)` - so there is no frozen tail to seed.
+        """
+        key = (int(lanes), int(nA), np.dtype(dtype).str, bool(armed))
+        if getattr(self, "_stq_key", None) == key:
+            return self._stq_buf
+        buf = np.zeros((int(lanes), int(nA)), dtype) if armed else np.zeros((1, 1), dtype)
+        self._stq_key = key
+        self._stq_buf = buf
+        return buf
+
+    # [FN-023d4]
+    def _stashq_selfcheck(self, run, tail_on, tail_off, qst, use_stash):
+        """First live call with the 19jp stash armed: RUN BOTH ARMS AND DIFF THEM.
+
+        Same discipline as the candidate-parallel and profile-blocked self-checks: a rewritten
+        kernel is only trustworthy diffed against the original on the SAME inputs in the SAME
+        run, on the real scaffold, before any result is used. A mock at live shapes measured
+        1.44x; a mock cannot prove bit-identity on this run's data.
+
+        TWO things are checked, not one. `np.array_equal` on vamp and txn is the answer. The
+        second is the sentinel assumption: every negative value in the stash must be exactly
+        -1.0 or exactly -2.0, because anything else in (-inf, 0) would be a real quotient that
+        decodes as a sentinel - the single way this change could be silently wrong.
+
+        The shipped arm runs LAST so `_pi_call` (what `[proj-inside]` replays) records the arm
+        this call actually returned. On failure the stash is disarmed for the process and the
+        OFF answer is returned: OFF is the shipped default, so the fallback is the untouched
+        kernel, and it says so rather than continuing quietly.
+        """
+        _STASH_FACT["checked"] = True
+        try:
+            _first, _second = ((tail_off, tail_on) if use_stash else (tail_on, tail_off))
+            _av, _at = run(_first)
+            _av, _at = np.asarray(_av).copy(), np.asarray(_at).copy()
+            _bv, _bt = run(_second)
+            _q = np.asarray(qst)
+            _bad = int(np.count_nonzero((_q < 0.0) & (_q != -1.0) & (_q != -2.0)))
+            _same = bool(np.array_equal(_av, _bv) and np.array_equal(_at, _bt))
+            _STASH_FACT.update(ok=bool(_same and _bad == 0), bad=_bad)
+            if _same and _bad == 0:
+                _pnote("[stash-q] SELF-CHECK PASSED on the live scaffold at nA="
+                       f"{int(_q.shape[1]):,}: the stashed-quotient nA pass and the original are "
+                       "bit-identical on BOTH vamp and txn (np.array_equal, not allclose), and "
+                       "every negative stashed value is exactly one of the two sentinels.")
+                return _bv, _bt
+            _dv = float(np.abs(_av.astype(float) - np.asarray(_bv, float)).max()) if _av.size else 0.0
+            _dt = float(np.abs(_at.astype(float) - np.asarray(_bt, float)).max()) if _at.size else 0.0
+            _pnote("*** [stash-q] SELF-CHECK FAILED - "
+                   f"max|dvamp|={_dv:.6e} max|dtxn|={_dt:.6e}, and {_bad:,} stashed value(s) "
+                   "collided with a sentinel. The stashed quotient is DISABLED for the rest of "
+                   "this process and the ORIGINAL nA pass is being used, so this run's numbers "
+                   "are the pre-19jp numbers. Report this.")
+            return (_av, _at) if use_stash else (_bv, _bt)
+        except Exception as _se:                   # noqa: BLE001
+            _STASH_FACT.update(ok=False, why=f"{type(_se).__name__}: {_se}")
+            _pnote(f"[stash-q] self-check could not run ({type(_se).__name__}: {_se}) - the "
+                   "stashed quotient is DISABLED for this process and the original nA pass runs. "
+                   "Correct, just not faster.")
+            return run(tail_off)
+
     # [FN-023d2]
     def _f32_drift(self, prop_raw, a, nprofile, P, v32, t32):
         """How far the float32 projector's answer sits from the float64 one, AT THIS WIDTH.
@@ -3570,9 +3811,35 @@ class PopulationBandProjector:
         _blk_c = cb["blk_c"]
         _blk_use = 1 if getattr(self, "_blk_armed", False) else 0
 
-        _tail = (_ef_in, _sfl_efl, _sfl_use, _sfl_pshf, _blk_c, _blk_use)
+        # 19jp: STASHED QUOTIENT. Armed only when the switch is on AND the age renormalise is
+        # on (that pass is where the quotient is computed, so without it there is nothing to
+        # stash) AND the scaffold has aged rows AND no earlier self-check has failed in this
+        # process. The buffer is allocated whenever ARMED, not whenever USED, so the A/B's OFF
+        # ticks do not free and re-allocate ~100 MB every other call. A (1, 1) dummy and a
+        # (lanes, nA) buffer are the same numba type - 2-D, C-contiguous, same dtype - so
+        # neither arming nor alternating triggers a recompile.
+        _nA_st = int(np.asarray(cb["pc_orgc"]).shape[0])
+        _stash_armed = bool((_STASH_Q_ON or _STASH_Q_AB) and _AGE_RENORM and _nA_st > 0
+                            and _STASH_FACT["ok"] is not False)
+        _qst = self._stashq_buf(_lanes, _nA_st, pshare.dtype, _stash_armed)
+        if _stash_armed and _STASH_Q_AB:
+            _STASH_FACT["calls"] += 1
+            _use_stash = (_STASH_FACT["calls"] % 2) == 0
+        else:
+            _use_stash = _stash_armed
+        _base_tail = (_ef_in, _sfl_efl, _sfl_use, _sfl_pshf, _blk_c, _blk_use)
+        _tail_on = _base_tail + (_qst, 1)
+        _tail_off = _base_tail + (_qst, 0)
+        _tail_dflt = _tail_on if _use_stash else _tail_off
+        _STASH_FACT.update(armed=_stash_armed, nA=_nA_st, lanes=int(_lanes),
+                           dtype=np.dtype(pshare.dtype).name,
+                           bytes=int(_qst.nbytes) if _stash_armed else 0)
 
-        def _run():
+        def _run(_tl=None):
+            # 19jp: the tail is a PARAMETER now, so the self-check drives both arms through the
+            # one code path that actually ships - chunking, lane counts, `_pi_call` and all -
+            # instead of a second call site that could drift from it.
+            _tail = _tail_dflt if _tl is None else _tl
             if chunk:
                 for _s0 in range(0, P, _lanes):
                     _s1 = min(_s0 + _lanes, P)
@@ -3594,7 +3861,17 @@ class PopulationBandProjector:
             return _k(_pr_in, *_args, cap, (P if par else 1), *_bufs, *_tail)
 
         try:
-            _v, _t = _run()
+            if _stash_armed and not _STASH_FACT["checked"]:
+                _v, _t = self._stashq_selfcheck(_run, _tail_on, _tail_off, _qst, _use_stash)
+            elif _stash_armed and _STASH_Q_AB:
+                # 19jp: time the WHOLE call, chunks included, and bill it to the arm that ran.
+                _st0 = _time_mod.perf_counter()
+                _v, _t = _run()
+                _sms = (_time_mod.perf_counter() - _st0) * 1e3
+                _STASH_FACT["on_ms" if _use_stash else "off_ms"] += _sms
+                _STASH_FACT["on_n" if _use_stash else "off_n"] += 1
+            else:
+                _v, _t = _run()
         except Exception as _cbe:                  # noqa: BLE001
             _CB_OK["use"] = False
             _pnote(f"profile-blocked projection FAILED to run ({type(_cbe).__name__}: {_cbe}) — "

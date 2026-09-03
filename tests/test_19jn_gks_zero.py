@@ -66,7 +66,9 @@ ARGS = (propidx_c, pw_c, base_c, mv_c, vcpos_c, profiles, cstart, ccnt,
         cap_rowc, cap_band, cap_c, cap_ctot, cap_base,
         pc_orgc, pc_vc, pc_pool, pc_band, pc_heldfac, pc_gc, pc_gkc, vconst)
 CAP = 0.5
-TAIL = (np.ones(NR), 0.0, 0, np.zeros((1, 1)), np.zeros(NR, bool), 0)
+# 19jp: the kernel gained `qst, usestash`. The (1, 1) dummy + 0 is the OFF path, which is
+# what this fixture is about - 19jn's claim is about the ORIGINAL nA pass.
+TAIL = (np.ones(NR), 0.0, 0, np.zeros((1, 1)), np.zeros(NR, bool), 0, np.zeros((1, 1)), 0)
 PROP = rng.random((P, 6))
 USED = set(pc_gkc.tolist())
 UNUSED = sorted(set(range(NGK)) - USED)
