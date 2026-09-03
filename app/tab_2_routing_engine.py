@@ -1185,6 +1185,16 @@ def render():
                     "seed-basis": "each seed on the RAW vs DELIVERED basis; the engine now "
                                   "selects on DELIVERED, which is what this was added to argue",
                     "seed-chain": "the staged seed build",
+                    # 19ik: TWO PASSING SELF-CHECKS. Both prove a speed optimisation did not
+                    # change a number, and both have printed a four-line ✓ paragraph every run
+                    # since they landed. The CHECK still runs - it is one comparison on the
+                    # first live call, and it is the only thing standing between a bit-identical
+                    # claim and an assumption - but a pass is not news. A failure carries ⚠⚠,
+                    # which releases the family, so the loud case is unaffected.
+                    "viol-bincount": "per-MID accumulation by bincount is bit-identical to "
+                                     "np.add.at (19ig); a pass is not news",
+                    "deliv-fuse": "the fused scatter+cap is bit-identical to scatter → copy → "
+                                  "cap (19ca); a pass is not news",
                 }
                 _LOG_ALL = os.environ.get("ROUTING_LOG_ALL", "0") == "1"
                 _mo = os.environ.get("ROUTING_LOG_MUTE")
@@ -7152,21 +7162,51 @@ def render():
                                 # which is the only time they have ever been read.
                                 _sd_breach = None
                                 _sd_breach_vamp = None      # 19hr: None ⇒ unknown, so run them
+                                # ── 19ik: ONE SPLIT, ONE BASIS ───────────────────────────────
+                                # The gate below tested `_fm_deliv(split)` while all nine probes
+                                # tested `split` RAW - the same expression, one of them wrapped.
+                                # On the 2026-09-03 00:23 run that cost the worst of both: the
+                                # gate found a breach so the nine ran, and every one of them then
+                                # printed "(no breached ceiling bands at this split.)" plus its
+                                # three-line reading note. Twenty lines saying nothing, and ~23s
+                                # of projector time (663.4s → 686.2s) spent deciding there was
+                                # nothing to say - which is the exact cost 19gs's gate exists to
+                                # avoid.
+                                # DELIVERED is the right basis: it is what the engine selects on
+                                # (19an) and what ships, so a band that is met raw and breached
+                                # delivered is precisely the case worth diagnosing. So the split
+                                # is computed ONCE, on that basis, and the gate and all nine read
+                                # it. A third split cannot creep in, and gate-vs-probe
+                                # disagreement is no longer expressible.
+                                _sd_split = None
+                                try:
+                                    _sd_base = np.asarray(
+                                        locals().get("_exact_G")
+                                        if locals().get("_exact_G") is not None
+                                        else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                    _sd_split = (_fm_deliv(_sd_base[None, :])[0]
+                                                 if locals().get("_fm_deliv") is not None
+                                                 else _sd_base)
+                                except Exception:  # noqa: BLE001
+                                    _sd_split = None
+                                if _sd_on and _sd_split is None:
+                                    # A SKIPPED diagnostic and a FAILED one must not read alike.
+                                    _sd_on = False
+                                    log("   [seed-diag] the nine 'why is this band stuck?' blocks "
+                                        "did NOT run: the split they analyse could not be built "
+                                        "(no seed candidate in scope, or the delivery transform "
+                                        "was unavailable). They are READ-ONLY, so the seed and "
+                                        "the search are unaffected - but nothing below answers "
+                                        "'is this band reachable?'.")
                                 # 19hr: `_sd_vamp_on` gates the six VAMP-ONLY probes
                                 # (vamp-sibling, vpsum, usable-recipient, breach-concentration,
                                 # scoped-vs-frozen, in-search RPGT breakdown). Set below.
                                 _sd_vamp_on = True
                                 if _sd_on:
                                     try:
-                                        _sdv = np.asarray(
-                                            locals().get("_exact_G")
-                                            if locals().get("_exact_G") is not None
-                                            else locals().get("_risk_greedy_G", _comp_share_G),
-                                            float)
+                                        _sdv = np.asarray(_sd_split, float)
                                         _sd_rep = ctx["exact_bands"].report(_fm_s2pr(
-                                            (_fm_deliv(_sdv[None, :])
-                                             if locals().get("_fm_deliv") is not None
-                                             else _sdv[None, :]),
+                                            _sdv[None, :],
                                             ctx["_exact_bands_selfcheck"]["inc"]))
                                         _sd_over = [
                                             _r for _r in _sd_rep
@@ -7233,9 +7273,7 @@ def render():
                                     # understated upstream. Read-only; never breaks the run.
                                     try:
                                         from routing_optimiser.s4_search.exact_band_solver import held_movable_report as _hm
-                                        _hm_split = np.asarray(
-                                            locals().get("_exact_G") if locals().get("_exact_G") is not None
-                                            else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                        _hm_split = np.asarray(_sd_split, float)   # 19ik: the ONE split
                                         for _ln in _hm(_hm_split, ctx["exact_bands"],
                                                        ctx["_exact_bands_selfcheck"]["inc"]):
                                             log(_ln)
@@ -7250,9 +7288,7 @@ def render():
                                     # "what-if" (it is NOT enforced by this engine). Read-only; never breaks the run.
                                     try:
                                         from routing_optimiser.s4_search.exact_band_solver import floor_min_report as _fmin
-                                        _fmin_split = np.asarray(
-                                            locals().get("_exact_G") if locals().get("_exact_G") is not None
-                                            else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                        _fmin_split = np.asarray(_sd_split, float)   # 19ik: the ONE split
                                         for _ln in _fmin(_fmin_split, ctx["exact_bands"],
                                                          ctx["_exact_bands_selfcheck"]["inc"],
                                                          mid_id=ctx["mid_id"], profile_starts=ctx["profile_starts"],
@@ -7269,9 +7305,7 @@ def render():
                                     # softmax engine. Read-only; never breaks the run.
                                     try:
                                         from routing_optimiser.s4_search.exact_band_solver import vamp_sibling_report as _vsib
-                                        _vsib_split = np.asarray(
-                                            locals().get("_exact_G") if locals().get("_exact_G") is not None
-                                            else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                        _vsib_split = np.asarray(_sd_split, float)   # 19ik: the ONE split
                                         for _ln in _vsib(_vsib_split, ctx["exact_bands"],
                                                          ctx["_exact_bands_selfcheck"]["inc"]):
                                             log(_ln)
@@ -7288,9 +7322,7 @@ def render():
                                             usable_recipient_report as _urr,
                                             breach_concentration_report as _bcr,
                                             scoped_frozen_report as _sfr)
-                                        _dx_split = np.asarray(
-                                            locals().get("_exact_G") if locals().get("_exact_G") is not None
-                                            else locals().get("_risk_greedy_G", _comp_share_G), float)
+                                        _dx_split = np.asarray(_sd_split, float)   # 19ik: the ONE split
                                         _dx_eb = ctx["exact_bands"]; _dx_inc = ctx["_exact_bands_selfcheck"]["inc"]
                                         _dx_names = [str(m) for m in _mids_u]
                                         for _ln in _isc(_dx_split, _dx_eb, _dx_inc,
@@ -7438,8 +7470,9 @@ def render():
                         # _fm_full), so this is a placeholder that keeps the shared downstream code defined.
                         _safe_G = np.asarray(locals().get("_risk_greedy_G", _comp_share_G), float)
                         _inf2 = None
-                        log("   [full-matrix] no preliminary endpoint search is run; the band-aware seed "
-                            "is used as the placeholder endpoint (the full-matrix GA is the delivered search).")
+                        # 19ik: the "no preliminary endpoint search is run" line is DELETED. It
+                        # announced, every run, the absence of a stage that has not existed for
+                        # many builds - to a reader with no way to want it back.
                         if _anchored:                                        # restore the original reference
                             ctx["ref_share"] = _ref_share_backup             # so downstream/frontier is unaffected
                         ss["ga_hist_rev"] = None                              # revenue-max CMA-ES removed
@@ -7723,9 +7756,8 @@ def render():
                                         _cb = _fm_breach(_cand)
                                         if _cb < _fm_seed_b:
                                             _fm_seed, _fm_seed_b, _fm_sname = np.asarray(_cand, float), _cb, _cnm
-                                    log(f"   [full-matrix] seed = '{_fm_sname}', exact M5 breach = "
-                                        f"{_fm_seed_b:.4g} (never-worse guarantee: delivered breach ≤ "
-                                        "this).")
+                                    log(f"   [full-matrix] seed = '{_fm_sname}'")
+                                    log(f"   [full-matrix] exact breach = {_fm_seed_b:.4g}")
                                     # ── ONE SEED, THREE STAGES (2026-08-19u) ──────────────────────
                                     # These are NOT competing candidates — they are a CHAIN, and the
                                     # global-LP branch that WAS a competitor is deleted (it cost ~71s
@@ -7802,10 +7834,17 @@ def render():
                                             "ON and what ships. Every seed below is accepted on "
                                             "DELIVERED.")
                                         log("")
-                                        log(f"      {'seed':<15}{'breach RAW':>12}"
+                                        # 19ik: the name column was <15 while "(start)
+                                        # revenue-greedy" is 22 characters, so that row pushed
+                                        # every number 7 places right and no column lined up
+                                        # with the one above it. Width is now the longest label,
+                                        # and the three breach columns are fixed-decimal so the
+                                        # decimal points align down the column instead of the
+                                        # digits ending raggedly (0 beside 0.88067).
+                                        log(f"      {'seed':<24}{'breach RAW':>12}"
                                             f"{'breach DLV':>12}{'delta':>11}"
                                             f"{'met RAW':>10}{'met DLV':>10}   the two bases")
-                                        log(f"      {'-' * 70}")
+                                        log(f"      {'-' * 79}")
                                         _sb_pairs = []   # 19bd: (name, RAW, DELIVERED)
                                         _sb_det = []     # 19hu: detail only where they differ
                                         _sb_nb = len(getattr(ctx["exact_bands"], "specs",
@@ -7821,12 +7860,25 @@ def render():
                                                 _bl_R = float(_fm_eb.penalty(_fm_s2pr(_bl_v[None, :], _fm_inc))[0])
                                                 _bl_u = _sb_unmet(_bl_v, ctx["exact_bands"], _fm_inc)
                                                 _bl_n = len(re.findall(r"\d[\d,]*\s*[<>]", str(_bl_u)))
-                                                log(f"      {'(start) revenue-greedy':<15}{_bl_R:>12.5g}"
+                                                log(f"      {'(start) revenue-greedy':<24}{_bl_R:>12.5f}"
                                                     f"{'-':>12}{'-':>11}{f'{_sb_nb - _bl_n}/{_sb_nb}':>10}{'-':>10}"
                                                     "   what the chain starts from, before any seed stage")
                                         except Exception:  # noqa: BLE001 - contrast only, never break the run
                                             pass
-                                        for _sbn, _sbc in _fm_cands:
+                                        # 19ik: IN THE ORDER THEY RAN. `_fm_cands` is ordered
+                                        # best-first (element 0 is the chosen seed), so the table
+                                        # read targeted-move, band-aware, exact-proj - the reverse
+                                        # of the chain the reader has just watched execute, which
+                                        # makes "how much did each stage buy?" unanswerable from
+                                        # it. Sorted by stage; anything unrecognised keeps its
+                                        # existing position after the known stages.
+                                        _sb_ord = {"band-aware": 0, "exact-proj": 1,
+                                                   "targeted-move": 2}
+                                        _sb_seq = sorted(
+                                            _fm_cands,
+                                            key=lambda _kv: (_sb_ord.get(str(_kv[0]).strip(), 99),
+                                                             str(_kv[0])))
+                                        for _sbn, _sbc in _sb_seq:
                                             _sbv = np.asarray(_sbc, float)
                                             _sbR = float(_fm_eb.penalty(
                                                 _fm_s2pr(_sbv[None, :], _fm_inc))[0])
