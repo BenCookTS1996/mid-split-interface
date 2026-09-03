@@ -779,6 +779,7 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
             sample_pairs=sorted(blocked_pairs)[:5],
             sample_split=sorted({(b, g) for b, g in zip(_bk, _gw)})[:5],
             split_rows=int(len(d)))
+        d["_blocked"] = False   # 19iq: pairs WERE supplied and matched nothing - that is a fact
         return d, 0
     # REDISTRIBUTION GROUP. The default omits `ctry`, so freed share from a bank-blocked row is
     # spread across the USA and Non-USA profiles of a (rpgt, currency, BIN, pmp) group TOGETHER.
@@ -801,6 +802,14 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
     # gateways are ALL blocked is left untouched (nowhere to move the freed volume).
     _new = np.where(_has_recip, _cap + _add, _sh)
     d["share"] = _new
+    # 19iq: STAMP THE FLAG ON THE DATA. Five water-fills run after this pass and every one of
+    # them has to know which rows were blocked, or a blocked row gets water-filled straight back
+    # off the floor at some stages and not others. Threading `blocked_pairs` into each of them
+    # means five call-site chains (build_split_exports alone has five callers across tab_3 and
+    # tab_4) and five chances to forget one. The flag is a property of the ROW, so it rides ON
+    # the row: `_blocked` is carried by every frame derived from this one, and a water-fill that
+    # does not see the column simply has no information and applies no rule.
+    d["_blocked"] = _isb
     d = d.drop(columns=["_freed", "_rw"])
     _capped = int((_isb & _has_recip & (_new < _sh - 1e-12)).sum())
     # CASE 2 vs CASE 3. `matched` rows paired with a blocked gateway. Of those, `above_floor` sit

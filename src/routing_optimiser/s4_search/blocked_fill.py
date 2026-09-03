@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__build__ = "2026-09-03-19ii-blocked-fill-rule"
+__build__ = "2026-09-03-19ii-blocked-fill-rule+19iq-two-stage-add"
 
 
 def _seg(x, starts, axis=1):
@@ -73,6 +73,21 @@ def unavoidable_excess(excess, room, blocked, starts):
     """
     _e = np.asarray(excess, float)
     _pnb = nonblocked_room(room, blocked, starts)
+    return np.minimum(np.maximum(_e - _pnb, 0.0), np.maximum(_e, 0.0))
+
+
+def unavoidable_excess_rowwise(excess, room, blocked):
+    """`unavoidable_excess` for the (rows, gw) layout, where the PROFILE axis is the row axis.
+
+    `excess` is (n, 1) or (n,); `room` is (n, gw); `blocked` is (n, gw) or (gw,). Returns (n,) -
+    the part of each row's excess that no non-blocked recipient had room for.
+    """
+    _e = np.asarray(excess, float).reshape(-1)
+    _r = np.asarray(room, float)
+    _b = np.asarray(blocked, bool)
+    if _b.ndim == 1:
+        _b = np.broadcast_to(_b[None, :], _r.shape)
+    _pnb = np.where(_b, 0.0, _r).sum(1)
     return np.minimum(np.maximum(_e - _pnb, 0.0), np.maximum(_e, 0.0))
 
 
@@ -108,6 +123,96 @@ def split_room(room, blocked, excess, starts, counts):
     return room_primary, room_fallback, excess_primary, excess_fallback
 
 
+def _factors(pool_primary, pool_fallback, excess, eps=1e-12):
+    """THE RULE on per-profile TOTALS. Returns ``(f_primary, f_fallback, split)``.
+
+    ``split`` is False for a profile with no blocked recipient holding room, and there the
+    caller MUST fall back to its own original single-pool expression rather than to anything
+    computed here. That is not a micro-optimisation, it is what makes the rule safe to wire
+    into five water-fills at once:
+
+      * BIT-IDENTITY. ``min(excess, pool) + max(excess - pool, 0)`` is not ``excess`` in
+        floating point, so re-deriving an unchanged profile's factor through the split would
+        move the last bits of every profile in the book - and this rule is supposed to change
+        nothing outside the profiles it is about.
+      * MASS. The original places the WHOLE excess, overshooting recipients above the cap and
+        re-shedding on the next sweep. A split that caps the primary stage at ``pool_primary``
+        and has no fallback pool to take the remainder would DROP it. That is reachable: a
+        profile whose blocked rows sit at 0 share or already at the cap holds no fallback room
+        at all.
+    """
+    _pp = np.asarray(pool_primary, float)
+    _pf = np.asarray(pool_fallback, float)
+    _e = np.asarray(excess, float)
+    split = _pf > eps
+    _ep = np.minimum(_e, _pp)
+    _ef = np.maximum(_e - _pp, 0.0)
+    f_p = np.where(_pp > eps, _ep / np.where(_pp > eps, _pp, 1.0), 0.0)
+    f_f = np.where(_pf > eps, _ef / np.where(_pf > eps, _pf, 1.0), 0.0)
+    return f_p, f_f, split
+
+
+def two_stage_add(room, blocked, excess, starts, counts, fallback_add=None):
+    """The per-row share to ADD, under THE RULE, in the segment (starts/counts) layout.
+
+    `fallback_add` is the caller's OWN unmodified expression, used verbatim for every profile
+    the rule does not reach (see `_factors`). Omit it and the unmodified single-pool formula is
+    reconstructed here, which is right for a fresh implementation but NOT for retro-fitting an
+    existing water-fill - pass yours.
+    """
+    _r = np.asarray(room, float)
+    _b = np.asarray(blocked, bool)
+    if _b.ndim == 1:
+        _b = _b[None, :]
+    _cc = np.asarray(counts, np.intp)
+    _rp = np.where(_b, 0.0, _r)
+    _rf = np.where(_b, _r, 0.0)
+    _f_p, _f_f, _split = _factors(_seg(_rp, starts), _seg(_rf, starts), excess)
+    _add_split = (_rp * np.repeat(_f_p, _cc, axis=1)) + (_rf * np.repeat(_f_f, _cc, axis=1))
+    if fallback_add is None:
+        _pool = _seg(_r, starts)
+        _e = np.asarray(excess, float)
+        _f = np.where(_pool > 1e-12, _e / np.where(_pool > 1e-12, _pool, 1.0), 0.0)
+        fallback_add = _r * np.repeat(_f, _cc, axis=1)
+    return np.where(np.repeat(_split, _cc, axis=1), _add_split, np.asarray(fallback_add, float))
+
+
+def two_stage_add_grouped(room, blocked, excess, g, ng, fallback_add):
+    """`two_stage_add` for a caller that groups with a GROUP-CODE array and `np.bincount`.
+
+    `room`/`blocked`/`fallback_add` are per row (R,); `excess` is per group (ng,); `g` maps row
+    -> group. This is impact_calcs' layout (`_max_share_waterfill`), and it exists so that site
+    runs THE SAME rule as the segment-layout ones rather than its own copy of it.
+    """
+    _r = np.asarray(room, float)
+    _b = np.asarray(blocked, bool)
+    _g = np.asarray(g, np.intp)
+    _rp = np.where(_b, 0.0, _r)
+    _rf = np.where(_b, _r, 0.0)
+    _pp = np.bincount(_g, weights=_rp, minlength=ng)
+    _pf = np.bincount(_g, weights=_rf, minlength=ng)
+    _f_p, _f_f, _split = _factors(_pp, _pf, excess)
+    _add_split = _rp * _f_p[_g] + _rf * _f_f[_g]
+    return np.where(_split[_g], _add_split, np.asarray(fallback_add, float))
+
+
+def two_stage_add_rowwise(room, blocked, excess, fallback_add):
+    """`two_stage_add` for a caller whose PROFILE axis is the row axis of a (rows, gw) array.
+
+    `room` is (n, gw); `blocked` is (n, gw) or (gw,); `excess` is (n, 1). This is
+    build_split_exports._cap_rows' layout - the water-fill that SHIPS.
+    """
+    _r = np.asarray(room, float)
+    _b = np.asarray(blocked, bool)
+    if _b.ndim == 1:
+        _b = np.broadcast_to(_b[None, :], _r.shape)
+    _rp = np.where(_b, 0.0, _r)
+    _rf = np.where(_b, _r, 0.0)
+    _f_p, _f_f, _split = _factors(_rp.sum(1, keepdims=True), _rf.sum(1, keepdims=True), excess)
+    _add_split = _rp * _f_p + _rf * _f_f
+    return np.where(_split, _add_split, np.asarray(fallback_add, float))
+
+
 def waterfill_once(shares, cap, blocked, starts, counts):
     """One shed-then-fill sweep under THE RULE. Reference implementation, pure numpy.
 
@@ -129,15 +234,10 @@ def waterfill_once(shares, cap, blocked, starts, counts):
         return _X
     _exc = _seg(np.where(_o, _X - cap, 0.0), starts)
     _room = np.where((~_o) & (_X > 1e-12) & (_X < cap), cap - _X, 0.0)
-    _rp, _rf, _ep, _ef = split_room(_room, _b, _exc, starts, counts)
     _cc = np.asarray(counts, np.intp)
     _out = np.where(_o, cap, _X)
-    for _pool_rows, _take in ((_rp, _ep), (_rf, _ef)):
-        _pool = _seg(_pool_rows, starts)
-        _f = np.repeat(np.where(_pool > 1e-12, _take / np.where(_pool > 1e-12, _pool, 1.0), 0.0),
-                       _cc, axis=1)
-        _out = _out + _pool_rows * _f
-    return _out
+    _add = two_stage_add(_room, _b, _exc, starts, _cc)
+    return _out + _add
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +417,40 @@ def wired():
 
 def missing():
     return [s for s in SITES if s not in _WIRED]
+
+
+# REGISTRATION is a property of the BUILD: a site registers when its MODULE imports, because
+# the five sites run at different points in a run (the search's mirror during the GA, the
+# delivered ones after it) and no single moment can see them all execute. What a site cannot
+# declare at import is whether it will actually RECEIVE a mask - a wired site handed no mask
+# applies no rule, which is the same partial application arming is supposed to prevent. So each
+# site records that fact when it runs, and `mask_report` is what a run log prints to prove the
+# rule reached every stage rather than assuming it did.
+_MASK_FACT = {}
+
+
+def saw_mask(site, ok, detail=""):
+    """A site records, per run, whether it actually got a blocked mask."""
+    if site not in SITES:
+        raise ValueError(f"blocked_fill.saw_mask: unknown site {site!r}")
+    _MASK_FACT[site] = (bool(ok), str(detail))
+
+
+def mask_report():
+    """(all_ok, lines). `all_ok` is False if any WIRED site ran without a mask this run."""
+    _lines = []
+    _bad = []
+    for _s in SITES:
+        if _s not in _WIRED:
+            continue
+        if _s not in _MASK_FACT:
+            _lines.append(f"      {_s}: wired, but did not run this run")
+            continue
+        _ok, _d = _MASK_FACT[_s]
+        _lines.append(f"      {_s}: {'mask' if _ok else 'NO MASK'} - {_d}")
+        if not _ok:
+            _bad.append(_s)
+    return (not _bad), _lines
 
 
 def arming_verdict(requested):

@@ -20,6 +20,12 @@ import streamlit as st
 
 from app_common import load_mid_list, _norm_cols, _renorm_share, _fid2vamp_from  # memoised MID reader + helpers
 
+try:    # 19iq: THE BLOCKED-ROW WATER-FILL RULE. See routing_optimiser/s4_search/blocked_fill.py.
+    from routing_optimiser.s4_search import blocked_fill as _BFM
+    _BFM.register("_cap_rows")
+except Exception:  # noqa: BLE001 - no rule available is a refusal, never a broken import
+    _BFM = None
+
 
 def _wide_by_mid(mids, vamp_pre, txn_pre, vamp_post, txn_post):
     """Assemble the per-vampMid VAMP/VI-Txn M0–5 (pre & post) wide table from the four
@@ -2676,6 +2682,33 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     df["gateway"] = df["gateway"].astype(str)
     df["share"] = pd.to_numeric(df["share"], errors="coerce").fillna(0.0)
     gateways = sorted(df["gateway"].unique().tolist())
+    # ── 19iq: THE BANK-BLOCKED MASK, FROM THE DATA ───────────────────────────────────────
+    # `_apply_blocked_caps` stamps `_blocked` on the split it floors, so this water-fill knows
+    # which rows are blocked without any caller having to remember to say so. No column = no
+    # information = no rule (and the pricing does not run either, rather than reading all-False
+    # as "nothing is blocked", which is a different claim).
+    _blk_pairs = set()
+    if "_blocked" in df.columns:
+        try:
+            _bm = df["_blocked"].fillna(False).astype(bool).to_numpy()
+            if _bm.any():
+                _blk_pairs = set(zip(df["BIN"].to_numpy()[_bm], df["gateway"].to_numpy()[_bm]))
+        except Exception:  # noqa: BLE001 - a mask must never break an export
+            _blk_pairs = set()
+    _BLK_ARMED, _BLK_MSG = ((False, "[blk-fill] rule unavailable (blocked_fill did not import)")
+                            if _BFM is None else
+                            _BFM.arming_verdict(
+                                os.environ.get("ROUTING_BLOCK_NOFILL", "0") != "0"))
+    if _BFM is not None:
+        _BFM.saw_mask("_cap_rows", bool(_blk_pairs),
+                      f"{len(_blk_pairs):,} (BIN, gateway) pair(s) from the split's _blocked "
+                      f"column" if _blk_pairs else
+                      ("the split carries _blocked but nothing is flagged"
+                       if "_blocked" in df.columns else
+                       "the split carries NO _blocked column, so this export has no blocked-row "
+                       "information at all"))
+    _BLK_MEAS = {"on_blocked": 0.0, "unavoidable": 0.0, "avoidable": 0.0, "sweeps": 0,
+                 "pairs": len(_blk_pairs), "armed": bool(_BLK_ARMED), "msg": str(_BLK_MSG)}
     _pmps = ["GOOGLEPAY", "APPLEPAY", "non_gp_ap"]
     # PROFILE split: if the incoming split already carries pmp/Country per row (from a profile
     # grain GA run), the rows ARE the profiles — build the template DIRECTLY from them instead of
@@ -2707,15 +2740,29 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
         return g in usa_only
 
     # [FN-272]
-    def _cap_rows(V):
+    def _cap_rows(V, _blk=None):
         """VECTORISED per-row cap + water-fill, applied to a whole (rows×gw)
         array at once. Each row (already normalised to sum 1) is capped at `_cap`, water-filling
         excess into the OTHER gateways already present. No-op for a row with <2 non-zero gateways
-        or cap 1.0. Byte-identical to the scalar version — same 50-sweep water-fill, same order."""
+        or cap 1.0. Byte-identical to the scalar version — same 50-sweep water-fill, same order.
+
+        `_blk` (19iq) is the (rows × gw) bank-blocked mask, from the split's own `_blocked`
+        column. THIS IS THE WATER-FILL THAT SHIPS, so it is the one the blocked-row rule is
+        ultimately about: the recipient test below (`share > 0`, not over, under the cap) is
+        satisfied by a row that the auto-block pass has just pinned to the exploration floor, so
+        the excess lifts it straight back off the floor. Under the rule a blocked row is a
+        recipient of LAST RESORT. The rule only applies when every site is wired AND armed; the
+        pricing (what the current behaviour puts on blocked rows, and how much of that a
+        non-blocked sibling had room for) is measured either way."""
         V = V.copy()
         m = (_cap < 1.0) & ((V > 1e-12).sum(1) >= 2)
         if m.any():
             W = V[m]
+            _Wb = None
+            if _blk is not None and _BFM is not None:
+                _Wb = np.asarray(_blk, bool)[m]
+                if not _Wb.any():
+                    _Wb = None
             for _ in range(50):
                 over = W > _cap + 1e-12
                 if not over.any():
@@ -2725,7 +2772,20 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
                 recip = (W > 1e-12) & (~over) & (W < _cap - 1e-12)
                 room = np.where(recip, _cap - W, 0.0)
                 rs = room.sum(1, keepdims=True)
-                W = W + np.where(rs > 1e-12, room / np.where(rs > 1e-12, rs, 1.0) * excess, 0.0)
+                _add = np.where(rs > 1e-12, room / np.where(rs > 1e-12, rs, 1.0) * excess, 0.0)
+                if _Wb is not None:
+                    # PRICE IT (always). `_add[_Wb]` is what the unmodified rule hands to blocked
+                    # rows; `unavoidable_excess` is the part of the excess no non-blocked sibling
+                    # had room for. The difference is share the rule would move.
+                    _onblk = float(_add[_Wb].sum())
+                    _need = float(_BFM.unavoidable_excess_rowwise(excess, room, _Wb).sum())
+                    _BLK_MEAS["on_blocked"] += _onblk
+                    _BLK_MEAS["unavoidable"] += _need
+                    _BLK_MEAS["avoidable"] += max(0.0, _onblk - _need)
+                    _BLK_MEAS["sweeps"] += 1
+                    if _BLK_ARMED:
+                        _add = _BFM.two_stage_add_rowwise(room, _Wb, excess, _add)
+                W = W + _add
             V[m] = W
         return V
 
@@ -2749,6 +2809,7 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     # It was proven byte-identical to the previous implementation on random splits, including
     # with the <2-gateway back-fill active; that back-fill has since been deleted outright, so
     # there is no longer any per-row Python path left in here at all.
+    globals()["_LAST_BLK_FILL"] = None      # 19iq: set at the end of the row engine below
     ng = len(gateways)
     incap_col = np.array([_incap(g) for g in gateways], dtype=bool)
     usa_col = np.array([_is_usa_only(g) for g in gateways], dtype=bool)
@@ -2822,7 +2883,12 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
         #
         # Stage 2 ("backfill") therefore does nothing; see the stage-gate note above.
         if _slvl >= 3:                                   # [stage >=3: max-share water-fill]
-            R = _cap_rows(R)
+            # 19iq: the mask in THIS block's row order - `_bin` per row, `gateways` per column.
+            _Rblk = None
+            if _blk_pairs:
+                _Rblk = np.array([[(str(_b), _g) in _blk_pairs for _g in gateways]
+                                  for _b in _bin], dtype=bool)
+            R = _cap_rows(R, _Rblk)
         # 2dp rounding + residual-push. Two fixes 2026-08-17:
         #  (1) the rounding was UN-GATED — it ran at EVERY _stage, so the breach-attribution
         #      "base" stage was never a true pre-rounding baseline. It is now inside the gate.
@@ -2868,6 +2934,12 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
             rdf["BIN GROUP"] = _key.map(_codes)
         rdf["DUP CHECK"] = 1
         out[(brand, rpgt)] = rdf.reindex(columns=_cols)
+    # 19iq: PRICE THE RULE ON THE SHIPPING PATH. `on_blocked` is what the water-fill handed to
+    # bank-blocked rows; `unavoidable` is the part of the excess no non-blocked sibling had room
+    # for - the rule's own exception. `avoidable` is the difference, i.e. share that would move
+    # if the rule were armed. tab_2's [blk-fill] prints the search-side twin of these numbers;
+    # this is the delivered side, and the two have to agree once the rule is on.
+    globals()["_LAST_BLK_FILL"] = dict(_BLK_MEAS)
     return out
 
 

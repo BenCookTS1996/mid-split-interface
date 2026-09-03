@@ -9505,6 +9505,32 @@ def render():
                                             _pj["emask_fact_said"] = True
                                             log("   [emask-grain] FACT: " + str(getattr(
                                                 _pj_ic, "_LAST_EMASK_GRAIN", "not recorded")))
+                                        # 19iq: the DELIVERED side of [blk-fill]. The search's
+                                        # own figure comes from _fm_cap during the GA; this one
+                                        # comes from the water-fill that SHIPS, so the two have
+                                        # to agree once the rule is armed - and until it is,
+                                        # this is what the rule would move on the real path.
+                                        _bkf = getattr(_pj_ic, "_LAST_BLK_FILL", None)
+                                        if _bkf and not _pj.get("blkfill_said"):
+                                            _pj["blkfill_said"] = True
+                                            if int(_bkf.get("pairs", 0) or 0) <= 0:
+                                                log("   [blk-fill] delivered: the split carries "
+                                                    "no bank-blocked row, so this water-fill has "
+                                                    "nothing to price.")
+                                            else:
+                                                log(f"   [blk-fill] delivered water-fill "
+                                                    f"(_cap_rows): {float(_bkf['on_blocked']):.6g} "
+                                                    "of share was handed to bank-blocked rows "
+                                                    "over "
+                                                    f"{int(_bkf['sweeps']):,} sweep(s), of which "
+                                                    f"{float(_bkf['unavoidable']):.6g} could not "
+                                                    "have gone anywhere else (the profile had no "
+                                                    "other under-cap recipient) and "
+                                                    f"{float(_bkf['avoidable']):.6g} is AVOIDABLE "
+                                                    "- a non-blocked sibling had room for it and "
+                                                    "did not get it. That last number is what "
+                                                    "the rule would move on the shipping path.")
+                                            log("      " + str(_bkf.get("msg", "")))
                                         log(f"   [proj-memo] '{_tag}' projected in {_t2 - _t0:.1f}s "
                                             f"= {_t1 - _t0:.1f}s enforced_prop_items/build_split_exports "
                                             f"+ {_t2 - _t1:.1f}s compute_vamp_prepost_granular.")
