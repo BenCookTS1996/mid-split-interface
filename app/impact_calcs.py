@@ -80,7 +80,7 @@ class _Skip(Exception):
     must not be recorded as a failure. Each handler re-checks the flag."""
 
 __build__ = ("2026-08-17b-count-only-pool-search+profile-exporter+staged-enforcement"
-             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zeroprofile+vamp-term-stash+2026-09-01-19gq-gk-int-key+cvp-submarks+19gt-forensic-on-demand+2026-09-03-19ih-sentinel-unclobbered+2026-09-03-19je-cvp-submarks+2026-09-03-19jh-txnterms-on-demand")
+             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zeroprofile+vamp-term-stash+2026-09-01-19gq-gk-int-key+cvp-submarks+19gt-forensic-on-demand+2026-09-03-19ih-sentinel-unclobbered+2026-09-03-19je-cvp-submarks+2026-09-03-19jh-txnterms-on-demand+2026-09-03-19ji-backfill-cleancol")
 
 
 # [FN-246b]
@@ -1101,8 +1101,19 @@ def _inject_backfill_rows(pp, prop, prop_name_map=None, mark=None):
     # which is what previously twinned MIDs across mismatched profiles.
     subk = ["Currency", "BIN", "_rpgtl", "_pmp", "_ctry"]
     b = pp.copy()
-    b["_rpgtl"] = b["RPGT"].astype(str).str.strip().str.lower()
-    b["_vml"] = b["vampMid"].astype(str).str.strip().str.lower()
+    if mark is not None:
+        mark("  backfill: copy the export frame")
+    # 19ji: `_clean_col` instead of the per-row chain. Same function this file's own key-normalise
+    # step uses (19fx): it cleans once per DISTINCT VALUE and returns an object ndarray that is
+    # character-for-character identical, so there is no bit-identity question to weigh - only 21
+    # vampMids and 8 RPGTs exist across 6.5M rows, and the per-row chain lower-cases each of them
+    # about 300,000 times to learn one fact. It falls back to the slow chain on a column holding
+    # nulls, which is a real trap and not caution: pd.factorize collapses None and NaN into one
+    # missing value where the per-row chain renders them "none" and "nan".
+    b["_rpgtl"] = _clean_col(b["RPGT"], lower=True)
+    b["_vml"] = _clean_col(b["vampMid"], lower=True)
+    if mark is not None:
+        mark("  backfill: lower-case the RPGT and vampMid keys")
     # PRESENCE IS JUDGED ON THE t == 0 SLICE — the frame the caller's LEFT merge actually
     # consumes (`_t0 = pp[pp["t"] == 0]`). Judging it over ALL t (as this did until
     # 2026-08-18h) made a MID with an AGED row but no t0 row read as "present": back-fill
@@ -1119,7 +1130,7 @@ def _inject_backfill_rows(pp, prop, prop_name_map=None, mark=None):
     # Global _vml -> proper-case vampMid, so a MID that exists elsewhere in the export keeps its
     # display name and merges cleanly (no lower-case twin) on the final collapse.
     if mark is not None:
-        mark("  backfill: normalise the keys + build the two presence sets")
+        mark("  backfill: the two presence sets (t0 uniques -> python tuples)")
     name_map = b.drop_duplicates("_vml").set_index("_vml")["vampMid"].to_dict()
     # Truly zero-baseline recipients have NO row anywhere in the export, so `b` can't supply a
     # proper-case name and they'd otherwise fall back to the lower-case merge key as their display
