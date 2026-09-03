@@ -132,7 +132,7 @@ except Exception:  # noqa: BLE001 - no rule available is a refusal, never a brok
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
+__build__ = ("2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -749,9 +749,19 @@ _PROJ_CB_ON = _env_switch("ROUTING_PROJ_PROFILEBLOCK", "ROUTING_PROJ_CELLBLOCK",
 #   * [proj-config] prints the measured drift rather than a remembered figure,
 #   * RECONCILIATION ERROR is the end-to-end proof, exactly as it was for 19fs: delivery is an
 #     untouched float64 path, so if float32 moved anything that matters it stops reading 0.
-# If reconciliation is non-zero on the next run, set ROUTING_PROJ_FLOAT32=0 and re-run before
-# reading anything else — that is the first thing to rule out.
-_PROJ_F32 = os.environ.get("ROUTING_PROJ_FLOAT32", "1") != "0"
+# Reconciliation reads about the drift rather than 0 as a RESULT of this setting, which is why
+# the self-check's measured Σ|Δ| is printed beside it every run.
+# 19iu: ROUTING_PROJ_FLOAT32 IS GONE and float32 is unconditional. It was a switch because
+# the drift it introduces was ACCEPTED rather than free, and the way back existed to prove the
+# drift was the only difference. It has been default-on since 19gt, the per-run self-check below
+# measures the drift against the float64 kernel on THIS run's scaffold every time, and that
+# measurement - not the switch - is what makes the setting safe to keep.
+#
+# WHAT IS LOST, stated rather than discovered later: a float64 run was the only way to read
+# RECONCILIATION ERROR without this drift in it, so the ~9.5-unit float32 noise floor can no
+# longer be removed by flipping a variable. The self-check's own Σ|Δ| across the bands is the
+# replacement measure of that floor, and it is printed by [proj-config] every run.
+_PROJ_F32 = True
 _F32_OK = {"use": _PROJ_F32, "said": False, "dv": None, "dt": None}
 # `use` is flipped off for the process by the live self-check. `sweeps` is the water-fill sweep
 # high-water mark: the ONE case where per-profile convergence could differ from the shipped kernel's
@@ -947,12 +957,17 @@ def proj_config():
     _f32_eff = bool(_F32_OK.get("use"))
     _f32_word = ("ON \u2014 this run's answer is NOT exact" if _f32_eff
                  else "off (float64, exact)")
-    out = ["PROJECTOR CONFIGURATION (stated every run, whether or not anything is unusual): "
-           "profile-blocked kernel " + ("ON" if _cb_eff else "OFF")
-           + " \u00b7 float32 " + _f32_word
-           + " \u00b7 lane cap " + str(_PROJ_LANE_CAP)
-           + " \u00b7 chunking " + ("ON" if _PROJ_CHUNK_ON else "off")
-           + " \u00b7 candidate-parallel " + ("ON" if _PROJ_PAR_ON else "off") + "."]
+    out = ["PROJECTOR CONFIGURATION (stated every run, whether or not anything is unusual)",
+           " ",
+           " " + f"{'setting':<24}value",
+           " " + "-" * 62,
+           " " + f"{'profile-blocked kernel':<24}" + ("ON" if _cb_eff else "OFF"),
+           " " + f"{'float32':<24}" + _f32_word,
+           " " + f"{'lane cap':<24}" + str(_PROJ_LANE_CAP),
+           " " + f"{'chunking':<24}" + ("ON" if _PROJ_CHUNK_ON else "off"),
+           " " + f"{'candidate-parallel':<24}" + ("ON" if _PROJ_PAR_ON else "off"),
+           " " + "-" * 62,
+           " "]
 
     # REQUESTED vs IN EFFECT — a different sentence, because only one of the two is a bug.
     if _PROJ_CB_ON and not _cb_eff:
@@ -968,8 +983,7 @@ def proj_config():
     # THE ENVIRONMENT NOW vs WHAT THE MODULE READ AT IMPORT. These switches are read once, at
     # import. Setting one after the app has started does nothing at all, and there was no way to
     # see that from the log.
-    for _nm, _im in (("ROUTING_PROJ_FLOAT32", _PROJ_F32),
-                     ("ROUTING_PROJ_PROFILEBLOCK", _PROJ_CB_ON),
+    for _nm, _im in (("ROUTING_PROJ_PROFILEBLOCK", _PROJ_CB_ON),
                      ("ROUTING_PROJ_CHUNK", _PROJ_CHUNK_ON),
                      ("ROUTING_PROJ_PARALLEL", _PROJ_PAR_ON)):
         _raw = os.environ.get(_nm)
@@ -984,10 +998,10 @@ def proj_config():
                        "nothing \u2014 quit the app fully and relaunch it.")
 
     if not _PROJ_F32:
-        out.append("float32 is OFF because ROUTING_PROJ_FLOAT32=0 is set in this process. It "
-                   "defaults ON since 19gt, so something set it: `routing.env` is read by "
-                   "run.command AT LAUNCH only. The projector is running the exact float64 path "
-                   "\u2014 correct, and paying roughly double the memory traffic.")
+        # 19iu: unreachable - `_PROJ_F32` is a constant True now. Kept so the branch below
+        # still reads as a pair, and so a future re-introduction has somewhere to land.
+        out.append("float32 is OFF in this process. The projector is running the exact float64 "
+                   "path \u2014 correct, and paying roughly double the memory traffic.")
 
     # 19ch: THE PATH ACTUALLY TAKEN, recorded rather than derived. [kernel-ab] restates the
     # dispatch rule to describe the live path; on 2026-08-25 19:14 its answer and [proj-par]'s
@@ -998,19 +1012,23 @@ def proj_config():
                    "not been called since the last reset. If the search has finished, that is "
                    "itself the finding.")
     else:
-        out.append("projection PATHS TAKEN this run, RECORDED at dispatch (not derived from the "
-                   "rule \u2014 compare with what [kernel-ab] says the live path is; they "
-                   "disagreed on 2026-08-25 19:14 and nothing could settle it): "
-                   + str(int(_PROJ_PATH.get("calls", 0))) + " call(s) over "
-                   + str(len(_seen)) + " distinct path(s), cap "
+        out.append("PATHS TAKEN this run, RECORDED at dispatch rather than derived from the "
+                   "dispatch rule: "
+                   + format(int(_PROJ_PATH.get("calls", 0)), ",") + " call(s) over "
+                   + str(len(_seen)) + " path(s), lane cap "
                    + str(int(_PROJ_PATH.get("cap", _PROJ_LANE_CAP))) + ", numba threads "
-                   + str(int(_PROJ_PATH.get("nthr", 0))) + ".")
+                   + str(int(_PROJ_PATH.get("nthr", 0))))
+        out.append(" ")
+        out.append(" " + f"{'kernel':<18}{'P':>5}{'mode':>21}{'lanes':>7}{'nlane':>7}"
+                         f"{'calls':>9}")
+        out.append(" " + "-" * 68)
         for _k, _n in sorted(_seen.items(), key=lambda kv: (-kv[1], str(kv[0]))):
-            out.append("   " + _k[0] + " \u00b7 P=" + str(_k[1])
-                       + " \u00b7 " + ("CHUNKED" if _k[3] else
-                                        ("candidate-parallel" if _k[2] else "serial"))
-                       + " \u00b7 lanes=" + str(_k[4]) + " \u00b7 nlane=" + str(_k[5])
-                       + "  \u2014 " + format(_n, ",") + " call(s)")
+            _mode = ("CHUNKED" if _k[3] else
+                     ("candidate-parallel" if _k[2] else "serial"))
+            out.append(" " + f"{str(_k[0]):<18}{str(_k[1]):>5}{_mode:>21}"
+                             f"{str(_k[4]):>7}{str(_k[5]):>7}{format(_n, ','):>9}")
+        out.append(" " + "-" * 68)
+        out.append(" ")
 
     # WHAT IS ACTUALLY VERIFIED, as opposed to merely switched on.
     if _cb_eff:
@@ -1054,17 +1072,21 @@ def proj_config():
         # is the line that says so.
         for _m in ([_F32_OK["live"]] if isinstance(_F32_OK.get("live"), dict) else _seen):
             out.append("float32 drift at P=" + str(_m["at_P"])
-                       + ("  (THE LIVE SEARCH WIDTH)" if _m is _F32_OK.get("live")
-                          else "  (the first projection's width)")
-                       + ": WORST SINGLE BAND max|\u0394vamp| " + format(_m["dv"], ".4g")
-                       + " on band column " + str(_m["dv_band"] + 1) + " of " + str(_m["nb"])
-                       + ", max|\u0394txn| " + format(_m["dt"], ".4g")
-                       + " on band column " + str(_m["dt_band"] + 1)
-                       + ". ACROSS ALL " + str(_m["nb"]) + " BANDS (same candidate): "
-                       + "\u03a3|\u0394vamp| " + format(_m["dv_sum"], ".4g") + " over "
-                       + str(_m["dv_nover"]) + " band(s), \u03a3|\u0394txn| "
-                       + format(_m["dt_sum"], ".4g") + " over " + str(_m["dt_nover"])
-                       + " band(s).")
+                       + (" (THE LIVE SEARCH WIDTH)" if _m is _F32_OK.get("live")
+                          else " (the first projection's width)")
+                       + ", measured against the float64 kernel on this run's own scaffold")
+            out.append(" ")
+            out.append(" " + f"{'metric':<8}{'worst single band':>22}{'band column':>14}"
+                             f"{'across all bands':>20}")
+            out.append(" " + "-" * 64)
+            out.append(" " + f"{'vamp':<8}{format(_m['dv'], '.4g'):>22}"
+                             f"{str(_m['dv_band'] + 1) + ' of ' + str(_m['nb']):>14}"
+                             f"{SG + '|' + DL + '| ' + format(_m['dv_sum'], '.4g'):>20}")
+            out.append(" " + f"{'txn':<8}{format(_m['dt'], '.4g'):>22}"
+                             f"{str(_m['dt_band'] + 1) + ' of ' + str(_m['nb']):>14}"
+                             f"{SG + '|' + DL + '| ' + format(_m['dt_sum'], '.4g'):>20}")
+            out.append(" " + "-" * 64)
+            out.append(" ")
         if _F32_OK.get("live") is False:
             out.append("float32 drift could not be re-measured at the live width this run "
                        "(see [proj-par]); the figure above is the first projection's, at its own "
@@ -2081,27 +2103,20 @@ class PopulationBandProjector:
                 self._ef_delivery_like = _ef_dl
                 _mm = int(np.count_nonzero(_ef_dl != self._ef_ok))
                 self._ef_mismatch = _mm
-                if self._efloor > 0.0:
+                if self._efloor > 0.0 and _mm:
+                    # 19iu: this line printed every run to report a difference against DELIVERY's
+                    # coarse vampMid-only mask - a mask 19ip deleted the switch for. The count is
+                    # what the OLD test would have disagreed by, i.e. history that cannot change,
+                    # so it only prints now if it is somehow NON-ZERO, which would mean the two
+                    # grains have come apart again and is worth a line.
                     _bnote(
-                        f"[ef-mask] exploration floor {self._efloor:.2%} carried into the "
-                        f"projector (STEP 1: stored, not applied). Floor-eligible rows: "
-                        f"{int(self._ef_ok.sum()):,} of {len(self._ef_ok):,} by the SEARCH's "
-                        f"(vampMid, currency)-grain capability mask, "
-                        f"{int(_ef_dl.sum()):,} by DELIVERY's coarser vampMid-only mask — "
-                        f"{_mm:,} row(s) differ."
-                        + (" ZERO disagreement, so the two eligibility sets are the same set on "
-                           "this data and the grain difference is harmless here."
-                           if _mm == 0 else
-                           " READ THIS AS HISTORY, NOT AS A DECISION (19hu). Since 19ht DELIVERY "
-                           "IS ON THE SAME (vampMid, currency) grain as the search by default, "
-                           "and build_split_exports has been finer still - fid-grain - since "
-                           "2026-08-17, so the search-vs-delivery disagreement on this axis is 0 "
-                           "by construction and [emask-grain] above says so. The count here is "
-                           "what the OLD coarse vampMid-only test would have disagreed by, which "
-                           "is worth keeping as the size of the over-blocking that was removed. "
-                           "19ip deleted the switch that could put delivery back on the coarse "
-                           "test, so this number is history for good and cannot become a live "
-                           "gap again."))
+                        f"[ef-mask] \u26a0 exploration floor {self._efloor:.2%}: floor-eligible "
+                        f"rows differ between the search's (vampMid, currency) grain "
+                        f"({int(self._ef_ok.sum()):,} of {len(self._ef_ok):,}) and a "
+                        f"vampMid-only reconstruction ({int(_ef_dl.sum()):,}) by {_mm:,} row(s). "
+                        "Since 19ht both sides mask at the pair grain and 19ip removed the way "
+                        "back, so this should be 0 - a non-zero reading means the two have come "
+                        "apart and the difference lands in RECONCILIATION ERROR.")
             elif self._efloor > 0.0:
                 _bnote(f"[ef-mask] exploration floor {self._efloor:.2%} carried into the "
                        f"projector (STEP 1: stored, not applied). Floor-eligible rows: "
@@ -2361,12 +2376,16 @@ class PopulationBandProjector:
                             "'|', or a radix overflow), or this module is stale")
                 else:
                     _tag = f"  ✓ vs ~{_before:.1f}s before 19fy/19fz, scaled to this run's rows"
-            _lines.append(f"{_d:8.1f}s  ({100.0 * _d / max(_pbp_tot, 1e-9):5.1f}%)  {_lbl}{_tag}")
+            _lines.append(f"{_lbl:<52}{_d:>7.1f}s"
+                          f"{100.0 * _d / max(_pbp_tot, 1e-9):>7.1f}%   {_tag.strip()}")
         _bnote("[pbp-inside] PopulationBandProjector.__init__ = "
-               f"{_pbp_tot:.1f}s, largest first (these SUM to the constructor, no residual):\n      "
-               + "\n      ".join(_lines)
-               + "\n      Ordered largest-first, not in execution order — the point is which step "
-                 "to attack next. A ⚠ above is the answer to 'why did [band-setup] not fall'.")
+               f"{_pbp_tot:.1f}s, largest first (these SUM to the constructor, no residual)"
+               + "\n"
+               + "\n      " + f"{'step':<52}{'time':>8}{'share':>7}   vs the 19fy/19fz baseline"
+               + "\n      " + "-" * 110
+               + "\n      " + "\n      ".join(_lines)
+               + "\n      " + "-" * 110
+               + "\n")
 
     # [FN-020]
     def project_pop_from_props(self, props):
@@ -2497,27 +2516,43 @@ class PopulationBandProjector:
                 _vconst)                                              # vconst (19cz)
             self._ix32 = dict(_ixs)
             _n_nar = int(_ixs.get("narrowed", 0)); _n_ref = int(_ixs.get("refused", 0))
-            _bnote(f"index width: {_n_nar} array(s) narrowed to int32, "
-                  f"{_n_ref} kept at int64. Largest index {_ixs.get('hi', 0):,} of the "
-                  f"{_I32_MAX:,} int32 ceiling "
-                  f"({_ixs.get('hi', 0) / _I32_MAX:.4%} of it) — "
-                  + ("ample margin. " if _n_ref == 0 else
-                     "SOME ARRAY DID NOT FIT and was left int64 (correct, not a failure). ")
-                  + "Values are unchanged, so the projection is bit-identical; only the bytes "
-                    "moved per index change. Adopted 19bi from [kernel-ab] variant G.")
+            # 19iu: the index-width line is gone. It said "N arrays narrowed, largest index
+            # 0.09% of the int32 ceiling, ample margin, values unchanged" on every run since
+            # 19bi. An index that does NOT fit is refused at `_ix32` and left int64, so the
+            # only news here would be a refusal - which is what this now prints, and only then.
+            if _n_ref:
+                _bnote(f"index width: {_n_ref} array(s) DID NOT FIT int32 and were left at "
+                       f"int64 (correct, not a failure). Largest index "
+                       f"{_ixs.get('hi', 0):,} against the {_I32_MAX:,} ceiling. Values are "
+                       "unchanged either way, so the projection is bit-identical; only the "
+                       "bytes moved per index change.")
             _h = self._nb_hoist
-            _bnote(f"aged-row hoist (19cz/19dd/19fs): no-origin "
-                  f"{_h['no_origin']:,} + zero-pool {_h['zero_pool']:,} + FROZEN-ORIGIN "
-                  f"{_h['frozen']:,} = {_h['static']:,} of {_h['total']:,} "
-                  f"banded aged row(s) ({100.0 * _h['static'] / max(_h['total'], 1):.1f}%) are "
-                  f"CANDIDATE-INDEPENDENT — `no-origin` are cohorts whose transactions "
-                  f"predate the split, `zero-pool` are layers with nothing movable to hand out "
-                  f"(fraud that is all FCP 2+ retries, or no fraud at that age at all). Both are "
-                  f"summed once into a per-band constant and dropped from the per-candidate loop; "
-                  f"{_h['live']:,} row(s) remain live. This shrinks the ONE "
-                  "pass the loop always made AND the two the 19cy age renormalise adds, so read "
-                  "[gen-gap]'s `eval` row against the previous run before concluding anything "
-                  "about what the renormalise cost.")
+            # 19iu: a table. The three classes and their two totals were embedded in a
+            # paragraph that then explained what each class means and what to read it against;
+            # the classes keep a short gloss each, the reading instructions go.
+            _hb_tot = max(_h["total"], 1)
+            _bnote("aged-row hoist (19cz/19dd/19fs): banded aged rows that are "
+                   "CANDIDATE-INDEPENDENT, summed once into a per-band constant and dropped "
+                   "from the per-candidate loop"
+                   + "\n"
+                   + "\n      " + f"{'class':<16}{'rows':>12}{'share':>8}   what it is"
+                   + "\n      " + "-" * 96
+                   + "\n      " + f"{'no-origin':<16}{_h['no_origin']:>12,}"
+                   + f"{100.0 * _h['no_origin'] / _hb_tot:>7.1f}%   cohorts whose transactions "
+                     "predate the split"
+                   + "\n      " + f"{'zero-pool':<16}{_h['zero_pool']:>12,}"
+                   + f"{100.0 * _h['zero_pool'] / _hb_tot:>7.1f}%   layers with nothing movable "
+                     "(all FCP 2+ retries, or no fraud at that age)"
+                   + "\n      " + f"{'frozen-origin':<16}{_h['frozen']:>12,}"
+                   + f"{100.0 * _h['frozen'] / _hb_tot:>7.1f}%   origin profile is frozen, so "
+                     "psum is 0 there for every candidate"
+                   + "\n      " + "-" * 96
+                   + "\n      " + f"{'hoisted':<16}{_h['static']:>12,}"
+                   + f"{100.0 * _h['static'] / _hb_tot:>7.1f}%"
+                   + "\n      " + f"{'still live':<16}{_h['live']:>12,}"
+                   + f"{100.0 * _h['live'] / _hb_tot:>7.1f}%"
+                   + "\n      " + f"{'total':<16}{_h['total']:>12,}{100.0:>7.1f}%"
+                   + "\n")
             _bnote(f"[vconst-frozen] 19fs added the THIRD class: "
                   f"{_h['frozen']:,} aged row(s) whose ORIGIN PROFILE IS FROZEN (no GA share "
                   f"column maps to it, so psum is 0 there for every candidate). "
@@ -3318,24 +3353,15 @@ class PopulationBandProjector:
                         "dt_sum": float(_ad_t[_it[0]].sum()),
                         "dt_nover": int((_ad_t[_it[0]] > 0.0).sum())}
                     _F32_OK["dv"], _F32_OK["dt"] = _dv, _dt2
-                    _pnote("*** FLOAT32 PROJECTOR IS ON (ROUTING_PROJ_FLOAT32=1). This is the one "
-                           "setting that CHANGES THE ANSWER, and it is on because a drift was "
-                           "ACCEPTED, not because it is free \u2014 so read the size below rather "
-                           "than assuming the size it was accepted at. (The figure accepted on "
-                           "2026-08-24, '~2 transactions', came from [kernel-ab] row F, which "
-                           "times a FLAT float32 kernel on a copy of prop_raw. This path is the "
-                           "profile-blocked one on the live scaffold and on 2026-08-25 it measured "
-                           "about 7x that.) Measured on THIS run's "
-                           f"scaffold against the float64 kernel: max|\u0394vamp| {_dv:.4g}, "
-                           f"max|\u0394txn| {_dt2:.4g} at P={P}. TWO CONSEQUENCES. (1) "
-                           "RECONCILIATION ERROR will no longer read 0: it is "
-                           "\u03a3|delivered \u2212 GA-fitness|, GA-fitness now comes from this "
-                           "float32 kernel and delivery is still float64, so it will read about "
-                           "the drift above. That is the setting, not a regression \u2014 but the "
-                           "number also stops being able to detect a REAL reconciliation bug at "
-                           "that magnitude. (2) The search is chaotic, so this run's trajectory "
-                           "diverges from a float64 run's; only the end results compare. "
-                           "ROUTING_PROJ_FLOAT32=0 restores exactness.")
+                    # 19iu: the paragraph that stood here argued the accept/revert decision
+                    # for float32 - what drift was accepted, on what evidence, and how to
+                    # revert. There is no revert any more (the switch is gone) and the decision
+                    # is made, so the only thing worth printing is the MEASURED drift, which
+                    # [proj-config]'s float32 row does every run in a form that can be compared
+                    # between runs. RECONCILIATION ERROR reads about this drift rather than 0,
+                    # and that is the setting, not a regression - it is stated where the
+                    # reconciliation number is printed.
+                    pass
                     return _v, _t
                 # bit patterns, not np.array_equal: array_equal calls -0.0 == 0.0, and -0.0 is
                 # exactly the value for which x + 0.0 == x fails. `_bitview` picks the integer
@@ -3362,11 +3388,11 @@ class PopulationBandProjector:
                 _pnote(f"*** profile-blocked self-check could not run ({type(_cve).__name__}: "
                        f"{_cve}) \u2014 falling back to the flat kernel for this process rather "
                        "than trusting an unverified path. READ THIS BEFORE READING ANY TIMING "
-                       "BELOW: the flat kernel is the SLOW one, and the float32 projector lives "
-                       "inside this same path, so if ROUTING_PROJ_FLOAT32=1 it is off for this run "
-                       "too and no float32 banner will print. The run is CORRECT and roughly half "
-                       "speed. Report this line rather than reading the [gen-cost] split as the "
-                       "engine's real cost profile.")
+                       "BELOW: the flat kernel is the SLOW one, and float32 lives inside this "
+                       "same path, so it is off for this run too and no float32 drift will be "
+                       "measured. The run is CORRECT and roughly half speed. Report this line "
+                       "rather than reading the [gen-cost] split as the engine's real cost "
+                       "profile.")
                 return None
         # 19cf: RE-MEASURE THE DRIFT AT THE LIVE WIDTH, once. The self-check above runs on the
         # FIRST profile-blocked projection, at whatever P that call happens to use — P=1 on

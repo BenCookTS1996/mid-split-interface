@@ -87,7 +87,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim+2026-09-03-19iu-log-batch"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -697,12 +697,10 @@ def _fx_selfcheck(a, b, rate, strength, profile_start, profile_len, rng, profile
     _same_s = (repr(_st_new) == repr(_st_ref))
     _FX_OK["checked"] = True
     if _same_v and _same_s:
-        _FX_OK["msg"] = (
-            "[fullmatrix-ga] \u2713 fused child SELF-CHECK PASSED on the live population: "
-            "bit-identical to crossover + _mutate_fast (int64 bit-pattern comparison, not "
-            "array_equal) AND the generator's end state matches, so the draw order is unchanged "
-            "and the child is the SAME child. Measured 127.1 -> 73.5 ms per generation at P=35 "
-            "([stage-ab], 7/7 paired rounds, p=0.016). ROUTING_CHILD_FUSE=0 reverts.")
+        # 19iu: SILENT ON PASS. The check still runs on the live population, every process, and
+        # still disables the fused path loudly on failure - but "bit-identical, as designed" is
+        # not news, which is the same reason [viol-bincount] and [deliv-fuse] are muted.
+        _FX_OK["msg"] = ""
         rng.bit_generator.state = _st_new
         return _got
     _FX_OK["use"] = False
@@ -907,20 +905,15 @@ def _segment_softmax(logits, profile_start, profile_len, max_share=None):
         _r = _segment_softmax_serial(_lg, profile_start, profile_len)
         _f = _segment_softmax_fast(_lg, profile_start, profile_len)
         if _fx_same(_r, _f):
-            _SM_OK["msg"] = (
-                "[fullmatrix-ga] \u2713 fused softmax SELF-CHECK PASSED on the live population: "
-                "bit-identical to the reference (int64 bit-pattern comparison on "
-                f"{_lg.shape[0]}x{_lg.shape[1]:,}, stricter than array_equal). Five full-width "
-                "temporaries become two; the two reduceat calls are untouched and np.exp stays in "
-                "numpy (numba's differs in the last bit). Measured 206.6 -> 126.9 ms at P=35 "
-                "([stage-ab], 7/7 paired rounds, p=0.016). ROUTING_SOFTMAX_FUSE=0 reverts.")
+            _SM_OK["msg"] = ""      # 19iu: silent on pass; a failure still prints and disables
         else:
             _SM_OK["use"] = False
             _SM_OK["msg"] = (
                 "[fullmatrix-ga] \u26a0 fused softmax SELF-CHECK FAILED \u2014 max|\u0394| "
                 f"{float(np.abs(np.asarray(_r) - np.asarray(_f)).max()):.3e}. DISABLED for this "
                 "process; the reference softmax is what ships. Report this.")
-        print(_SM_OK["msg"])
+        if _SM_OK["msg"]:            # 19iu: empty on a pass, so nothing goes to the terminal
+            print(_SM_OK["msg"])
     _fn = _segment_softmax_fast if _SM_OK["use"] else _segment_softmax_serial
     if max_share is None or not _DECODE_CAP:
         return _rowpar(lambda _sub: _fn(_sub, profile_start, profile_len), _lg, "softmax")
@@ -1739,8 +1732,16 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # intent-vs-fact error 19hr had just finished fixing. So it stays where the fact is, and
     # costs one line instead of two.
     eval_pop, _eval_info = make_fused_eval(p, use_numba=numba)
-    log(f"[fullmatrix-ga] build={__build__} R={R} profiles={p.n_profiles} mids={p.n_mids} "
-        f"evaluator={_eval_info.get('backend')}"
+    # 19iu: the build tag is a 40-tag chain and it was printed in full on this line, which
+    # made the ONE line carrying the run's shape (rows, profiles, MIDs, evaluator) unreadable.
+    # The tag exists as a STALENESS SENTINEL - to prove which code is loaded - and the newest
+    # tags are what answer that; the older ones are history, and `info["__build__"]` still
+    # carries the whole chain for anything that wants it.
+    _bt = [_x for _x in str(__build__).split("+") if _x.strip()]
+    log(f"[fullmatrix-ga] build {' + '.join(_bt[-3:])}"
+        + (f"  (+{len(_bt) - 3} earlier tag(s))" if len(_bt) > 3 else ""))
+    log(f"      rows {R:,} \u00b7 profiles {p.n_profiles:,} \u00b7 MIDs {p.n_mids:,} \u00b7 "
+        f"evaluator {_eval_info.get('backend')}"
         + (f" ({_eval_info.get('reason')})" if _eval_info.get('reason') else ""))
     # Make the parallelism visible: numba defaults NUMBA_NUM_THREADS to ALL cores for the
     # parallel=True kernels (each candidate writes only its own slot, so more threads scale
@@ -2181,16 +2182,26 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             _cs_ps_live = _cs_ps[_cs_ps > 1e-12]
             _cs_sum_err = (float(np.abs(_cs_ps_live - 1.0).max())
                            if _cs_ps_live.size else 0.0)
-            log(f"[fullmatrix-ga] [cap-source] the seed's per-profile sums: worst deviation from "
-                f"1.0 is {_cs_sum_err:.3e} over {_cs_ps_live.size:,} routed profile(s). The "
-                f"decode renormalises every profile to 1, so a deviation d scales every share in "
-                f"that profile by 1/(1-d) and lifts a row AT the cap over it by about cap*d "
-                f"(= {0.97 * _cs_sum_err:.3e} here)."
-                + (" ⇒ THAT ALONE ACCOUNTS FOR THE OBSERVED EXCESS, and the fix is to make "
-                   "the stage close its profiles to 1 exactly, not to aim below the cap."
-                   if _cs_sum_err > 1e-9 else
-                   " The profiles are closed to within float64 dust, so this is NOT the "
-                   "mechanism and the excess comes from somewhere else."))
+            # ── 19iu: THE GATE. Everything in this block is still measured every run - the
+            # seed's profile closure, both over-cap counts, the round trip's worst movement and
+            # the counterfactual. What changed is that a run with nothing over the cap on either
+            # side prints NOTHING rather than four lines saying so in four different ways.
+            # [seed-cap]'s single tick line is the clean statement for the whole question, and
+            # every loud path below is untouched.
+            _cs_quiet = ((not _cs_over_s.any()) and (not _cs_over_d.any())
+                         and _cs_sum_err <= 1e-9)
+            if not _cs_quiet:
+              log(f"[fullmatrix-ga] [cap-source] the seed's per-profile sums: worst deviation from "
+                  f"1.0 is {_cs_sum_err:.3e} over {_cs_ps_live.size:,} routed profile(s). The "
+                  f"decode renormalises every profile to 1, so a deviation d scales every share "
+                  f"in that profile by 1/(1-d) and lifts a row AT the cap over it by about cap*d "
+                  f"(= {0.97 * _cs_sum_err:.3e} here)."
+                  + (" ⇒ THAT ALONE ACCOUNTS FOR THE OBSERVED EXCESS, and the fix is "
+                     "to make the stage close its profiles to 1 exactly, not to aim below the "
+                     "cap."
+                     if _cs_sum_err > 1e-9 else
+                     " The profiles are closed to within float64 dust, so this is NOT the "
+                     "mechanism and the excess comes from somewhere else."))
             # ── THE COUNTERFACTUAL, which is what turns this from a matching pair of
             # magnitudes into a PROOF. Two numbers both reading ~3e-07 is a coincidence until
             # you remove one of them and watch the other go. So: close every profile to exactly
@@ -2244,29 +2255,28 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     np.asarray(_v, float)[None, :], p.vol, p.succ, total_vol)[0]))
                 _cs_r_seed, _cs_r_dec = _cs_sr(_cs_seed), _cs_sr(_cs_dec)
                 _cs_r_cl = _cs_sr(_cs_dec2)
-                log(f"[fullmatrix-ga] [cap-source] COUNTERFACTUAL - close every profile to "
-                    f"exactly 1, re-encode, decode again: rows over the cap "
-                    f"{_cs_n_d:,} \u2192 {_cs_over_2:,}; success rate (raw) seed "
-                    f"{_cs_r_seed:.6f} \u2192 decoded {_cs_r_dec:.6f} "
-                    f"({_cs_r_dec - _cs_r_seed:+.6f}) \u2192 decoded-after-closing "
-                    f"{_cs_r_cl:.6f} ({_cs_r_cl - _cs_r_seed:+.6f}). Worst excess left after "
-                    f"closing: {_cs_w2:.3e}"
-                    + (" - i.e. ULP DUST, which is irreducible and which the decode's cap "
-                       "absorbs." if _cs_w2 <= _cs_tol else "."))
+                if not _cs_quiet:
+                    log(f"[fullmatrix-ga] [cap-source] COUNTERFACTUAL - close every profile to "
+                        f"exactly 1, re-encode, decode again: rows over the cap "
+                        f"{_cs_n_d:,} \u2192 {_cs_over_2:,}; success rate (raw) seed "
+                        f"{_cs_r_seed:.6f} \u2192 decoded {_cs_r_dec:.6f} "
+                        f"({_cs_r_dec - _cs_r_seed:+.6f}) \u2192 decoded-after-closing "
+                        f"{_cs_r_cl:.6f} ({_cs_r_cl - _cs_r_seed:+.6f}). Worst excess left "
+                        f"after closing: {_cs_w2:.3e}"
+                        + (" - i.e. ULP DUST, which is irreducible and which the decode's cap "
+                           "absorbs." if _cs_w2 <= _cs_tol else "."))
                 # 19io: the 0 -> 0 case fell through every branch to "PARTLY", so the run
                 # printed "explains most of them but not all" immediately followed by "nothing
                 # is over the cap on either side". Contradictory, and exactly the kind of line
                 # this series exists to delete. Nothing over the cap is its own verdict.
                 _cs_none = (_cs_n_d == 0 and _cs_over_2 == 0)
+                _cs_quiet = _cs_quiet and _cs_none
                 _cs_fixed = (_cs_n_d > 0 and _cs_over_2 == 0)
                 _cs_sr_fixed = (abs(_cs_r_dec - _cs_r_seed) > 1e-9
                                 and abs(_cs_r_cl - _cs_r_seed) <= 0.05
                                 * abs(_cs_r_dec - _cs_r_seed))
                 if _cs_none:
-                    log("[fullmatrix-ga] [cap-source]    \u21d2 NOTHING TO EXPLAIN. No row is "
-                        "over the cap before OR after closing, so there is no closure deficit "
-                        "and no seed defect to attribute. See [decode-cap] for what its own "
-                        "'share moved' figure actually counts.")
+                    pass          # 19iu: nothing over the cap either side => nothing to say
                 elif _cs_fixed and _cs_sr_fixed:
                     log("[fullmatrix-ga] [cap-source]    \u21d2 PROVEN, AND IT ANSWERS BOTH. "
                         "Closing the profiles removes every over-cap row AND collapses the "
@@ -2298,13 +2308,14 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 log(f"[fullmatrix-ga] [cap-source] counterfactual skipped "
                     f"({type(_cfe).__name__}: {_cfe}) - the two magnitudes above still stand, "
                     "but nothing here PROVES which way the causation runs.")
-            log(f"[fullmatrix-ga] [cap-source] rows above the max-share cap, in the SEED "
-                f"{int(_cs_over_s.sum()):,} vs in its DECODE {int(_cs_over_d.sum()):,}; the "
-                f"round trip PUSHED {int(_cs_made.sum()):,} legal row(s) over - counted "
-                f"against cap + {_cs_tol:.1e}, so 1-ulp dust is not counted as a violation "
-                f"({_cs_dust_d:,} row(s) sit within that dust band and are excluded). "
-                f"Encode/decode's own worst movement on any row: {float(_cs_rt.max()):.3e} "
-                f"(median {float(np.median(_cs_rt)):.3e}).")
+            if not _cs_quiet:
+                log(f"[fullmatrix-ga] [cap-source] rows above the max-share cap, in the SEED "
+                    f"{int(_cs_over_s.sum()):,} vs in its DECODE {int(_cs_over_d.sum()):,}; the "
+                    f"round trip PUSHED {int(_cs_made.sum()):,} legal row(s) over - counted "
+                    f"against cap + {_cs_tol:.1e}, so 1-ulp dust is not counted as a violation "
+                    f"({_cs_dust_d:,} row(s) sit within that dust band and are excluded). "
+                    f"Encode/decode's own worst movement on any row: {float(_cs_rt.max()):.3e} "
+                    f"(median {float(np.median(_cs_rt)):.3e}).")
             if _cs_over_s.any():
                 log(f"[fullmatrix-ga] [cap-source]    SEED excess over the cap: min "
                     f"{float(_cs_ex_s.min()):.3e} / median "
@@ -2316,8 +2327,10 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             # THE VERDICT, stated rather than left to be inferred.
             _cs_rtw = float(_cs_rt.max())
             if not _cs_over_d.any():
-                log("[fullmatrix-ga] [cap-source]    \u2713 nothing is over the cap on either "
-                    "side. Nothing to explain this run.")
+                # 19iu: silent. [seed-cap]'s single tick line states the clean case for both
+                # blocks; this printed "nothing is over the cap on either side" beside three
+                # other lines saying the same thing in different words.
+                pass
             elif not _cs_over_s.any():
                 log("[fullmatrix-ga] [cap-source]    \u21d2 THE SEED IS CLEAN AND THE ROUND TRIP "
                     "IS THE SOURCE. Every over-cap row is legal in the seed and illegal only "
@@ -3375,46 +3388,56 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _raw = np.asarray(_gg["gen"], float) * 1000.0
         _tot = float(_raw.sum()) / 1000.0
         _n = len(_raw)
-        log("   == [gen-gap] THE REAL GENERATION, TIMED IN SITU — the segments below SUM to it, "
-            "so there is no residual to argue about (read-only; [gen-cost] times COPIES of five "
-            "stages, warm and repeated, and its 'whole generation' is built from them) ==")
-        log(f"      median {float(np.median(_gv)):,.1f} ms · p05 {float(_gv[int(0.05 * (_n - 1))]):,.1f}"
-            f" · p95 {float(_gv[int(0.95 * (_n - 1))]):,.1f} · over {_n:,} generation(s)")
-        _f10 = float(np.median(_raw[:min(10, _n)]))
-        _l10 = float(np.median(_raw[-min(10, _n):]))
-        log(f"      first-10 median {_f10:,.1f} ms · last-10 median {_l10:,.1f} ms "
-            f"({(_l10 / _f10 - 1.0) * 100.0:+.1f}%) — a LEVEL difference between two runs is a "
-            "different fault from a DRIFT within one, and averaging the run cannot tell them apart")
-        for _k, _lbl in (("eval", "eval      _eval_with_bands(children) — the five stages "
+        # 19iu: A TABLE. Six rows of prose with the numbers embedded mid-sentence could not
+        # be read as a column, which is the only way to read a cost breakdown. The `first-10 vs
+        # last-10` drift line is gone with it: it was added to tell a LEVEL difference from a
+        # DRIFT, and over ~40 runs it has never read anything but a few percent of noise.
+        log("")
+        log("   == [gen-gap] THE REAL GENERATION, TIMED IN SITU \u2014 the rows below SUM to it, "
+            "so there is no residual to argue about ==")
+        log("")
+        log(f"      median {float(np.median(_gv)):,.1f} ms \u00b7 p05 "
+            f"{float(_gv[int(0.05 * (_n - 1))]):,.1f} \u00b7 p95 "
+            f"{float(_gv[int(0.95 * (_n - 1))]):,.1f} \u00b7 over {_n:,} generation(s)")
+        log("")
+        log(f"      {'stage':<10}{'ms/gen':>10}{'share':>8}{'total':>10}   what it covers")
+        log(f"      {'-' * 84}")
+        for _k, _lbl in (("eval", "_eval_with_bands(children) \u2014 the five stages "
                                   "[gen-cost] models"),
-                         ("build", "build     history, heartbeat, elites, mut_weight_fn, "
-                                   "the per-child loop"),
-                         ("rank", "rank      _rank"),
-                         ("refresh", "refresh   codebook refit + re-score (0 unless compression "
-                                     "is on)"),
-                         ("tail", "tail      vstack / concatenate re-assembly")):
+                         ("build", "history, heartbeat, elites, mut_weight_fn, the per-child "
+                                   "loop"),
+                         ("rank", "_rank"),
+                         ("refresh", "codebook refit + re-score (0 unless compression is on)"),
+                         ("tail", "vstack / concatenate re-assembly")):
             _v = float(_gg[_k])
-            log(f"      {_lbl.split(chr(32))[0]:<9} {1000.0 * _v / _n:>8,.1f} ms/gen "
-                f"({100.0 * _v / max(_tot, 1e-9):>5.1f}% · {_v:,.1f}s total)  "
-                f"{_lbl.split(chr(32), 1)[1].strip()}")
-        log(f"      of `build`, the throttled HEARTBEAT was {1000.0 * _gg['beat'] / _n:,.1f} ms/gen "
-            f"({_gg['beat']:,.1f}s over {_gg['beats']:,} call(s), {1000.0 * _gg['beat'] / max(_gg['beats'], 1):,.0f} "
-            "ms each) — it runs a FULL _deliver_full plus a band report, and the generations that "
-            "do NOT fire it pay none of it")
-        log(f"      OUTSIDE the generation loop entirely: the per-restart start-up cost "
-            f"{_gg['init']:,.1f}s over the run — charged to no stage anywhere else, and it scales "
-            f"with RESTARTS, not generations ({_gg['i_n']:,} restart(s), "
-            f"{_gg['init'] / max(_gg['i_n'], 1):,.1f}s each)")
+            log(f"      {_k:<10}{1000.0 * _v / _n:>10,.1f}"
+                f"{100.0 * _v / max(_tot, 1e-9):>7.1f}%{_v:>9,.1f}s   {_lbl}")
+        log(f"      {'-' * 84}")
+        log(f"      {'heartbeat':<10}{1000.0 * _gg['beat'] / _n:>10,.1f}"
+            f"{100.0 * float(_gg['beat']) / max(_tot, 1e-9):>7.1f}%{float(_gg['beat']):>9,.1f}s"
+            f"   inside `build`: {_gg['beats']:,} call(s) at "
+            f"{1000.0 * _gg['beat'] / max(_gg['beats'], 1):,.0f} ms \u2014 a FULL _deliver_full "
+            "plus a band report, and the generations that do not fire it pay none of it")
+        log("")
+        log(f"      START-UP, outside the generation loop: {_gg['init']:,.1f}s over "
+            f"{_gg['i_n']:,} restart(s) at {_gg['init'] / max(_gg['i_n'], 1):,.1f}s each "
+            "\u2014 charged to no stage anywhere else, and it scales with RESTARTS, not "
+            "generations")
+        log("")
         # 19fn: WHICH PART of the start-up. Before this the whole block was one number, so the
         # only available lever was "fewer restarts" — a budget decision, not a fix. The four
         # lines below SUM to the number above by construction: `remainder` is computed as the
         # total minus the other three, so a part nobody thought to time still shows up.
+        log(f"      {'start-up step':<34}{'total':>9}{'share':>8}{'per restart':>14}")
+        log(f"      {'-' * 65}")
         for _il, _iv in (("_init_pop (build the population)", _gg["i_pop"]),
-                         ("_eval_with_bands (score it)     ", _gg["i_eval"]),
-                         ("remainder (census, bookkeeping) ", _gg["i_rest"])):
-            log(f"         {_il}  {_iv:,.1f}s  "
-                f"({100.0 * _iv / max(_gg['init'], 1e-9):>5.1f}%) · "
-                f"{1000.0 * _iv / max(_gg['i_n'], 1):,.0f} ms per restart")
+                         ("_eval_with_bands (score it)", _gg["i_eval"]),
+                         ("remainder (census, bookkeeping)", _gg["i_rest"])):
+            log(f"      {_il:<34}{_iv:>8,.1f}s"
+                f"{100.0 * _iv / max(_gg['init'], 1e-9):>7.1f}%"
+                f"{1000.0 * _iv / max(_gg['i_n'], 1):>11,.0f} ms")
+        log(f"      {'-' * 65}")
+        log("")
         # ── [eval-cost] 19gw: the `eval` row, split ─────────────────────────────────────
         # `eval` is 92% of a generation and was the only row in this block with nothing behind
         # it. These five accumulators are taken inside `_eval_with_bands` around its own calls,
@@ -3427,9 +3450,16 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             # unaccounted row uses. Before this the five stages were divided by their own sum
             # and unaccounted by the true total, so the column read 100% and then another 49.6%.
             _ev_ref = float(_gg["eval"]) + float(_gg["i_eval"])
-            log(f"      == [eval-cost] inside the `eval` row ({_ev_ref:,.1f}s over "
-                f"{_ev['n']:,} call(s)), largest first \u2014 every row is a share of that "
+            log("")
+            log(f"      == [eval-cost] inside the `eval` row: {_ev_ref:,.1f}s over "
+                f"{_ev['n']:,} call(s), largest first \u2014 every row is a share of that "
                 f"total, so the column sums to 100% ==")
+            log("")
+            # 19iu: labels are TRUNCATED to the column width. One row's label is 64
+            # characters and it pushed that row's numbers out of the column, which is the one
+            # thing a table has to get right.
+            log(f"      {'stage':<66}{'total':>9}{'share':>8}{'ms/call':>11}")
+            log(f"      {'-' * 94}")
             _ev_rows = [
                 ("eval_pop (fused numba: softmax + success rate + engineering viol)", _ev["pop"]),
                 ("_deliver_full (blocked-caps -> eligibility -> cap, per candidate)",
@@ -3444,27 +3474,23 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             ]
             for _el, _evv in sorted(_ev_rows, key=lambda kv: -kv[1]):
                 if _evv > 0.0 or "compress" in _el:
-                    log(f"         {_evv:8.1f}s  "
-                        f"({100.0 * _evv / max(_ev_ref, 1e-9):>5.1f}%)  {_el}"
-                        f"  ·  {1000.0 * _evv / max(_ev['n'], 1):,.1f} ms/call")
+                    log(f"      {str(_el)[:66]:<66}{_evv:>8,.1f}s"
+                        f"{100.0 * _evv / max(_ev_ref, 1e-9):>7.1f}%"
+                        f"{1000.0 * _evv / max(_ev['n'], 1):>10,.1f}")
             # 19gx: the `eval` row counts the GENERATION calls only; `_ev` counts every call,
             # which includes the one per restart that [gen-gap] charges to `init`. On the
             # 2026-09-02 00:22 run that was 336 calls against 320 generations and the difference
             # printed as a NEGATIVE unaccounted row. Compare against both, and say which.
             _ev_gap = _ev_ref - _ev_tot
-            log(f"         {_ev_gap:8.1f}s  "
-                f"({100.0 * _ev_gap / max(_ev_ref, 1e-9):>5.1f}%)  unaccounted — function "
-                "entry/exit and the early return when no band scoring is wired")
-            log(f"      [eval-cost] the {_ev['n']:,} call(s) above are the "
-                f"{int(_gg['i_n']) + 320 if False else _ev['n']:,} that ran: one per generation "
-                f"PLUS one per restart. [gen-gap] charges the per-restart calls to `init`, so "
-                f"these sum to `eval` ({float(_gg['eval']):,.1f}s) + the init eval row "
+            log(f"      {'unaccounted (function entry/exit; the no-band early return)':<66}"
+                f"{_ev_gap:>8,.1f}s{100.0 * _ev_gap / max(_ev_ref, 1e-9):>7.1f}%"
+                f"{1000.0 * _ev_gap / max(_ev['n'], 1):>10,.1f}")
+            log(f"      {'-' * 94}")
+            log(f"      the {_ev['n']:,} call(s) are one per generation PLUS one per restart, and "
+                f"[gen-gap] charges the per-restart ones to `init` \u2014 so they sum to `eval` "
+                f"({float(_gg['eval']):,.1f}s) + the init eval row "
                 f"({float(_gg['i_eval']):,.1f}s) = {_ev_ref:,.1f}s, not to `eval` alone.")
-            log("      [eval-cost] READ THIS AGAINST [proj-config] AND [lift-ab]: the band row "
-                "here is the projector, and multiplying [lift-ab]'s ms/call by the P=35 call "
-                "count should land on it. `eval_pop` and `_deliver_full` are the two that have "
-                "never been separated from it before, and between them they are most of the "
-                "search.")
+            log("")
         # SELF-CHECK. "The segments SUM to it" is the block's whole claim over [gen-cost]; it is
         # true by the interval algebra only while every EXIT from the loop records what it spent.
         # There are two (fall-through and the patience break), so the claim is checked rather than
@@ -3478,17 +3504,28 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 "is reporting a smaller run than it timed. Read the rows as a ranking only.")
         _acct = _tot + float(_gg["init"])
         _secs = float(time.perf_counter() - _t0)
-        log(f"      ⇒ Σ generations {_tot:,.1f}s + init {_gg['init']:,.1f}s = {_acct:,.1f}s of the "
-            f"search's {_secs:,.1f}s ({100.0 * _acct / max(_secs, 1e-9):.1f}%). The remainder is "
-            "outside both loops (seed setup, the one-off self-checks, numba compiles). COMPARE THE "
-            "`eval` ROW WITH [gen-cost]'s WHOLE GENERATION: [gen-cost] models only what `eval` "
-            "does, so if the two agree while this block's median does not, the gap it reports was "
-            "never in the five stages.")
-    log(f"[fullmatrix-ga] evaluated {evaluated:,} candidate splits over "
-        f"{len(history)} generations ({n_seeds} seed(s) × {restarts} restart(s), "
-        f"pop {pop_size}) in {info['seconds']:.1f}s = {info['splits_per_s']:,.0f} splits/s")
-    log(f"[fullmatrix-ga] done success rate {best_success_rate:.6f} M5-breach={best_band:.3e} "
-        f"eng-viol={best_other:.3e} feasible={info['feasible']} improved={info['improved_over_seed']}")
+        log(f"      \u21d2 \u03a3 generations {_tot:,.1f}s + start-up {_gg['init']:,.1f}s = "
+            f"{_acct:,.1f}s of the search's {_secs:,.1f}s "
+            f"({100.0 * _acct / max(_secs, 1e-9):.1f}%). The remainder is outside both loops: "
+            "seed setup, the one-off self-checks, numba compiles.")
+        log("")
+    # 19iu: two dense one-liners become two labelled sections. These are the numbers most
+    # often quoted out of a run log, and they were the hardest two lines in it to read.
+    log("")
+    log("[fullmatrix-ga] SEARCH")
+    log(f"      candidates      {evaluated:,} split(s) over {len(history):,} generation(s)")
+    log(f"      layout          {n_seeds} seed(s) \u00d7 {restarts} restart(s), pop {pop_size}")
+    log(f"      time            {info['seconds']:.1f}s at "
+        f"{info['splits_per_s']:,.0f} split(s)/s")
+    log("")
+    log("[fullmatrix-ga] RESULT")
+    log(f"      success rate    {best_success_rate:.6f}")
+    log(f"      M5 breach       {best_band:.3e}")
+    log(f"      engineering     {best_other:.3e}")
+    log(f"      feasible        {info['feasible']}")
+    log(f"      improved        {info['improved_over_seed']}"
+        + ("" if info['improved_over_seed'] else "   \u2014 the GA did not beat its seed"))
+    log("")
     return best_shares, info
 
 

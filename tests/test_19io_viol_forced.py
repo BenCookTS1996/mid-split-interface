@@ -80,9 +80,13 @@ check("[viol-forced] reports the decomposition so 'constant' is checked, not ass
       "[viol-forced]" in SRC and "THE REMAINDER IS NON-ZERO" in SRC)
 check("[decode-cap] now separates the two populations it used to merge",
       "_dc_over_tgt" in SRC and "do not divide it" in SRC)
-check("[cap-source]'s 0 -> 0 case has its own verdict instead of falling through to PARTLY",
+# 19iu made the 0 -> 0 case SILENT rather than verbose - the verdict text ("NOTHING TO
+# EXPLAIN") is gone with the three other lines that said the same thing. What 19io actually
+# fixed is still checked: the case is recognised on its own terms and cannot fall through to
+# the contradictory "PARTLY" branch.
+check("[cap-source]'s 0 -> 0 case is recognised on its own terms, not fallen through to PARTLY",
       "_cs_none = (_cs_n_d == 0 and _cs_over_2 == 0)" in SRC
-      and "NOTHING TO EXPLAIN" in SRC)
+      and "if _cs_none:" in SRC and "_cs_quiet = _cs_quiet and _cs_none" in SRC)
 
 EBS = (ROOT / "src/routing_optimiser/s4_search/exact_band_solver.py").read_text(encoding="utf-8")
 check("the LP stall is armed at K=4, above the largest stall_min_safe seen (3)",

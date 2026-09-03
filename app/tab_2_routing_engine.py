@@ -1329,25 +1329,21 @@ def render():
                     reports on a failed run too."""
                     if not _log_held:
                         return
-                    _log_emit("   ── [muted] settled diagnostics held back this run. Each family "
-                              "below stayed QUIET because none of its own lines carried a ⚠ / STOP "
-                              "/ DIVERGE / ✗ / crashed-skip marker — that is the LINE-BY-LINE "
-                              "release condition, checked line by line, so a regression prints "
-                              "the whole family including the run-up. There is a SECOND, "
-                              "RUN-LEVEL condition since 19co: a reconciliation error above the "
-                              "bar releases the families that explain it, because a line-by-line "
-                              "gate cannot hear a number computed long after the lines it muted. "
-                              "ROUTING_LOG_ALL=1 shows everything. ──")
-                    for _f in sorted(_log_held):
-                        _h = _log_held[_f]
-                        if not _h:
-                            continue
-                        _log_emit(f"      [{_f}] {len(_h):>3} line(s) held — "
-                                  f"{_LOG_SETTLED.get(_f, '')}")
-                    _log_emit(f"      ⇒ {sum(len(v) for v in _log_held.values()):,} line(s) across "
-                              f"{len([1 for v in _log_held.values() if v])} family(ies). The "
-                              "blocks still RAN — this is a display gate, not a skip, so nothing "
-                              "measured here was left unmeasured.")
+                    # 19iu: ONE LINE, not twenty-two. The two-paragraph preamble described the
+                    # release conditions (a per-line ⚠/STOP/DIVERGE marker, or a reconciliation
+                    # error above the bar) - which is how the gate WORKS, not what happened this
+                    # run - and then every family listed its own one-line description of a block
+                    # that printed nothing. A reader who wants the held lines sets
+                    # ROUTING_LOG_ALL=1; a reader who does not needs the count and the names.
+                    _mt_n = sum(len(v) for v in _log_held.values())
+                    _mt_f = sorted(_f for _f, _h in _log_held.items() if _h)
+                    if not _mt_n:
+                        return
+                    _log_emit(f"   [muted] {_mt_n:,} settled line(s) held back across "
+                              f"{len(_mt_f)} family(ies): " + ", ".join(_mt_f)
+                              + ". Each stayed quiet because none of its own lines carried a "
+                                "warning marker; the blocks still RAN, so nothing here was left "
+                                "unmeasured. ROUTING_LOG_ALL=1 shows them.")
 
                 # Stage timer: logs "▶ … started" and, when the next stage begins (or the run
                 # ends), "✓ … finished in Ns" for the previous stage.
@@ -1406,11 +1402,12 @@ def render():
                     """
                     if not _settled_pend:
                         return
-                    _tags = ", ".join(_t for _t, _v in _settled_pend)
-                    _ns = len(_settled_pend)
+                    # 19iu: the flush no longer PRINTS. Each settled family carries a
+                    # standing verdict at its own call site, and [muted] already accounts for
+                    # held-back output, so this line was a second inventory of things that did
+                    # not run. The pending list is still cleared and the return value is
+                    # unchanged, so any caller counting flushes still works.
                     del _settled_pend[:]
-                    log(f"   {_ns} settled diagnostic(s) NOT RUN: {_tags}. Each carries a standing "
-                        "verdict at its call site. ROUTING_SETTLED_DIAG=1 restores all of them.")
                     return True
                 
                 # [FN-306c]
@@ -7412,9 +7409,7 @@ def render():
                                             incidence_selfcheck_report as _isc,
                                             seed_gradient_report as _sgr,
                                             vpsum_report as _vpr,
-                                            usable_recipient_report as _urr,
-                                            breach_concentration_report as _bcr,
-                                            scoped_frozen_report as _sfr)
+                                            usable_recipient_report as _urr)
                                         _dx_split = np.asarray(_sd_split, float)   # 19ik: the ONE split
                                         _dx_eb = ctx["exact_bands"]; _dx_inc = ctx["_exact_bands_selfcheck"]["inc"]
                                         _dx_names = [str(m) for m in _mids_u]
@@ -7428,11 +7423,16 @@ def render():
                                             log(_ln)
                                         for _ln in _urr(_dx_split, _dx_eb, _dx_inc):
                                             log(_ln)
-                                        for _ln in _bcr(_dx_split, _dx_eb, _dx_inc):
-                                            log(_ln)
-                                        for _ln in _sfr(_dx_split, _dx_eb, _dx_inc,
-                                                        scoped_rpgts=(locals().get("_sel_rpgts") or set())):
-                                            log(_ln)
+                                    # 19iu: BREACH CONCENTRATION and SCOPED-vs-FROZEN are no
+                                    # longer called - the same treatment 19hx gave co-location.
+                                    # Between them they printed ~15 lines per breached VAMP band
+                                    # (a top-10 profile list plus a three-line reading note) to
+                                    # answer "is this reachable?", and they have answered
+                                    # REACHABLE on every run that printed them, while the GA then
+                                    # reaches breach 0 and ships a compliant split - the same
+                                    # answer arriving from the other side. breach_concentration_
+                                    # report and scoped_frozen_report are still in
+                                    # exact_band_solver and THIS is the call site to restore.
                                     except Exception as _dxe:  # noqa: BLE001 — a diagnostic must never break the run
                                         log(f"   extra root-cause diagnostics skipped ({type(_dxe).__name__}: {_dxe}).")
                                     # 19hx: THE CO-LOCATION DIAGNOSTIC IS DELETED. It asked whether a stuck
@@ -7867,19 +7867,31 @@ def render():
                                                 float((_sv - _sc_cap)[_ov].max()) if _ov.any()
                                                 else 0.0))
                                         _sc_any = any(_r[2] for _r in _sc_rows)
-                                        log(f"   [seed-cap] every seed stage's output against the "
-                                            f"max-share cap {_sc_cap:.4g} \u2014 which stage, if "
-                                            f"any, emits a share above it")
-                                        log(f"      {'stage':<24}{'over cap':>10}"
-                                            f"{'FORCED':>9}{'DEFECT':>9}{'worst defect':>15}")
-                                        log(f"      {'-' * 67}")
-                                        for _scn, _n_ov, _n_bad, _w_bad, _w_ov in _sc_rows:
-                                            log(f"      {str(_scn):<24}{_n_ov:>10,}"
-                                                f"{_n_ov - _n_bad:>9,}{_n_bad:>9,}"
-                                                + (f"{_w_bad:>15.3e}" if _n_bad
-                                                   else f"{'-':>15}"))
-                                        log(f"      {'-' * 67}")
+                                        _sc_ov = sum(_r[1] for _r in _sc_rows)
+                                        if not _sc_any:
+                                            # 19iu: QUIET WHEN CLEAN. The audit still runs - it is
+                                            # what would catch a stage handing over an illegal
+                                            # share - but a clean result is one line, not a table
+                                            # of zeros and a paragraph explaining them. The table
+                                            # comes back in full the moment DEFECT is non-zero.
+                                            log(f"   [seed-cap] \u2713 no seed stage emits a share "
+                                                f"above the cap {_sc_cap:.4g} where the cap can be "
+                                                f"met ({len(_sc_rows)} stage(s) audited, "
+                                                f"{_sc_ov:,} FORCED row(s) - profiles whose "
+                                                "eligible gateways cannot hold 1.0 between them).")
                                         if _sc_any:
+                                            log(f"   [seed-cap] every seed stage's output against "
+                                                f"the max-share cap {_sc_cap:.4g} \u2014 which "
+                                                f"stage, if any, emits a share above it")
+                                            log(f"      {'stage':<24}{'over cap':>10}"
+                                                f"{'FORCED':>9}{'DEFECT':>9}{'worst defect':>15}")
+                                            log(f"      {'-' * 67}")
+                                            for _scn, _n_ov, _n_bad, _w_bad, _w_ov in _sc_rows:
+                                                log(f"      {str(_scn):<24}{_n_ov:>10,}"
+                                                    f"{_n_ov - _n_bad:>9,}{_n_bad:>9,}"
+                                                    + (f"{_w_bad:>15.3e}" if _n_bad
+                                                       else f"{'-':>15}"))
+                                            log(f"      {'-' * 67}")
                                             log("      \u26a0\u26a0 A SEED STAGE IS EMITTING SHARES "
                                                 "ABOVE THE CAP IN PROFILES WHERE THE CAP CAN BE "
                                                 "MET. That is a defect in the stage named above, "
@@ -7891,15 +7903,7 @@ def render():
                                                 "here - but the split the stage HANDS OVER is "
                                                 "already invalid, and the exact-projector breach "
                                                 "reported for that stage was measured on it.")
-                                        else:
-                                            log("      \u2713 no stage emits a share above the cap "
-                                                "where the cap can be met. Every 'over cap' row "
-                                                "above sits in a profile whose eligible gateways "
-                                                "cannot hold 1.0 between them at this cap, so the "
-                                                "row is FORCED there - the same rows _cap_rows "
-                                                "leaves alone for having fewer than two present "
-                                                "gateways. [decode-cap]'s count is those rows, and "
-                                                "capping them in the decode is correct.")
+
                                 except Exception as _sce:  # noqa: BLE001 - audit only
                                     log(f"   [seed-cap] audit skipped ({type(_sce).__name__}: "
                                         f"{_sce}) \u2014 measurement only, the seed is unaffected.")
@@ -8859,8 +8863,6 @@ def render():
                                             log(f"      [prop-reach] skipped "
                                                 f"({type(_prE).__name__}: {_prE}) — MEASUREMENT "
                                                 "ONLY, the run is unaffected.")
-                                        log("   ── [frozen-scaffold] how much of the band projector "
-                                            "is PERMANENTLY constant? (read-only) ──")
                                         log(f"      prop-keys reachable by the GA: "
                                             f"{_fs_reach_keys:,} of {_fs_K:,} "
                                             f"({_fs_reach_keys / max(_fs_K, 1):.1%}). The rest have "
@@ -9179,8 +9181,18 @@ def render():
                                     _pcf = getattr(_bpm, "proj_config", None)
                                     if _pcf is not None:
                                         try:
+                                            # 19iu: proj_config() now returns TABLE rows too,
+                                            # and a row that starts with a space is a
+                                            # continuation - it keeps its own indentation and
+                                            # does not get the tag repeated down the left
+                                            # margin, which is what made the block unreadable.
+                                            log("")
                                             for _pc_ln in (_pcf() or []):
-                                                log(f"   [proj-config] {_pc_ln}")
+                                                log((f"      {_pc_ln[1:]}"
+                                                     if _pc_ln.startswith(" ")
+                                                     else f"   [proj-config] {_pc_ln}")
+                                                    if _pc_ln.strip() else "")
+                                            log("")
                                         except Exception as _pce2:  # noqa: BLE001
                                             log(f"   [proj-config] unavailable "
                                                 f"({type(_pce2).__name__}: {_pce2}) — this is the "
@@ -9537,9 +9549,11 @@ def render():
                                             for _a, _v in _stash.items():
                                                 setattr(_pj_ic, _a, _v)
                                             _pj["hits"] += 1
-                                            log(f"   [proj-memo] '{_tag}' served from the projection already "
-                                                f"computed for an identical split — one full delivery projection "
-                                                f"skipped.")
+                                            # 19iu: silent on a HIT. The memo's whole job is
+                                            # to skip a projection for an identical split, and
+                                            # the summary line at the end of the run reports the
+                                            # hit/miss counts. A line per hit is the memo
+                                            # narrating itself.
                                             return _ep, _g5
                                         _pj["miss"] += 1
                                         _wc = ss.get("wallet_ctx", {}) or {}
@@ -9675,13 +9689,19 @@ def render():
                                             _cvt = list(getattr(_pj_ic, "_LAST_CVP_TIMING", []) or [])
                                             if _cvt:
                                                 _cvs = sum(_v for _, _v in _cvt)
+                                                log("")
                                                 log(f"   [cvp-timing] inside compute_vamp_prepost_"
-                                                    f"granular ({_cvs:.1f}s of the "
-                                                    f"{_t2 - _t1:.1f}s above; the remainder is "
-                                                    "function entry/exit) ──")
+                                                    f"granular: {_cvs:.1f}s of the "
+                                                    f"{_t2 - _t1:.1f}s above, largest first "
+                                                    "(the remainder is function entry/exit)")
+                                                log("")
+                                                log(f"      {'step':<62}{'time':>8}{'share':>8}")
+                                                log(f"      {'-' * 78}")
                                                 for _cl, _cvv in sorted(_cvt, key=lambda kv: -kv[1]):
-                                                    log(f"      {_cvv:8.1f}s  "
-                                                        f"({100.0 * _cvv / max(_cvs, 1e-9):>5.1f}%)  {_cl}")
+                                                    log(f"      {str(_cl)[:62]:<62}{_cvv:>7,.1f}s"
+                                                        f"{100.0 * _cvv / max(_cvs, 1e-9):>7.1f}%")
+                                                log(f"      {'-' * 78}")
+                                                log("")
                                                 log("      The [pshare-why] and [vterms] steps are "
                                                     "the Search-vs-Delivery Reconciliation "
                                                     "Breakdown's inputs. They are NOT optional and "
@@ -9922,7 +9942,9 @@ def render():
                                                 f"trigger a 159s forensic re-projection — and a REAL "
                                                 f"disagreement smaller than it is now invisible. That is "
                                                 f"the price of the setting, stated as a number. "
-                                                f"ROUTING_PROJ_FLOAT32=0 restores an exact detector.")
+                                                "The float32 projector is unconditional as "
+                                                "of 19iu, so this floor is a property of the "
+                                                "build, not of a setting.")
                                         # Σ|delivered − scored| over the banded MIDs. `_per_band` values are
                                         # (delivered, projector_now, ceil, floor, metric, over).
                                         _fx_drift = None
@@ -10036,15 +10058,20 @@ def render():
                                         # whether the guard ran.
                                         _nw_sg = _nw_scored_units(_fm_full)
                                         _nw_kg = abs(_nw_dg - _nw_sg)
+                                        log("")
                                         log("   ── [never-worse] GA output vs the seed it started "
                                             "from, decided on the DELIVERED breach ALONE (19an) ──")
+                                        log("")
                                         log(f"      {'candidate':<22}{'delivered':>11}"
-                                            f"{'scored':>11}{'drift':>10}   GA-fitness")
+                                            f"{'scored':>11}{'drift':>10}{'GA-fitness':>14}")
+                                        log(f"      {'-' * 68}")
                                         log(f"      {('seed ' + str(_fm_sname))[:22]:<22}"
-                                            f"{'not proj.':>11}{'—':>11}{'—':>10}   "
-                                            f"{_nw_seed:.6g}")
+                                            f"{'not proj.':>11}{'—':>11}{'—':>10}"
+                                            f"{_nw_seed:>14.6g}")
                                         log(f"      {'GA output':<22}{_nw_dg:>11,.0f}"
-                                            f"{_nw_sg:>11,.0f}{_nw_kg:>+10,.0f}   {_nw_ga:.6g}")
+                                            f"{_nw_sg:>11,.0f}{_nw_kg:>+10,.0f}"
+                                            f"{_nw_ga:>14.6g}")
+                                        log(f"      {'-' * 68}")
                                         _nw_pick_ga = True
                                         _nw_rule = ("DELIVERED breach alone — the GA output is at "
                                                     "0 and 0 is the minimum")
@@ -10084,15 +10111,20 @@ def render():
                                         _nw_kg = abs(_nw_dg - _nw_sg)      # GA drift, units
                                         _nw_ks = abs(_nw_ds - _nw_ss)      # seed drift, units
                                         _nw_gap = abs(_nw_dg - _nw_ds)
+                                        log("")
                                         log("   ── [never-worse] GA output vs the seed it started "
                                             "from, decided on the DELIVERED breach ALONE (19an) ──")
+                                        log("")
                                         log(f"      {'candidate':<22}{'delivered':>11}"
-                                            f"{'scored':>11}{'drift':>10}   GA-fitness")
+                                            f"{'scored':>11}{'drift':>10}{'GA-fitness':>14}")
+                                        log(f"      {'-' * 68}")
                                         log(f"      {('seed ' + str(_fm_sname))[:22]:<22}"
                                             f"{_nw_ds:>11,.0f}{_nw_ss:>11,.0f}"
-                                            f"{_nw_ks:>+10,.0f}   {_nw_seed:.6g}")
+                                            f"{_nw_ks:>+10,.0f}{_nw_seed:>14.6g}")
                                         log(f"      {'GA output':<22}{_nw_dg:>11,.0f}"
-                                            f"{_nw_sg:>11,.0f}{_nw_kg:>+10,.0f}   {_nw_ga:.6g}")
+                                            f"{_nw_sg:>11,.0f}{_nw_kg:>+10,.0f}"
+                                            f"{_nw_ga:>14.6g}")
+                                        log(f"      {'-' * 68}")
                                         log(f"      breach gap {_nw_gap:,.0f} unit(s). The "
                                             "LOWER DELIVERED BREACH ships — nothing else enters "
                                             "the decision. DRIFT above is REPORTED, never used to "
@@ -11050,11 +11082,11 @@ def render():
                                         # PROFILE-BLOCKED kernel on the live scaffold and measured
                                         # ~11.96 on the same run: a 7x gap between two numbers that
                                         # read as the same quantity. Both now print together.
-                                        log("        F float32    REAL, and NOT bit-identical, so it "
-                                            "cannot be a DEFAULT. It is available as an explicit "
-                                            "OPT-IN (ROUTING_PROJ_FLOAT32=1) \u2014 a different "
-                                            "decision from adopting it, and one that has to be "
-                                            "made on the drift, not on the speed.")
+                                        log("        F float32    REAL, and NOT bit-identical. "
+                                            "ADOPTED as the default in 19gt and UNCONDITIONAL as "
+                                            "of 19iu \u2014 a different "
+                                            "decision from measuring it, and one made on the "
+                                            "drift rather than on the speed.")
                                         try:
                                             from routing_optimiser.s4_search import band_projection as _kf_bp
                                             _kf_all = getattr(_kf_bp, "_F32_OK", {}) or {}
@@ -11132,7 +11164,7 @@ def render():
                                                     + ". Row F's max|\u0394| is a FLAT float32 kernel "
                                                     "on a COPY of prop_raw, NOT the drift the "
                                                     "profile-blocked float32 path would carry. Switch "
-                                                    "ROUTING_PROJ_FLOAT32=1 and read [proj-config] "
+                                                    "read [proj-config] "
                                                     "for the figure that matters.")
                                         except Exception as _kfe:   # noqa: BLE001
                                             log(f"        F drift      not available "
@@ -11579,7 +11611,7 @@ def render():
                                 #     MEMORY-BANDWIDTH bound - ~72 MB per full-width pass, about ten passes - so only
                                 #     moving fewer bytes can help it, never more threads and never more fusion;
                                 #   * float32 would be ~1.93x on an elementwise pass but CHANGES THE ANSWER, the same
-                                #     trade as ROUTING_PROJ_FLOAT32, which is now hardwired off;
+                                #     trade as float32, which 19iu hardwired ON;
                                 #   * [gen-cost]'s own 'MODEL vs RUN GAP ... 53.8% cheaper' is ANSWERED: the missing
                                 #     time was max-share repair, which [gen-gap] charges to `build` and [ms-repair]
                                 #     measured at 191.7s of a 511.6s search.
@@ -11800,8 +11832,6 @@ def render():
                                                               bin_to_bank=bin_to_bank,
                                                               group_keys=_bwGK)
                         _comp_gran = _restrict(_ga_gran)         # eligibility only (bans / wallet / USA)
-                        log("   Enforcement OFF: delivered split = GA search output + eligibility "
-                            "(bans / wallet-incapable / USA-only); no VAMP-cap / per-MID band projection.")
 
 
                         # ── RECONCILE: authoritative delivered M5 (== tab-3 'Now') ────────────────────
@@ -13952,14 +13982,36 @@ def render():
                                                         _t3 = _tri3(_ix)[1]
                                                         if _t3 is not None and _t3 in _dTri:
                                                             _onD += 1
-                                                    log(f"   [profiles] PART B — WHICH PROFILES CARRY THE "
-                                                        f"DISCREPANCY? {len(_nz2):,} prop-key(s) differ "
-                                                        f"between the split the GA SCORED and the one it "
-                                                        f"SHIPS · Σ|Δprop| {np.abs(_dB2).sum():,.4f}. Full "
-                                                        f"keys below, worst first — [step2] truncates "
-                                                        f"these at 44 chars and loses the pmp/ctry/MID "
-                                                        f"tail.")
-                                                    _ord2 = _nz2[np.argsort(-np.abs(_dB2[_nz2]))]
+                                                    # 19iu: GATED ON SIZE. Σ|Δprop| 0.03 over
+                                                    # 15 keys is the scored-vs-shipped noise the
+                                                    # [rung]/[step2] chain already bounds, and
+                                                    # naming eight profiles for it is a finding
+                                                    # the run does not have. The bar is 0.5 of
+                                                    # total prop mass; above it every line below
+                                                    # prints exactly as before.
+                                                    _pb_sum = float(np.abs(_dB2).sum())
+                                                    _pb_loud = _pb_sum > 0.5
+                                                    if not _pb_loud:
+                                                        log(f"   [profiles] PART B: {len(_nz2):,} "
+                                                            f"prop-key(s) differ between the split "
+                                                            f"the GA SCORED and the one it SHIPS, "
+                                                            f"\u03a3|\u0394prop| {_pb_sum:,.4f} "
+                                                            f"\u2014 below the 0.5 bar, so the "
+                                                            "per-profile keys are not listed. "
+                                                            "RECONCILIATION ERROR is the check "
+                                                            "that matters on a difference this "
+                                                            "small.")
+                                                    if _pb_loud:
+                                                        log(f"   [profiles] PART B \u2014 WHICH "
+                                                            f"PROFILES CARRY THE DISCREPANCY? "
+                                                            f"{len(_nz2):,} prop-key(s) differ "
+                                                            f"between the split the GA SCORED and "
+                                                            f"the one it SHIPS \u00b7 "
+                                                            f"\u03a3|\u0394prop| {_pb_sum:,.4f}. "
+                                                            f"Full keys below, worst first \u2014 "
+                                                            "[step2] truncates these at 44 chars "
+                                                            "and loses the pmp/ctry/MID tail.")
+                                                    _ord2 = _nz2[np.argsort(-np.abs(_dB2[_nz2]))] if _pb_loud else _nz2[:0]
                                                     for _ix in _ord2[:_prN]:
                                                         _kk, _t3 = _tri3(_ix)
                                                         log(f"   [profiles]     {_kk}  ·  Δprop "
@@ -13967,7 +14019,7 @@ def render():
                                                             + ("  ·  ON A DROPPED PROFILE"
                                                                if (_t3 is not None and _t3 in _dTri)
                                                                else "  ·  this profile DOES ship"))
-                                                    if len(_nz2):
+                                                    if len(_nz2) and _pb_loud:
                                                         log(f"   [profiles]   of the {len(_nz2):,} "
                                                             f"discrepancy key(s), {_onD:,} sit on a "
                                                             f"DROPPED profile."
@@ -13981,7 +14033,7 @@ def render():
                                                                "ROUTING_BLOCK_CTRY, which is DEFAULT "
                                                                "ON since 19o — so with it unset this "
                                                                "should read 0 keys."))
-                                                    else:
+                                                    elif _pb_loud:
                                                         log("   [profiles]   no key differs, so there is "
                                                             "no discrepancy profile to name this run.")
                                                 else:
@@ -14504,6 +14556,14 @@ def render():
                                         _worst_drift = ("—", 0.0)
                                         _n_band = 0
                                         _n_breach = 0
+                                        # 19iu: the WITHIN-band rows are collected and printed as
+                                        # ONE table after the loop. Fifteen lines each carrying a
+                                        # value, a band, a drift and a five-stage arrow chain
+                                        # could not be scanned down a column, and on a clean run
+                                        # every one of those chains is the same number five
+                                        # times. BREACHED bands keep their inline block: that is
+                                        # the loud path and it is meant to interrupt.
+                                        _wb_rows = []
                                         for _r in _rec_rep:
                                             _midl = str(_r.get("midl", "")).strip().lower()
                                             _metric = str(_r.get("metric", "")).strip().lower()
@@ -14559,9 +14619,15 @@ def render():
                                                 if _absd > _worst_drift[1]:
                                                     _worst_drift = (str(_r.get("midl")), _absd)
                                             if _dirn is None:
-                                                log(f"      {_r.get('midl')} [{_metric}]: delivered "
-                                                    f"{_dv:,.0f} WITHIN band ({_bandtxt}) · "
-                                                    f"drift {_dv - _gafit:+,.0f}.   {_chain}")
+                                                # the chain is only worth a column when the five
+                                                # stages are NOT all the same number
+                                                _wb_flat = all(
+                                                    _x is None or abs(float(_x) - _dv) <= 0.5
+                                                    for _x in (_rawnow, _gafit, _shipnow, _enfnow))
+                                                _wb_rows.append((str(_r.get("midl")), _metric, _dv,
+                                                                 _bandtxt, _dv - _gafit,
+                                                                 "all stages agree" if _wb_flat
+                                                                 else _chain))
                                                 continue
                                             _n_breach += 1
                                             _tot = abs(_dv - _lval)
@@ -14587,6 +14653,20 @@ def render():
                                                    else "   [scored == delivered here]"))
                                             log(f"           (sum {_short + _drift:+,.0f} == the "
                                                 f"{_tot:,.0f} breach)   chain: {_chain}")
+                                        if _wb_rows:
+                                            log("")
+                                            log(f"      {len(_wb_rows):,} band(s) WITHIN their "
+                                                "limits (raw \u2192 GA-fitness \u2192 shipped "
+                                                "\u2192 enforced \u2192 delivered)")
+                                            log("")
+                                            log(f"      {'MID':<30}{'metric':>7}{'delivered':>12}"
+                                                f"{'band':>26}{'drift':>8}   chain")
+                                            log(f"      {'-' * 100}")
+                                            for _wl, _wm, _wd, _wb, _wdr, _wc in _wb_rows:
+                                                log(f"      {_wl[:30]:<30}{_wm:>7}{_wd:>12,.0f}"
+                                                    f"{_wb:>26}{_wdr:>+8,.0f}   {_wc}")
+                                            log(f"      {'-' * 100}")
+                                            log("")
                                         # ── CONSERVATION BISECTION ────────────────────────────────
                                         # Drift is txn-only and one-directional across every run so far.
                                         # Two very different causes look identical per-MID:
@@ -15284,8 +15364,10 @@ def render():
                                                    f"{_sum_absdrift:,.0f} is ABOVE it — float32 "
                                                    "cannot account for this error and something "
                                                    "else is wrong. Read the released blocks below.")
-                                                + " ROUTING_PROJ_FLOAT32=0 restores an exact "
-                                                  "detector (and costs ~40s of search).")
+                                                + " The float32 projector is unconditional as "
+                                                  "of 19iu, so this floor is a property of the "
+                                                  "build and cannot be turned off to get an "
+                                                  "exact detector back.")
                                         # 19co: THIS number is the one that should open the muted
                                         # reconciliation families, and it is not knowable until
                                         # here — a thousand lines after those families were
@@ -15439,57 +15521,13 @@ def render():
                                 "volume": summ["volume"],
                             })
 
-                    # --- GRANULAR PROFILE SAMPLES: dump a handful of representative engine
-                    #     profiles (currency × bank × rpgt) end-to-end — each gateway's baseline vs
-                    #     proposed share, forecast volume, VAMP risk and vampMid — so every run
-                    #     shows concrete profile-level decisions, not just aggregate counts.
-                    #     Samples the biggest profiles + the biggest reallocations. Best-effort. ---
-                    try:
-                        _samp_v = min(variations, key=lambda v: v["weight"]) if variations else None
-                        _sdf = _samp_v["split"].copy() if _samp_v is not None else pd.DataFrame()
-                        _ckeys = [c for c in ("currency", "bin", "rpgt") if c in _sdf.columns]
-                        if _ckeys and "share" in _sdf.columns and not _sdf.empty:
-                            _sdf["_bs"] = pd.to_numeric(_sdf.get("baseline_share", 0), errors="coerce").fillna(0.0)
-                            _sdf["_sh"] = pd.to_numeric(_sdf["share"], errors="coerce").fillna(0.0)
-                            _sdf["_vol"] = pd.to_numeric(_sdf.get("volume", 0), errors="coerce").fillna(0.0)
-                            _cv = _sdf.groupby(_ckeys)["_vol"].sum()
-                            _mv = (_sdf.assign(_d=(_sdf["_sh"] - _sdf["_bs"]).abs())
-                                   .groupby(_ckeys)["_d"].sum())
-                            _pick, _seen = [], set()
-                            for _k in list(_cv.sort_values(ascending=False).head(3).index) + \
-                                      list(_mv.sort_values(ascending=False).head(4).index):
-                                _kk = _k if isinstance(_k, tuple) else (_k,)
-                                if _kk not in _seen:
-                                    _seen.add(_kk); _pick.append(_kk)
-                                if len(_pick) >= 6:
-                                    break
-                            _grp = _sdf.groupby(_ckeys)
-                            log(f"   ── GRANULAR PROFILE SAMPLES · dial {int(round(_samp_v['weight'] * 100))} · "
-                                f"{len(_pick)} of {len(_cv):,} profiles (currency × bank × rpgt) ──")
-                            log("      each row: gateway · baseline% → proposed% (Δpp) · fc volume · VAMP risk · vampMid")
-                            for _kk in _pick:
-                                _rows = _grp.get_group(_kk if len(_kk) > 1 else _kk[0]).copy()
-                                _rows = _rows[(_rows["_bs"] > 1e-6) | (_rows["_sh"] > 1e-6)]
-                                _rows = _rows.sort_values("_sh", ascending=False).head(12)
-                                _lbl = " / ".join(str(x) for x in _kk)
-                                log(f"      • {_lbl}  ·  profile_vol={float(_rows['_vol'].sum()):,.0f}  ·  {len(_rows)} active gateway(s)")
-                                for _, _r in _rows.iterrows():
-                                    _gw = str(_r.get("gateway", "?"))
-                                    # profile grain: one row per (gateway, pmp, Country) — label the
-                                    # profile so the otherwise-identical gateway rows are distinct.
-                                    _pmpv = str(_r.get("pmp", "") or "").strip().lower()
-                                    _ctryv = str(_r.get("ctry", "") or "").strip().lower()
-                                    if _pmpv and _pmpv not in ("_all_", "nan", ""):
-                                        _gw = f"{_gw} [{_pmpv}/{_ctryv}]"
-                                    _b, _p = float(_r["_bs"]) * 100.0, float(_r["_sh"]) * 100.0
-                                    _rk = pd.to_numeric(_r.get("gateway_risk_rate", _r.get("rate", None)), errors="coerce")
-                                    _rks = f"{float(_rk) * 100:.2f}%" if pd.notna(_rk) else "—"
-                                    _vm = str(_r.get("vampMid", "") or "")
-                                    log(f"          {_gw:<30s} {_b:5.1f}% → {_p:5.1f}% ({_p - _b:+5.1f}pp) · "
-                                        f"vol {float(_r['_vol']):>8,.0f} · risk {_rks:>7s}" + (f" · {_vm}" if _vm else ""))
-                    except Exception as _e:  # noqa: BLE001
-                        _diag(f"   [granular profile samples failed: {_e}]")
-
+                    # 19iu: GRANULAR PROFILE SAMPLES DELETED. It dumped six representative profiles
+                    # end to end - every gateway's baseline vs proposed share, forecast volume, VAMP
+                    # risk and vampMid - which is ~80 lines a run, and it was ~80 lines whether or not
+                    # anything about them was surprising. tab 3 shows the same split interactively, at
+                    # whatever grain a reader actually wants, and the profiles worth naming in a LOG are
+                    # the ones some diagnostic has a reason to name ([profiles], [breach-*]). This was
+                    # ~80 lines chosen by size, not by relevance.
                     granular_sr = gateway_success_rates(orig_adf, shrink_strength=float(shrink), time_decay_half_life_days=(float(decay_half) if apply_decay else None), prior_scope=("rpgt", "currency", "bin"), empirical_bayes=use_eb)
                     granular_problems = build_profile_problems(orig_forecast, granular_sr)
 
@@ -15541,9 +15579,16 @@ def render():
                                                                           group_keys=_vgk)
                                     _tot_cap += _nc
                                 ss["blocked_capped"] = int(_tot_cap)
-                                log(f"   auto-block: {len(_bpairs)} bank×gateway flagged as BANK-BLOCKED "
-                                    f"(≥{int(_bmin)} most-recent consecutive failed attempts) → capped to the "
-                                    f"exploration floor ({_tot_cap} split row(s) capped across dials).")
+                                # 19iu: this line reported "N flagged -> 0 capped" every run,
+                                # because the pre-enforcement pass inside the search has already
+                                # floored those rows. It only prints now when this pass ACTUALLY
+                                # capped something, which would mean the search did not.
+                                if _tot_cap:
+                                    log(f"   auto-block: {len(_bpairs)} bank\u00d7gateway flagged "
+                                        f"as BANK-BLOCKED (\u2265{int(_bmin)} most-recent "
+                                        f"consecutive failed attempts); this POST-ENGINE pass "
+                                        f"capped {_tot_cap} split row(s) across dials \u2014 rows "
+                                        "the in-search flooring left above the exploration floor.")
                                 if _tot_cap == 0:
                                     # 19fw: the old line said "naming mismatch?" for ALL THREE ways
                                     # this reaches 0, and named the least likely one. Read the
@@ -15585,14 +15630,11 @@ def render():
                                             "form. The pre-GA pass matched rows, so the pairs "
                                             "themselves are sound — only this grain is not.")
                                     elif _bs_a == 0:
-                                        log(f"   auto-block: NOTHING TO CAP, and that is CORRECT — "
-                                            f"{_bs_m:,} split row(s) DID match a flagged pair, but "
-                                            f"every one already sits at or below the exploration "
-                                            f"floor {float(_bs.get('floor', 0)):.4g} (largest matched "
-                                            f"share {float(_bs.get('max_matched_share', 0)):.6g}). The "
-                                            "pre-enforcement pass capped them inside enforcement; this "
-                                            "pass has nothing left to take off them. NOT a naming "
-                                            "mismatch — the keys matched fine.")
+                                        # 19iu: the EXPECTED case, and therefore silent. Rows
+                                        # matched, every one already at or below the floor,
+                                        # because the in-search flooring put them there. A line
+                                        # confirming the design is not a finding.
+                                        pass
                                     else:
                                         log(f"   [Warning] auto-block: {_bs_m:,} row(s) matched and "
                                             f"{_bs_a:,} sit ABOVE the floor, but none was capped — "
