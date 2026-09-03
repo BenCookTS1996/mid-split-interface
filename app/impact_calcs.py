@@ -23,6 +23,7 @@ from app_common import load_mid_list, _norm_cols, _renorm_share, _fid2vamp_from 
 try:    # 19iq: THE BLOCKED-ROW WATER-FILL RULE. See routing_optimiser/s4_search/blocked_fill.py.
     from routing_optimiser.s4_search import blocked_fill as _BFM
     _BFM.register("_cap_rows")
+    _BFM.register("_max_share_waterfill")
 except Exception:  # noqa: BLE001 - no rule available is a refusal, never a broken import
     _BFM = None
 
@@ -1404,7 +1405,39 @@ def inject_capable_rows(pp, capable, profile_cols, mid_col="vampMid",
     return _out, int(len(_new))
 
 
-def _max_share_waterfill(shares, t0, grp, cap, live):
+def blocked_keys_for(blocked_pairs, mid_list_path):
+    """(bin, gatewayFid) pairs -> the canonical (bin, vampMid, currency) keys, memoised.
+
+    19iq stamps `_blocked` on the split, which serves the two sites that can express a
+    gatewayFid. The VAMP forecast and the band projector cannot: their row identity is
+    (vampMid, currency), and blocking a whole vampMid would block five currencies because one
+    was flagged (31 of 37 active TotalAV fids sit under a multi-fid vampMid). (vampMid,
+    currency) pins down a unique ACTIVE fid within a brand-scoped run, which is what makes the
+    coarse sites able to reproduce the fine ones - see blocked_fill's canonical-key note and
+    `equivalence_report`, which proves it per run rather than trusting that paragraph.
+
+    Returns frozenset(); an empty set on any failure, because a mask must never break a
+    projection - a site with no mask applies no rule and says so through `saw_mask`.
+    """
+    if not blocked_pairs or _BFM is None:
+        return frozenset()
+    _key = (tuple(sorted((str(a), str(b)) for a, b in blocked_pairs)), str(mid_list_path or ""))
+    _hit = _BLK_KEY_MEMO.get(_key)
+    if _hit is not None:
+        return _hit
+    try:
+        _rows = load_mid_list(mid_list_path).to_dict("records")
+        _out = frozenset(_BFM.canonical_keys(blocked_pairs, _rows))
+    except Exception:  # noqa: BLE001 - no keys is a refusal, never a broken projection
+        _out = frozenset()
+    _BLK_KEY_MEMO[_key] = _out
+    return _out
+
+
+_BLK_KEY_MEMO = {}
+
+
+def _max_share_waterfill(shares, t0, grp, cap, live, blocked=None):
     """Port of the search's per-profile max-share water-fill (`band_projection.py:317-347`).
 
     Line-for-line the same algorithm, vectorised: everything over `cap` is cut back to it, and
@@ -1423,6 +1456,11 @@ def _max_share_waterfill(shares, t0, grp, cap, live):
          floating-point summation order is the kernel's too.
 
     `live` is the kernel's `_psum[c] > 0` — rows in an unrouted profile take no part.
+
+    `blocked` (19ir) is the per-row bank-blocked mask. Same rule, same arithmetic, as the two
+    fine-grained sites: a blocked row is a recipient of LAST RESORT, and the rule is applied
+    only when every site is wired AND armed. It is PRICED either way, because "the rule would
+    move nothing here" is a measurement, not an assumption.
     """
     _sh = np.asarray(shares, dtype=float).copy()
     if _sh.size == 0:
@@ -1431,6 +1469,17 @@ def _max_share_waterfill(shares, t0, grp, cap, live):
     _ng = int(_g.max()) + 1
     _live = np.asarray(live, dtype=bool)
     EPS = 1e-12
+    _blk = None
+    if blocked is not None and _BFM is not None:
+        _blk = np.asarray(blocked, bool)
+        if _blk.shape != _sh.shape or not _blk.any():
+            _blk = None
+    _armed = False
+    if _blk is not None:
+        _armed, _amsg = _BFM.arming_verdict(
+            os.environ.get("ROUTING_BLOCK_NOFILL", "0") != "0")
+        _meas = {"on_blocked": 0.0, "unavoidable": 0.0, "avoidable": 0.0, "sweeps": 0,
+                 "rows": int(_blk.sum()), "armed": bool(_armed), "msg": str(_amsg)}
     # (1) computed ONCE — the kernel does not refresh it between sweeps.
     _nz = np.bincount(_g, weights=(_live & (_sh > EPS)).astype(float), minlength=_ng)
     _multi = (_nz >= 2.0)[_g] & _live
@@ -1445,9 +1494,23 @@ def _max_share_waterfill(shares, t0, grp, cap, live):
         _room = _multi & (_sh > EPS) & (_sh < cap - EPS)
         _rsum = np.bincount(_g, weights=np.where(_room, cap - _sh, 0.0), minlength=_ng)
         _ok = _room & (_rsum[_g] > EPS)
-        _sh = np.where(_ok,
-                       _sh + (cap - _sh) / np.where(_ok, _rsum[_g], 1.0) * _exc[_g],
-                       _sh)
+        _add = np.where(_ok, (cap - _sh) / np.where(_ok, _rsum[_g], 1.0) * _exc[_g], 0.0)
+        if _blk is not None:
+            _roomv = np.where(_room, cap - _sh, 0.0)
+            _onb = float(_add[_blk].sum())
+            _nb = np.bincount(_g, weights=np.where(_blk, 0.0, _roomv), minlength=_ng)
+            _need = float(np.minimum(np.maximum(_exc - _nb, 0.0),
+                                     np.maximum(_exc, 0.0)).sum())
+            _meas["on_blocked"] += _onb
+            _meas["unavoidable"] += _need
+            _meas["avoidable"] += max(0.0, _onb - _need)
+            _meas["sweeps"] += 1
+            if _armed:
+                _add = _BFM.two_stage_add_grouped(_roomv, _blk, _exc, _g, _ng, _add)
+        _sh = _sh + _add
+    if _blk is not None:
+        globals()["_LAST_BLK_FILL_VAMP"] = dict(_meas)
+        _BFM.saw_mask("_max_share_waterfill", True, f"{int(_blk.sum()):,} row(s) blocked")
     return _sh
 
 
@@ -1457,7 +1520,8 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
                                   exploration_floor=0.0, vamp_off_mids=frozenset(),
                                   capability=None, max_share=1.0,
                                   wallet_incapable_pairs=frozenset(),
-                                  usa_only_pairs=frozenset()):
+                                  usa_only_pairs=frozenset(),
+                                  blocked_keys=frozenset()):
     """Per-ROW baseline vs proposed VAMP / VI-Txn from the pro-rata export.
 
     Routes at the (vampMid, RPGT, BIN, Currency, pmp, Country) profile grain when the
@@ -1797,7 +1861,24 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         _live = (_psum_c > 0).to_numpy()
         _sh = np.where(_live, t0["prop_raw"].to_numpy(float)
                        / np.where(_live, _psum_c.to_numpy(float), 1.0), 0.0)
-        t0["_vprop"] = _max_share_waterfill(_sh, t0, grp, _cap_ms, _live)
+        # ── 19ir: THE BANK-BLOCKED MASK AT (BIN, vampMid, currency) ──────────────────────
+        # This site cannot express a gatewayFid, so it reads the canonical key instead - see
+        # `blocked_keys_for`. No keys = no mask = no rule, recorded rather than assumed.
+        _blk_ms = None
+        if blocked_keys:
+            try:
+                _bk_b = t0["BIN"].astype(str).str.strip().to_numpy()
+                _bk_v = t0["vampMid"].astype(str).str.strip().str.lower().to_numpy()
+                _bk_c = t0["Currency"].astype(str).str.strip().str.lower().to_numpy()
+                _bks = set(blocked_keys)
+                _blk_ms = np.array([(_b, _v, _c) in _bks
+                                    for _b, _v, _c in zip(_bk_b, _bk_v, _bk_c)], dtype=bool)
+            except Exception:  # noqa: BLE001 - a mask must never break a projection
+                _blk_ms = None
+        if _BFM is not None and not blocked_keys:
+            _BFM.saw_mask("_max_share_waterfill", False,
+                          "no blocked_keys were passed to compute_vamp_prepost_granular")
+        t0["_vprop"] = _max_share_waterfill(_sh, t0, grp, _cap_ms, _live, blocked=_blk_ms)
     if len(vamp_off_mids):
         _voff = {str(_m).strip().lower() for _m in vamp_off_mids}
         _vmask = ~t0["vampMid"].astype(str).str.strip().str.lower().isin(_voff)
@@ -2558,7 +2639,8 @@ _PROJ_CODE_VER = "2026-09-03-19ip-pair-grain-ONLY"  # bump on ANY projection-log
 
 
 def projection_cache_sig(pp_path, prop_items, exploration_floor=0.0, extra="",
-                         wallet_incapable_pairs=frozenset(), usa_only_pairs=frozenset()):
+                         wallet_incapable_pairs=frozenset(), usa_only_pairs=frozenset(),
+                         blocked_keys=frozenset()):
     """Stable cache-key SIGNATURE for the granular projection.
 
     The projection's `@st.cache_data` key used to lean on the pipeline file's mtime (`m`), which is
@@ -2584,6 +2666,11 @@ def projection_cache_sig(pp_path, prop_items, exploration_floor=0.0, extra="",
     # recompute, not a different answer.
     h.update(("|wcp=" + ",".join(sorted(f"{a}~{b}" for a, b in (wallet_incapable_pairs or ())))
               + "|uop=" + ",".join(sorted(f"{a}~{b}" for a, b in (usa_only_pairs or ())))
+              # 19ir: the blocked keys change the water-filled share once the rule is armed, so
+              # they belong in the key. Hashed even while the rule is refused, so an armed run
+              # cannot be served an unarmed run's projection.
+              + "|blk=" + ",".join(sorted("~".join(str(_x) for _x in _k)
+                                          for _k in (blocked_keys or ())))
               ).encode("utf-8"))
     h.update(f"|floor={float(exploration_floor or 0.0):.8g}|{extra}|cv={_PROJ_CODE_VER}".encode("utf-8"))
     return f"{mt:.0f}:{len(prop_items or ()):d}:{h.hexdigest()}"
@@ -2595,7 +2682,8 @@ def _c_prepost_granular(pp_path, m, prop_items, excluded_mids, kill_eff=(), mont
                         scoped_rpgts=(), wallet_incapable=frozenset(), usa_only=frozenset(),
                         exploration_floor=0.0, vamp_off_mids=frozenset(),
                         cap_sig="", _capability=None, max_share=1.0,
-                        wallet_incapable_pairs=frozenset(), usa_only_pairs=frozenset()):
+                        wallet_incapable_pairs=frozenset(), usa_only_pairs=frozenset(),
+                        blocked_keys=frozenset()):
     # `m` = cache-key SIGNATURE (callers now pass projection_cache_sig(): mtime + a content hash of
     # the actual split + floor). PLAIN (non-underscore) name so it participates in the st.cache_data
     # key (underscore args are excluded from the hash) — so the cache busts whenever the deployed
@@ -2616,6 +2704,10 @@ def _c_prepost_granular(pp_path, m, prop_items, excluded_mids, kill_eff=(), mont
                                          # `cap_sig` above carries its identity into the key.
                                          capability=_capability,
                                          max_share=max_share,
+                                         # 19ir: PLAIN, so it participates in the cache key -
+                                         # the keys change the water-filled share once the rule
+                                         # is armed, and a frozenset of tuples hashes stably.
+                                         blocked_keys=blocked_keys,
                                          # 19hh: PLAIN (non-underscore) names so they
                                          # participate in the st.cache_data key — the grain
                                          # changes the answer, so a frame computed at the other

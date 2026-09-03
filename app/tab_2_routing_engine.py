@@ -9484,6 +9484,17 @@ def render():
                                         _pj_wcp, _pj_uop, _ = _cap_pairs(
                                             mid_list_path,
                                             input_json_path("routing_restrictions.json"))
+                                        # 19ir: the blocked-row rule at the VAMP forecast's own
+                                        # water-fill. `_blk_pairs_pre` is what this run flagged;
+                                        # the canonical key is what this site can express (it
+                                        # has vampMid + currency, not the fid).
+                                        try:
+                                            from impact_calcs import (
+                                                blocked_keys_for as _blk_keys_for)
+                                            _pj_blk = _blk_keys_for(_blk_pairs_pre or set(),
+                                                                    mid_list_path)
+                                        except Exception:  # noqa: BLE001
+                                            _pj_blk = frozenset()
                                         _g = _pj_cvp(
                                             _ppp, _ep, _pj_excl,
                                             _pj["ke"], _pj["m0"], _pj_scoped,
@@ -9491,7 +9502,8 @@ def render():
                                             capability=_deliv_cap, vamp_off_mids=_vamp_off_mids,
                                             max_share=float(_wc.get("max_share", 0.97)),
                                             wallet_incapable_pairs=_pj_wcp,
-                                            usa_only_pairs=_pj_uop)
+                                            usa_only_pairs=_pj_uop,
+                                            blocked_keys=_pj_blk)
                                         _g5 = _g[_g["period"] == 5]
                                         _t2 = _pjt.perf_counter()
                                         _pj["t_epi"] += _t1 - _t0
@@ -9531,6 +9543,21 @@ def render():
                                                     "did not get it. That last number is what "
                                                     "the rule would move on the shipping path.")
                                             log("      " + str(_bkf.get("msg", "")))
+                                        # 19ir: and the VAMP forecast's own water-fill, which
+                                        # is a THIRD implementation of the same cap. If these
+                                        # three numbers ever disagree, the rule is not the same
+                                        # rule at every stage, which is the failure the arming
+                                        # gate exists to prevent.
+                                        _bkv = getattr(_pj_ic, "_LAST_BLK_FILL_VAMP", None)
+                                        if _bkv and not _pj.get("blkfillv_said"):
+                                            _pj["blkfillv_said"] = True
+                                            log(f"   [blk-fill] VAMP forecast water-fill "
+                                                f"(_max_share_waterfill): "
+                                                f"{float(_bkv['on_blocked']):.6g} onto "
+                                                f"{int(_bkv['rows']):,} blocked row(s) over "
+                                                f"{int(_bkv['sweeps']):,} sweep(s), "
+                                                f"{float(_bkv['unavoidable']):.6g} unavoidable, "
+                                                f"{float(_bkv['avoidable']):.6g} AVOIDABLE.")
                                         log(f"   [proj-memo] '{_tag}' projected in {_t2 - _t0:.1f}s "
                                             f"= {_t1 - _t0:.1f}s enforced_prop_items/build_split_exports "
                                             f"+ {_t2 - _t1:.1f}s compute_vamp_prepost_granular.")

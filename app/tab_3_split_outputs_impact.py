@@ -31,6 +31,25 @@ from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, DEFAU
                         HAS_PLOTLY, _ensure_base_30d_metrics, _impact_eval_frame, _ink_caption,
                         _switched_off_gateways, _vamp_off_gateways, _unknown_apply_to,
                         _locked_panel, _split_df_to_xlsx_bytes)
+from impact_calcs import blocked_keys_for as _blk_keys_for
+
+
+# [FN-19ir]
+def _blk_keys_t3():
+    """The run's bank-blocked rows, as the canonical (bin, vampMid, currency) key.
+
+    19ir. The three delivery projections in this tab water-fill the same split the engine ships,
+    so they have to know which rows the auto-block pass floored - otherwise a blocked gateway is
+    held at the floor by one stage and lifted off it by another, and the difference lands in
+    reconciliation error. `ss["blocked_pairs"]` is what tab 2 recorded; `blocked_keys_for`
+    memoises the mid-list read, so calling this at three sites costs one.
+    """
+    try:
+        return _blk_keys_for(
+            ss.get("blocked_pairs") or set(),
+            os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"))
+    except Exception:  # noqa: BLE001 - no keys is a refusal, never a broken tab
+        return frozenset()
 
 
 # [FN-347b] Scheme-normalisation shim. This whole tab is written against the VISA export schema
@@ -1389,15 +1408,20 @@ def render():
                     _wcp_r, _uop_r, _ = _cap_pairs(
                         os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"),
                         input_json_path("routing_restrictions.json"))
+                    # 19ir: the blocked-row rule has to hold at EVERY water-fill or the tables
+                    # disagree with each other about the delivered split.
+                    _blk_r = _blk_keys_t3()
                     _gran_r = _c_prepost_granular(
                         _pp_r, projection_cache_sig(_pp_r, _prop_r, _floor_r,
                                                     wallet_incapable_pairs=_wcp_r,
-                                                    usa_only_pairs=_uop_r),
+                                                    usa_only_pairs=_uop_r,
+                                                    blocked_keys=_blk_r),
                         _prop_r, _excl_r, _kill_r, _m0_r, _scoped_rpgts,
                         frozenset(str(x).strip().lower() for x in (_wc_r.get("incapable") or set())),
                         frozenset(str(x).strip().lower() for x in (_wc_r.get("usa_only") or set())),
                         exploration_floor=_floor_r,
                         wallet_incapable_pairs=_wcp_r, usa_only_pairs=_uop_r,
+                        blocked_keys=_blk_r,
                         # 19df — the same max-share cap the search applies, so this secondary
                         # table cannot disagree with the primary one at :4205 about what the
                         # delivered VAMP is. `_wc_rr` hands the identical value to
@@ -3420,15 +3444,18 @@ def render():
                 _wcp3, _uop3, _ = _cap_pairs(
                     os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"),
                     input_json_path("routing_restrictions.json"))
+                _blk3 = _blk_keys_t3()
                 _gr = _gr_shared if _gr_shared is not None else _c_prepost_granular(
                     pp_path, projection_cache_sig(pp_path, prop_items, _gr_floor3,
                                                   wallet_incapable_pairs=_wcp3,
-                                                  usa_only_pairs=_uop3),
+                                                  usa_only_pairs=_uop3,
+                                                  blocked_keys=_blk3),
                     prop_items, excluded_mids, _kill_eff, _m0s, _scoped_rpgts,
                     frozenset(str(x).strip().lower() for x in ((ss.get("wallet_ctx") or {}).get("incapable") or set())),
                     frozenset(str(x).strip().lower() for x in ((ss.get("wallet_ctx") or {}).get("usa_only") or set())),
                     exploration_floor=_gr_floor3,
                     wallet_incapable_pairs=_wcp3, usa_only_pairs=_uop3,
+                    blocked_keys=_blk3,
                     # 19df — the same max-share cap the search applies. This site usually reuses
                     # `_gr_shared` from :4205 and only computes its own frame when that is None;
                     # if the two disagreed on the cap, which branch ran would change the numbers.
@@ -4343,15 +4370,18 @@ def render():
                         os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"),
                         input_json_path("routing_restrictions.json"))
                     if os.path.exists(pp_path):
+                        _blk0 = _blk_keys_t3()
                         _gr_shared = _c_prepost_granular(pp_path,
                                                          projection_cache_sig(pp_path, _proj_prop, _proj_floor,
                                                                               wallet_incapable_pairs=_wcp0,
-                                                                              usa_only_pairs=_uop0),
+                                                                              usa_only_pairs=_uop0,
+                                                                              blocked_keys=_blk0),
                                                          _proj_prop, excluded_mids,
                                                          _kill_eff, _m0s, _scoped_rpgts, _wcin, _uonly,
                                                          exploration_floor=_proj_floor,
                                                          wallet_incapable_pairs=_wcp0,
                                                          usa_only_pairs=_uop0,
+                                                         blocked_keys=_blk0,
                                                          vamp_off_mids=_vamp_off_mids,
                                                          cap_sig=_cap_sig,
                                                          _capability=_capability,
