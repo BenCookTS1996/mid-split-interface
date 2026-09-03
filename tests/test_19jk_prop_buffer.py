@@ -132,6 +132,21 @@ check("2  an array that is ALREADY C-contiguous float64 is passed through, not c
 check("2  ...and two instances do not share a buffer",
       mk()._pr_buf is None and _p._pr_buf is not None)
 
+# 19jm: THE SHAPE ALTERNATION. The projector runs at P=35, P=40 and P=1 in one run
+# ([proj-config] counted 338 / 15 / 38), and a single buffer keyed on the exact shape was
+# thrown away and rebuilt on every switch - the 22:30 run allocated 32 times over 336 copies,
+# which is the allocation 19jk existed to remove.
+_p3 = mk()
+for _ in range(20):
+    for _w in (6, 4, 1):
+        _p3.penalty(base[:, :_w].T)
+check("2  alternating P does NOT re-allocate - one buffer per shape, not one buffer",
+      _p3._pr_stat["alloc"] == 3 and _p3._pr_stat["copied"] == 60,
+      f"{_p3._pr_stat} over 3 distinct shape(s) x 20 rounds")
+check("2  ...and each shape's buffer is the right size",
+      sorted(k[0] for k in _p3._pr_bufs) == [1, 4, 6]
+      and all(v.shape == k for k, v in _p3._pr_bufs.items()))
+
 
 # ═══ 3. the wiring ═══════════════════════════════════════════════════════════════════════
 check("3  the allocation is what went, not the rewrite - and the docstring says so",

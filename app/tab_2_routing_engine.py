@@ -8002,10 +8002,125 @@ def render():
                                             f"({type(_fbe).__name__}: {_fbe}); fitness scores the RAW split "
                                             "(may diverge from tab-3).")
 
-                                def _fm_s2pr(_sh, _inc, _raw=_fm_s2pr_raw):
+                                # ── 19jm: THE PROP-KEY SCATTER ───────────────────────────────
+                                # [bpf-inside] on the 22:30 run: `shares -> prop_raw` 39.1 ms and
+                                # `prop_raw -> C-contiguous` 126.1 ms, 61.6s between them - and 19jk
+                                # proved the second one is ALL transpose, not allocation. So the two
+                                # together are: multiply by a sparse matrix, then rewrite the answer
+                                # the other way round.
+                                #
+                                # THE MATRIX IS A PERMUTATION. [inc-build] builds it from `np.ones`,
+                                # and [inc-build] / [incidence self-check] read 154,405 non-zeros over
+                                # 154,405 share columns and 154,405 reachable prop-keys. One non-zero
+                                # per column, one per row, every value exactly 1.0 - so `prop_raw` is
+                                # not a matmul at all, it is a SCATTER. There is no summation to
+                                # reassociate and no multiply to reorder, which is what makes this
+                                # bit-identical BY CONSTRUCTION rather than by argument.
+                                #
+                                # THAT IS A PROPERTY OF THIS DATA, NOT A LAW. The builder appends one
+                                # (row, col) per matching BIN, so a column can carry several. So it is
+                                # CHECKED here, checked again against the real thing on the first live
+                                # call, and falls back to the matmul on either failing.
+                                #
+                                # THE UNMAPPED COLUMNS ARE WRITTEN ONCE. 47.8% of prop-keys are
+                                # reachable; the other 52.2% are zero for every candidate forever, so
+                                # the buffer is allocated with np.zeros and only the mapped columns are
+                                # ever written again - the same argument `_fm_deliv_full`'s scatter
+                                # buffer rests on. Measured at the live shape before shipping: 229.5 ms
+                                # -> 71.8 ms, 3.2x, bit-identical.
+                                _fm_s2pr_perm = None
+                                _fm_s2pr_buf = {"a": None, "checked": False, "on": True,
+                                                "why": "", "calls": 0}
+                                try:
+                                    if _fm_blend_pr is not None:
+                                        _fm_s2pr_buf["why"] = (
+                                            "a backup catch-all is configured, so the prop vector is "
+                                            "folded after it is built and the scatter would not be "
+                                            "what ships")
+                                    elif os.environ.get("ROUTING_S2PR_SCATTER", "1") == "0":
+                                        _fm_s2pr_buf["why"] = "ROUTING_S2PR_SCATTER=0"
+                                    elif _fm_inc is None:
+                                        _fm_s2pr_buf["why"] = "no incidence matrix on the hook"
+                                    else:
+                                        _sc_coo = _fm_inc.tocoo()
+                                        _sc_N = int(_fm_inc.shape[1])
+                                        _sc_K = int(_fm_inc.shape[0])
+                                        _sc_ok = bool(
+                                            _sc_coo.nnz == _sc_N
+                                            and np.array_equal(np.sort(_sc_coo.col),
+                                                               np.arange(_sc_N))
+                                            and np.unique(_sc_coo.row).size == _sc_coo.nnz
+                                            and np.all(np.asarray(_sc_coo.data) == 1.0))
+                                        if _sc_ok:
+                                            _sc_row = np.empty(_sc_N, np.intp)
+                                            _sc_row[np.asarray(_sc_coo.col, np.intp)] = \
+                                                np.asarray(_sc_coo.row, np.intp)
+                                            _fm_s2pr_perm = (_sc_row, _sc_K)
+                                            log(f"   [s2pr-perm] the incidence is a PERMUTATION: "
+                                                f"{_sc_N:,} share column(s) onto {_sc_N:,} of "
+                                                f"{_sc_K:,} prop-key(s), one each way, every weight "
+                                                "exactly 1.0. So prop_raw is a scatter, not a matmul "
+                                                "- no sum to reassociate, no multiply to reorder. "
+                                                "Self-checked against the matmul on the first live "
+                                                "call; ROUTING_S2PR_SCATTER=0 reverts.")
+                                        else:
+                                            _fm_s2pr_buf["why"] = (
+                                                f"the incidence is NOT a permutation on this build "
+                                                f"({_sc_coo.nnz:,} non-zero(s) over {_sc_N:,} "
+                                                f"column(s)), so prop_raw is a real sum and its "
+                                                "order has to be preserved")
+                                except Exception as _sce:  # noqa: BLE001
+                                    _fm_s2pr_perm = None
+                                    _fm_s2pr_buf["why"] = f"{type(_sce).__name__}: {_sce}"
+                                if _fm_s2pr_perm is None:
+                                    log("   [s2pr-perm] OFF - "
+                                        + (_fm_s2pr_buf["why"] or "unknown")
+                                        + ". The sparse matmul runs, which is what ships.")
+
+                                def _fm_s2pr(_sh, _inc, _raw=_fm_s2pr_raw, _pm=_fm_s2pr_perm,
+                                             _st=_fm_s2pr_buf):
                                     # shares → prop_raw, THEN fold in the backup catch-all (deployed reality)
                                     # when configured. All band scoring / seed selection / self-checks below go
                                     # through this, so the GA and the log breach reflect the shares that ship.
+                                    if _pm is not None and _st["on"]:
+                                        _X = np.asarray(_sh, float)
+                                        _one = _X.ndim == 1
+                                        if _one:
+                                            _X = _X[None, :]
+                                        _r, _K = _pm
+                                        if _X.shape[1] == _r.size:
+                                            _P = _X.shape[0]
+                                            _b = _st["a"]
+                                            if _b is None or _b.shape[0] < _P:
+                                                # np.zeros, and only the MAPPED columns are ever
+                                                # written after: the rest stay the zeros they were
+                                                # born with, for every candidate, forever.
+                                                _b = _st["a"] = np.zeros((_P, _K), float)
+                                            _o = _b[:_P]
+                                            for _p in range(_P):
+                                                _o[_p, _r] = _X[_p]
+                                            _st["calls"] += 1
+                                            if not _st["checked"]:
+                                                _st["checked"] = True
+                                                _ref = np.asarray(_raw(_X, _inc), float)
+                                                if np.array_equal(np.asarray(_ref).view(np.int64),
+                                                                  np.asarray(_o).view(np.int64)):
+                                                    log("   [s2pr-perm] \u2713 SELF-CHECK PASSED on "
+                                                        "the live population: the scatter is "
+                                                        "bit-identical to the sparse matmul it "
+                                                        f"replaces (int64 bit-pattern comparison on "
+                                                        f"{_P}x{_K:,}, stricter than array_equal).")
+                                                else:
+                                                    _st["on"] = False
+                                                    log("   [s2pr-perm] \u26a0 SELF-CHECK FAILED - "
+                                                        "max|\u0394| "
+                                                        f"{float(np.abs(_ref - _o).max()):.3e}. "
+                                                        "DISABLED for this process; the sparse "
+                                                        "matmul is what ships. Report this: the "
+                                                        "incidence passed the permutation check and "
+                                                        "then did not behave like one.")
+                                                    return _ref[0] if _one else _ref
+                                            return _o[0] if _one else _o
                                     _pr = _raw(_sh, _inc)
                                     return _fm_blend_pr(_pr) if _fm_blend_pr is not None else _pr
                                 # SEED SELECTION: start from the LOWEST-breach BAND-AWARE compliant split
@@ -9379,6 +9494,15 @@ def render():
                                                         f"{_ps.get('passthru', 0):,} call(s) "
                                                         "arrived already C-contiguous and were "
                                                         "passed through untouched.")
+                                                _sp_n = int(_fm_s2pr_buf.get("calls", 0))
+                                                if _sp_n:
+                                                    log(f"      [bpf-inside] [s2pr-perm] built "
+                                                        f"prop_raw by SCATTER on {_sp_n:,} call(s) "
+                                                        "(19jm), so the `shares -> prop_raw` row is "
+                                                        "the scatter and the C-contiguous row below "
+                                                        "it should be near zero - the scatter writes "
+                                                        "a C-contiguous buffer, so there is nothing "
+                                                        "left to make contiguous.")
                                                 log("")
                                                 log("      THE TWO CALL COUNTS DIFFER ON PURPOSE. "
                                                     "The first row is the GA's band hook; the "

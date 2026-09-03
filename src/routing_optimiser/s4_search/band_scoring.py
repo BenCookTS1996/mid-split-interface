@@ -161,7 +161,8 @@ class ExactBandPenalty:
         self.use_numba = bool(use_numba)
         # Map each (midl, period) band to its column in the projector's output.
         self._band_to_index = {band: i for i, band in enumerate(projector.band_order)}
-        self._pr_buf = None        # 19jk: the reused C-contiguous prop_raw buffer
+        self._pr_buf = None        # 19jk: the most recent reused prop_raw buffer (tests read it)
+        self._pr_bufs = {}         # 19jm: one per shape - P alternates between 1, 35 and 40
         self._pr_stat = {"copied": 0, "passthru": 0, "alloc": 0}
 
     # [FN-029]
@@ -227,10 +228,16 @@ class ExactBandPenalty:
         if _a.dtype == np.float64 and _a.flags["C_CONTIGUOUS"]:
             self._pr_stat["passthru"] += 1
             return _a
-        _b = self._pr_buf
-        if _b is None or _b.shape != _a.shape:
-            _b = self._pr_buf = np.empty(_a.shape, np.float64)
+        # 19jm: ONE BUFFER PER SHAPE, not one buffer. The 22:30 run allocated 32 times over
+        # 336 copies because the projector alternates between P=35, P=40 and P=1 ([proj-config]
+        # counts 338 / 15 / 38), and a single buffer keyed on the exact shape was thrown away
+        # and rebuilt on every switch - which is the allocation this was supposed to remove.
+        # At most a handful of shapes exist, so the dict cannot grow.
+        _b = self._pr_bufs.get(_a.shape)
+        if _b is None:
+            _b = self._pr_bufs[_a.shape] = np.empty(_a.shape, np.float64)
             self._pr_stat["alloc"] += 1
+        self._pr_buf = _b
         np.copyto(_b, _a)
         self._pr_stat["copied"] += 1
         return _b
