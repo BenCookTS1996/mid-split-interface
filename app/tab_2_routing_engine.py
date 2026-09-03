@@ -20,6 +20,15 @@ from routing_optimiser import (HardConstraints, OptimiserSettings, SoftConstrain
                                build_profile_problems, detect_blocked_gateways,
                                gateway_success_rates, load_forecast, load_success_data,
                                optimise_split, portfolio_summary, run_sql_file)
+
+try:    # 19is: the search's own water-fill (`_fm_cap`) implements the blocked-row rule, so this
+        # build CLAIMS the site. Registration is a property of the build, not of the moment a
+        # site runs - the five water-fills fire at different points and no single moment sees
+        # them all. Whether this site got a MASK is recorded separately, per run (`saw_mask`).
+    from routing_optimiser.s4_search import blocked_fill as _BFM_T2
+    _BFM_T2.register("_fm_cap")
+except Exception:  # noqa: BLE001 - no rule available is a refusal, never a broken import
+    _BFM_T2 = None
 from impact_calcs import _mtime, pool_targeted_compression, process_wallet_incapable
 
 from app_common import load_mid_list, _norm_cols  # memoised MID reader + column-normaliser
@@ -4883,9 +4892,22 @@ def render():
                         # max_share (0.97) folds the per-profile max-share cap into the fitness
                         # projection so the GA scores the DELIVERED breach (proven: the cap is the
                         # entire scored-vs-delivered VAMP residual).
+                        # 19is: the blocked key, for sites 4 and 5. The two diagnostic
+                        # _PBP builds above/below are TIMING probes and take none - they never
+                        # produce a delivered or scored number. Guarded because the projector
+                        # can be built before the pre-enforcement auto-block pass has run, and
+                        # a missing key must read as "no mask" (which `saw_mask` records) rather
+                        # than as an exception.
+                        try:
+                            from impact_calcs import (
+                                blocked_keys_for as _pbp_blk_keys)
+                            _pbp_blk = _pbp_blk_keys(_blk_pairs_pre or set(), mid_list_path)
+                        except Exception:  # noqa: BLE001
+                            _pbp_blk = frozenset()
                         _band_diag_state["pbp"] = _PBP(_T0a, _Pca, _poolarr, _bset, by_rpgt=_byr,
                                                        max_share=float(max_share),
                                                        by_profile=bool(_opt_profile),
+                                                       blocked_keys=_pbp_blk,
                                                        # 19dw: the GA must score the same
                                                        # recipient set delivery ships.
                                                        vamp_off_mids=_vamp_off_mids,
@@ -6181,6 +6203,33 @@ def render():
                                         "with no stated cause). Fix bin_to_bank / the "
                                         "gateway+bank columns on G. "
                                         "(engine=genetic_fullmatrix)") from _blkE
+                            # ── 19is: THE SAME MASK, INTO THE BAND PROJECTOR ─────────────
+                            # The fitness projector is built by _build_ga_bands (:5350), which
+                            # runs BEFORE the auto-block detection just above, so there was
+                            # nothing to pass at construction. It is the same object for the
+                            # rest of the run and every projection happens from here on, so the
+                            # key goes in now rather than by moving the detection earlier to
+                            # suit an argument list.
+                            try:
+                                _pbp_live = _band_diag_state.get("pbp")
+                                if _pbp_live is not None and _blk_pairs_pre:
+                                    from impact_calcs import (
+                                        blocked_keys_for as _bk_for)
+                                    _pk = _bk_for(_blk_pairs_pre, mid_list_path)
+                                    _nblk = _pbp_live.set_blocked_keys(_pk)
+                                    log(f"   [blk-fill] band projector: {_nblk:,} scaffold "
+                                        f"row(s) matched {len(_pk):,} canonical "
+                                        "(bin, vampMid, currency) key(s) from "
+                                        f"{len(_blk_pairs_pre):,} blocked (BIN, gateway) "
+                                        "pair(s)."
+                                        + ("" if _nblk else " ZERO rows matched: the projector "
+                                           "will apply no rule, and the search would then "
+                                           "score a split delivery does not ship. Read the "
+                                           "canonical-key report before arming."))
+                            except Exception as _pbkE:  # noqa: BLE001
+                                log(f"   [blk-fill] band projector: mask NOT set "
+                                    f"({type(_pbkE).__name__}: {_pbkE}) - the rule cannot be "
+                                    "armed this run, and blocked_fill will refuse it.")
                             _fm_bcs = np.asarray(ctx["profile_starts"], np.intp)
                             _fm_bcc = np.asarray(ctx["profile_counts"], np.intp)
                             _fm_bfloor = float(floor)
@@ -6430,7 +6479,28 @@ def render():
                                 # part of a run and this adds a full-width reduceat.
                                 "bf_n": 0, "bf_cap": 20, "bf_pairs": 0, "bf_rows": 0,
                                 "bf_share": 0.0, "bf_need": 0.0, "bf_worst": 0.0,
-                                "bf_seen": 0}
+                                "bf_seen": 0,
+                                # 19is: measurement became APPLICATION. `bf_on` is the arming
+                                # verdict, read ONCE here rather than per call - the verdict is
+                                # a property of the build and the environment, neither of which
+                                # changes mid-run, and this function is called millions of
+                                # times. `bf_applied` counts the calls that actually ran the
+                                # rule, so "armed" and "took effect" stay separate facts.
+                                "bf_on": False, "bf_applied": 0, "bf_msg": ""}
+                            try:
+                                from routing_optimiser.s4_search import blocked_fill as _bfm0
+                                _bf_ok, _bf_msg = _bfm0.arming_verdict(
+                                    os.environ.get("ROUTING_BLOCK_NOFILL", "0") != "0")
+                                _bfm0.saw_mask("_fm_cap", _fm_blk_row is not None,
+                                               f"{int(np.asarray(_fm_blk_row).sum()):,} row(s) "
+                                               "blocked in the search's own row order"
+                                               if _fm_blk_row is not None else
+                                               "no blocked row in the search scaffold")
+                                _DCAP["bf_on"] = bool(_bf_ok and _fm_blk_row is not None)
+                                _DCAP["bf_msg"] = str(_bf_msg)
+                            except Exception as _bfE:  # noqa: BLE001
+                                _DCAP["bf_msg"] = (f"[blk-fill] unavailable "
+                                                   f"({type(_bfE).__name__}: {_bfE})")
                             if not _DCAP["on"]:
                                 log("   [deliv-cap] OFF — "
                                     + ("ROUTING_DELIV_CAP=0, so the search caps the genome "
@@ -6473,8 +6543,25 @@ def render():
                                 _f = np.repeat(np.where(_ok, _exc / np.where(_pool > 1e-12,
                                                                              _pool, 1.0),
                                                         0.0), _cc, axis=1)
+                                # ── 19is: THE RULE, when armed at every site ──────────
+                                # `_add` is the unmodified expression; the two-stage version
+                                # returns it VERBATIM for any profile with no blocked recipient
+                                # holding room, which is what keeps this bit-identical outside
+                                # the rule's reach.
+                                _add = _room * _f
+                                if _blk is not None and _st.get("bf_on"):
+                                    try:
+                                        from routing_optimiser.s4_search import (
+                                            blocked_fill as _bfm2)
+                                        _add = _bfm2.two_stage_add(
+                                            _room, np.asarray(_blk, bool)[None, :], _exc,
+                                            _cs, _cc, fallback_add=_add)
+                                        _st["bf_applied"] += 1
+                                    except Exception:  # noqa: BLE001
+                                        _st["bf_on"] = False   # never break the search
+                                        _add = _room * _f
                                 _Y = np.where(_okr & _o, _cap,
-                                              np.where(_okr, _X + _room * _f, _X))
+                                              np.where(_okr, _X + _add, _X))
                                 # ── 19ii [blk-fill]: WHAT THIS WATER-FILL PUTS BACK ON A
                                 # BLOCKED ROW, and how much of it was unavoidable. READ-ONLY —
                                 # `_Y` above is already decided and nothing here touches it.
@@ -9229,16 +9316,29 @@ def render():
                                                    "hold the cap, so the rule would change no "
                                                    "share here. Confirm across a run with more "
                                                    "blocked pairs before concluding it is free."))
-                                            log("   [blk-fill] SCOPE: this measures the SEARCH's "
-                                                "mirror (`_fm_cap`), the only water-fill with the "
-                                                "blocked mask in scope. The shipped template is "
-                                                "built by `impact_calcs._cap_rows`, which applies "
-                                                "the same rule in the same order but has no mask "
-                                                "and is NOT measured here. Changing the behaviour "
-                                                "means changing both, plus "
-                                                "`_max_share_waterfill` and the band projector's "
-                                                "own cap, or GA-fitness stops matching delivered. "
-                                                "READ-ONLY: nothing in this run was altered by it.")
+                                            # 19is: the SCOPE note is out of date - every
+                                            # water-fill it named as unmeasured now has the
+                                            # mask (19iq _cap_rows, 19ir _max_share_waterfill,
+                                            # 19is the band projector). What matters now is
+                                            # whether the rule APPLIED, which is a different
+                                            # statement from whether it was requested.
+                                            log("   [blk-fill] STATUS: "
+                                                + ("the rule APPLIED in this water-fill on "
+                                                   f"{int(_DCAP['bf_applied']):,} call(s) - the "
+                                                   "numbers above are what it removed."
+                                                   if _DCAP.get("bf_applied") else
+                                                   "the rule did NOT apply, so the numbers above "
+                                                   "are what it WOULD remove."))
+                                            log("      " + str(_DCAP.get("bf_msg", "")))
+                                            log("   [blk-fill] the other four water-fills report "
+                                                "their own figures: [blk-fill] delivered "
+                                                "(_cap_rows, what ships), [blk-fill] VAMP "
+                                                "forecast (_max_share_waterfill) and [blk-fill] "
+                                                "band projector (the fitness cap, both kernels "
+                                                "plus the numpy reference). All five have to "
+                                                "agree, or GA-fitness stops matching delivered - "
+                                                "which is why arming is refused until every one "
+                                                "of them is wired.")
                                 except Exception as _dce:  # noqa: BLE001
                                     log(f"   [deliv-cap] summary skipped "
                                         f"({type(_dce).__name__}: {_dce}) — measurement only.")

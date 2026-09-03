@@ -86,6 +86,18 @@ import threading as _threading
 import numpy as np
 import pandas as pd
 
+try:    # 19is: THE BLOCKED-ROW WATER-FILL RULE (blocked_fill). Imported at MODULE level, not
+        # lazily, because `register` is a capability claim about the BUILD - the five sites run
+        # at different points in a run and no single moment sees them all execute. The two
+        # numba kernels are registered in 19it, once they carry the mask; `_cap_pshare` (the
+        # flat kernel's numpy twin, below) moves with them because every self-check diffs
+        # against it, and a reference that does not model the rule would fail the check by
+        # construction - which is exactly what 19hv's exploration floor did to the
+        # profile-blocked self-check.
+    from routing_optimiser.s4_search import blocked_fill as _BFM
+except Exception:  # noqa: BLE001 - no rule available is a refusal, never a broken import
+    _BFM = None
+
 # Bumped when the projection signature/behaviour changes so stale bytecode is obvious in the run log.
 # KEEP THIS IN STEP WITH THE FILE. The run header prints it under "backend build markers (if any
 # ≠ expected → stale bytecode)", and it is the ONLY thing standing between a stale in-memory module
@@ -1863,7 +1875,8 @@ class PopulationBandProjector:
     def __init__(self, T0: pd.DataFrame, Pc: pd.DataFrame, pool: np.ndarray, bands,
                  by_rpgt: bool = False, max_share: float = 1.0, by_profile: bool = False,
                  vamp_off_mids=frozenset(), exploration_floor: float = 0.0,
-                 wallet_incapable=frozenset(), usa_only=frozenset()):
+                 wallet_incapable=frozenset(), usa_only=frozenset(),
+                 blocked_keys=frozenset()):
         # ── 19fz [pbp-inside] ─────────────────────────────────────────────────────────────
         # WHY THIS EXISTS. [pbp-build] priced this constructor at 114.5s and said nothing about
         # WHERE. I then attributed ~80s of it to the prop-key build from reading the code, and
@@ -1942,6 +1955,19 @@ class PopulationBandProjector:
         # change bit-identical on data with no mid-month switch-off (test_19dt).
         self._pw = np.where(self._excl | self._emask, 0.0,
                             self._pkeep).astype(np.float64)
+        # ── 19is: THE BANK-BLOCKED ROW MASK (blocked_fill's rule, sites 4 and 5) ──────────
+        # Built from the REDUCED frame's own (bin, midl, cur) - the canonical key 19ij proved
+        # is an identity for the active gatewayFid within a brand-scoped run. Built HERE, after
+        # the reduction, so it cannot fall out of alignment with the rows it describes; a
+        # caller-supplied (nT0,) array would have to survive the same reduction and an
+        # alignment bug there is silent.
+        if {"bin", "midl", "cur"} <= set(R.columns):
+            self._blk_cols_bin = R["bin"].astype(str).str.strip().to_numpy()
+            self._blk_cols_mid = R["midl"].astype(str).str.strip().str.lower().to_numpy()
+            self._blk_cols_cur = R["cur"].astype(str).str.strip().str.lower().to_numpy()
+        self._blk_msg = ("[blk-fill] rule unavailable (blocked_fill did not import)"
+                         if _BFM is None else "[blk-fill] no key supplied yet")
+        self.set_blocked_keys(blocked_keys)
         # ── 19he STEP 1 of the EXPLORATION FLOOR: carry the inputs, change nothing. ────────
         # See docs/scope_exploration_floor_in_search.md. NOTHING reads `_efloor` or `_ef_ok`
         # yet — this step exists so the mask can be MEASURED against delivery before any
@@ -2609,6 +2635,40 @@ class PopulationBandProjector:
         # from the incidence, and `_nb_arrays` may already have cached without it. Invalidate,
         # or the widened mask would never take effect and the log would report it as if it had.
         self._nbcache = None
+
+    # [FN-19is]
+    def set_blocked_keys(self, blocked_keys):
+        """Supply the bank-blocked key AFTER construction. Returns the number of rows masked.
+
+        WHY THIS EXISTS. The live fitness projector is built by `_build_ga_bands` (tab_2:5350)
+        and the pre-enforcement auto-block pass runs LATER in the same function (tab_2:6099), so
+        at construction time there is nothing to pass. The projector object survives in
+        `_band_diag_state["pbp"]` and its `project_pop*` calls all happen during the search,
+        after the detection - so the mask can be set in between. Passing it at construction
+        instead would have meant moving the detection earlier, which changes the order of a run
+        for the convenience of an argument.
+
+        Idempotent, and it invalidates the numba argument cache: the kernels read the mask out
+        of that tuple (19it), so setting keys without clearing it would leave the rule armed in
+        `_cap_pshare` and absent in the kernels - a partial application, which is the one thing
+        the arming gate exists to prevent.
+        """
+        self._blk_keys = frozenset(blocked_keys or ())
+        _R_ok = all(hasattr(self, _a) for _a in ("_blk_cols_bin", "_blk_cols_mid", "_blk_cols_cur"))
+        if self._blk_keys and _R_ok:
+            self._pblk = np.array([(_b, _m, _c) in self._blk_keys
+                                   for _b, _m, _c in zip(self._blk_cols_bin, self._blk_cols_mid,
+                                                         self._blk_cols_cur)], dtype=bool)
+        else:
+            self._pblk = np.zeros(len(self._gcode), bool)
+        self._blk_armed = False
+        if _BFM is not None:
+            self._blk_armed, self._blk_msg = _BFM.arming_verdict(
+                os.environ.get("ROUTING_BLOCK_NOFILL", "0") != "0")
+            self._blk_armed = bool(self._blk_armed and self._pblk.any())
+        self._nbcache = None
+        self._cb = None
+        return int(self._pblk.sum())
 
     # [FN-023]
     def _stash_ab(self, prop_raw):
@@ -3337,7 +3397,19 @@ class PopulationBandProjector:
             recip = cappable & (~over) & (W > 1e-12) & (W < cap - 1e-12)
             room = np.where(recip, cap - W, 0.0)
             rs = self._profilesum(room)[:, gc]
-            W = W + np.where(rs > 1e-12, room / np.where(rs > 1e-12, rs, 1.0) * excess, 0.0)
+            _add = np.where(rs > 1e-12, room / np.where(rs > 1e-12, rs, 1.0) * excess, 0.0)
+            if self._blk_armed and _BFM is not None:
+                # THE RULE, from the one place it is defined. `_factors` is elementwise, so the
+                # per-profile totals broadcast back to rows work unchanged - and a profile with
+                # no blocked recipient holding room keeps `_add` VERBATIM, which is what makes
+                # this bit-identical outside the rule's reach.
+                _bm = self._pblk[None, :]
+                _rp = np.where(_bm, 0.0, room)
+                _rf = np.where(_bm, room, 0.0)
+                _fp, _ff, _spl = _BFM._factors(self._profilesum(_rp)[:, gc],
+                                               self._profilesum(_rf)[:, gc], excess)
+                _add = np.where(_spl, _rp * _fp + _rf * _ff, _add)
+            W = W + _add
         return np.where(cappable, W, pshare)
 
     # [FN-025]
