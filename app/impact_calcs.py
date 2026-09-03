@@ -1078,7 +1078,7 @@ def _dump_projection_diag(t0, pp_path, prop_items, enforced, by_rpgt):
 
 
 # [FN-259]
-def _inject_backfill_rows(pp, prop, prop_name_map=None):
+def _inject_backfill_rows(pp, prop, prop_name_map=None, mark=None):
     """#3 ZERO-BASELINE ROW INJECTION. Nothing to do with the deleted <2-gateway share
     back-fill — this adds ROWS, never share.
 
@@ -1118,6 +1118,8 @@ def _inject_backfill_rows(pp, prop, prop_name_map=None):
     valid_sub = set(map(tuple, _b0[subk].drop_duplicates().to_numpy()))
     # Global _vml -> proper-case vampMid, so a MID that exists elsewhere in the export keeps its
     # display name and merges cleanly (no lower-case twin) on the final collapse.
+    if mark is not None:
+        mark("  backfill: normalise the keys + build the two presence sets")
     name_map = b.drop_duplicates("_vml").set_index("_vml")["vampMid"].to_dict()
     # Truly zero-baseline recipients have NO row anywhere in the export, so `b` can't supply a
     # proper-case name and they'd otherwise fall back to the lower-case merge key as their display
@@ -1130,6 +1132,8 @@ def _inject_backfill_rows(pp, prop, prop_name_map=None):
     # Representative RPGT / go-live pro_rata / fcp1 per (profile, period), lowest-t row.
     reps = (b.sort_values("t").drop_duplicates(subk + ["period"])
             [subk + ["RPGT", "period", "pro_rata", "fcp1_frac"]])
+    if mark is not None:
+        mark("  backfill: the per-profile representative t0 rows")
     pc = prop[subk + ["_vml"]].drop_duplicates()
     # missing = enforced (profile, MID) with no baseline row in that profile, AND the profile
     # itself exists in the baseline (so we don't fabricate profiles from label mismatches).
@@ -1327,7 +1331,7 @@ def build_capability(mid_list_path=None, restrictions=None, brand=None):
 
 
 def inject_capable_rows(pp, capable, profile_cols, mid_col="vampMid",
-                        period_col="period", t_col="t"):
+                        period_col="period", t_col="t", mark=None):
     """Complete every MOVABLE (t <= period) group of `pp` with a zero-VAMP row per absent capable
     MID. Returns (frame, n_added). VECTORISED — a per-group Python loop over the live export's
     622,592 movable groups is not viable.
@@ -1368,6 +1372,8 @@ def inject_capable_rows(pp, capable, profile_cols, mid_col="vampMid",
     _layer = _mov.groupby(_gk, as_index=False, observed=True).agg(
         pro_rata=("pro_rata", "first"), fcp1_frac=("fcp1_frac", "first"))
 
+    if mark is not None:
+        mark("  capable: the movable-pool groupby-transform over the whole export")
     _profiles = _mov[list(profile_cols)].drop_duplicates()
     _profiles["_cap"] = [sorted(capable(*[str(v).strip().lower() if i != 1 else str(v).strip()
                                        for i, v in enumerate(row)]))
@@ -1382,6 +1388,8 @@ def inject_capable_rows(pp, capable, profile_cols, mid_col="vampMid",
     _hk = _gk + [mid_col]
     _have = _mov[_hk].drop_duplicates().assign(_seen=1)
     _new = _full.merge(_have, on=_hk, how="left")
+    if mark is not None:
+        mark("  capable: the capability lookup per profile + the two anti-join merges")
     _new = _new[_new["_seen"].isna()].drop(columns=["_seen"])
     if not len(_new):
         return pp, 0
@@ -1556,10 +1564,10 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         _profilek = [c for c in ("Currency", "BIN", "RPGT", "paymentMethodProvider", "Country")
                   if c in pp.columns]
         if len(_profilek) >= 3:
-            pp, _n_inj = inject_capable_rows(pp, capability, _profilek)
+            pp, _n_inj = inject_capable_rows(pp, capability, _profilek, mark=_cv_mark)
             if _n_inj:
                 globals()["_LAST_INJECTED"] = int(_n_inj)
-    _cv_mark("inject_capable_rows (zero rows for capable doors)")
+    _cv_mark("  capable: build and concat the injected rows")
     # 19fx: cleaned once per DISTINCT VALUE, not once per row -- see _clean_col. Identical output.
     pp["Currency"] = _clean_col(pp["Currency"], lower=True)
     pp["BIN"] = _clean_col(pp["BIN"])
@@ -1612,8 +1620,8 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         prop["_pmp"] = prop["_pmp"].astype(str).str.strip().str.lower()
         prop["_ctry"] = prop["_ctry"].astype(str).str.strip().str.lower()
         _cv_mark("prop frame build (prop_items -> DataFrame + keys)")
-        pp = _inject_backfill_rows(pp, prop, _prop_name_map)   # #3 add zero-baseline back-fill target rows
-        _cv_mark("_inject_backfill_rows (zero-baseline recipients)")
+        pp = _inject_backfill_rows(pp, prop, _prop_name_map, mark=_cv_mark)
+        _cv_mark("  backfill: the anti-join + build and concat the new rows")
 
     grp = ["Currency", "BIN", "RPGT", "_pmp", "_ctry", "period"]
     if _enforced:
@@ -1796,6 +1804,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         globals()["_LAST_EMASK_GRAIN"] = (
             _emask_grain + " - NOT APPLIED, no consumer ran: " + _why
             + f"; exploration_floor={_efloor:g} so the floor block is skipped.")
+    _cv_mark("  the exploration floor (a no-op when the floor is 0, which delivery's is)")
     # Movable fraction = go-live pro-rata × fcp1 cohort fraction (see _vamp_post_core).
     _p = t0["pro_rata"] * t0["fcp1_frac"]
     t0["post_txn"] = t0["profile_tot"] * ((1 - _p) * t0["base_share"] + _p * t0["prop_share"])
@@ -1885,6 +1894,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         t0["_vprop"] = t0["_vprop"] * _vmask.astype(float)
     t0["_vpsum"] = t0.groupby(grp)["_vprop"].transform("sum")
     t0["_vshare"] = np.where(t0["_vpsum"] > 0, t0["_vprop"] / t0["_vpsum"], 0.0)
+    _cv_mark("  the max-share cap water-fill (_max_share_waterfill) + the VAMP share")
 
     # RPGT scope: hold non-scoped RPGTs at their current baseline split (post == pre).
     if scoped_rpgts:
@@ -1961,7 +1971,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # largest line in [cvp-timing] and the one that could say least about itself. Six marks
     # now split it, so the next run names the expensive half instead of leaving it to be
     # guessed at. Marks only; nothing computed here moved.
-    _cv_mark("exploration floor + max-share cap + the txn-terms stash")
+    _cv_mark("  the [txn-terms] / [txn-denom] diagnostic stash")
 
     _sub = ["Currency", "BIN", "RPGT", "_pmp", "_ctry"]
     # #2 GO-LIVE TIMING: the pipeline applies the go-live weight by the APPEARANCE month
