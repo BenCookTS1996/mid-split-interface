@@ -161,6 +161,8 @@ class ExactBandPenalty:
         self.use_numba = bool(use_numba)
         # Map each (midl, period) band to its column in the projector's output.
         self._band_to_index = {band: i for i, band in enumerate(projector.band_order)}
+        self._pr_buf = None        # 19jk: the reused C-contiguous prop_raw buffer
+        self._pr_stat = {"copied": 0, "passthru": 0, "alloc": 0}
 
     # [FN-029]
     def _pen(self, overshoot):
@@ -182,6 +184,57 @@ class ExactBandPenalty:
             return self.projector.project_pop_numba(prop_raw)
         return self.projector.project_pop(prop_raw)
 
+    # [FN-030b]
+    def _contig(self, prop_raw):
+        """`np.ascontiguousarray(prop_raw, dtype=float)`, into a buffer this instance reuses.
+
+        WHY (19jk). [bpf-inside] on the 21:57 run put this ONE LINE at 148 ms per call and
+        57.6s of the run - a quarter of the band row, and it computes nothing. The caller hands
+        over `(incidence @ shares.T).T`, which is a TRANSPOSED VIEW, so making it C-contiguous
+        is a full-width strided rewrite of a (35 x 323,063) array. 90 MB, 338 times, and every
+        one of them was a fresh allocation whose pages had to be faulted in before they could
+        be written. This does not remove the rewrite - that needs the array built the other way
+        round in the first place, which changes the order the sparse matmul sums in and is a
+        separate, riskier change. It removes the ALLOCATION: ~30 GB of churn over a run.
+
+        MEASURED AT THE LIVE SHAPE before shipping, so the expectation is on record rather than
+        implied. 35 x 323,063, the same transposed view, best of 25 after 5 warm-ups:
+
+            np.ascontiguousarray (allocates)   177.4 ms min / 207.7 ms mean
+            np.copyto into a reused buffer     145.2 ms min / 159.9 ms mean
+                                            => 1.22x on the min, 1.30x on the mean
+
+        So this is worth roughly a quarter of the row, not the whole of it - about 14s of the
+        21:57 run's 57.6s. The other 145 ms IS the transpose, and only route two removes that.
+
+        A COPY IS A COPY. `np.copyto` moves the same values in the same order into memory of
+        the same dtype; there is no arithmetic here to reassociate, so this is bit-identical by
+        construction rather than by measurement. The test asserts it anyway, on F-order,
+        C-order, 1-D, float32 and integer inputs.
+
+        AN ALREADY-C-CONTIGUOUS float64 ARRAY IS RETURNED UNTOUCHED, which is exactly what
+        `np.ascontiguousarray` did with it - so a caller that already hands over the right
+        layout still pays nothing, and the `passthru` counter says how often that happens.
+
+        THE BUFFER ESCAPES INTO `project`, and that is safe but worth stating. `project_pop_numba`
+        keeps a REFERENCE to its proposal for [lift-ab] and [proj-inside] to replay; that
+        reference now points at this buffer, so it holds the LAST call's values. It always did -
+        `_stash_ab` is called on every projection - so "the last real proposal" means the same
+        thing it did before. The buffer is per-instance and `penalty` is not called
+        concurrently: rowpar threads the delivery transform, not this, and the projector's
+        parallelism is inside the numba kernel."""
+        _a = np.asarray(prop_raw)
+        if _a.dtype == np.float64 and _a.flags["C_CONTIGUOUS"]:
+            self._pr_stat["passthru"] += 1
+            return _a
+        _b = self._pr_buf
+        if _b is None or _b.shape != _a.shape:
+            _b = self._pr_buf = np.empty(_a.shape, np.float64)
+            self._pr_stat["alloc"] += 1
+        np.copyto(_b, _a)
+        self._pr_stat["copied"] += 1
+        return _b
+
     # [FN-031]
     def penalty(self, prop_raw, detail_out=None) -> np.ndarray:
         """(P, K) prop_raw → (P,) total band violation to add to each candidate's `viol`.
@@ -201,7 +254,7 @@ class ExactBandPenalty:
         reassociated). Do not "tidy" this into a single accumulation — the two separate `+=` are
         load-bearing for reproducing earlier runs."""
         _bp_t0 = _bs_time.perf_counter()
-        prop_raw = np.ascontiguousarray(prop_raw, dtype=float)
+        prop_raw = self._contig(prop_raw)
         if prop_raw.ndim == 1:
             prop_raw = prop_raw[None, :]
         candidate_count = prop_raw.shape[0]
@@ -251,7 +304,10 @@ class ExactBandPenalty:
         can show target vs Now per constraint that reconciles with the search's own breach.
         Returns a list aligned with `self.specs`: dicts of midl / months / metric / ceil / floor /
         now."""
-        prop_raw = np.ascontiguousarray(prop_raw, dtype=float)
+        # 19jk: the same reused buffer as `penalty`. The two are called back-to-back by the
+        # progress heartbeat and each consumes its result before the other runs, so sharing one
+        # buffer cannot interleave; `report` is ~48 calls a run, but they are 148 ms each.
+        prop_raw = self._contig(prop_raw)
         if prop_raw.ndim == 1:
             prop_raw = prop_raw[None, :]
         vamp, txn = self.project(prop_raw)

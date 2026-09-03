@@ -9365,6 +9365,21 @@ def render():
                                                     f"{_tb:>7.1f}s{1000.0 * _tb / max(_n1, 1):>9.1f}"
                                                     f"{_n1:>9,}")
                                                 log("")
+                                                # 19jk: did the copy actually reuse its buffer?
+                                                _ps = dict(getattr(_fm_eb_pen, "_pr_stat", {}))
+                                                if _ps:
+                                                    log("")
+                                                    log(f"      [bpf-inside] the C-contiguous row "
+                                                        f"copied {_ps.get('copied', 0):,} time(s) "
+                                                        f"and allocated its buffer "
+                                                        f"{_ps.get('alloc', 0):,} time(s) (19jk): "
+                                                        "the rewrite is still there - the caller "
+                                                        "hands over a transposed view - but the "
+                                                        "90 MB allocation behind it is not. "
+                                                        f"{_ps.get('passthru', 0):,} call(s) "
+                                                        "arrived already C-contiguous and were "
+                                                        "passed through untouched.")
+                                                log("")
                                                 log("      THE TWO CALL COUNTS DIFFER ON PURPOSE. "
                                                     "The first row is the GA's band hook; the "
                                                     "other three are every `penalty` call in the "
