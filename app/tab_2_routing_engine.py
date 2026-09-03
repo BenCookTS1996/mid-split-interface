@@ -4192,6 +4192,7 @@ def render():
                         _pc_join = (_Pc["_cur"] + "|" + _Pc["_bin"] + "|" + _Pc["_rpgt"] + "|"
                                     + _Pc["_pmp"] + "|" + _Pc["_ctry"] + "|"
                                     + _Pc["_midl"] + "|" + _Pc["_om"].astype(str)).to_numpy()
+                        _cap_mark("  join keys: two 7-part strings, over _T0 and over _Pc")
                         # Vectorised _Pc -> _T0 row-index map (replaces a per-row dict build + fromiter
                         # over ~1.3M rows). A Series indexed by the non-back-fill t0 keys, reindexed to
                         # the _Pc keys, gives each _Pc row its t0 position or -1 — identical to the
@@ -4200,7 +4201,7 @@ def render():
                         _t0_pos = pd.Series(np.where(_valid)[0], index=_t0_join[_valid])
                         _t0_pos = _t0_pos[~_t0_pos.index.duplicated(keep="last")]
                         _Pc_to_t0 = _t0_pos.reindex(_pc_join).fillna(-1).to_numpy().astype(np.int64)
-                        _cap_mark("_Pc -> _T0 row-index map (two more string keys, over _T0 and _Pc)")
+                        _cap_mark("  _Pc -> _T0 map: hash those strings + de-dup + reindex")
                         _Pc_vc_a = _Pc["_vc"].to_numpy(float)
                         # Moved-VAMP pool per (cur,bin,rpgt,pmp,ctry,period,t), APPEARANCE-MONTH timed
                         # to match the tab-3 DELIVERED projection (compute_vamp_prepost_granular):
@@ -4216,6 +4217,7 @@ def render():
                             ["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_midl", "_per"])["_fcp"].to_dict()
                         _prapp_map = (_P0.drop_duplicates(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per"])
                                       .set_index(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per"])["_pr"].to_dict())
+                        _cap_mark("  the two _P0 tuple-key dicts (fcp[origin], pro_rata[appearance])")
                         _P_origin = (_P["_per"] - _P["_t"]).to_numpy()
                         _fcp_o_P = np.fromiter(
                             (_fcp_orig_map.get((_c, _b, _r, _pm, _ct, _ml, _o), 0.0)
@@ -4223,9 +4225,11 @@ def render():
                              zip(_P["_cur"], _P["_bin"], _P["_rpgt"], _P["_pmp"], _P["_ctry"],
                                  _P["_midl"], _P_origin)),
                             dtype=float, count=len(_P))
+                        _cap_mark("  fcp[origin] per _P row (np.fromiter over the tuple-key dict)")
                         _P["_mvraw"] = _P["_vc"].to_numpy(float) * _fcp_o_P   # vc × fcp[origin] (no pro_rata yet)
                         _mvp_map = _P.groupby(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_per", "_t"],
                                               observed=True)["_mvraw"].sum().to_dict()
+                        _cap_mark("  moved-pool per group (7-column groupby + to_dict)")
                         # per-_Pc appearance pro_rata (static) — reused by _project_capped's held term.
                         # 19cw was tried here (key on `_per - _tt`) and is WRONG — see the
                         # long note in band_projection._pc_prapp. Delivery takes fcp from the
@@ -4244,10 +4248,11 @@ def render():
                              zip(_Pc["_cur"], _Pc["_bin"], _Pc["_rpgt"], _Pc["_pmp"], _Pc["_ctry"],
                                  _Pc["_per"], _Pc["_t"])),
                             dtype=float, count=len(_Pc)) * _pc_prapp_a
+                        _cap_mark("  pro_rata + moved-pool per _Pc row (two np.fromiter loops)")
                         # Aggregation group codes + (midl, period) labels — VAMP over _Pc rows,
                         # TXN over capped _T0 rows. Same groups as the old (_midl,_per) group-by.
                         _SEP = ""
-                        _cap_mark("origin fcp / pro-rata / moved-pool maps over _P (np.fromiter loops)")
+                        _cap_mark("  the rest of the _P / _Pc map build")
                         _pc_aggcodes, _pc_agguniq = pd.factorize(
                             _Pc["_midl"].astype(str) + _SEP + _Pc["_per"].astype(str))
                         _pc_agg_labels = [(_s.rsplit(_SEP, 1)[0], int(_s.rsplit(_SEP, 1)[1])) for _s in _pc_agguniq]
@@ -4413,6 +4418,12 @@ def render():
                                             f"{100.0 * _v / max(_cap_tot, 1e-9):>8.1f}%")
                                 log(f"      {'-' * 64}{'-' * 10}{'-' * 9}")
                                 log(f"      {'TOTAL':<64}{_cap_tot:>9.1f}s{100.0:>8.1f}%")
+                                # 19ja: the INDENTED steps are the two rows that were 78% of
+                                # this table, split into what they actually spend the time on.
+                                # A per-row cost is the only way to tell a string build from a
+                                # hash from a Python loop, so the row counts belong here.
+                                log(f"      over _T0 {len(_T0):,} row(s), _P {len(_P):,}, "
+                                    f"_Pc {len(_Pc):,}")
                         except Exception as _cte:  # noqa: BLE001
                             log(f"   [cap-timing] unavailable ({type(_cte).__name__}) — "
                                 "measurement only.")
