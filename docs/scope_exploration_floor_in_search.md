@@ -382,9 +382,16 @@ with nothing standing in its way. Passing the pairs closes it.
    pre-19hh formula with the switch off.
 3. ✅ **Call sites migrated**: tab_2's delivery projection and tab 3's three
    `_c_prepost_granular` calls. (Not nine — see the correction above.)
-4. ✅ **`ROUTING_EMASK_PAIRS`, default OFF.** The grain is in the cache key, and so is the
-   switch, so flipping it cannot be served a projection computed at the other grain.
-   `_PROJ_CODE_VER` bumped for the same reason.
+4. ✅ ~~**`ROUTING_EMASK_PAIRS`, default OFF.**~~ **DELETED in 19ip.** (It shipped default
+   OFF, was flipped ON in 19ht, and is now gone.) The claim above — that hashing the switch
+   into the cache key made a flip safe — was **false**: `projection_cache_sig` read it with
+   default `"0"` while `compute_vamp_prepost_granular` read it with default `"1"`, so an
+   **unset** run (pair grain) and an explicit **`=0`** run (coarse grain) hashed IDENTICALLY
+   and computed DIFFERENTLY. That is the stale-projection bug the hash existed to prevent,
+   sitting inside the hash. 19ip removes the switch, the reader, and the `|emp=` term; the
+   pair grain is unconditional wherever pair data exists, and the name-set fallback still
+   serves a caller that has only vampMid names. Default behaviour is unchanged, so a default
+   run is bit-identical apart from a one-time cache recompute.
 5. ⬜ **Step 2 of §12** — wire the floor into the kernel. Now unblocked.
 
 ### Measured property of the change
@@ -517,11 +524,14 @@ exactly today, and the whole disagreement was ever between the coarse test and t
 
 ### What shipped
 
-- `ROUTING_EMASK_PAIRS` **defaults ON**. `=0` restores the coarse test — the switch stays,
-  because this changes what tab 3 shows and what a floored run computes.
-- `impact_calcs.emask_pairs_on()` is now the **one reader** of it. tab_2's `[emask-grain]` line
-  calls that instead of doing its own `os.environ.get`, which is how a default flip would
-  otherwise have been reported wrongly in the log while behaving correctly in the code.
+- ~~`ROUTING_EMASK_PAIRS` **defaults ON**. `=0` restores the coarse test — the switch stays,
+  because this changes what tab 3 shows and what a floored run computes.~~ **Gone in 19ip**
+  (see item 4 above): the two readers disagreed on the default, so the way back was never
+  safely takeable. The coarse test also only ever over-blocked — a vampMid whose fids differ
+  in capability by currency — which is why nothing asked for it back.
+- ~~`impact_calcs.emask_pairs_on()` is now the **one reader** of it.~~ Deleted with the switch
+  in 19ip. tab_2's `[emask-grain]` line now states the one grain both sides use, in three
+  lines instead of one 340-character sentence with an armed/unarmed branch.
 - `app_common.capability_pairs` records `LAST_CAP_PAIR_SPLITS` — the pairs whose **active** fids
   disagree — and tab_2 logs a ⚠ if it is ever non-empty. It is empty today. The thing that would
   make it non-empty is a **MID-list edit**, which no code change would announce, and on that day

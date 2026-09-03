@@ -3553,7 +3553,7 @@ def render():
                                 f"{_capability.n_mids} capable MID(s) / {_capability.n_gateways} "
                                 "gateway(s) that had none, so volume routed to a new MID can pick "
                                 "up the VAMP it causes.")
-                            log("            Frozen layers (t > period) are untouched — their pool "
+                            _ = ("            Frozen layers (t > period) are untouched — their pool "
                                 "is 0. Σ vampCount is asserted unchanged.")
                         except Exception as _ije:  # noqa: BLE001
                             _capability = None
@@ -3751,15 +3751,30 @@ def render():
                                 _fcp0P = _P["_fcp"].to_numpy(float)
                                 _hitP = _oosP & (_fcp0P > 0.0)
                                 _P["_fcp"] = np.where(_oosP, 0.0, _fcp0P)
-                                log(f"   [rpgt-scope] {int(_hitP.sum()):,} of {len(_P):,} scaffold row(s) held at "
-                                    f"baseline - a non-zero movable fraction on an UNSCOPED RPGT, "
-                                    f"covering {float(np.asarray(_P['_vc'], float)[_hitP].sum()):,.1f} "
-                                    "VAMP. The search now holds them as delivery does."
+                                # 19ip: counted at PROFILE level. "2,915,566 of 6,477,850 rows"
+                                # is a number nobody can act on - the decision grain is the
+                                # profile, and a profile is either held or it is not.
+                                try:
+                                    _rsK = (_P["_cur"].astype(str) + "|" + _P["_bin"].astype(str)
+                                            + "|" + _P["_rpgt"].astype(str) + "|"
+                                            + _P["_pmp"].astype(str) + "|"
+                                            + _P["_ctry"].astype(str))
+                                    _rsN = int(_rsK.nunique())
+                                    _rsH = int(_rsK[_hitP].nunique())
+                                except Exception:  # noqa: BLE001
+                                    _rsN, _rsH = len(_P), int(_hitP.sum())
+                                log(f"   [rpgt-scope] {_rsH:,} of {_rsN:,} profile(s) held at baseline"
                                     + ("" if _hitP.any() else
-                                       " INERT this run: psum == 0 was already reaching the same "
+                                       " - INERT this run: psum == 0 was already reaching the same "
                                        "answer, so this makes it a rule instead of a coincidence.")
-                                    + " Scope: " + ", ".join(sorted(_sel_rpgts))
-                                    + ". ROUTING_SEARCH_RPGT_SCOPE=0 reverts.")
+                                    + ".")
+                                log("      an UNSCOPED RPGT still carries volume the routing decision "
+                                    "could move, and delivery does NOT move it - so the search holds "
+                                    "it at baseline too, or it would optimise volume that never "
+                                    "actually reroutes.")
+                                log(f"      scope: {', '.join(sorted(_sel_rpgts))} \u00b7 "
+                                    f"{float(np.asarray(_P['_vc'], float)[_hitP].sum()):,.0f} VAMP "
+                                    f"held \u00b7 ROUTING_SEARCH_RPGT_SCOPE=0 reverts")
                         # 19dr — SWITCHED-OFF GATEWAYS, EXPLICITLY, IN THE SEARCH. A gateway on a volume
                         # override of target 0 gets no transactions, so fraud already on its books cannot
                         # be rerouted — there is nothing to reroute it WITH. Delivery encodes that as
@@ -3812,17 +3827,19 @@ def render():
                                 # column so `_T0` (and the back-fill rows concatenated into it) inherit it and
                                 # the projector slices it with every other per-row static.
                                 _P["_keepf"] = _keepK
-                                log(f"   [keep-gate] {int(_hitK.sum()):,} of {len(_P):,} scaffold row(s) held at "
-                                    f"baseline - a non-zero movable fraction on a gateway with a "
-                                    f"target-0 volume override, covering "
-                                    f"{float(np.asarray(_P['_vc'], float)[_hitK].sum()):,.1f} VAMP "
-                                    f"({len(_excluded_mids):,} switched-off vampMid(s), "
-                                    f"month_0={_m0K}). A gateway that receives no transactions "
-                                    "cannot have its fraud rerouted."
-                                    + ("" if _hitK.any() else " INERT this run.")
-                                    + " NOT addressed here: delivery also scales prop_raw by the "
-                                      "fractional _keep for a mid-month switch-off; the search "
-                                      "does not. ROUTING_SEARCH_KEEP=0 reverts.")
+                                log(f"   [keep-gate] {int(_hitK.sum()):,} row(s) on SWITCHED-OFF "
+                                    f"gateways held at baseline"
+                                    + ("" if _hitK.any() else " - INERT this run") + ".")
+                                log(f"      {len(_excluded_mids):,} vampMid(s) are set to receive ZERO "
+                                    f"volume from {_m0K}. A gateway that gets no transactions cannot "
+                                    "have its existing fraud rerouted - there is nothing to reroute "
+                                    "it WITH - so its "
+                                    f"{float(np.asarray(_P['_vc'], float)[_hitK].sum()):,.0f} VAMP "
+                                    "stays where it is, in the search exactly as in delivery.")
+                                log("      not modelled: delivery also scales the share down "
+                                    "pro-rata for a gateway switched off MID-month; the search "
+                                    "treats it as off for the whole month. "
+                                    "ROUTING_SEARCH_KEEP=0 reverts.")
                             except Exception as _keE:  # noqa: BLE001
                                 log(f"   [keep-gate] \u26a0 NOT APPLIED ({type(_keE).__name__}: {_keE}). The search is "
                                     "running WITHOUT the switched-off-gateway gate and will reroute fraud from "
@@ -3957,29 +3974,17 @@ def render():
                         # here because this is where the mask is APPLIED.
                         _wc_pairs, _uo_pairs, _pair_src = _cap_pairs(
                             mid_list_path, input_json_path("routing_restrictions.json"))
-                        # 19hh: say which GRAIN the DELIVERY projection will mask at, because it
-                        # is now a switch and it changes the delivered number. The search has
-                        # been on the pair grain since 2026-08-17; delivery follows only when
-                        # ROUTING_EMASK_PAIRS is armed, so the two can be deliberately mismatched
-                        # and this line is the only thing that would say so.
-                        # 19ht: read the switch from the ONE place that acts on it. Two
-                        # independent os.environ reads of one switch is how the default flip
-                        # would have been reported wrongly here while behaving correctly there.
-                        from impact_calcs import emask_pairs_on as _emp_read
+                        # 19hh: say which GRAIN the DELIVERY projection masks at, because it
+                        # changes the delivered number. 19ip removed the switch that could put
+                        # the two sides on different grains (see impact_calcs), so this line no
+                        # longer has an armed/unarmed case to report - it states the one grain
+                        # both sides use, and the exports are finer still.
                         from app_common import LAST_CAP_PAIR_SPLITS as _cap_splits
-                        _emp_on = _emp_read()
                         log("   [emask-grain] wallet/USA capability is masked at (vampMid, "
-                            f"currency) grain: {len(_wc_pairs):,} wallet-incapable pair(s), "
-                            f"{len(_uo_pairs):,} USA-only pair(s), from {_pair_src}."
-                            + (" Search, delivery and build_split_exports all agree (19ht "
-                               "default; the exports are fid-grain, finer still). "
-                               "ROUTING_EMASK_PAIRS=0 restores the coarse vampMid-only test."
-                               if _emp_on else
-                               " ⚠ BUT DELIVERY IS ON THE COARSE vampMid-ONLY TEST "
-                               "(ROUTING_EMASK_PAIRS=0 is set), which OVER-BLOCKS any vampMid "
-                               "whose fids differ in capability by currency. The two sides model "
-                               "different eligibility sets and the difference lands in "
-                               "RECONCILIATION ERROR. Unset it to agree."))
+                            "currency) grain, in the search and in delivery alike:")
+                        log(f"      {len(_wc_pairs):,} wallet-incapable pair(s)")
+                        log(f"      {len(_uo_pairs):,} USA-only pair(s)")
+                        log(f"      source: {_pair_src}")
                         # 19ht: the pair grain is an OR over a pair's ACTIVE fids;
                         # build_split_exports tests each fid. They agree only while a pair's
                         # active fids agree with each other. 0 of 296 do not, on the MID list this
@@ -4032,9 +4037,10 @@ def render():
                         log("")
                         log("   per-MID cap projection scaffold")
                         log(f"      {'origin-month cells (t0)':<38}{len(_T0):>14,}")
-                        log(f"      {'aged rows for capped MIDs':<38}{len(_Pc):>14,}")
-                        log(f"      {'profiles covered':<38}{len(_keep):>14,}")
-                        log("")
+                        # 19ip: all three rows are CELL counts now. "profiles covered" was a
+                        # profile count sitting in a table of cell counts, and the profile count
+                        # is on the `profiles:` line of the reconciliation table below anyway.
+                        log(f"      {'aged cells for capped MIDs':<38}{len(_Pc):>14,}")
                         log("")
                         # ── [cap-timing] 19gt: SPLIT THE 54.5s ────────────────────────────
                         # The gap between this line and the END of the cap build was
@@ -4082,7 +4088,7 @@ def render():
                                 f"{'':>14}{_rcD:>14,}")
                             log(f"      {'2  collapse to (cur,bin,rpgt,pmp,ctry,mid,period,t)':<58}"
                                 f"{_rcA - _rcD:>+14,}{_rcA:>14,}")
-                            log(f"      {'3  drop profiles with no banded MID (out of scope)':<58}"
+                            log(f"      {'3  drop cells in profiles with no banded MID':<58}"
                                 f"{_rcS - _rcA:>+14,}{_rcS:>14,}")
                             log(f"      {'4  drop t > 0 (aged cohorts; scaffold is t0 only)':<58}"
                                 f"{_rcT - _rcS:>+14,}{_rcT:>14,}")
@@ -4103,10 +4109,11 @@ def render():
                             _rc_cb = int(_rc.get("profiles_band", 0))
                             log("")
                             log("")
-                            log(f"      profiles: {_rc_cn:,} profile(s) the search can route into — "
-                                f"{_rc_cb:,} already had a banded MID with baseline history there, "
-                                f"{_rc_cn - _rc_cb:,} exist only because a candidate door was "
-                                "injected into them.")
+                            # 19ip: the "N already had a banded MID / M exist only because a
+                            # candidate door was injected" split has read N / 0 on every run since
+                            # candidate doors landed - the second number is structurally 0 here,
+                            # so the sentence explained a distinction that never occurs.
+                            log(f"      profiles: {_rc_cn:,} profile(s) the search can route into")
                             # 19hg: the "WHAT EACH STEP IS" paragraph is now one row per step.
                             # KEPT rather than deleted: steps 3 and 4 drop 73% of the file
                             # between them, and without a reason beside each number the table
@@ -7143,8 +7150,8 @@ def render():
                                     log(f"   targeted move-operator seed skipped: "
                                         f"{type(_me).__name__}: {_me}")
                                 # ── READ-ONLY SEED DIAGNOSTICS (ROUTING_SEED_DIAG) ──────────────────
-                                # Eight report blocks that change NO share: held-vs-movable,
-                                # reachable minimum, VAMP-positive sibling, the four root-cause
+                                # Eight report blocks that change NO share: reachable
+                                # minimum, VAMP-positive sibling, the four root-cause
                                 # reports, co-location, and the seed unmet-band summary. Measured
                                 # ~15.8s on the 2026-08-25 20:35 run. Worth that while a seed
                                 # question is open; worth nothing once it is closed — the same
@@ -7157,16 +7164,16 @@ def render():
                                 # note about how to read the numbers they did not produce — about
                                 # 20 lines of the run log saying nothing, and ~10s of projector
                                 # time spent deciding there was nothing to say. Ask the question
-                                # ONCE, up front, and skip all nine when the answer is "nothing is
+                                # ONCE, up front, and skip all eight when the answer is "nothing is
                                 # breached". They come back in full the moment a band breaches,
                                 # which is the only time they have ever been read.
                                 _sd_breach = None
                                 _sd_breach_vamp = None      # 19hr: None ⇒ unknown, so run them
                                 # ── 19ik: ONE SPLIT, ONE BASIS ───────────────────────────────
-                                # The gate below tested `_fm_deliv(split)` while all nine probes
+                                # The gate below tested `_fm_deliv(split)` while all eight probes
                                 # tested `split` RAW - the same expression, one of them wrapped.
                                 # On the 2026-09-03 00:23 run that cost the worst of both: the
-                                # gate found a breach so the nine ran, and every one of them then
+                                # gate found a breach so they all ran, and every one of them then
                                 # printed "(no breached ceiling bands at this split.)" plus its
                                 # three-line reading note. Twenty lines saying nothing, and ~23s
                                 # of projector time (663.4s → 686.2s) spent deciding there was
@@ -7175,7 +7182,7 @@ def render():
                                 # DELIVERED is the right basis: it is what the engine selects on
                                 # (19an) and what ships, so a band that is met raw and breached
                                 # delivered is precisely the case worth diagnosing. So the split
-                                # is computed ONCE, on that basis, and the gate and all nine read
+                                # is computed ONCE, on that basis, and the gate and all eight read
                                 # it. A third split cannot creep in, and gate-vs-probe
                                 # disagreement is no longer expressible.
                                 _sd_split = None
@@ -7192,7 +7199,7 @@ def render():
                                 if _sd_on and _sd_split is None:
                                     # A SKIPPED diagnostic and a FAILED one must not read alike.
                                     _sd_on = False
-                                    log("   [seed-diag] the nine 'why is this band stuck?' blocks "
+                                    log("   [seed-diag] the eight 'why is this band stuck?' blocks "
                                         "did NOT run: the split they analyse could not be built "
                                         "(no seed candidate in scope, or the delivery transform "
                                         "was unavailable). They are READ-ONLY, so the seed and "
@@ -7215,7 +7222,7 @@ def render():
                                             or (_r.get("floor") is not None
                                                 and float(_r["now"]) < float(_r["floor"]) - 1e-6)]
                                         _sd_breach = [str(_r.get("midl")) for _r in _sd_over]
-                                        # 19hr: AND PER METRIC. Six of the nine probes can only
+                                        # 19hr: AND PER METRIC. Six of the eight probes can only
                                         # analyse a VAMP band; gating them on ANY breach is what
                                         # made all six run for a TXN band that was over by one.
                                         _sd_met = {str(getattr(_sp, "midl", "")).strip().lower():
@@ -7241,9 +7248,9 @@ def render():
                                         "none. They return the moment a VAMP band breaches.")
                                 if _sd_on and _sd_breach == []:
                                     _sd_on = False
-                                    log("   [seed-diag] all bands are met at the seed, so the nine "
+                                    log("   [seed-diag] all bands are met at the seed, so the eight "
                                         "'why is this band stuck?' blocks did not run — "
-                                        "held-vs-movable, reachable-minimum, VAMP-positive "
+                                        "reachable-minimum, VAMP-positive "
                                         "sibling, seed-gradient, vpsum, usable-recipient, breach "
                                         "concentration, scoped-vs-frozen and co-location. Each "
                                         "one explains a BREACHED band; there is no breached band. "
@@ -7256,7 +7263,7 @@ def render():
                                     # evidence for whether a band is genuinely unreachable, so
                                     # their absence has to be stated, not inferred.
                                     log("   [seed-diag] SKIPPED by ROUTING_SEED_DIAG=0 \u2014 the "
-                                        "held-vs-movable, reachable-minimum, VAMP-sibling, "
+                                        "reachable-minimum, VAMP-sibling, "
                                         "incidence self-check, seed-gradient, vpsum, "
                                         "usable-recipient, co-location and seed unmet-band blocks "
                                         "did not run. They are READ-ONLY, so the seed and the "
@@ -7264,21 +7271,14 @@ def render():
                                         "'is this band reachable?'. Unset it to get them back "
                                         "(~16s).")
                                 if _sd_on:
-                                    # ── HELD-vs-MOVABLE DIAGNOSTIC (READ-ONLY) ──────────────────────────
-                                    # How much of each breached MID's M5 value the routing decision can MOVE
-                                    # (pool redistributed by share) vs HELD (baseline / FCP2+ / pre-go-live).
-                                    # held < ceil ⇒ compliance reachable (any stuck solver = search bug);
-                                    # held ≥ ceil ⇒ structurally stuck. This is the decisive movability test.
-                                    # If 'held' is far larger than expected, mv = pro_rata × fcp1_frac is
-                                    # understated upstream. Read-only; never breaks the run.
-                                    try:
-                                        from routing_optimiser.s4_search.exact_band_solver import held_movable_report as _hm
-                                        _hm_split = np.asarray(_sd_split, float)   # 19ik: the ONE split
-                                        for _ln in _hm(_hm_split, ctx["exact_bands"],
-                                                       ctx["_exact_bands_selfcheck"]["inc"]):
-                                            log(_ln)
-                                    except Exception as _hme:  # noqa: BLE001 — a diagnostic must never break the run
-                                        log(f"   held-vs-movable check skipped ({type(_hme).__name__}: {_hme}).")
+                                    # 19ip: the HELD-vs-MOVABLE block is gone. It quoted HELD as
+                                    # the floor a breached band could reach; the REACHABLE MINIMUM
+                                    # block immediately below reaches that floor by actually routing
+                                    # the breached MID toward zero against real eligibility, so the
+                                    # two answered the same question and only one of them measured
+                                    # it. The function itself is still in exact_band_solver,
+                                    # unwired, because its pro_rata x fcp1_frac provenance has no
+                                    # other home - see the note on its docstring.
                                     # ── REACHABLE MINIMUM (READ-ONLY) ───────────────────────────────────
                                     # The full-matrix decode is a plain softmax with NO hard share floor, so
                                     # route each breached MID toward 0 wherever an eligible sibling can absorb
@@ -9476,8 +9476,11 @@ def render():
                                         #      an ineligible gateway" hazard, with nothing
                                         #      standing in its way on this path.
                                         # Passing the pairs closes (2) without touching (1).
-                                        # Under ROUTING_EMASK_PAIRS=0 (the default) the sets are
-                                        # ignored and this is unchanged.
+                                        # 19ip: this comment used to say the sets were ignored
+                                        # "under ROUTING_EMASK_PAIRS=0 (the default)" - the
+                                        # default was 1, so they were NOT ignored, and the note
+                                        # said the opposite of what the code did. The switch is
+                                        # gone; the pairs are always used.
                                         _pj_wcp, _pj_uop, _ = _cap_pairs(
                                             mid_list_path,
                                             input_json_path("routing_restrictions.json"))
@@ -9493,12 +9496,11 @@ def render():
                                         _t2 = _pjt.perf_counter()
                                         _pj["t_epi"] += _t1 - _t0
                                         _pj["t_cvp"] += _t2 - _t1
-                                        # 19hr: [emask-grain] far above announces the ARMED
-                                        # grain; this is the FACT of whether the mask reached a
-                                        # consumer. On this path it usually does NOT — the frame
-                                        # is ENFORCED and the floor is off — so arming
-                                        # ROUTING_EMASK_PAIRS here is a no-op and the run is
-                                        # byte-identical to an unarmed one. Say it once.
+                                        # 19hr: [emask-grain] far above states the grain; this
+                                        # is the FACT of whether the mask reached a consumer. On
+                                        # this path it usually does NOT — the frame is
+                                        # ENFORCED and the floor is off — so the grain makes no
+                                        # difference to what this call returns. Say it once.
                                         if not _pj.get("emask_fact_said"):
                                             _pj["emask_fact_said"] = True
                                             log("   [emask-grain] FACT: " + str(getattr(

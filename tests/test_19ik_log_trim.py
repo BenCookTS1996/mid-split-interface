@@ -19,10 +19,13 @@ def check(n, ok, d=""):
 # ── the gate and the nine probes share ONE split ────────────────────────────────────────
 check("the split is hoisted once, on the DELIVERED basis",
       "_sd_split = (_fm_deliv(_sd_base[None, :])[0]" in T2)
+# 19ip: _hm_split is gone with the HELD-vs-MOVABLE block, so three entry points remain.
 _probes = re.findall(r"(_hm_split|_fmin_split|_vsib_split|_dx_split) = np\.asarray\("
                      r"_sd_split, float\)", T2)
-check("all four probe entry points read the hoisted split", len(set(_probes)) == 4,
+check("every probe entry point reads the hoisted split", len(set(_probes)) == 3,
       f"{sorted(set(_probes))}")
+check("...and _hm_split is not one of them (19ip removed held-vs-movable)",
+      "_hm_split" not in T2)
 check("the gate reads it too, not its own copy",
       "_sdv = np.asarray(_sd_split, float)" in T2)
 # Six legitimate readers of _exact_G remain, and none of them is one of the nine probes:

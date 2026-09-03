@@ -1445,16 +1445,6 @@ def _max_share_waterfill(shares, t0, grp, cap, live):
     return _sh
 
 
-def emask_pairs_on():
-    """Is the wallet/USA capability mask on the FINE (vampMid, currency) grain? Default YES.
-
-    19ht. Read per call rather than at import, so `routing.env` picked up by run.command AT
-    LAUNCH is honoured and a mid-session export still works. THE one reader - tab_2's
-    [emask-grain] line calls this instead of reading the environment itself.
-    """
-    return os.environ.get("ROUTING_EMASK_PAIRS", "1") != "0"
-
-
 def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset(),
                                   kill_eff=(), month_0=None, scoped_rpgts=(),
                                   wallet_incapable=frozenset(), usa_only=frozenset(),
@@ -1646,14 +1636,20 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # them an inactive `-test` sibling; app_common.capability_pairs now flags it if an active fid
     # ever joins them, because that is the day pairs and fids stop agreeing.
     #
-    # ROUTING_EMASK_PAIRS=0 restores the coarse test. Keep the switch: this is a change to what
-    # tab 3's PRE/POST table shows and to any floored run, so there has to be a way back.
-    _EMASK_PAIRS = emask_pairs_on()
+    # 19ip: ROUTING_EMASK_PAIRS IS GONE. It was a way back to the coarse vampMid-only test,
+    # and it could not be taken safely: `projection_cache_sig` read the same switch with
+    # DEFAULT "0" while this function read it with default "1", so an UNSET run (pair grain,
+    # hashed emp=0) and an explicit ROUTING_EMASK_PAIRS=0 run (coarse grain, hashed emp=0)
+    # produced the SAME cache key and DIFFERENT answers - the exact stale-projection class the
+    # hash was added to prevent. The coarse test also over-blocks any vampMid whose fids differ
+    # in capability by currency, which is why nothing had asked for it back. The pair grain is
+    # now unconditional wherever pair data exists; with none supplied the name-set fallback
+    # below still runs, so a caller that has only vampMid names is unaffected.
     _wc_p = {(str(a).strip().lower(), str(b).strip().lower())
              for a, b in (wallet_incapable_pairs or ())}
     _uo_p = {(str(a).strip().lower(), str(b).strip().lower())
              for a, b in (usa_only_pairs or ())}
-    _use_pairs = bool(_EMASK_PAIRS and (_wc_p or _uo_p))
+    _use_pairs = bool(_wc_p or _uo_p)
 
     def _cap_emask():
         """The wallet/USA capability mask over `t0`, at whichever grain is armed."""
@@ -1674,10 +1670,9 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # which is intent wearing a fact's clothes. The mask has exactly TWO consumers in this
     # function, and BOTH can be closed at once: the `prop_raw` zeroing is skipped for an ENFORCED
     # 7-tuple frame (the shares already have the masks baked in), and the exploration-floor block
-    # is skipped when `exploration_floor` is 0. tab_2's reconcile path hits both, so arming
-    # ROUTING_EMASK_PAIRS there changes NOTHING and the run comes out byte-identical to an
-    # unarmed one. That is what the 2026-09-02 16:19 run was, and nothing in the log could say
-    # so. Record the consumers that actually ran.
+    # is skipped when `exploration_floor` is 0. tab_2's reconcile path hits both, so the grain
+    # this function chose changed NOTHING on that path - which is what the 2026-09-02 16:19 run
+    # was, and nothing in the log could say so. Record the consumers that actually ran.
     _emask_grain = ("(vampMid, currency) pairs" if _use_pairs else
                     "vampMid name sets" if (_wc_s or _uo_s) else
                     "none - no capability data supplied")
@@ -1711,7 +1706,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     if _efloor > 0.0:
         # 19hh: was a second, independent copy of the wallet/USA test. Now the SAME builder
         # the `prop_raw` zeroing above uses, so the floor's eligibility set and the zeroing's
-        # can no longer disagree — and both move to the pair grain together under one switch.
+        # can no longer disagree — both read the same builder at the same grain.
         _emask_f = _cap_emask()
         _emask_applied.append("exploration-floor eligibility")
         _elig_f = (((t0["base_share"] > 0) | (t0["prop_raw"] > 0)) & (t0["_keep"] > 0)
@@ -1730,8 +1725,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
                 else "no wallet/USA capability data was supplied")
         globals()["_LAST_EMASK_GRAIN"] = (
             _emask_grain + " - NOT APPLIED, no consumer ran: " + _why
-            + f"; exploration_floor={_efloor:g} so the floor block is skipped"
-            + ". ROUTING_EMASK_PAIRS cannot change this call's output.")
+            + f"; exploration_floor={_efloor:g} so the floor block is skipped.")
     # Movable fraction = go-live pro-rata × fcp1 cohort fraction (see _vamp_post_core).
     _p = t0["pro_rata"] * t0["fcp1_frac"]
     t0["post_txn"] = t0["profile_tot"] * ((1 - _p) * t0["base_share"] + _p * t0["prop_share"])
@@ -2552,7 +2546,7 @@ def _c_vamp_post_prorata(pp_path, m, prop_items, excluded_mids, kill_eff=(), mon
 
 
 # [FN-266b]
-_PROJ_CODE_VER = "2026-09-02-19ht-pair-grain-DEFAULT-ON"  # bump on ANY projection-logic
+_PROJ_CODE_VER = "2026-09-03-19ip-pair-grain-ONLY"  # bump on ANY projection-logic
 # change so the in-memory st.cache_data entries bust on the next rerun (the data signature alone
 # can't see code edits: a re-used outputs folder + unchanged split => identical key => stale result).
 
@@ -2575,15 +2569,16 @@ def projection_cache_sig(pp_path, prop_items, exploration_floor=0.0, extra="",
     h = _hl.blake2b(digest_size=16)
     for t in (prop_items or ()):
         h.update(repr(t).encode("utf-8"))
-    # 19hh: the capability GRAIN is part of the answer, so it has to be part of the key. Without
-    # this, flipping ROUTING_EMASK_PAIRS would be served the projection computed at the OTHER
-    # grain — the exact stale-cache class of bug this codebase has already had from a numba
-    # cache (band_projection's _VAMP_CONSERVE incident). The switch is hashed too, so arming it
-    # busts the key even when the pair sets themselves are unchanged.
-    _emp = os.environ.get("ROUTING_EMASK_PAIRS", "0") != "0"
+    # 19hh: the capability GRAIN is part of the answer, so the pair SETS are part of the key.
+    # 19ip: the switch that selected the grain is gone, and so is the `|emp=` term that hashed
+    # it. That term was itself the bug it was meant to prevent - it read ROUTING_EMASK_PAIRS
+    # with default "0" while the projection read it with default "1", so an unset run and an
+    # explicit =0 run hashed IDENTICALLY and computed at DIFFERENT grains. With one grain there
+    # is nothing left to disambiguate. Dropping the term changes every key once: that is a
+    # recompute, not a different answer.
     h.update(("|wcp=" + ",".join(sorted(f"{a}~{b}" for a, b in (wallet_incapable_pairs or ())))
               + "|uop=" + ",".join(sorted(f"{a}~{b}" for a, b in (usa_only_pairs or ())))
-              + f"|emp={int(_emp)}").encode("utf-8"))
+              ).encode("utf-8"))
     h.update(f"|floor={float(exploration_floor or 0.0):.8g}|{extra}|cv={_PROJ_CODE_VER}".encode("utf-8"))
     return f"{mt:.0f}:{len(prop_items or ()):d}:{h.hexdigest()}"
 

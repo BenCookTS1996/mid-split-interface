@@ -2004,8 +2004,9 @@ class PopulationBandProjector:
                            "by construction and [emask-grain] above says so. The count here is "
                            "what the OLD coarse vampMid-only test would have disagreed by, which "
                            "is worth keeping as the size of the over-blocking that was removed. "
-                           "ROUTING_EMASK_PAIRS=0 puts delivery back on the coarse test, and only "
-                           "then does this number become a live gap again."))
+                           "19ip deleted the switch that could put delivery back on the coarse "
+                           "test, so this number is history for good and cannot become a live "
+                           "gap again."))
             elif self._efloor > 0.0:
                 _bnote(f"[ef-mask] exploration floor {self._efloor:.2%} carried into the "
                        f"projector (STEP 1: stored, not applied). Floor-eligible rows: "

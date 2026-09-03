@@ -87,7 +87,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -2405,22 +2405,6 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     s0 = _segment_softmax(seed_logits[None, :], p.profile_start, p.profile_len, p.max_share)
     seed_success_rate = _success_rate(s0, p.vol, p.succ, total_vol)[0]
     seed_other = _violation(s0, p)[0]           # engineering viol (global cap + max-share) — secondary
-    if _VIOL_FORCED and _VF_FACT["n"] and not _VF_FACT["said"]:
-        _VF_FACT["said"] = True
-        _vf_tot = _VF_FACT["forced"] + _VF_FACT["kept"]
-        log(f"   [viol-forced] the engineering key's MAX-SHARE term on the seed: "
-            f"{_vf_tot:.6g} total, of which {_VF_FACT['forced']:.6g} comes from "
-            f"{_VF_FACT['rows']:,} row(s) in profiles whose only eligible gateway MUST hold "
-            f"100% - there is nowhere else for that share to go, and `_cap_rows` leaves those "
-            f"rows alone. EXEMPTED (19io), leaving {_VF_FACT['kept']:.6g}"
-            + (" \u2014 so the key's 0 is now REACHABLE and 'viol 0' means compliant. The old "
-               "key read a flat, unreachable floor for the whole run and ranked it ABOVE "
-               "conversion."
-               if _VF_FACT["kept"] <= 1e-9 else
-               " \u2014 \u26a0 THE REMAINDER IS NON-ZERO: that is a REAL max-share violation "
-               "the old flat figure was masking, on rows where the cap COULD have been met. "
-               "Worth investigating.")
-            + " ROUTING_VIOL_FORCED=0 restores the old key.")
     if _VIOL_FACT.get("msg"):   # 19ig: the line above is the run's FIRST _violation call
         log("   " + _VIOL_FACT["msg"])
     seed_band = 0.0                              # exact M5 band breach — strict primary key
@@ -2493,6 +2477,32 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         except Exception as _obe:  # noqa: BLE001 - a self-check must never break a run
             log(f"[fullmatrix-ga] [obj-basis] view check skipped ({type(_obe).__name__}: "
                 f"{_obe}) - the objective is unaffected, only the proof of it.")
+    # -- [viol-forced] 19ip: MEASURED ON THE BASIS THE KEY IS COMPARED ON --------------
+    # 19io printed this immediately after `seed_other = _violation(s0, p)` - the RAW decoded
+    # seed, where the capped decode has already pulled every row down to the cap, so it found
+    # ZERO forced rows and reported "0 total, 0 rows" on the very run whose delivered key had
+    # 6.18557 removed by this exemption. The number was real; the split it was read off was
+    # not the one the key uses. `_VF_FACT` holds row 0 of the LAST _violation call made before
+    # this prints, so printing it HERE reads the D2 re-score above - the delivered split, where
+    # the 200 rows at share 1.0 in single-eligible-gateway profiles actually live.
+    if _VIOL_FORCED and _VF_FACT["n"] and not _VF_FACT["said"]:
+        _VF_FACT["said"] = True
+        _vf_tot = _VF_FACT["forced"] + _VF_FACT["kept"]
+        _vf_basis = ("DELIVERED" if (_DECODE_OBJ and _have_full and _fd0 is not None)
+                     else "RAW decoded")
+        log(f"   [viol-forced] the engineering key's MAX-SHARE term on the seed, measured on "
+            f"the {_vf_basis} split: {_vf_tot:.6g} total, of which {_VF_FACT['forced']:.6g} "
+            f"comes from {_VF_FACT['rows']:,} row(s) in profiles whose only eligible gateway "
+            f"MUST hold 100% - there is nowhere else for that share to go, and `_cap_rows` "
+            f"leaves those rows alone. EXEMPTED (19io), leaving {_VF_FACT['kept']:.6g}"
+            + (" \u2014 so the key's 0 is now REACHABLE and 'viol 0' means compliant. The old "
+               "key read a flat, unreachable floor for the whole run and ranked it ABOVE "
+               "conversion."
+               if _VF_FACT["kept"] <= 1e-9 else
+               " \u2014 \u26a0 THE REMAINDER IS NON-ZERO: that is a REAL max-share violation "
+               "the old flat figure was masking, on rows where the cap COULD have been met. "
+               "Worth investigating.")
+            + " ROUTING_VIOL_FORCED=0 restores the old key.")
     if _compress_on:
         _refresh_codebook(seed_logits)                            # learn the initial codebook from the seed
         _k0 = 0 if _cb["cent"] is None else _cb["cent"].shape[0]
@@ -3160,20 +3170,24 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             "hit the cap (impact_calcs._cap_rows). Single pass, because Σ(target - share) over a "
             "profile's present rows is (present_rows × target) - 1 + excess.")
         if _DECODE_OBJ and _have_full:
-            # 19ig: under ROUTING_DECODE_OBJ the engineering key is measured on the DELIVERED
-            # split, where the cap genuinely CANNOT always hold - [deliv-cap] reports the
-            # (candidate, profile) pairs whose live rows have less room than the excess, and
-            # _cap_rows leaves those at baseline, above the cap. On the 23:01 run that read a
-            # flat 4.9485 for 320 generations. So the sentence below would have accused the
-            # water-fill of failing on every armed run.
-            log("[decode-cap]    THE ENGINEERING KEY IS NOT 0 THIS RUN, AND SHOULD NOT BE: "
-                "ROUTING_DECODE_OBJ measures it on the DELIVERED split, and delivery leaves "
-                "rows above the cap wherever the profile has less room than the excess (see "
-                "[deliv-cap]'s 'unsatisfiable' count). What WOULD be a defect is the key MOVING "
-                "while [deliv-cap]'s unsatisfiable count does not, or the key reading non-zero "
-                "with that count at 0 - that is the max-share term, and then the water-fill did "
-                "not hold. Note the key outranks the success rate in `_key_of`, so a candidate "
-                "that lowers it beats a better-converting one.")
+            # 19ip: this paragraph used to open by declaring the engineering key non-zero
+            # for the whole of an armed run, which 19io made false. The flat 4.9485 / 6.18557
+            # it was
+            # explaining was ENTIRELY forced rows - profiles whose only eligible gateway must
+            # hold 100%, which no routing can bring under the cap - and 19io exempts them. The
+            # 14:19 run read 0.0000 with the split unchanged. So 0 is the expected reading
+            # again on the delivered basis too, and a non-zero one is a finding.
+            log("[decode-cap]    THE ENGINEERING KEY should read 0.0000 even though "
+                "ROUTING_DECODE_OBJ measures it on the DELIVERED split. Delivery does leave "
+                "rows above the cap - a profile with less room than the excess cannot absorb "
+                "it - but every such row that is STRUCTURALLY forced there is exempted by "
+                "19io (see [viol-forced]), so what remains is only rows the cap COULD have "
+                "held. A non-zero max-share term therefore means the water-fill did not hold: "
+                "cross-check it against [deliv-cap]'s 'unsatisfiable' count, and treat the key "
+                "moving while that count does not as the same finding. Note the key outranks "
+                "the success rate in `_key_of`, so a candidate that lowers it beats a "
+                "better-converting one - which is why an unreachable floor here was so "
+                "expensive.")
         else:
             log("[decode-cap]    THE ENGINEERING KEY should now read 0.0000 for every candidate, "
                 "because none can violate. If `viol` above is ever non-zero on the max-share "

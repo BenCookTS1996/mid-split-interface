@@ -71,7 +71,7 @@ import numpy as np
 from scipy.optimize import linprog as _linprog
 import scipy.sparse as _sparse
 
-__build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+global-linear-lp-seed+minimal-move-projection+colocation-report+held-movable-report+movable-provenance+reachable-minimum-no-floor+vamp-positive-sibling+selfcheck+seedgrad+vpsum+usable-recipient+degenerate-gradient-flag+breach-concentration+scoped-frozen-split+gradient-vpsum-regularisation+insearch-rpgt-breakdown+catchall-eps-floor+targeted-move-headroom+2026-08-19bd-raw-basis-claim-labelled+2026-08-19be-recipient-headroom-per-metric+2026-09-01-19go-delivery-faithful-seed-accept-tests+2026-09-03-19ik-log-trim+2026-09-03-19io-lp-stall-armed"
+__build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+global-linear-lp-seed+minimal-move-projection+colocation-report+held-movable-report+movable-provenance+reachable-minimum-no-floor+vamp-positive-sibling+selfcheck+seedgrad+vpsum+usable-recipient+degenerate-gradient-flag+breach-concentration+scoped-frozen-split+gradient-vpsum-regularisation+insearch-rpgt-breakdown+catchall-eps-floor+targeted-move-headroom+2026-08-19bd-raw-basis-claim-labelled+2026-08-19be-recipient-headroom-per-metric+2026-09-01-19go-delivery-faithful-seed-accept-tests+2026-09-03-19ik-log-trim+2026-09-03-19io-lp-stall-armed+2026-09-03-19ip-log-trim"
 
 # Gradient-only vpsum/psum floor used by the SEED SOLVERS (not the diagnostics, not the forward
 # values). Share-scale denominators: real high-VAMP profiles sit well above this, near-empty profiles
@@ -1019,6 +1019,13 @@ def unmet_summary(split, exact_bands, incidence, *, max_list=8):
 # [FN-393]
 def held_movable_report(split, exact_bands, incidence, *, max_list=15):
     """READ-ONLY: how much of each breached band's M5 value is MOVABLE vs HELD.
+
+    UNWIRED as of 19ip - nothing calls this, so it produces no run-log output. It came out of
+    [seed-diag] because floor_min_report answers the same question better: this function reports
+    HELD as the floor, which is an approximation of the reachable minimum, while floor_min_report
+    actually routes each breached MID toward zero against real eligibility and reads the true
+    minimum. Kept, not deleted, because the pro_rata x fcp1_frac provenance below has no other
+    home. To re-wire it, call it beside floor_min_report in tab_2's [seed-diag] block.
 
     For a split, decomposes every ceiling band into the routing-invariant HELD cohort (baseline /
     FCP2+ / pre-go-live) and the MOVABLE pool (redistributed by the share). For each BREACHED ceiling
@@ -2412,44 +2419,32 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
                        + ("ALL ceilings cleared — a compliant split exists." if _cleared
                           else ("Some ceilings remain and a pass found NO improving move ⇒ this "
                                 "operator is exhausted (evidence of joint infeasibility BY THIS "
-                                "OPERATOR, not proof of infeasibility). Kept — strictly better on RAW (see log note)."
+                                "OPERATOR, not proof of infeasibility). Kept — strictly better on the RAW basis; the engine selects on DELIVERED."
                                 if stop_reason == "no-improving-move" else
                                 ("Some ceilings remain; the last pass improved the breach by less "
                                  "than one part in a million, so this is CONVERGED, not capped. "
-                                 "Kept — strictly better on RAW (see log note)."
+                                 "Kept — strictly better on the RAW basis; the engine selects on DELIVERED."
                                  if stop_reason == "converged" else
                                  f"⚠ Some ceilings remain and the loop hit its RUNAWAY BACKSTOP at "
                                  f"{_RUNAWAY:,} passes while STILL IMPROVING. This is NOT "
                                  f"convergence and NOT exhausted headroom — it is a pathological "
-                                 f"case. Raise ROUTING_TMOVE_MAXPASS. Kept — strictly better on RAW (see log note)."))))
+                                 f"case. Raise ROUTING_TMOVE_MAXPASS. Kept — strictly better on the RAW basis; the engine selects on DELIVERED."))))
+            # 19ip: the nine-line RAW-vs-DELIVERED note is gone. It was a standing
+            # explanation of a divergence whose CAUSE 19be removed, and the two bases it
+            # asked the reader to compare are now printed as two columns of the
+            # [seed-basis] table - which is where they get compared. The per-verdict
+            # strings above still name the RAW basis, so the label is not lost.
             if log_fn:
-                # 19bd: say WHICH BASIS "better" was measured on. This operator's
-                # line-search scores the RAW split; the engine SELECTS seeds on the
-                # DELIVERED basis (blocked-caps + eligibility). On 2026-08-23 10:07 it
-                # improved RAW by 0.0017 and worsened DELIVERED by 0.0375, having
-                # reported itself strictly better. Selection rejected it, so nothing bad
-                # shipped — but the claim was false, the stage was wasted, and a reader
-                # had no way to tell from this line.
-                # 19be then removed the CAUSE of that particular divergence (recipient
-                # headroom was one slot per MID, debited in VAMP units whatever metric
-                # the ceiling belonged to). The accept test is STILL RAW, so this note
-                # stays: it is the honest label for what the line-search measured, not a
-                # standing bug report.
-                log_fn("      targeted-move seed: NOTE every 'better' above is the RAW "
-                       "basis — the only one this operator can see. The engine selects "
-                       "on the DELIVERED basis (blocked-caps + eligibility), so the two "
-                       "can still move apart. The mechanism that made them disagree on "
-                       "WoodForest is GONE as of 19be: recipient headroom is now kept "
-                       "per (MID, METRIC), so a txn-only MID no longer reads infinite "
-                       "room for a VAMP shed. What remains is delivery's own transform, "
-                       "not a unit error here. Read [seed-basis] for both bases and "
-                       "[seed-chain] for what shipped.")
-            if log_fn:
-                log_fn(f"      targeted-move seed: stopped because '{stop_reason}' after "
-                       f"{passes:,} pass(es) · projection cost {_cost['mv']:,} sparse matvec(s), "
-                       f"{_cost['pen']:,} penalty + {_cost['rep']:,} report pass(es)"
-                       + ("  (fast line-search ON — 1 matvec per MID instead of 4)"
-                          if _FASTLS else "  (fast line-search OFF — 4 matvecs per MID)"))
+                _sr_why = {
+                    "cleared": "every breached ceiling is now met",
+                    "no-improving-move": "no remaining single move improves the breach",
+                    "converged": "the last pass improved the breach by less than one part "
+                                 "in a million",
+                    "runaway": "hit the pass backstop while still improving "
+                               "(raise ROUTING_TMOVE_MAXPASS)",
+                }.get(str(stop_reason), str(stop_reason))
+                log_fn(f"      targeted-move seed: stopped after {passes:,} pass(es) "
+                       f"\u2014 {_sr_why}")
                 _tmove_cost(_cost, _time.perf_counter() - _t_stage, log_fn, fastls=_FASTLS)
             return s, info
         info.update(ok=False, breach=b0, reason="no exact-breach improvement (breach only relocates)")
