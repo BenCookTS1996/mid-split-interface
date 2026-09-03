@@ -8261,6 +8261,8 @@ def render():
                                 _fm_report_fn = None
                                 _fm_deliv_full = None   # shared full-grain delivery (band + compress)
                                 _fm_gather = None       # full-grain → kept-grain gather (compress distortion)
+                                _fm_deliv_rows = None   # 19iz: subset-capable delivery (deliver delta)
+                                _fm_dlv_map = None      # 19iz: kept-grain → full-grain profile map
                                 if _fm_use_exact:
                                     _fm_colmap = np.asarray(_fm_meta["keep_idx"])[_fm_p.order]
                                     _fm_nrow = int(ctx["n_row"])
@@ -8457,6 +8459,205 @@ def render():
                                         _seg = np.repeat(np.add.reduceat(_d, _cs, axis=1), _cc, axis=1)
                                         _d = np.where(_seg > 1e-12, _d / np.where(_seg > 1e-12, _seg, 1.0), _d)
                                         return _d[0] if _one else _d
+
+                                    # -- 19iz: THE DELIVER DELTA'S SUBSET TRANSFORM ----------
+                                    # [eval-cost] on the 19:38 run: `_fm_deliv_full` is 364.9 ms of
+                                    # every 839 ms evaluation - 122.6s of a 322s search - and it is
+                                    # per profile for exactly the reason the decode was. Block,
+                                    # eligibility, cap and floor are all np.add.reduceat and
+                                    # np.repeat along axis=1 over one profile's own rows, so
+                                    # profile j's output depends on profile j's input and on
+                                    # nothing else in the array.
+                                    #
+                                    # So a child that inherited profile j unchanged has profile j's
+                                    # DELIVERED rows unchanged too, and the ~1% of profiles it
+                                    # actually mutates are the only ones that need computing. 19ix
+                                    # could not do this from inside the GA because delivery is THIS
+                                    # closure over full-width arrays; `_fm_deliv_rows` is the
+                                    # subset-capable transform that opens it and `_fm_dlv_map` is
+                                    # what lets the GA - which knows the KEPT-grain profile layout -
+                                    # address the FULL-grain one delivery works in.
+                                    #
+                                    # THE MAP IS VERIFIED, NOT ASSUMED. Every kept profile must land
+                                    # entirely inside ONE full profile, the correspondence must be a
+                                    # bijection, and the row counts must agree. Any of those failing
+                                    # leaves `_fm_dlv_map` None and the GA simply never gathers a
+                                    # delivery - it is not a fallback that changes an answer.
+                                    _fm_dlv_map = None
+                                    _fm_deliv_rows = None
+                                    _fm_cminv = None
+                                    try:
+                                        _dm_kps = np.asarray(_fm_p.profile_start, np.intp)
+                                        _dm_kpc = np.asarray(_fm_p.profile_len, np.intp)
+                                        _dm_pof = np.repeat(np.arange(_fm_bcs.size, dtype=np.intp),
+                                                            np.asarray(_fm_bcc, np.intp))
+                                        _dm_kr = _dm_pof[np.asarray(_fm_colmap, np.intp)]
+                                        _dm_lo = np.minimum.reduceat(_dm_kr, _dm_kps)
+                                        _dm_hi = np.maximum.reduceat(_dm_kr, _dm_kps)
+                                        _dm_ok = bool(
+                                            _dm_kps.size == _fm_bcs.size
+                                            and np.array_equal(_dm_lo, _dm_hi)
+                                            and np.array_equal(np.sort(_dm_lo),
+                                                               np.arange(_fm_bcs.size))
+                                            and np.array_equal(
+                                                np.asarray(_fm_bcc, np.intp)[_dm_lo], _dm_kpc))
+                                        if _dm_ok:
+                                            _fm_cminv = np.full(int(_fm_nrow), -1, np.intp)
+                                            _fm_cminv[np.asarray(_fm_colmap, np.intp)] = np.arange(
+                                                np.asarray(_fm_colmap).size, dtype=np.intp)
+                                            _fm_dlv_map = {
+                                                "jmap": np.asarray(_dm_lo, np.intp),
+                                                "cs": np.asarray(_fm_bcs, np.intp),
+                                                "cc": np.asarray(_fm_bcc, np.intp),
+                                                "nrow": int(_fm_nrow)}
+                                            log(f"   [dlv-map] delivery can be addressed per "
+                                                f"profile from the search: {_dm_lo.size:,} "
+                                                f"kept-grain profile(s) map one-to-one onto "
+                                                f"{_fm_bcs.size:,} full-grain profile(s), each "
+                                                "entirely inside one, with matching row counts. "
+                                                "Checked on this build's own keep_idx, not "
+                                                "inherited from the run that first held.")
+                                        else:
+                                            log("   [dlv-map] the kept-grain and full-grain profile "
+                                                "layouts do NOT correspond one-to-one on this "
+                                                "build, so a delivery cannot be addressed per "
+                                                "profile from the search. The deliver delta is "
+                                                "unavailable this run and nothing else changes.")
+                                    except Exception as _dmE:  # noqa: BLE001
+                                        _fm_dlv_map = None
+                                        log(f"   [dlv-map] profile map NOT built "
+                                            f"({type(_dmE).__name__}: {_dmE}) - the deliver delta "
+                                            "is unavailable this run and nothing else changes.")
+
+                                    def _fm_sub_rows(_cs, _cc, _hit):
+                                        """Row indices of the hit segments plus the gathered
+                                        array's own reduceat starts/counts. Index construction
+                                        only - no arithmetic on shares happens here."""
+                                        _cs = np.asarray(_cs, np.intp)
+                                        _cc = np.asarray(_cc, np.intp)
+                                        _sel = np.where(np.asarray(_hit, bool))[0]
+                                        _scc = _cc[_sel]
+                                        _scs = np.zeros(_scc.size, np.intp)
+                                        if _scc.size:
+                                            np.cumsum(_scc[:-1], out=_scs[1:])
+                                        _t = int(_scc.sum())
+                                        _rows = (np.arange(_t, dtype=np.intp)
+                                                 + np.repeat(_cs[_sel] - _scs, _scc)) if _t else \
+                                            np.zeros(0, np.intp)
+                                        return _rows, _scs, _scc
+
+                                    def _fm_elig_sub(_A, _rows, _scs, _scc, _op=_fm_elig_op,
+                                                     _ap=_apply_elig_pop):
+                                        """Eligibility on a SUB-LAYOUT: the same operator, its
+                                        per-row arrays sliced to `_rows`, its profile segments
+                                        replaced by the sub-layout's.
+
+                                        `has_ban`/`has_w`/`has_u` are carried over VERBATIM rather
+                                        than recomputed on the slice. They gate whole stages, and a
+                                        stage is not the identity just because this subset happens
+                                        to contain no banned row - the ban stage ends in a
+                                        renormalise, which moves any profile whose rows do not sum
+                                        to exactly 1."""
+                                        if _op is None:
+                                            return _A
+                                        _r = np.asarray(_rows, np.intp)
+                                        _o2 = {"profile_starts": np.asarray(_scs, np.intp),
+                                               "profile_counts": np.asarray(_scc, np.intp),
+                                               "n_rows": int(_r.size),
+                                               "has_ban": _op.get("has_ban"),
+                                               "has_w": _op.get("has_w"),
+                                               "has_u": _op.get("has_u")}
+                                        for _k in ("ban", "w_incap", "w_wf", "u_incap", "u_wf"):
+                                            _v = _op.get(_k)
+                                            _o2[_k] = None if _v is None else np.asarray(_v)[_r]
+                                        return _ap(_A, _o2)
+
+                                    def _fm_block_sub(_A, _rows, _scs, _scc, _blk=_fm_blk_row,
+                                                      _fl=_fm_bfloor, _st=_fm_blk_ok):
+                                        """Blocked-caps on a SUB-LAYOUT, matching whichever path is
+                                        live full-width: the RESTRICTED one leaves a profile with no
+                                        blocked row untouched, the full one runs the formula on it.
+                                        The two differ only on -0.0, which is exactly why this
+                                        follows the live flag instead of picking one."""
+                                        if _blk is None:
+                                            return _A
+                                        _r = np.asarray(_rows, np.intp)
+                                        _bm_all = np.asarray(_blk, bool)[_r]
+                                        if not _st["use"]:
+                                            return _fm_block_full(_A, _bm_all,
+                                                                  np.asarray(_scs, np.intp),
+                                                                  np.asarray(_scc, np.intp), _fl)
+                                        _hit = np.maximum.reduceat(
+                                            _bm_all.astype(np.intp),
+                                            np.asarray(_scs, np.intp)) > 0
+                                        if not _hit.any():
+                                            return np.array(_A, float, copy=True)
+                                        _r2, _s2, _c2 = _fm_sub_rows(_scs, _scc, _hit)
+                                        _sub = np.ascontiguousarray(_A[:, _r2])
+                                        _bm = _bm_all[None, _r2]
+                                        _capd = np.where(_bm, np.minimum(_sub, _fl), _sub)
+                                        _freed = _sub - _capd
+                                        _recip = np.where(_bm, 0.0, _capd)
+                                        _fc = np.repeat(np.add.reduceat(_freed, _s2, axis=1),
+                                                        _c2, axis=1)
+                                        _rc = np.repeat(np.add.reduceat(_recip, _s2, axis=1),
+                                                        _c2, axis=1)
+                                        _has = _rc > 1e-12
+                                        _add = np.where(_has,
+                                                        _recip * _fc / np.where(_has, _rc, 1.0),
+                                                        0.0)
+                                        _Y = np.array(_A, float, copy=True)
+                                        _Y[:, _r2] = np.where(_has, _capd + _add, _sub)
+                                        return _Y
+
+                                    def _fm_deliv_rows(_sh, _rows, _scs, _scc, _rowc):
+                                        """DELIVER, restricted to a set of (candidate, profile)
+                                        pairs.
+
+                                        `_rows` are FULL-grain row indices, one pair's profile after
+                                        another; `_rowc` says which candidate each of those rows is
+                                        read from; `_scs`/`_scc` are the sub-layout's reduceat
+                                        starts and counts, one entry per pair. Returns a
+                                        (1, len(_rows)) delivered array in `_rows` order.
+
+                                        WHY ONE ROW FOR THE WHOLE BATCH. A pair is a (candidate,
+                                        profile) and no two pairs share a segment, so the batch is
+                                        one flat problem however many candidates it came from. That
+                                        keeps the work proportional to the profiles that actually
+                                        changed rather than to the union of them across the
+                                        population - the difference between ~0.6% of the transform
+                                        and ~19% of it.
+
+                                        THE STAGES ARE THE SHIPPED ONES. `_fm_cap` and `_fm_floor`
+                                        are called directly with the sub-layout's starts and counts,
+                                        so the cap water-fill and the exploration floor here ARE the
+                                        functions delivery uses, not copies of them that can
+                                        drift."""
+                                        _r = np.asarray(_rows, np.intp)
+                                        _ki = _fm_cminv[_r]
+                                        _S = np.asarray(_sh, float)
+                                        _X = np.where(_ki >= 0,
+                                                      _S[np.asarray(_rowc, np.intp),
+                                                         np.maximum(_ki, 0)], 0.0)[None, :]
+                                        _cs2 = np.asarray(_scs, np.intp)
+                                        _cc2 = np.asarray(_scc, np.intp)
+                                        # 19iz: [deliv-cap] counts what the CAP saw, and from here
+                                        # it sees the changed profiles instead of all of them.
+                                        # Counted separately so the report can say so rather than
+                                        # quietly reporting a smaller number for the same words.
+                                        _DCAP["sub"] = _DCAP.get("sub", 0) + 1
+                                        _X = _fm_block_sub(_X, _r, _cs2, _cc2)
+                                        _X = _fm_elig_sub(_X, _r, _cs2, _cc2)
+                                        _X = _fm_cap(_X, _cs=_cs2, _cc=_cc2,
+                                                     _blk=(None if _fm_blk_row is None
+                                                           else np.asarray(_fm_blk_row, bool)[_r]))
+                                        _X = _fm_floor(_X, _cs=_cs2, _cc=_cc2,
+                                                       _bs=(None if _SF_BASE is None
+                                                            else np.asarray(_SF_BASE, bool)[_r]))
+                                        return np.asarray(_X, float)
+
+                                    if _fm_dlv_map is None:
+                                        _fm_deliv_rows = None
 
                                     # REMOVED 2026-08-17: the full-matrix FIXED per-band breach
                                     # penalty (ss['fm_band_fixed']). With it > 0 the GA RANKED
@@ -8725,7 +8926,13 @@ def render():
                                     # the success rate) and no 439s of gather in the hot loop.
                                     # Read only when ROUTING_DECODE_OBJ=1; None is a supported
                                     # fallback that the GA's [obj-basis] line flags out loud.
-                                    obj_full=_fm_meta.get("obj_full"))
+                                    obj_full=_fm_meta.get("obj_full"),
+                                    # 19iz: the subset-capable delivery and the kept->full
+                                    # profile map it is addressed with. Both None unless
+                                    # [dlv-map] verified the layouts correspond, and the GA
+                                    # gathers a delivery only when ROUTING_DELIV_DELTA=1.
+                                    deliver_rows_fn=_fm_deliv_rows,
+                                    deliver_map=_fm_dlv_map)
                                 _fm_best, _fm_info = _fm_run(_fm_p, **_fm_kw)
                                 # [frozen-scaffold] HOW MUCH OF THE PROJECTOR IS PERMANENTLY
                                 # CONSTANT? 92% of a GA generation is _pop_band_kernel over the cap
@@ -9293,6 +9500,23 @@ def render():
                                                " ⚠ NON-ZERO — the single-pass closed form does not "
                                                "hold on this data; investigate before trusting "
                                                "this run's band numbers."))
+                                        # 19iz: READ THE COUNTS ABOVE ON THE RIGHT BASIS. With the
+                                        # deliver delta armed, a profile a child inherited unchanged
+                                        # is never re-delivered, so the cap never sees it again and
+                                        # every total above is over the profiles that CHANGED. The
+                                        # per-pair facts (unsatisfiable, still-over, largest move)
+                                        # are unaffected, because each of those is a property of one
+                                        # pair and every distinct pair is still computed once.
+                                        if _DCAP.get("sub"):
+                                            log(f"   [deliv-cap] {_DCAP['sub']:,} of those "
+                                                f"{_DCAP['calls']:,} call(s) were SUBSET deliveries "
+                                                "(19iz): the search re-delivered only the profiles "
+                                                "a child actually mutated. So the totals above "
+                                                "count distinct (candidate, profile) work, not one "
+                                                "entry per candidate per profile - lower than a "
+                                                "pre-19iz run's for the same data, and not a change "
+                                                "in what was delivered. Read [deliv-delta] for how "
+                                                "much was gathered.")
                                         # ── 19ii [blk-fill] ──────────────────────────────
                                         if _fm_blk_row is None:
                                             log("   [blk-fill] no row is bank-blocked this run, "

@@ -87,7 +87,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim+2026-09-03-19iu-log-batch+2026-09-03-19ix-eval-delta+2026-09-03-19iy-delta-default-on"
+__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim+2026-09-03-19iu-log-batch+2026-09-03-19ix-eval-delta+2026-09-03-19iy-delta-default-on+2026-09-03-19iz-deliv-delta"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -1719,7 +1719,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                       restart_mode="lean", compress_lambda=0.0,
                       compress_pools=200, compress_refresh=8, deliver_fn=None,
                       codebook_fn=None, deliver_full_fn=None, gather_fn=None,
-                      obj_full=None):
+                      obj_full=None, deliver_rows_fn=None, deliver_map=None):
     """Evolve a full-matrix BIN-grain split that maximises VWSR under dual VAMP
     ceilings, hugging the boundary via adaptive tolerance.
 
@@ -1915,10 +1915,9 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # not merely close to the parent's, they are the same operations on the same inputs. Copying
     # them is bit-identical BY CONSTRUCTION, not to a tolerance.
     #
-    # WHAT IS NOT DONE HERE. `_deliver_full` is 423 ms and the same argument applies to it, but
-    # it is tab_2's closure over full-width arrays and cannot be asked for a subset of profiles
-    # from in here. Doing it needs a subset-capable delivery transform - a bigger change, in a
-    # more delicate file, and worth doing only once this one has proven itself on a real run.
+    # `_deliver_full` was the other half of this and 19iz now does it the same way - see the
+    # DELTA DELIVERY block below. It needed a subset-capable delivery transform in tab_2, which
+    # is why it waited until this one had proven itself on a real run.
     #
     # THE GUARD. A gather is only correct while the cache and the population stay in step, and a
     # desync would be SILENTLY WRONG rather than loud. So one child per generation is decoded
@@ -1977,6 +1976,97 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _DLT["checks"] += 1
         return bool(_fx_same(np.asarray(_ref), np.asarray(got)[_c][None, :]))
 
+    # ══ 19iz: DELTA DELIVERY ═══════════════════════════════════════
+    # [eval-cost] on the 19:38 run: `_deliver_full` is 364.9 ms of every 839 ms evaluation,
+    # 122.6s of a 321.8s search - the largest single row left in the hot loop now that 19ix
+    # has taken the decode down to 69.5 ms.
+    #
+    # THE SAME ARGUMENT AS THE DECODE, AND IT IS EXACT. Blocked-caps, eligibility, the cap
+    # water-fill and the exploration floor are every one of them np.add.reduceat and np.repeat
+    # along axis=1 over ONE profile's own rows. So the delivered rows of profile j depend on
+    # the input rows of profile j and on nothing else in the array, and a profile the child
+    # inherited unchanged delivers to the parent's own bits - not close to them, the same
+    # operations on the same inputs.
+    #
+    # WHAT 19ix COULD NOT DO AND THIS CAN. Delivery is tab_2's closure over full-width arrays,
+    # so there was no way to ask it for a subset of profiles. `deliver_rows_fn` is that subset
+    # transform and `deliver_map` is the kept-grain -> full-grain profile map the GA addresses
+    # it with; tab_2's [dlv-map] line verifies the two layouts correspond one-to-one before
+    # handing either of them over, and passes None when they do not.
+    #
+    # ONE FLAT BATCH, NOT A UNION. Each child mutates about 1% of profiles, but the UNION of
+    # those across 35 children is ~19% - recomputing the union would give back most of the
+    # saving. A (candidate, profile) pair has its own segment and no two pairs share one, so
+    # every pair in the generation goes into a single flat sub-problem whose reduceat
+    # boundaries are the pairs themselves. The work is then the ~0.6% that changed.
+    #
+    # THE GUARD IS THE DECODE'S. One child per generation is delivered BOTH ways and compared
+    # on bit patterns; on any mismatch the delta turns itself off for the process and the run
+    # continues on the full delivery. It also rides on the decode delta's provenance, so it is
+    # never armed when 19ix is not.
+    # DEFAULT OFF until a real run proves it against the 19iy baseline, exactly as 19ix was.
+    _DLV_ENV = os.environ.get("ROUTING_DELIV_DELTA", "0") != "0"
+    _DLV = {"arr": None, "last": None,
+            "on": bool(_DLV_ENV and _have_full and callable(deliver_rows_fn)
+                       and isinstance(deliver_map, dict)),
+            "gathered": 0, "full": 0, "prof_re": 0, "prof_tot": 0, "checks": 0,
+            "why": "", "said": False}
+    if _DLV_ENV and not _DLV["on"]:
+        _DLV["why"] = ("ROUTING_DELIV_DELTA=1 but the caller wired no subset-capable delivery "
+                       "(deliver_rows_fn / deliver_map), so there was nothing to gather with")
+
+    def _delta_dlv(sh, prov):
+        """The DELIVERED population, gathered from the parents' deliveries. None if not possible."""
+        _D = _DLV["arr"]
+        if _D is None or prov is None or len(prov) != np.asarray(sh).shape[0]:
+            return None
+        _jm = np.asarray(deliver_map["jmap"], np.intp)
+        _fcs = np.asarray(deliver_map["cs"], np.intp)
+        _fcc = np.asarray(deliver_map["cc"], np.intp)
+        _out = np.empty((len(prov), _D.shape[1]), dtype=float)
+        _pp, _pc = [], []
+        for _c, _pv in enumerate(prov):
+            _ia, _ib, _pick, _hit = _pv
+            if _ia is None or _ia >= _D.shape[0] or (_ib is not None and _ib >= _D.shape[0]):
+                return None
+            if _ib is None:
+                _out[_c] = _D[_ia]
+            else:
+                # `_pick` is per KEPT profile; delivery is laid out per FULL profile. The map
+                # is a bijection, so this is a relabelling and not a lookup that can miss.
+                _pf = np.empty(_jm.size, bool)
+                _pf[_jm] = np.asarray(_pick, bool)
+                _out[_c] = np.where(np.repeat(_pf, _fcc), _D[_ia], _D[_ib])
+            _DLV["prof_tot"] += int(_jm.size)
+            if _hit is None or not np.asarray(_hit).any():
+                continue
+            _h = _jm[np.asarray(_hit, bool)]
+            _pp.append(_h)
+            _pc.append(np.full(_h.size, _c, np.intp))
+        if _pp:
+            _pp = np.concatenate(_pp)
+            _pc = np.concatenate(_pc)
+            _scc = _fcc[_pp]
+            _scs = np.zeros(_scc.size, np.intp)
+            if _scc.size:
+                np.cumsum(_scc[:-1], out=_scs[1:])
+            _t = int(_scc.sum())
+            _rows = (np.arange(_t, dtype=np.intp)
+                     + np.repeat(_fcs[_pp] - _scs, _scc)) if _t else np.zeros(0, np.intp)
+            _rowc = np.repeat(_pc, _scc)
+            _sub = np.asarray(deliver_rows_fn(sh, _rows, _scs, _scc, _rowc), float)
+            _out[_rowc, _rows] = _sub[0] if _sub.ndim == 2 else _sub
+            _DLV["prof_re"] += int(_pp.size)
+        return _out
+
+    def _delta_dlv_check(sh, got):
+        """One child, delivered BOTH ways, compared on bit patterns."""
+        _ref = _deliver_full(np.asarray(sh)[0][None, :])
+        _DLV["checks"] += 1
+        if _ref is None:
+            return True
+        return bool(_fx_same(np.asarray(_ref), np.asarray(got)[0][None, :]))
+
     def _eval_with_bands(logits):
         # Returns (success rate, other_viol, band_breach) as THREE separate arrays so the ranking can treat
         # the EXACT M5 band breach as the strict primary key (see _rank). `other_viol` is the
@@ -2027,7 +2117,35 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         _ev["decode"] += time.perf_counter() - _t
         _DLT["last"] = _sh
         _t = time.perf_counter()
-        _fd = _deliver_full(_sh)                                  # shared delivery — computed ONCE
+        # 19iz: the DELIVERED array, gathered from the parents' where the profile did not move.
+        _fd = None
+        _DLV["last"] = None
+        if _DLV["on"] and _DLT["on"] and _prov is not None:
+            _fd = _delta_dlv(_sh, _prov)
+            if _fd is not None and not _delta_dlv_check(_sh, _fd):
+                _DLV["on"] = False
+                _DLV["why"] = ("the gathered delivery did NOT match a full delivery of the "
+                               "same child, bit for bit")
+                log("[fullmatrix-ga] \u26a0\u26a0 [deliv-delta] SELF-CHECK FAILED - the "
+                    "gathered delivery disagrees with the full delivery on this generation's "
+                    "first child. The deliver delta is DISABLED for the rest of this process "
+                    "and every candidate from here is delivered in full, so the run is "
+                    "correct. Report this: it means the parent cache and the population are "
+                    "out of step, which is the one way this optimisation can be wrong.")
+                _fd = None
+            elif _fd is not None:
+                _DLV["gathered"] += int(np.asarray(_sh).shape[0])
+                _DLV["last"] = _fd
+        if _fd is None:
+            _fd = _deliver_full(_sh)                              # shared delivery — computed ONCE
+            if _fd is not None:
+                _DLV["full"] += int(np.asarray(_sh).shape[0])
+                if _DLV["on"]:
+                    # `_deliver_full`'s fused path returns a VIEW of a buffer it overwrites on
+                    # its next call, and the heartbeat calls it again inside the same
+                    # generation. The cache has to own its copy or it would quietly become
+                    # whatever that call delivered.
+                    _DLV["last"] = np.array(_fd, float, copy=True)
         _ev["deliver"] += time.perf_counter() - _t
         # ── 19id: THE OBJECTIVE, ON THE SPLIT THAT SHIPS. Both halves of the fitness now read the
         # SAME array the bands do. `x` moves with `v` on purpose: they come out of one kernel call
@@ -2993,6 +3111,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             # 19ix: the restart's own population is the first cache. A restart that cannot
             # produce one (no band penalty wired, so no decode is built) simply never gathers.
             _DLT["dec"] = _DLT["last"] if _DLT["on"] else None
+            _DLV["arr"] = _DLV["last"] if _DLV["on"] else None      # 19iz
             _gg_i3 = time.perf_counter()
             # 19fn: the three parts of `init`, timed separately. `i_rest` is picked up at the
             # end of the block as (total - these three), so it cannot silently absorb anything.
@@ -3255,6 +3374,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 child_success_rate, child_other, child_band = _eval_with_bands(children)
                 _DLT["prov"] = None                  # never let a later call inherit it
                 _dec_new = _DLT["last"]
+                _dlv_new = _DLV["last"]                              # 19iz
                 # [ga-census] against the incumbent AS OF THIS GENERATION (best_* was updated at the
                 # top of the loop). Comparison on arrays that already exist; the run total is the copy
                 # that keeps the magnitudes, so nothing is double-counted.
@@ -3297,6 +3417,9 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 if _DLT["on"]:
                     _DLT["dec"] = (None if (_dec_new is None or _DLT["dec"] is None)
                                    else np.vstack([_DLT["dec"][_el_idx], _dec_new]))
+                if _DLV["on"]:
+                    _DLV["arr"] = (None if (_dlv_new is None or _DLV["arr"] is None)
+                                   else np.vstack([_DLV["arr"][_el_idx], _dlv_new]))
                 pop = np.vstack([elites, children])
                 success_rate = np.concatenate([elite_success_rate, child_success_rate])
                 other = np.concatenate([elite_other, child_other])
@@ -3698,6 +3821,31 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             + ("" if _DLT["on"] else
                f" \u26a0 DISABLED MID-RUN: {_DLT['why']}. Every candidate after that point was "
                "decoded in full, so this run is correct."))
+    # 19iz: the deliver delta's own report, on the same terms.
+    globals()["_LAST_DELIV_DELTA"] = dict(_DLV, arr=None, last=None)
+    if _DLV["gathered"]:
+        _dv_pc = 100.0 * _DLV["prof_re"] / max(_DLV["prof_tot"], 1)
+        log("")
+        log(f"[fullmatrix-ga] [deliv-delta] {_DLV['gathered']:,} candidate(s) had their "
+            f"DELIVERY gathered from their parents' and {_DLV['full']:,} were delivered in "
+            "full. Blocked-caps, eligibility, the cap water-fill and the exploration floor are "
+            "every one of them a reduceat/repeat along one profile's own rows, so a profile a "
+            "child inherited unchanged delivers to the parent's own bits - only the mutated "
+            f"ones are re-delivered: {_DLV['prof_re']:,} of {_DLV['prof_tot']:,} "
+            f"profile-deliveries ({_dv_pc:.1f}%).")
+        log("      the re-delivered profiles are batched as ONE flat sub-problem across the "
+            "whole population rather than one per child. Each child mutates about 1% of "
+            "profiles but the UNION across the population is nearer 19%, and recomputing the "
+            "union would have given most of the saving back.")
+        log(f"      verified on {_DLV['checks']:,} generation(s) - one child per generation is "
+            "delivered BOTH ways and compared on bit patterns, for the same reason the decode "
+            "is: a cache out of step with the population would be silently wrong, not loud."
+            + ("" if _DLV["on"] else
+               f" \u26a0 DISABLED MID-RUN: {_DLV['why']}. Every candidate after that point was "
+               "delivered in full, so this run is correct."))
+    elif _DLV["why"]:
+        log("")
+        log(f"[fullmatrix-ga] [deliv-delta] NOT USED \u2014 {_DLV['why']}.")
     log("")
     log("[fullmatrix-ga] SEARCH")
     log(f"      candidates      {evaluated:,} split(s) over {len(history):,} generation(s)")
