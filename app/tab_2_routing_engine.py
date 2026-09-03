@@ -4179,6 +4179,16 @@ def render():
                         _T0_vi_a = _T0["_vi"].to_numpy(float)
                         _cap_mark("factorise the _T0 keys + pull the per-row arrays")
                         _T0_capidx = np.where(_T0["_midl"].isin(_capped_l).to_numpy())[0]
+                        # 19jf: THESE TWO LIVE OUTSIDE THE FALLBACK BLOCK, and that is the whole point.
+                        # 19jb wrapped the string/tuple-key code in `if _CK_NEW is None or _CK_VERIFY:`
+                        # so it could be skipped once the int key was verified - and swept these two up
+                        # with it. Neither is a lookup; both are read hundreds of lines below, so with
+                        # ROUTING_CAPKEY_VERIFY=0 the run died on `_SEP` referenced before assignment.
+                        # The 20:36 run passed only because the verify made the block run anyway.
+                        # A name the fallback DEFINES and the code below READS must be hoisted here;
+                        # test_19jb_cap_intkey asserts there are no others, by parsing the block.
+                        _Pc_vc_a = _Pc["_vc"].to_numpy(float)
+                        _SEP = ""
 
                         # ── 19jb: ONE INT64 CODEBOOK FOR THE SCAFFOLD'S CROSS-FRAME LOOKUPS ──
                         # [cap-timing] 19ja put two steps at 39.9s of a 51.7s table, and both are
@@ -4323,7 +4333,6 @@ def render():
                             _t0_pos = _t0_pos[~_t0_pos.index.duplicated(keep="last")]
                             _Pc_to_t0 = _t0_pos.reindex(_pc_join).fillna(-1).to_numpy().astype(np.int64)
                             _cap_mark("  _Pc -> _T0 map: hash those strings + de-dup + reindex")
-                            _Pc_vc_a = _Pc["_vc"].to_numpy(float)
                             # Moved-VAMP pool per (cur,bin,rpgt,pmp,ctry,period,t), APPEARANCE-MONTH timed
                             # to match the tab-3 DELIVERED projection (compute_vamp_prepost_granular):
                             #   pool = pro_rata[APPEARANCE profile (sub,per)] × Σ_MID vampCount × fcp1_frac[ORIGIN
@@ -4372,7 +4381,6 @@ def render():
                             _cap_mark("  pro_rata + moved-pool per _Pc row (two np.fromiter loops)")
                             # Aggregation group codes + (midl, period) labels — VAMP over _Pc rows,
                             # TXN over capped _T0 rows. Same groups as the old (_midl,_per) group-by.
-                            _SEP = ""
                         if _CK_NEW is not None:
                             if _CK_VERIFY:
                                 # BIT PATTERNS, not `==`: two float arrays differing in the last

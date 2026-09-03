@@ -253,6 +253,60 @@ check("5  [cap-key] says which way it went, either way", '[cap-key] ON - ' in T2
 check("5  the original string/tuple code is KEPT as the fallback, not deleted",
       "_fcp_orig_map = _P0.set_index(" in T2 and "np.fromiter(" in T2)
 
+
+# ═══ 6. THE FALLBACK BLOCK DEFINES NOTHING THE CODE BELOW NEEDS ══════════════════════════
+# 19jf. Wrapping the string/tuple-key code in `if _CK_NEW is None or _CK_VERIFY:` made every
+# name it assigns conditional. Two of them - `_SEP` and `_Pc_vc_a` - are not lookups at all
+# and are read hundreds of lines further down, so the FIRST run with the verify off died on
+# `local variable '_SEP' referenced before assignment`. The run before it passed only because
+# the verify made the block execute anyway, which is what hid it.
+#
+# So this is not a check that those two names are hoisted. It is a check that there is no
+# THIRD one: the block is parsed, every name it binds is collected, and each is looked for in
+# the rest of the file before anything rebinds it.
+import ast as _ast, re as _re, textwrap as _tw
+
+_L = T2.splitlines()
+_g = next(i for i, l in enumerate(_L) if l.strip() == "if _CK_NEW is None or _CK_VERIFY:")
+_ind = len(_L[_g]) - len(_L[_g].lstrip())
+_e = _g + 1
+while _e < len(_L) and not (_L[_e].strip() and (len(_L[_e]) - len(_L[_e].lstrip())) <= _ind):
+    _e += 1
+_bound = {n.id for n in _ast.walk(_ast.parse(_tw.dedent("\n".join(_L[_g + 1:_e]))))
+          if isinstance(n, _ast.Name) and isinstance(n.ctx, _ast.Store)}
+check("6  the fallback block was found and it really does bind names",
+      len(_bound) > 5, f"{len(_bound)} name(s): {', '.join(sorted(_bound))}")
+
+# names the ADOPT block sets on the fast path, so they are defined either way
+_adopted = {"_Pc_to_t0", "_fcp_o_P", "_pc_prapp_a", "_Pc_movedvpool_a"}
+_leaks = []
+for _c in sorted(_bound - _adopted):
+    _pat = _re.compile(r"(?<![A-Za-z0-9_])" + _re.escape(_c) + r"(?![A-Za-z0-9_])")
+    for _i, _l in enumerate(_L[_e:]):
+        _s = _l.split("#")[0]
+        if not _pat.search(_s) or _re.search(r"[\"']" + _re.escape(_c) + r"[\"']", _s):
+            continue                                  # not a use, or a same-spelled string key
+        _asg = _re.search(r"(^|[\s(,])" + _re.escape(_c) + r"\s*(=[^=]|,\s*\w|\))", _s) \
+            and _re.search(r"=", _s)
+        _fori = _re.search(r"\bfor\b[^:]*(^|[\s(,])" + _re.escape(_c)
+                           + r"(?![A-Za-z0-9_])[^:]*\bin\b", _s)
+        if _asg or _fori:
+            break                                     # rebound before it is ever read
+        _leaks.append((_c, _e + 1 + _i, _l.strip()[:70]))
+        break
+check("6  NO name is defined only by the fallback and then read below it",
+      not _leaks,
+      "; ".join(f"{c} read at line {n}: {t}" for c, n, t in _leaks) if _leaks
+      else "checked every name the block binds against the rest of the file")
+# by LINE against the guard the scan found, not by `T2.find` on the guard's text: the 19jf
+# comment above the hoist quotes that line verbatim, so a text search finds the comment first.
+_hoist = {_n: next((_i for _i, _l in enumerate(_L) if _l.strip().startswith(_n + " = ")), -1)
+          for _n in ("_Pc_vc_a", "_SEP")}
+check("6  ...and the two that bit are hoisted ABOVE the block, where every path sets them",
+      all(0 <= _v < _g for _v in _hoist.values()),
+      f"guard at line {_g + 1}; " + ", ".join(f"{_n} first bound at line {_v + 1}"
+                                              for _n, _v in _hoist.items()))
+
 print()
 print("FAILURES: " + (", ".join(FAIL) if FAIL else "none"))
 sys.exit(1 if FAIL else 0)
