@@ -138,3 +138,155 @@ def waterfill_once(shares, cap, blocked, starts, counts):
                        _cc, axis=1)
         _out = _out + _pool_rows * _f
     return _out
+
+
+# ---------------------------------------------------------------------------
+# THE CANONICAL KEY, and why there has to be one
+# ---------------------------------------------------------------------------
+# The rule has to hold at FIVE water-fills that run after the blocked flooring, or GA-fitness
+# stops matching delivered. The obstacle is that they do not all carry the same row identity:
+#
+#   site                                          bank   gatewayFid   vampMid   currency
+#   ------------------------------------------------------------------------------------
+#   tab_2._fm_cap                (the search)      yes      YES         yes       yes
+#   impact_calcs._cap_rows       (what SHIPS)      yes      YES         -         yes
+#   impact_calcs._max_share_waterfill (forecast)   yes      no          YES       YES
+#   band_projection kernels x2 + numpy reference   yes      no          YES       YES
+#
+# `detect_blocked_gateways` flags (bank, gatewayFid) pairs - the fid is what has the failing
+# attempt history. Two sites cannot express a fid at all. Blocking the whole vampMid instead is
+# not an option: measured on this book, 31 of 37 active TotalAV fids (84%) sit under a vampMid
+# that carries more than one, and the multi-fid vampMids are split by CURRENCY -
+# Adyen_TotalAV alone spans adyen-{aud,cad,eur,gbp,usd}-tav. Coarsening to vampMid would block
+# five currencies because one was flagged, and would then DISAGREE with the two sites that can
+# see the fid. That is the scored-vs-delivered divergence this rule is supposed to avoid.
+#
+# THE RESOLUTION, and it is the same one 19ht reached for the capability mask: (vampMid,
+# currency) pins down a unique ACTIVE gatewayFid. Measured on Master_MID_List: 37 (vampMid,
+# currency) groups over 37 active TotalAV fids, ZERO ambiguous. So
+#
+#       (bank, vampMid, currency)   ==   (bank, gatewayFid)
+#
+# is an identity on the active set, and it is expressible at every one of the five sites. Every
+# site builds its mask from that key, so they agree by construction rather than by inspection.
+#
+# `equivalence_report` PROVES it per run rather than trusting the paragraph above - if a future
+# mid list gives one (vampMid, currency) two active fids, the identity breaks and the run has to
+# say so before anything ships on it.
+
+
+def canonical_keys(blocked_pairs, mid_rows):
+    """(bank, gatewayFid) pairs -> {(bank, vampMid_lower, currency_lower)}.
+
+    `mid_rows` is an iterable of mappings with `gatewayFid`, `vampMid`, `currency` and
+    `IsActive` (the Master_MID_List rows). Inactive rows are ignored: they cannot carry share.
+    """
+    _f2vc = {}
+    for _r in mid_rows:
+        if str(_r.get("IsActive", "")).strip().upper() != "TRUE":
+            continue
+        _f2vc[str(_r.get("gatewayFid", "")).strip().lower()] = (
+            str(_r.get("vampMid", "")).strip().lower(),
+            str(_r.get("currency", "")).strip().lower())
+    _out = set()
+    for _bk, _gw in blocked_pairs or ():
+        _vc = _f2vc.get(str(_gw).strip().lower())
+        if _vc is not None:
+            _out.add((str(_bk).strip().lower(), _vc[0], _vc[1]))
+    return _out
+
+
+def equivalence_report(blocked_pairs, mid_rows, in_scope_fids=None):
+    """Is (vampMid, currency) still an identity for gatewayFid on the fids THIS RUN can route to?
+
+    `in_scope_fids` is the run's own gateway set. Pass it. Without it this reads the whole mid
+    list, and the whole mid list is genuinely ambiguous: measured 2026-09-03, five (vampMid,
+    currency) groups carry two or more active fids, and every one is a CROSS-BRAND collision -
+    `adyen_totalsecurity/usd` is `adyen-usd-tsc-x-tav` (Total AV) beside `adyen-usd-tsc-x-tab`
+    (Total Adblock); `paysafe - total av/eur` is `paysafe-eur-tav` beside `paysafe-eur-tvn`
+    (Total VPN). A run is brand-scoped and drops the siblings ("77 other-brand vs 'TotalAV'"),
+    so within a run the identity holds - which is the same conclusion 19ht reached for the
+    capability mask ("0 among ACTIVE fids"). Scoping to the run's own fids is therefore not a
+    convenience, it is what makes the answer true; an unscoped call is reported as such.
+
+    Returns a dict the caller logs. `ambiguous` lists the (vampMid, currency) groups resolving
+    to more than one in-scope fid - each is a place the two coarse sites cannot reproduce what
+    the two fine sites do. `ambiguous_hit` is the subset a BLOCKED pair actually lands on, and
+    that is the one that gates arming: an ambiguous group nothing is blocked in costs nothing.
+    """
+    _scope = None if in_scope_fids is None else {
+        str(_f).strip().lower() for _f in in_scope_fids}
+    _groups = {}
+    for _r in mid_rows:
+        if str(_r.get("IsActive", "")).strip().upper() != "TRUE":
+            continue
+        _fid = str(_r.get("gatewayFid", "")).strip().lower()
+        if _scope is not None and _fid not in _scope:
+            continue
+        _k = (str(_r.get("vampMid", "")).strip().lower(),
+              str(_r.get("currency", "")).strip().lower())
+        _groups.setdefault(_k, set()).add(_fid)
+    _amb = sorted(k for k, v in _groups.items() if len(v) > 1)
+    _keys = canonical_keys(blocked_pairs, mid_rows)
+    _hit = sorted(k[1:] for k in _keys if k[1:] in set(_amb))
+    _pairs = {(str(b).strip().lower(), str(g).strip().lower())
+              for b, g in (blocked_pairs or ())}
+    _known = {_f for _g in _groups.values() for _f in _g}
+    _unmapped = sorted(p for p in _pairs if p[1] not in _known)
+    return {"groups": len(_groups), "ambiguous": _amb, "ambiguous_hit": _hit,
+            "keys": _keys, "n_pairs": len(_pairs), "unmapped": _unmapped,
+            "scoped": _scope is not None, "n_scope": (0 if _scope is None else len(_scope)),
+            "safe": (not _hit) and (not _unmapped)}
+
+
+# ---------------------------------------------------------------------------
+# ARMING: partial is worse than off
+# ---------------------------------------------------------------------------
+# A rule applied at four of five water-fills is not "mostly done" - it is a guaranteed
+# scored-vs-delivered divergence on exactly the rows it touches, which is harder to find than
+# the behaviour it replaced. So arming is gated on every site REGISTERING itself, and the gate
+# lives here rather than in any one caller.
+SITES = ("_fm_cap", "_cap_rows", "_max_share_waterfill", "band_kernel_profile",
+         "band_kernel_flat")
+_WIRED = set()
+
+
+def register(site):
+    """A site calls this once when it has the mask and applies the rule."""
+    if site not in SITES:
+        raise ValueError(f"blocked_fill.register: unknown site {site!r}; expected one of {SITES}")
+    _WIRED.add(site)
+
+
+def wired():
+    return sorted(_WIRED)
+
+
+def missing():
+    return [s for s in SITES if s not in _WIRED]
+
+
+def arming_verdict(requested):
+    """(armed, message). `armed` is True only when EVERY site is wired.
+
+    A request that cannot be honoured comes back False with the reason, so the caller logs a
+    refusal and runs the old behaviour - never half of the new one.
+    """
+    if not requested:
+        return False, ("[blk-fill] rule OFF (ROUTING_BLOCK_NOFILL unset). Blocked rows are "
+                       "water-fill recipients like any other, which is what every build before "
+                       "19ij did; [blk-fill] prices what that costs.")
+    _miss = missing()
+    if _miss:
+        return False, ("[blk-fill] ⚠ RULE REQUESTED AND REFUSED: "
+                       f"{len(_miss)} of {len(SITES)} water-fill(s) are not wired for it "
+                       f"({', '.join(_miss)}). Arming a subset would put the rule on some "
+                       "stages and not others, so GA-fitness would stop matching delivered on "
+                       "exactly the rows the rule touches - a worse failure than leaving it "
+                       "off. Running the OLD behaviour on every stage instead. Wired: "
+                       + (", ".join(wired()) or "none"))
+    return True, ("[blk-fill] RULE ON at all "
+                  f"{len(SITES)} water-fill(s) ({', '.join(wired())}): a bank-blocked gateway "
+                  "stays at the exploration floor, and receives water-fill ONLY where its "
+                  "profile has no other under-cap recipient with room - i.e. only where the "
+                  "0.97 cap could not otherwise hold. ROUTING_BLOCK_NOFILL=0 reverts.")

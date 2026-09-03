@@ -679,3 +679,71 @@ both byte-identity properties.
 One run gives the avoidable number. If it is material, the change lands across all five sites
 together behind one switch. If it is ~0, the rule is already satisfied in practice and that is
 worth knowing before touching the shipping path.
+
+---
+
+## §18 — 19ij: the canonical key, because the five sites do not share a row identity
+
+Ben, 2026-09-03: *"It needs to be done at all stages so it is consistent."* Agreed — and the
+first thing that surfaced when mapping the five sites is that **they cannot all name the same
+thing**:
+
+| site | bank | gatewayFid | vampMid | currency |
+|---|:--:|:--:|:--:|:--:|
+| `tab_2._fm_cap` (the search) | ✓ | **✓** | ✓ | ✓ |
+| `impact_calcs._cap_rows` (**what ships**) | ✓ | **✓** | — | ✓ |
+| `impact_calcs._max_share_waterfill` (VAMP forecast) | ✓ | ✗ | **✓** | **✓** |
+| band projector, 2 kernels + numpy reference | ✓ | ✗ | **✓** | **✓** |
+
+`detect_blocked_gateways` flags **(bank, gatewayFid)** pairs — the fid is what carries the
+failing attempt history. Two sites cannot express a fid: `compute_vamp_prepost_granular`'s frame
+carries `vampMid` and the code says so outright (*"the pro-rata export carries vampMid, NOT
+gatewayFid"*), and the projector's `T0` carries `cur`/`mid`/`midl` with no fid column.
+
+**Coarsening to vampMid is not an option.** Measured on this book: **31 of 37 active TotalAV fids
+(84%) sit under a vampMid carrying more than one**, and the multi-fid vampMids split by
+*currency* — `Adyen_TotalAV` alone spans `adyen-{aud,cad,eur,gbp,usd}-tav`. Blocking the vampMid
+would block five currencies because one was flagged, and would then disagree with the two sites
+that *can* see the fid. That is the scored-vs-delivered divergence the rule is meant to avoid.
+
+### The resolution
+
+```
+(bank, vampMid, currency)  ==  (bank, gatewayFid)
+```
+
+Measured: **37 (vampMid, currency) groups over 37 active in-scope fids, zero ambiguous.** Same
+conclusion 19ht reached for the capability mask. Expressible at all five sites, so they agree by
+construction rather than by inspection.
+
+**But only when scoped to the run's own gateways, and that is not a detail.** The *full* mid list
+is genuinely ambiguous — five (vampMid, currency) groups carry two or more active fids, and every
+one is a **cross-brand collision**:
+
+* `adyen_totalsecurity / usd` → `adyen-usd-tsc-x-tav` (Total AV) **and** `adyen-usd-tsc-x-tab` (Total Adblock)
+* `paysafe - total av / eur` → `paysafe-eur-tav` (Total AV) **and** `paysafe-eur-tvn` (Total VPN)
+* plus three under Hotspot Shield / Total Adblock
+
+A run is brand-scoped and drops the siblings ("77 other-brand vs 'TotalAV'"), so *within a run*
+the identity holds. `equivalence_report(pairs, mid_rows, in_scope_fids=…)` proves it per run and
+reports whether it was scoped at all; `ambiguous_hit` — an ambiguous group a blocked pair actually
+lands on — is what gates arming, because an ambiguous group nothing is blocked in costs nothing.
+
+### Arming is all-or-nothing
+
+A rule at four of five water-fills is not "mostly done" — it is a guaranteed scored-vs-delivered
+divergence on exactly the rows it touches, and harder to find than the behaviour it replaced. So
+each site calls `register()` when it is wired, and `arming_verdict()` returns armed **only** when
+all five have. A request that cannot be honoured is **refused, named, and the old behaviour runs
+on every stage** — never half the new one. That makes consistency enforced rather than reviewed.
+
+`tests/test_19ij_canonical_key.py` — 16 checks: the key maps correctly off the live mid list; the
+unscoped list's five collisions are reported rather than hidden; scoping to the run's 37 fids
+makes the identity hold; an unmapped fid and a genuinely ambiguous group both read UNSAFE; an
+inactive sibling creates no ambiguity; and arming refuses at 0/5 and at 4/5, naming the gap.
+
+### Remaining
+
+`_fm_cap` and `_cap_rows` (the fine-grain pair, one of which ships) then the two coarse sites.
+Until all five register, `ROUTING_BLOCK_NOFILL=1` refuses and the run is unchanged — so the
+sequence is safe to land in pieces.
