@@ -9305,6 +9305,32 @@ def render():
                                             "candidate width, because the flat passes it skips are "
                                             "per-candidate — see [lift-ab] for THIS run's measured "
                                             "number.")
+                                        # 19jd: BEFORE [lift-ab], which re-runs the projector
+                                        # with the lift OFF. The stash [proj-inside] replays is
+                                        # the LAST real projection's, and it should be the
+                                        # search's, not a measurement's.
+                                        try:
+                                            from routing_optimiser.s4_search import (
+                                                band_projection as _bpm_pi)
+                                            _pir = getattr(_bpm_pi, "proj_inside_report", None)
+                                            if _pir is None:
+                                                log("      [proj-inside] unavailable - this "
+                                                    "band_projection predates 19jd, so the "
+                                                    "projector's 70% of every evaluation is "
+                                                    "running with no per-call breakdown.")
+                                            elif _fsp is None:
+                                                log("      [proj-inside] NOT MEASURED: no "
+                                                    "projector on the exact-band hook.")
+                                            elif _pir(_fsp) is None:
+                                                log("      [proj-inside] NOT MEASURED: the "
+                                                    "projector held no recorded kernel call "
+                                                    "(the profile-blocked path never ran, or "
+                                                    "ROUTING_PROJ_INSIDE=0). The projector is "
+                                                    "unaffected - only its breakdown is missing.")
+                                        except Exception as _piE:  # noqa: BLE001
+                                            log(f"      [proj-inside] skipped "
+                                                f"({type(_piE).__name__}: {_piE}) - MEASUREMENT "
+                                                "ONLY, the run is unaffected.")
                                         try:
                                             # 19gf: `_bpm` is imported ~266 lines BELOW this point
                                             # (the [proj-par] drain). Using it here raised NameError

@@ -132,7 +132,7 @@ except Exception:  # noqa: BLE001 - no rule available is a refusal, never a brok
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
+__build__ = ("2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -1816,6 +1816,130 @@ def lift_ab_report(proj, reps=3):
             "noise": _noise, "floor": _floor, "reps": int(_rounds)}
 
 
+# 19jd: `[proj-inside]` keeps a reference to the last real kernel call so it can replay it.
+# References, not copies - the buffers already belong to the projector and the proposal is the
+# one `[lift-ab]` already holds. ROUTING_PROJ_INSIDE=0 stops the stash and the report with it.
+_PI_ON = os.environ.get("ROUTING_PROJ_INSIDE", "1") != "0"
+
+
+def proj_inside_report(proj, reps=3):
+    """WHERE A PROJECTION'S MILLISECONDS GO, measured on this run's own scaffold.
+
+    The projector is 70% of every evaluation and had no per-call breakdown at all - the same
+    blind spot `[cap-timing]` had before 19ja, and for the same reason: nobody could see inside
+    it. `[pbp-inside]` splits the CONSTRUCTOR, which is a one-off 25s; this splits the 486 ms
+    that runs 336 times.
+
+    HOW, and this is what makes it trustworthy. Every row is THE SAME COMPILED KERNEL called
+    with one of its own input arrays truncated to length zero. The kernel's three big loops are
+    `for ci in range(profiles.shape[0])`, `for j in range(cap_rowc.shape[0])` and
+    `for j in range(pc_orgc.shape[0])`, so a zero-length array makes that loop do nothing while
+    every other line is untouched. Nothing is recompiled (same dtype, same ndim, same
+    contiguity), no branch is edited, and no variant is a re-implementation that could drift.
+    The water-fill is switched off the same way, with `cap = 1.0`, because the kernel guards it
+    with `if cap < 1.0` - a scalar of the same dtype, so again no recompile.
+
+    THE OUTPUTS ARE GARBAGE AND ARE DISCARDED. This is a cost measurement, not a projection;
+    the truncated calls compute a wrong answer on purpose. The buffers they write are the
+    per-lane scratch the next real call overwrites anyway, and the frozen slots the lift primes
+    are never in `profiles`, so nothing they touch survives.
+
+    INTERLEAVED, like `[lift-ab]`, and for the reason today's run demonstrated: the machine
+    moved ~30% between two runs of identical code. Rounds are round-robin across the variants so
+    drift is shared, the minimum is the least-contaminated sample, and the within-variant spread
+    is printed as the bar any difference has to clear.
+
+    Returns a dict, or None when there is nothing to measure. Never raises - it is a report.
+    """
+    st = getattr(proj, "_pi_call", None)
+    if st is None:
+        return None
+    try:
+        _k, _pr, _args, _cap, _n, _bufs, _tail = st
+        _A = list(_args)
+        _empty = lambda _i: [(_x[:0] if _i2 in _i else _x) for _i2, _x in enumerate(_A)]
+        _PROF = {5, 6, 7}                      # profiles / cstart / ccnt
+        _TXN = {8, 9, 10, 11, 12}              # cap_rowc / cap_band / cap_c / cap_ctot / cap_base
+        _AGED = {13, 14, 15, 16, 17, 18, 19}   # pc_orgc / vc / pool / band / heldfac / gc / gkc
+        # THE DTYPE OF THE 1.0 MATTERS. `cap` is np.float32 on a float32 run, and passing a
+        # PYTHON float there compiles a SECOND specialisation - measured: 1 signature before,
+        # 2 after. That timing would be a compile, not a water-fill. A zero-length slice of a
+        # C-contiguous array does NOT recompile (measured, serial and parallel).
+        _cap1 = type(_cap)(1.0) if not isinstance(_cap, float) else 1.0
+        _VAR = {
+            "full":     (_A, _cap),
+            "no_aged":  (_empty(_AGED), _cap),
+            "no_txn":   (_empty(_TXN), _cap),
+            "no_prof":  (_empty(_PROF), _cap),
+            "fixed":    (_empty(_PROF | _TXN | _AGED), _cap),
+            "no_wf":    (_A, _cap1),
+        }
+        _ms = {_kk: [] for _kk in _VAR}
+
+        def _one(_a, _c):
+            _k(_pr, *_a, _c, _n, *_bufs, *_tail)          # settle / re-prime the caches
+            _t0 = _time_mod.perf_counter()
+            _k(_pr, *_a, _c, _n, *_bufs, *_tail)
+            return (_time_mod.perf_counter() - _t0) * 1e3
+
+        _rounds = max(2, int(reps))
+        for _r in range(_rounds):
+            for _kk, (_a, _c) in _VAR.items():
+                _ms[_kk].append(_one(_a, _c))
+        _t = {_kk: min(_v) for _kk, _v in _ms.items()}
+        _spread = max((max(_v) - min(_v)) / max(min(_v), 1e-9) for _v in _ms.values())
+    except Exception as _e:                     # noqa: BLE001 - a report must not break a run
+        _pnote(f"[proj-inside] NOT MEASURED ({type(_e).__name__}: {_e}) - MEASUREMENT ONLY, the "
+               "run and the projector are unaffected.")
+        return None
+    finally:
+        proj._pi_call = None
+        # the truncated calls left the per-lane scratch holding a wrong answer; force the lift
+        # to re-prime so the next real projection cannot read any of it.
+        proj._lift_primed = None
+
+    _full = _t["full"]
+    _rows = [("profile loop: proposals, per-row shares, vpsum",
+              _full - _t["no_prof"], int(_args[6].shape[0]), "profile(s)"),
+             ("   of which the max-share water-fill", _full - _t["no_wf"], -1, ""),
+             ("nA: aged VAMP accumulation + the age renormalise",
+              _full - _t["no_aged"], int(_args[13].shape[0]), "aged row(s)"),
+             ("nC: t0 TXN accumulation", _full - _t["no_txn"], int(_args[8].shape[0]),
+              "t0 row(s)"),
+             ("fixed: entry, buffer zeroing, the per-band constant",
+              _t["fixed"], -1, "")]
+    # the water-fill is INSIDE the profile loop, so it is a sub-row and must not be summed twice
+    _sum = sum(_v for _l, _v, _c, _u in _rows if not _l.startswith("   "))
+    _pnote("")
+    _pnote(f"[proj-inside] WHERE A PROJECTION'S {_full:,.1f} ms GOES, measured on THIS run's own "
+           f"scaffold at P={_n} (best of {_rounds} INTERLEAVED round(s))")
+    _pnote("")
+    _pnote(f"   {'phase':<52}{'ms/call':>10}{'share':>8}   what it walks")
+    _pnote(f"   {'-' * 52}{'-' * 10}{'-' * 8}   {'-' * 24}")
+    for _l, _v, _c, _u in _rows:
+        _pnote(f"   {_l[:52]:<52}{_v:>8.1f}ms{100.0 * _v / max(_full, 1e-9):>7.1f}%   "
+               + (f"{_c:,} {_u}" if _c >= 0 else ""))
+    _pnote(f"   {'-' * 52}{'-' * 10}{'-' * 8}   {'-' * 24}")
+    _pnote(f"   {'TOTAL of the four phases':<52}{_sum:>8.1f}ms"
+           f"{100.0 * _sum / max(_full, 1e-9):>7.1f}%")
+    _pnote(f"   {'residual (a phase costs less alone than in company)':<52}"
+           f"{_full - _sum:>8.1f}ms{100.0 * (_full - _sum) / max(_full, 1e-9):>7.1f}%")
+    _pnote("")
+    _pnote(f"      MACHINE NOISE on these rounds: the worst within-variant spread is "
+           f"{_spread:.1%} - the same code timed twice - so a row smaller than that is not "
+           "separable from the clock. The residual is not an error: the phases share memory "
+           "bandwidth and a cache, so removing one makes the others cheaper than they are "
+           "together, and a large residual means the kernel is bandwidth-bound rather than "
+           "that a phase is missing.")
+    _pnote("      EVERY ROW IS THE SAME COMPILED KERNEL with one of its own input arrays "
+           "truncated to zero length, so no code path changed and nothing was recompiled. The "
+           "answers those calls produce are wrong on purpose and are discarded. "
+           "ROUTING_PROJ_INSIDE=0 skips the whole block.")
+    return {"P": int(_n), "full_ms": float(_full), "spread": float(_spread),
+            "phases": {_l: float(_v) for _l, _v, _c, _u in _rows},
+            "residual_ms": float(_full - _sum)}
+
+
 # [FN-015]
 def _vok_rows(T0):
     """19db — per-row VAMP eligibility for the two pandas paths (`_shares`, `project`). They get a
@@ -3392,20 +3516,28 @@ class PopulationBandProjector:
         _blk_c = cb["blk_c"]
         _blk_use = 1 if getattr(self, "_blk_armed", False) else 0
 
+        _tail = (_ef_in, _sfl_efl, _sfl_use, _sfl_pshf, _blk_c, _blk_use)
+
         def _run():
             if chunk:
                 for _s0 in range(0, P, _lanes):
                     _s1 = min(_s0 + _lanes, P)
                     _n = _s1 - _s0
                     _k = _cb_kernel if _n == 1 else _cb_kernel_par
-                    _k(np.ascontiguousarray(_pr_in[_s0:_s1]), *_args, cap, _n,
-                       vamp[_s0:_s1], txn[_s0:_s1], psum, vpsum, moved, pr, pshare, sw, gks,
-                       _ef_in, _sfl_efl, _sfl_use, _sfl_pshf, _blk_c, _blk_use)
+                    # 19jd: named so `[proj-inside]` can replay THIS call. The expression was
+                    # already evaluated exactly once here; naming it adds no work.
+                    _pr_c = np.ascontiguousarray(_pr_in[_s0:_s1])
+                    _bufs = (vamp[_s0:_s1], txn[_s0:_s1], psum, vpsum, moved, pr, pshare,
+                             sw, gks)
+                    _k(_pr_c, *_args, cap, _n, *_bufs, *_tail)
+                    if _PI_ON:
+                        self._pi_call = (_k, _pr_c, _args, cap, _n, _bufs, _tail)
                 return vamp, txn
             _k = _cb_kernel_par if par else _cb_kernel
-            return _k(_pr_in, *_args, cap, (P if par else 1),
-                      vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks,
-                      _ef_in, _sfl_efl, _sfl_use, _sfl_pshf, _blk_c, _blk_use)
+            _bufs = (vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks)
+            if _PI_ON:
+                self._pi_call = (_k, _pr_in, _args, cap, (P if par else 1), _bufs, _tail)
+            return _k(_pr_in, *_args, cap, (P if par else 1), *_bufs, *_tail)
 
         try:
             _v, _t = _run()
