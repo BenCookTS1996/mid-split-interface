@@ -56,6 +56,23 @@ import numpy as np
 # problem) silently ran a different code path. An ImportError here names the real problem on line
 # one. Ben's call, 2026-08-19aa: if it fails, crash.
 import scipy.sparse as _sp
+import time as _bs_time
+
+# ── 19jg: WHERE THE BAND-PENALTY ROW ACTUALLY GOES ───────────────────────────────────────
+# [eval-cost] charges "band projection + penalty" 418.5 ms/call - the largest single row in
+# the whole search. Then 19jd measured the KERNEL at 139.6 ms and [lift-ab] the whole
+# projection at 166.5 ms, so SIXTY PERCENT of that row is not the projection at all, and
+# nothing had ever measured it. These three counters split what `penalty` itself does; tab_2
+# adds the `shares -> prop_raw` step in front of them and prints [bpf-inside].
+#
+# Timers only. Nothing computed here moved, and three perf_counter calls against a 400 ms
+# body are not measurable.
+_BP_T = {"contig": 0.0, "project": 0.0, "specs": 0.0, "n": 0}
+
+
+def bpf_timing():
+    """The [bpf-inside] counters, as a plain dict. Read by tab_2 at the end of the search."""
+    return dict(_BP_T)
 
 
 # [FN-026]
@@ -183,11 +200,14 @@ class ExactBandPenalty:
         added before (stored in a temp and reused for the detail, never recomputed and never
         reassociated). Do not "tidy" this into a single accumulation — the two separate `+=` are
         load-bearing for reproducing earlier runs."""
+        _bp_t0 = _bs_time.perf_counter()
         prop_raw = np.ascontiguousarray(prop_raw, dtype=float)
         if prop_raw.ndim == 1:
             prop_raw = prop_raw[None, :]
         candidate_count = prop_raw.shape[0]
+        _bp_t1 = _bs_time.perf_counter()
         vamp, txn = self.project(prop_raw)                      # (P, B) each
+        _bp_t2 = _bs_time.perf_counter()
         penalties = np.zeros(candidate_count, dtype=float)
         per_spec = (np.zeros((candidate_count, len(self.specs)), dtype=float)
                     if detail_out is not None else None)
@@ -213,6 +233,13 @@ class ExactBandPenalty:
         if detail_out is not None:
             detail_out["per_spec"] = per_spec
             detail_out["specs"] = self.specs
+        # 19jg: `contig` is the C-contiguous copy of the (P, K) prop array the caller just
+        # built - K is the prop-key count, not the row count, so this is a full-width copy of
+        # a transposed sparse-matmul result and is a candidate for the missing 60%.
+        _BP_T["contig"] += _bp_t1 - _bp_t0
+        _BP_T["project"] += _bp_t2 - _bp_t1
+        _BP_T["specs"] += _bs_time.perf_counter() - _bp_t2
+        _BP_T["n"] += 1
         return penalties
 
     # [FN-032]

@@ -27,6 +27,7 @@ ROOT = pathlib.Path(os.environ.get("RO_ROOT") or pathlib.Path(__file__).resolve(
 sys.path.insert(0, str(ROOT / "src"))
 T2 = (ROOT / "app/tab_2_routing_engine.py").read_text(encoding="utf-8")
 BP_SRC = (ROOT / "src/routing_optimiser/s4_search/band_projection.py").read_text(encoding="utf-8")
+BS_SRC = (ROOT / "src/routing_optimiser/s4_search/band_scoring.py").read_text(encoding="utf-8")
 
 import routing_optimiser.s4_search.band_projection as bp
 
@@ -145,23 +146,28 @@ try:
     res = bp.proj_inside_report(pj, reps=2)
 finally:
     bp._pnote = _real_pnote
-for _l in LOG:
+TAB = list(res.get("lines", ())) if isinstance(res, dict) else []
+for _l in TAB:
     print("        | " + _l)
 
 check("4  the report returned a result", isinstance(res, dict) and res.get("full_ms", 0) > 0)
-check("4  it printed the header and the four phases plus the water-fill sub-row",
-      any("[proj-inside] WHERE A PROJECTION" in l for l in LOG)
-      and any("profile loop" in l for l in LOG)
-      and any("water-fill" in l for l in LOG)
-      and any("aged VAMP accumulation" in l for l in LOG)
-      and any("TXN accumulation" in l for l in LOG))
+check("4  the table comes back as `lines` for the caller to log",
+      any("[proj-inside] WHERE A PROJECTION" in l for l in TAB)
+      and any("profile loop" in l for l in TAB)
+      and any("water-fill" in l for l in TAB)
+      and any("aged VAMP accumulation" in l for l in TAB)
+      and any("TXN accumulation" in l for l in TAB))
+# 19jg: `_pnote` queues into _PROJ_PAR_NOTES, which tab_2 drains under a "[proj-par]"
+# prefix - so a table pushed through it came out as `[proj-par]    nA: aged VAMP ...`.
+check("4  ...and NOT one row of it goes through the [proj-par] note channel",
+      not LOG, f"{len(LOG)} line(s) leaked: {LOG[:2]}")
 check("4  the water-fill is a SUB-row of the profile loop, not summed twice",
-      any(l.lstrip().startswith("of which") for l in LOG)
+      any(l.lstrip().startswith("of which") for l in TAB)
       and abs(sum(v for k, v in res["phases"].items() if not k.startswith("   "))
               + res["residual_ms"] - res["full_ms"]) < 1e-6)
 check("4  it states the noise bar and that the answers are discarded",
-      any("MACHINE NOISE" in l for l in LOG)
-      and any("wrong on purpose and are discarded" in l for l in LOG))
+      any("MACHINE NOISE" in l for l in TAB)
+      and any("wrong on purpose and are discarded" in l for l in TAB))
 check("4  it dropped the stash and forced a re-prime, so no wrong scratch survives",
       pj._pi_call is None and pj._lift_primed is None)
 check("4  a projector with no stash returns None instead of raising",
@@ -192,6 +198,64 @@ check("5  tab_2 runs [proj-inside] BEFORE [lift-ab], which re-runs the projector
 check("5  ...and the call is wrapped, so a measurement cannot break the run",
       "[proj-inside] skipped" in T2 and "MEASUREMENT" in T2)
 check("5  band_projection records 19jd", "19jd-proj-inside" in BP_SRC)
+check("5  tab_2 logs the returned lines instead of draining them under [proj-par]",
+      'for _pl in _pires.get("lines", ()):' in T2)
+
+
+# ═══ 6. 19jg: THE BAND-PENALTY ROW, SPLIT ════════════════════════════════════════════════
+# [eval-cost] charges "band projection + penalty" 418.5 ms/call - the largest row in the
+# search - and the 21:23 run measured the KERNEL at 139.6 ms and the whole projection at
+# 166.5 ms. Sixty percent of that row is neither, and nothing had measured it. These are
+# timers, so the only thing that can go wrong is the answer moving.
+import routing_optimiser.s4_search.band_scoring as bs
+
+_specs = [bs.BandSpec(midl="m1", months=(1,), metric="vamp", ceil=10.0, floor=None, weight=1.0),
+          bs.BandSpec(midl="m2", months=(1,), metric="txn", ceil=None, floor=50.0, weight=0.125)]
+
+class _FakeProj:
+    band_order = [("m1", 1), ("m2", 1)]
+
+    def project_pop_numba(self, prop_raw):
+        _p = np.asarray(prop_raw, float)
+        _v = np.stack([_p.sum(axis=1) * 0.5, _p.sum(axis=1) * 0.25], axis=1)
+        _t = np.stack([_p.sum(axis=1) * 4.0, _p.sum(axis=1) * 2.0], axis=1)
+        return _v, _t
+
+_ebp = bs.ExactBandPenalty(_FakeProj(), _specs, breach_fixed=0.3, breach_quad=1.0)
+_pr = np.abs(rng.random((4, 7))) * 30.0
+_before = dict(bs.bpf_timing())
+_pen1 = np.asarray(_ebp.penalty(_pr), float)
+_dt = {}
+_pen2 = np.asarray(_ebp.penalty(_pr, detail_out=_dt), float)
+_after = dict(bs.bpf_timing())
+
+check("6  the timers did not move the answer - two calls, bit-identical",
+      np.array_equal(_pen1.view(np.int64), _pen2.view(np.int64)))
+check("6  ...and the penalty is a real, varying number on this fixture",
+      float(_pen1.sum()) > 0 and len(set(_pen1.tolist())) > 1, f"{_pen1}")
+check("6  the detail_out contract still holds",
+      _dt.get("per_spec") is not None and _dt["per_spec"].shape == (4, 2)
+      and list(_dt.get("specs", ())) == _specs)
+check("6  bpf_timing counts every penalty call and all three phases",
+      _after["n"] - _before["n"] == 2
+      and all(_after[_k] >= _before[_k] for _k in ("contig", "project", "specs"))
+      and (_after["project"] - _before["project"]) > 0,
+      f"n +{_after['n'] - _before['n']}, project +"
+      f"{1000.0 * (_after['project'] - _before['project']):.3f} ms")
+check("6  the three phases are what `penalty` itself does, in order",
+      "_bp_t0 = _bs_time.perf_counter()" in BS_SRC
+      and '_BP_T["contig"] += _bp_t1 - _bp_t0' in BS_SRC
+      and '_BP_T["project"] += _bp_t2 - _bp_t1' in BS_SRC)
+check("6  tab_2 times the OTHER half - shares -> prop_raw - separately",
+      "_pr = _fm_s2pr(np.asarray(_fd, float), _inc)" in T2
+      and '_t["s2pr"] += _b - _a' in T2 and '_t["pen"] += _tm.perf_counter() - _b' in T2)
+check("6  ...and prints [bpf-inside] with BOTH call counts, because they differ",
+      "[bpf-inside] THE [eval-cost] BAND ROW" in T2
+      and "THE TWO CALL COUNTS DIFFER ON PURPOSE" in T2)
+check("6  the [bpf-inside] block cannot break the run",
+      "[bpf-inside] skipped" in T2 and "MEASUREMENT" in T2)
+check("6  band_scoring gained no new import beyond the clock",
+      "import time as _bs_time" in BS_SRC)
 
 print()
 print("FAILURES: " + (", ".join(FAIL) if FAIL else "none"))

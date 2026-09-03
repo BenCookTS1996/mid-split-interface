@@ -132,7 +132,7 @@ except Exception:  # noqa: BLE001 - no rule available is a refusal, never a brok
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
+__build__ = ("2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -1910,34 +1910,42 @@ def proj_inside_report(proj, reps=3):
               _t["fixed"], -1, "")]
     # the water-fill is INSIDE the profile loop, so it is a sub-row and must not be summed twice
     _sum = sum(_v for _l, _v, _c, _u in _rows if not _l.startswith("   "))
-    _pnote("")
-    _pnote(f"[proj-inside] WHERE A PROJECTION'S {_full:,.1f} ms GOES, measured on THIS run's own "
-           f"scaffold at P={_n} (best of {_rounds} INTERLEAVED round(s))")
-    _pnote("")
-    _pnote(f"   {'phase':<52}{'ms/call':>10}{'share':>8}   what it walks")
-    _pnote(f"   {'-' * 52}{'-' * 10}{'-' * 8}   {'-' * 24}")
+    # 19jg: the table is RETURNED for the caller to log, NOT pushed through `_pnote`.
+    # `_pnote` queues into _PROJ_PAR_NOTES, which tab_2 drains under a "[proj-par]" prefix, so
+    # every row of the 19jd table came out as `[proj-par]    nA: aged VAMP ...`. The error
+    # paths above keep _pnote: they are one line each and start with their own tag, which the
+    # drain leaves alone.
+    _out = []
+    _out.append("")
+    _out.append(f"[proj-inside] WHERE A PROJECTION'S {_full:,.1f} ms GOES, measured on THIS "
+                f"run's own scaffold at P={_n} (best of {_rounds} INTERLEAVED round(s))")
+    _out.append("")
+    _out.append(f"   {'phase':<52}{'ms/call':>10}{'share':>8}   what it walks")
+    _out.append(f"   {'-' * 52}{'-' * 10}{'-' * 8}   {'-' * 24}")
     for _l, _v, _c, _u in _rows:
-        _pnote(f"   {_l[:52]:<52}{_v:>8.1f}ms{100.0 * _v / max(_full, 1e-9):>7.1f}%   "
-               + (f"{_c:,} {_u}" if _c >= 0 else ""))
-    _pnote(f"   {'-' * 52}{'-' * 10}{'-' * 8}   {'-' * 24}")
-    _pnote(f"   {'TOTAL of the four phases':<52}{_sum:>8.1f}ms"
-           f"{100.0 * _sum / max(_full, 1e-9):>7.1f}%")
-    _pnote(f"   {'residual (a phase costs less alone than in company)':<52}"
-           f"{_full - _sum:>8.1f}ms{100.0 * (_full - _sum) / max(_full, 1e-9):>7.1f}%")
-    _pnote("")
-    _pnote(f"      MACHINE NOISE on these rounds: the worst within-variant spread is "
-           f"{_spread:.1%} - the same code timed twice - so a row smaller than that is not "
-           "separable from the clock. The residual is not an error: the phases share memory "
-           "bandwidth and a cache, so removing one makes the others cheaper than they are "
-           "together, and a large residual means the kernel is bandwidth-bound rather than "
-           "that a phase is missing.")
-    _pnote("      EVERY ROW IS THE SAME COMPILED KERNEL with one of its own input arrays "
-           "truncated to zero length, so no code path changed and nothing was recompiled. The "
-           "answers those calls produce are wrong on purpose and are discarded. "
-           "ROUTING_PROJ_INSIDE=0 skips the whole block.")
+        _out.append(f"   {_l[:52]:<52}{_v:>8.1f}ms{100.0 * _v / max(_full, 1e-9):>7.1f}%   "
+                    + (f"{_c:,} {_u}" if _c >= 0 else ""))
+    _out.append(f"   {'-' * 52}{'-' * 10}{'-' * 8}   {'-' * 24}")
+    _out.append(f"   {'TOTAL of the four phases':<52}{_sum:>8.1f}ms"
+                f"{100.0 * _sum / max(_full, 1e-9):>7.1f}%")
+    _out.append(f"   {'residual (a phase costs less alone than in company)':<52}"
+                f"{_full - _sum:>8.1f}ms{100.0 * (_full - _sum) / max(_full, 1e-9):>7.1f}%")
+    _out.append("")
+    _out.append(f"      MACHINE NOISE on these rounds: the worst within-variant spread is "
+                f"{_spread:.1%} - the same code timed twice - so a row smaller than that is "
+                "not separable from the clock. The residual is not an error: the phases share "
+                "memory bandwidth and a cache, so removing one makes the others cheaper than "
+                "they are together, and a large residual means the kernel is bandwidth-bound "
+                "rather than that a phase is missing.")
+    _out.append("      EVERY ROW IS THE SAME COMPILED KERNEL with one of its own input arrays "
+                "truncated to zero length, so no code path changed and nothing was recompiled. "
+                "The answers those calls produce are wrong on purpose and are discarded. "
+                "ROUTING_PROJ_INSIDE=0 skips the whole block.")
+    for _l in _out:
+        print("[band_projection] " + _l if _l else "[band_projection]")
     return {"P": int(_n), "full_ms": float(_full), "spread": float(_spread),
             "phases": {_l: float(_v) for _l, _v, _c, _u in _rows},
-            "residual_ms": float(_full - _sum)}
+            "residual_ms": float(_full - _sum), "lines": _out}
 
 
 # [FN-015]

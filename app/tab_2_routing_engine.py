@@ -8877,10 +8877,33 @@ def render():
                                     # evaluation; only the latest generation matters.
                                     _fm_bdet = {}
 
-                                    def _fm_bpf(_fd, _eb=_fm_eb_pen, _inc=_fm_inc, _dt=_fm_bdet):
-                                        return np.asarray(
-                                            _eb.penalty(_fm_s2pr(np.asarray(_fd, float), _inc),
-                                                        detail_out=_dt), dtype=float)
+                                    # ── 19jg [bpf-inside] ────────────────────────────
+                                    # THIS ONE LINE IS THE BIGGEST THING IN THE SEARCH.
+                                    # [eval-cost] charges it 418.5 ms/call and 140.6s of a
+                                    # 231s search. 19jd then measured the KERNEL at 139.6 ms
+                                    # and [lift-ab] the whole projection at 166.5 ms - so
+                                    # ~250 ms of it, SIXTY PERCENT, is neither, and nothing
+                                    # had ever measured it. The obvious suspect is `_fm_s2pr`:
+                                    # it is a sparse matvec producing a (P, 323,063) array and
+                                    # then TRANSPOSING it, and `penalty` immediately takes a
+                                    # C-contiguous copy of that transpose. But the last two
+                                    # things I was sure of off a table like this were wrong by
+                                    # 4x and by a factor the other way, so this measures.
+                                    # Timers only; nothing computed here moved.
+                                    import time as _bpf_time
+                                    _fm_bpf_t = {"s2pr": 0.0, "pen": 0.0, "n": 0}
+
+                                    def _fm_bpf(_fd, _eb=_fm_eb_pen, _inc=_fm_inc, _dt=_fm_bdet,
+                                                _t=_fm_bpf_t, _tm=_bpf_time):
+                                        _a = _tm.perf_counter()
+                                        _pr = _fm_s2pr(np.asarray(_fd, float), _inc)
+                                        _b = _tm.perf_counter()
+                                        _out = np.asarray(_eb.penalty(_pr, detail_out=_dt),
+                                                          dtype=float)
+                                        _t["s2pr"] += _b - _a
+                                        _t["pen"] += _tm.perf_counter() - _b
+                                        _t["n"] += 1
+                                        return _out
 
                                     # Heartbeat readout: (# distinct MIDs with an unmet band, total
                                     # MID-constraint penalty, sorted NAMES of the unmet MIDs) at one split
@@ -9305,6 +9328,55 @@ def render():
                                             "candidate width, because the flat passes it skips are "
                                             "per-candidate — see [lift-ab] for THIS run's measured "
                                             "number.")
+                                        # ── 19jg [bpf-inside] ────────────────────────
+                                        try:
+                                            from routing_optimiser.s4_search import (
+                                                band_scoring as _bsm)
+                                            _bpt = _bsm.bpf_timing()
+                                            _n1 = int(_fm_bpf_t.get("n", 0))
+                                            _n2 = int(_bpt.get("n", 0))
+                                            _tb = float(_fm_bpf_t["s2pr"] + _fm_bpf_t["pen"])
+                                            if _n1 and _n2 and _tb >= 1.0:
+                                                _br = [
+                                                    ("shares -> prop_raw (sparse matvec, then a "
+                                                     "transpose)", _fm_bpf_t["s2pr"], _n1),
+                                                    ("prop_raw -> C-contiguous (a full-width copy "
+                                                     "of it)", _bpt["contig"], _n2),
+                                                    ("project (the kernel; [proj-inside] splits "
+                                                     "this)", _bpt["project"], _n2),
+                                                    ("the 15-band penalty loop", _bpt["specs"],
+                                                     _n2)]
+                                                log("")
+                                                log(f"      [bpf-inside] THE [eval-cost] BAND ROW, "
+                                                    f"SPLIT: {_tb:.1f}s over {_n1:,} hook call(s). "
+                                                    "[proj-inside] splits the kernel INSIDE the "
+                                                    "`project` row below; this splits everything "
+                                                    "around it, which no line measured before.")
+                                                log("")
+                                                log(f"      {'step':<54}{'total':>8}"
+                                                    f"{'ms/call':>10}{'calls':>9}")
+                                                log(f"      {'-' * 54}{'-' * 8}{'-' * 10}{'-' * 9}")
+                                                for _l, _v, _nc in sorted(_br, key=lambda kv: -kv[1]):
+                                                    log(f"      {_l[:54]:<54}{_v:>7.1f}s"
+                                                        f"{1000.0 * _v / max(_nc, 1):>9.1f}"
+                                                        f"{_nc:>9,}")
+                                                log(f"      {'-' * 54}{'-' * 8}{'-' * 10}{'-' * 9}")
+                                                log(f"      {'hook total (the [eval-cost] band row)':<54}"
+                                                    f"{_tb:>7.1f}s{1000.0 * _tb / max(_n1, 1):>9.1f}"
+                                                    f"{_n1:>9,}")
+                                                log("")
+                                                log("      THE TWO CALL COUNTS DIFFER ON PURPOSE. "
+                                                    "The first row is the GA's band hook; the "
+                                                    "other three are every `penalty` call in the "
+                                                    "run, which also includes the progress "
+                                                    "heartbeat and the seed stages. So the three "
+                                                    "inner rows do NOT sum to the hook total - "
+                                                    "read the ms/call column, not the seconds, "
+                                                    "when comparing them to it.")
+                                        except Exception as _bpe:  # noqa: BLE001
+                                            log(f"      [bpf-inside] skipped "
+                                                f"({type(_bpe).__name__}: {_bpe}) - MEASUREMENT "
+                                                "ONLY, the run is unaffected.")
                                         # 19jd: BEFORE [lift-ab], which re-runs the projector
                                         # with the lift OFF. The stash [proj-inside] replays is
                                         # the LAST real projection's, and it should be the
@@ -9321,12 +9393,23 @@ def render():
                                             elif _fsp is None:
                                                 log("      [proj-inside] NOT MEASURED: no "
                                                     "projector on the exact-band hook.")
-                                            elif _pir(_fsp) is None:
-                                                log("      [proj-inside] NOT MEASURED: the "
-                                                    "projector held no recorded kernel call "
-                                                    "(the profile-blocked path never ran, or "
-                                                    "ROUTING_PROJ_INSIDE=0). The projector is "
-                                                    "unaffected - only its breakdown is missing.")
+                                            else:
+                                                # 19jg: LOG THE RETURNED LINES. They used to go
+                                                # through band_projection's `_pnote`, which tab_2
+                                                # drains under a "[proj-par]" prefix - so every
+                                                # row of the table read `[proj-par]    nA: aged
+                                                # VAMP ...`.
+                                                _pires = _pir(_fsp)
+                                                if _pires is None:
+                                                    log("      [proj-inside] NOT MEASURED: the "
+                                                        "projector held no recorded kernel call "
+                                                        "(the profile-blocked path never ran, or "
+                                                        "ROUTING_PROJ_INSIDE=0). The projector is "
+                                                        "unaffected - only its breakdown is "
+                                                        "missing.")
+                                                else:
+                                                    for _pl in _pires.get("lines", ()):
+                                                        log(("      " + _pl) if _pl else "")
                                         except Exception as _piE:  # noqa: BLE001
                                             log(f"      [proj-inside] skipped "
                                                 f"({type(_piE).__name__}: {_piE}) - MEASUREMENT "
