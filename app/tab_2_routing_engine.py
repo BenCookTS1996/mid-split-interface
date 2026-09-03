@@ -14659,13 +14659,21 @@ def render():
                                                 "limits (raw \u2192 GA-fitness \u2192 shipped "
                                                 "\u2192 enforced \u2192 delivered)")
                                             log("")
+                                            # 19iv: 'ceil 30,000 / floor 20,000' is 26 chars,
+                                            # exactly the width the band column had, so a range
+                                            # band ran into the delivered figure beside it
+                                            # ("20,656ceil 30,000 / floor 20,000"). Widened, and
+                                            # a drift under half a unit prints as 0 rather than
+                                            # as "-0", which read as a negative quantity.
                                             log(f"      {'MID':<30}{'metric':>7}{'delivered':>12}"
-                                                f"{'band':>26}{'drift':>8}   chain")
-                                            log(f"      {'-' * 100}")
+                                                f"{'band':>30}{'drift':>9}   chain")
+                                            log(f"      {'-' * 104}")
                                             for _wl, _wm, _wd, _wb, _wdr, _wc in _wb_rows:
                                                 log(f"      {_wl[:30]:<30}{_wm:>7}{_wd:>12,.0f}"
-                                                    f"{_wb:>26}{_wdr:>+8,.0f}   {_wc}")
-                                            log(f"      {'-' * 100}")
+                                                    f"{str(_wb)[:30]:>30}"
+                                                    f"{(0.0 if abs(_wdr) < 0.5 else _wdr):>+9,.0f}"
+                                                    f"   {_wc}")
+                                            log(f"      {'-' * 104}")
                                             log("")
                                         # ── CONSERVATION BISECTION ────────────────────────────────
                                         # Drift is txn-only and one-directional across every run so far.

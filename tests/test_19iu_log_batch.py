@@ -116,8 +116,10 @@ check("[seed-cap] is one line when clean and a table when not",
 check("the [frozen-scaffold] banner is gone", "[frozen-scaffold] how much" not in T2)
 check("the 'settled diagnostic(s) NOT RUN' flush no longer prints",
       "settled diagnostic(s) NOT RUN" not in T2 and "del _settled_pend[:]" in T2)
-check("the [ef-mask] line only prints when the two grains DISAGREE",
-      "if self._efloor > 0.0 and _mm:" in BP and "READ THIS AS HISTORY" not in BP)
+# 19iv REPLACED this check: gating the line on `_mm != 0` was itself the bug (see section 7).
+check("the [ef-mask] comparison is still COMPUTED, it just says nothing",
+      "_mm = int(np.count_nonzero(_ef_dl != self._ef_ok))" in BP
+      and "READ THIS AS HISTORY" not in BP)
 check("[pbp-inside] is a table", "vs the 19fy/19fz baseline" in BP
       and "Ordered largest-first" not in BP)
 check("the [band-build] index-width line only prints on a REFUSAL",
@@ -163,6 +165,41 @@ check("...and every auto-block WARNING branch survives",
 check("[muted] is one line",
       "settled line(s) held back across" in T2
       and "that is the LINE-BY-LINE" not in T2)
+
+# ── 7. 19iv: THE BRANCHES A SMOKE TEST DOES NOT REACH ───────────────────────────────────
+# Both 19iu bugs were in code paths that only run when a measurement EXISTS: the float32 drift
+# rows (a NameError - `SG`/`DL` were locals of the patch script that wrote them) and the
+# [ef-mask] gate (a ⚠ on a permanently non-zero historical count). Calling proj_config() with
+# an empty projector - which is what the 19iu test did - reaches neither. So plant the
+# measurements and call it.
+from routing_optimiser.s4_search import band_projection as _bpv   # noqa: E402
+_bpv._F32_OK.update(use=True, live={"at_P": 35, "dv": 0.5463, "dv_band": 2, "nb": 15,
+                                    "dt": 1.725, "dt_band": 10, "dv_sum": 1.648,
+                                    "dt_sum": 7.877, "dv_nover": 15, "dt_nover": 15})
+_bpv._CB_OK.update(use=True, checked=True, sweeps=1)
+_bpv._PROJ_PATH.update(seen={("profile-blocked", 35, True, False, 35, 35): 338},
+                       calls=338, cap=64, nthr=16)
+try:
+    _pc = _bpv.proj_config()
+    check("proj_config() runs with a float32 drift measurement present (19iv: NameError)",
+          True, f"{len(_pc)} line(s)")
+    check("...and the drift table has both rows",
+          sum(1 for l in _pc if l.strip().startswith(("vamp", "txn"))) == 2,
+          str([l.strip()[:24] for l in _pc if l.strip().startswith(("vamp", "txn"))]))
+    check("...with the paths table filled in",
+          any("profile-blocked" in l and "338" in l for l in _pc))
+except Exception as _e:
+    check("proj_config() runs with a float32 drift measurement present (19iv: NameError)",
+          False, f"{type(_e).__name__}: {_e}")
+
+check("[ef-mask] prints NOTHING - the count it compared is permanently non-zero (19iv)",
+      "[ef-mask] \u26a0 exploration floor" not in BP
+      and "floor-eligible rows differ between" not in BP
+      and "_ef_mismatch = _mm" in BP)
+check("the WITHIN-band table's band column fits a range band",
+      "{'band':>30}" in T2 and "str(_wb)[:30]:>30" in T2)
+check("...and a sub-unit drift prints as 0, not -0",
+      "0.0 if abs(_wdr) < 0.5 else _wdr" in T2)
 
 print()
 print("FAILURES: " + (", ".join(FAIL) if FAIL else "none"))

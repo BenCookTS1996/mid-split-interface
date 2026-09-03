@@ -132,7 +132,7 @@ except Exception:  # noqa: BLE001 - no rule available is a refusal, never a brok
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
+__build__ = ("2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -1076,15 +1076,20 @@ def proj_config():
                           else " (the first projection's width)")
                        + ", measured against the float64 kernel on this run's own scaffold")
             out.append(" ")
+            # 19iv: the prefix is a NAME, not an inline literal - an f-string expression
+            # part cannot contain a backslash on this Python, which is how the first attempt
+            # at this table went out with `SG`/`DL` (patch-script locals) baked into it and
+            # took the whole [proj-config] block down with a NameError.
+            _sgdl = "\u03a3|\u0394| "
             out.append(" " + f"{'metric':<8}{'worst single band':>22}{'band column':>14}"
                              f"{'across all bands':>20}")
             out.append(" " + "-" * 64)
             out.append(" " + f"{'vamp':<8}{format(_m['dv'], '.4g'):>22}"
                              f"{str(_m['dv_band'] + 1) + ' of ' + str(_m['nb']):>14}"
-                             f"{SG + '|' + DL + '| ' + format(_m['dv_sum'], '.4g'):>20}")
+                             f"{_sgdl + format(_m['dv_sum'], '.4g'):>20}")
             out.append(" " + f"{'txn':<8}{format(_m['dt'], '.4g'):>22}"
                              f"{str(_m['dt_band'] + 1) + ' of ' + str(_m['nb']):>14}"
-                             f"{SG + '|' + DL + '| ' + format(_m['dt_sum'], '.4g'):>20}")
+                             f"{_sgdl + format(_m['dt_sum'], '.4g'):>20}")
             out.append(" " + "-" * 64)
             out.append(" ")
         if _F32_OK.get("live") is False:
@@ -2103,20 +2108,16 @@ class PopulationBandProjector:
                 self._ef_delivery_like = _ef_dl
                 _mm = int(np.count_nonzero(_ef_dl != self._ef_ok))
                 self._ef_mismatch = _mm
-                if self._efloor > 0.0 and _mm:
-                    # 19iu: this line printed every run to report a difference against DELIVERY's
-                    # coarse vampMid-only mask - a mask 19ip deleted the switch for. The count is
-                    # what the OLD test would have disagreed by, i.e. history that cannot change,
-                    # so it only prints now if it is somehow NON-ZERO, which would mean the two
-                    # grains have come apart again and is worth a line.
-                    _bnote(
-                        f"[ef-mask] \u26a0 exploration floor {self._efloor:.2%}: floor-eligible "
-                        f"rows differ between the search's (vampMid, currency) grain "
-                        f"({int(self._ef_ok.sum()):,} of {len(self._ef_ok):,}) and a "
-                        f"vampMid-only reconstruction ({int(_ef_dl.sum()):,}) by {_mm:,} row(s). "
-                        "Since 19ht both sides mask at the pair grain and 19ip removed the way "
-                        "back, so this should be 0 - a non-zero reading means the two have come "
-                        "apart and the difference lands in RECONCILIATION ERROR.")
+                # 19iv: NOTHING IS PRINTED HERE, and 19iu's version was a false alarm of my
+                # own making. `_ef_dl` is a vampMid-only RECONSTRUCTION of the mask delivery
+                # used BEFORE 19ht - not the mask it uses now - so `_mm` is the size of the
+                # over-blocking that old test would cause. It is 89,955 rows on this book and
+                # it is non-zero by construction, for ever. 19iu gated the line on `_mm != 0`
+                # in the belief that 0 was the expected reading, which put a ⚠ in front of a
+                # permanent historical fact. The comparison is still COMPUTED, and both halves
+                # are stashed on the projector (`_ef_delivery_like`, `_ef_mismatch`) for
+                # anything that wants them.
+                pass
             elif self._efloor > 0.0:
                 _bnote(f"[ef-mask] exploration floor {self._efloor:.2%} carried into the "
                        f"projector (STEP 1: stored, not applied). Floor-eligible rows: "
@@ -2376,7 +2377,7 @@ class PopulationBandProjector:
                             "'|', or a radix overflow), or this module is stale")
                 else:
                     _tag = f"  ✓ vs ~{_before:.1f}s before 19fy/19fz, scaled to this run's rows"
-            _lines.append(f"{_lbl:<52}{_d:>7.1f}s"
+            _lines.append(f"{str(_lbl)[:52]:<52}{_d:>7.1f}s"
                           f"{100.0 * _d / max(_pbp_tot, 1e-9):>7.1f}%   {_tag.strip()}")
         _bnote("[pbp-inside] PopulationBandProjector.__init__ = "
                f"{_pbp_tot:.1f}s, largest first (these SUM to the constructor, no residual)"
