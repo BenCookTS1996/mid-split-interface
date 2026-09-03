@@ -132,7 +132,7 @@ except Exception:  # noqa: BLE001 - no rule available is a refusal, never a brok
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
+__build__ = ("2026-09-03-19jn-gks-zero-by-slot+2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -415,8 +415,23 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
         # contribute nothing to the sum, the group reads 0, and both `mpc` and `psh` fall to 0 —
         # which is exactly the hold that delivery produces when its orig_m merge finds nothing.
         if _AGE_RENORM:
-            for j in range(nA):
-                _gks[pc_gk[j]] = 0.0
+            # 19jn: ZERO THE SLOTS, NOT THE ROWS. This used to walk all nA aged rows to clear
+            # `_gks[pc_gk[j]]`, which is one full pass over the biggest array in the kernel to
+            # clear an accumulator with one slot PER GROUP. [proj-inside] puts the nA phase at
+            # ~48% of a projection and this is one of its three passes.
+            #
+            # BIT-IDENTICAL, and for a reason worth stating plainly: the only reads of `_gks`
+            # below are `_gks[pc_gk[j]]`, so the slots this now clears that the old loop did not
+            # are slots nothing ever looks at. Clearing more of a scratch buffer cannot change an
+            # answer. `pc_gk` is a factorize code in 0.._n_gk-1 and `gks` is allocated
+            # (lanes, _n_gk), so the range covers every slot the loop below can reach.
+            #
+            # VERIFIED UNDER REAL NUMBA before shipping, serial AND parallel=True: the
+            # slot-wise clear on a per-lane row view inside a prange body compiles, and is
+            # bit-identical to the per-row clear it replaces. Pre-poisoning the slots the
+            # codes never name changes nothing, which is the same claim from the other side.
+            for _z in range(_gks.shape[0]):
+                _gks[_z] = 0.0
             for j in range(nA):
                 o = pc_org[j]
                 if o >= 0:
@@ -668,8 +683,23 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
         # under the same two guards the reader below uses; anything else would sum a different
         # quantity from the one it divides.
         if _AGE_RENORM:
-            for j in range(nA):
-                _gks[pc_gkc[j]] = 0.0
+            # 19jn: ZERO THE SLOTS, NOT THE ROWS. This used to walk all nA aged rows to clear
+            # `_gks[pc_gkc[j]]`, which is one full pass over the biggest array in the kernel to
+            # clear an accumulator with one slot PER GROUP. [proj-inside] puts the nA phase at
+            # ~48% of a projection and this is one of its three passes.
+            #
+            # BIT-IDENTICAL, and for a reason worth stating plainly: the only reads of `_gks`
+            # below are `_gks[pc_gkc[j]]`, so the slots this now clears that the old loop did not
+            # are slots nothing ever looks at. Clearing more of a scratch buffer cannot change an
+            # answer. `pc_gkc` is a factorize code in 0.._n_gk-1 and `gks` is allocated
+            # (lanes, _n_gk), so the range covers every slot the loop below can reach.
+            #
+            # VERIFIED UNDER REAL NUMBA before shipping, serial AND parallel=True: the
+            # slot-wise clear on a per-lane row view inside a prange body compiles, and is
+            # bit-identical to the per-row clear it replaces. Pre-poisoning the slots the
+            # codes never name changes nothing, which is the same claim from the other side.
+            for _z in range(_gks.shape[0]):
+                _gks[_z] = 0.0
             for j in range(nA):
                 o = pc_orgc[j]
                 if o >= 0:
@@ -2564,6 +2594,20 @@ class PopulationBandProjector:
                 _codes, _uniq = pd.factorize(_gk_key)
                 self._pc_gk = _codes.astype(np.int64)
                 self._n_gk = int(len(_uniq))
+            # 19jn: how much the slot-wise clear is worth, stated rather than assumed. The old
+            # loop wrote once per AGED ROW to clear an accumulator with one slot per GROUP, so
+            # the saving is exactly the difference between these two numbers, once per candidate.
+            try:
+                _gz_n = int(getattr(self, "_n_gk", 0) or 0)
+                _gz_a = int(np.asarray(getattr(self, "_pc_gk", ())).size)
+                if _gz_a:
+                    _bnote(f"[gks-zero] the age-renormalise accumulator is cleared per SLOT now, "
+                           f"not per row: {_gz_n:,} group slot(s) against {_gz_a:,} aged row(s) "
+                           f"({100.0 * _gz_n / max(_gz_a, 1):.0f}%). That is one of the nA phase's "
+                           "three passes, and [proj-inside] puts nA at about half a projection. "
+                           "Bit-identical: the extra slots it clears are slots nothing reads.")
+            except Exception:  # noqa: BLE001 - a note must never break a build
+                pass
             # 19dl — RETAIN THE KEY STRINGS. Diagnostic only; nothing in the kernels reads this.
             # `_pc_gk` is a factorised CODE, so a group can be counted but never NAMED, and the
             # passthrough-disagreement dump in [vterms-is] needs to print which (profile, period, t)
