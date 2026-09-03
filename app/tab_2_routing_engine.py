@@ -6394,7 +6394,26 @@ def render():
                                            and float(ctx.get("max_share", 1.0) or 1.0) < 1.0),
                                 "cap": float(ctx.get("max_share", 1.0) or 1.0),
                                 "said": False, "profiles": 0, "moved": 0.0, "worst": 0.0,
-                                "calls": 0, "hit": 0, "reover": 0, "infeas": 0}
+                                "calls": 0, "hit": 0, "reover": 0, "infeas": 0,
+                                # ── 19ii [blk-fill] ──────────────────────────────────────
+                                # Ben, 2026-09-03: a bank-blocked gateway "needs to stay at
+                                # 0.01, the only exception is if the gateway in that profile
+                                # is needed in order to keep other gateways under the max cap
+                                # in that same profile." 19ih established that neither the
+                                # search's `_fm_cap` nor the LIVE `impact_calcs._cap_rows`
+                                # does that today: both pick recipients on share alone, so a
+                                # row `_fm_block` just pinned to the floor is lifted back off
+                                # it. This PRICES the rule before anything behavioural moves,
+                                # because the change has to land in FIVE water-fills that run
+                                # after the flooring or the run stops reconciling, and only
+                                # this one has the blocked mask already in scope.
+                                # `need` is the part the cap could NOT have held without —
+                                # the rule's own exception. `share - need` is what the rule
+                                # would actually remove. Sampled: the split is the expensive
+                                # part of a run and this adds a full-width reduceat.
+                                "bf_n": 0, "bf_cap": 20, "bf_pairs": 0, "bf_rows": 0,
+                                "bf_share": 0.0, "bf_need": 0.0, "bf_worst": 0.0,
+                                "bf_seen": 0}
                             if not _DCAP["on"]:
                                 log("   [deliv-cap] OFF — "
                                     + ("ROUTING_DELIV_CAP=0, so the search caps the genome "
@@ -6412,7 +6431,8 @@ def render():
                                     f"{_DCAP['cap']:.4g}, matching delivery's own order. "
                                     "Effect is reported at the end of the search.")
 
-                            def _fm_cap(_farr, _st=_DCAP, _cs=_fm_bcs, _cc=_fm_bcc):
+                            def _fm_cap(_farr, _st=_DCAP, _cs=_fm_bcs, _cc=_fm_bcc,
+                                        _blk=_fm_blk_row):
                                 if not _st["on"]:
                                     return _farr
                                 _X = np.asarray(_farr, float)
@@ -6438,6 +6458,38 @@ def render():
                                                         0.0), _cc, axis=1)
                                 _Y = np.where(_okr & _o, _cap,
                                               np.where(_okr, _X + _room * _f, _X))
+                                # ── 19ii [blk-fill]: WHAT THIS WATER-FILL PUTS BACK ON A
+                                # BLOCKED ROW, and how much of it was unavoidable. READ-ONLY —
+                                # `_Y` above is already decided and nothing here touches it.
+                                if _blk is not None and _st["bf_n"] < _st["bf_cap"]:
+                                    try:
+                                        _st["bf_n"] += 1
+                                        _bm = np.asarray(_blk, bool)[None, :]
+                                        # share this call LANDED on blocked rows
+                                        _lift = np.where(_okr & (~_o) & _bm, _room * _f, 0.0)
+                                        _st["bf_share"] += float(_lift.sum())
+                                        _st["bf_rows"] += int(np.count_nonzero(_lift > 1e-12))
+                                        if _lift.size:
+                                            _st["bf_worst"] = max(_st["bf_worst"],
+                                                                  float(_lift.max()))
+                                        # THE EXCEPTION, per (candidate, profile): what the
+                                        # NON-blocked recipients could have absorbed. Whatever
+                                        # the excess exceeds is share the cap cannot hold
+                                        # without a blocked row, which is precisely the case
+                                        # the rule allows.
+                                        # ONE definition of the exception, shared with the
+                                        # rule itself (blocked_fill.split_room) so what is
+                                        # measured here is exactly what the change would do.
+                                        from routing_optimiser.s4_search import (
+                                            blocked_fill as _bfm)
+                                        _need = np.where(_ok, _bfm.unavoidable_excess(
+                                            _exc, _room, _bm, _cs), 0.0)
+                                        _st["bf_need"] += float(_need.sum())
+                                        _st["bf_pairs"] += int(np.count_nonzero(
+                                            _ok & (np.add.reduceat(_lift, _cs, axis=1) > 1e-12)))
+                                        _st["bf_seen"] += int(_ok.sum())
+                                    except Exception:  # noqa: BLE001 - measurement only
+                                        _st["bf_cap"] = 0        # stop trying, never break
                                 _st["hit"] += 1
                                 _st["profiles"] += int(_ok.sum())
                                 _st["infeas"] += int(np.count_nonzero(~(_pool >= _exc)
@@ -9003,6 +9055,57 @@ def render():
                                                " ⚠ NON-ZERO — the single-pass closed form does not "
                                                "hold on this data; investigate before trusting "
                                                "this run's band numbers."))
+                                        # ── 19ii [blk-fill] ──────────────────────────────
+                                        if _fm_blk_row is None:
+                                            log("   [blk-fill] no row is bank-blocked this run, "
+                                                "so the 0.97 water-fill has nothing to lift off "
+                                                "the exploration floor and the rule (a blocked "
+                                                "gateway stays at the floor unless the profile "
+                                                "needs it to hold the cap) is satisfied trivially.")
+                                        elif not _DCAP["bf_n"]:
+                                            log("   [blk-fill] NOT MEASURED: the cap never fired "
+                                                "on a call where the measurement was still "
+                                                "sampling, so this run says nothing about how "
+                                                "much share the water-fill puts back on blocked "
+                                                "rows.")
+                                        else:
+                                            _bf_av = max(0.0, _DCAP["bf_share"] - _DCAP["bf_need"])
+                                            log(f"   [blk-fill] WHAT THE 0.97 WATER-FILL PUTS BACK "
+                                                f"ON BANK-BLOCKED ROWS, measured on "
+                                                f"{_DCAP['bf_n']:,} sampled delivery call(s) "
+                                                f"covering {_DCAP['bf_seen']:,} (candidate, "
+                                                f"profile) pair(s): {_DCAP['bf_pairs']:,} pair(s) "
+                                                f"lifted a blocked row, "
+                                                f"{_DCAP['bf_rows']:,} blocked (candidate, row) "
+                                                f"entr(ies) received share, \u03a3 "
+                                                f"{_DCAP['bf_share']:.6g}, largest single lift "
+                                                f"{_DCAP['bf_worst']:.4g}.")
+                                            log(f"   [blk-fill] OF THAT, {_DCAP['bf_need']:.6g} was "
+                                                f"UNAVOIDABLE — the profile's NON-blocked "
+                                                f"recipients held less room than the excess, so "
+                                                f"the cap could not have held without a blocked "
+                                                f"row, which is exactly the exception the rule "
+                                                f"allows. THE AVOIDABLE PART IS {_bf_av:.6g}"
+                                                + (" \u2014 a non-blocked sibling had room and "
+                                                   "the blocked row took the share anyway. That "
+                                                   "is what the rule removes, and it is the "
+                                                   "number to weigh the change against."
+                                                   if _bf_av > 1e-9 else
+                                                   " \u2014 i.e. NOTHING. On this run every lift "
+                                                   "onto a blocked row was already required to "
+                                                   "hold the cap, so the rule would change no "
+                                                   "share here. Confirm across a run with more "
+                                                   "blocked pairs before concluding it is free."))
+                                            log("   [blk-fill] SCOPE: this measures the SEARCH's "
+                                                "mirror (`_fm_cap`), the only water-fill with the "
+                                                "blocked mask in scope. The shipped template is "
+                                                "built by `impact_calcs._cap_rows`, which applies "
+                                                "the same rule in the same order but has no mask "
+                                                "and is NOT measured here. Changing the behaviour "
+                                                "means changing both, plus "
+                                                "`_max_share_waterfill` and the band projector's "
+                                                "own cap, or GA-fitness stops matching delivered. "
+                                                "READ-ONLY: nothing in this run was altered by it.")
                                 except Exception as _dce:  # noqa: BLE001
                                     log(f"   [deliv-cap] summary skipped "
                                         f"({type(_dce).__name__}: {_dce}) — measurement only.")

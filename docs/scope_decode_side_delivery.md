@@ -611,3 +611,71 @@ wrong in `_cap_rows`, and that is where it would change.
 `tests/test_19ih_parked_items.py` — 16 checks, including a fake-clock drive of `lift_ab_report`
 that asserts min/min (not mean/mean), that a 13% difference inside a 40% noise bar is not called
 real, and that 0.909x comes back `above_floor=False, impossible=True`.
+
+---
+
+## §17 — 19ii: the blocked-row rule, priced before it ships
+
+**The rule** (Ben, 2026-09-03): a bank-blocked gateway *"needs to stay at 0.01, the only
+exception is if the gateway in that profile is needed in order to keep other gateways under the
+max cap in that same profile."*
+
+That is the right rule. Today no water-fill in the codebase implements it — every one picks
+recipients on share alone, so a row auto-block just pinned to the floor is lifted straight back
+off it. On a toy profile the unmodified rule takes a blocked row from **0.01 to 0.110**.
+
+### Why this commit measures instead of changing
+
+19ih's map found **five** water-fills that run *after* the blocked flooring, and they must all
+agree or GA-fitness stops matching delivered — the exact failure class the 19i* series exists to
+close:
+
+| implementation | what it decides | blocked mask in scope? |
+|---|---|---|
+| `impact_calcs._cap_rows` (in `build_split_exports`) | **the shipped template** | no |
+| `tab_2._fm_cap` | the search's mirror | **yes — `_fm_blk_row`** |
+| `impact_calcs._max_share_waterfill` | the VAMP forecast | no |
+| `band_projection._pop_band_kernel_impl` / `_cb_kernel_impl` | GA-fitness bands | no |
+| `band_projection._cap_pshare` | the numpy reference the kernels are checked against | no |
+
+Threading a blocked mask into `build_split_exports` touches tab_3 and tab_4 as well, and the
+projector kernels take it at *scaffold* grain, which is not the split grain. That is a real piece
+of work, and how much of it is justified depends on a number nobody has: **how much share does
+the water-fill actually put back on blocked rows, and how much of that was avoidable?**
+
+### `[blk-fill]` — the number
+
+`_fm_cap` is the only site with the mask already in scope, so the measurement goes there. Per run
+it reports, on sampled delivery calls: how many (candidate, profile) pairs lifted a blocked row,
+how many blocked entries received share, the total, and the split into
+
+* **UNAVOIDABLE** — the profile's non-blocked recipients held less room than the excess, so the
+  cap could not have held without a blocked row. This is the rule's own exception.
+* **AVOIDABLE** — a non-blocked sibling had room and the blocked row took the share anyway.
+  **This is what the rule removes**, and it is the number to weigh the change against.
+
+Read-only. Sampled (capped at 20 firing calls) because it adds a full-width `reduceat` and the
+delivery transform is 36% of the search.
+
+### `blocked_fill.py` — the rule, written and tested, not yet wired
+
+`split_room` is the rule as a pure function over the arrays every one of those five water-fills
+already computes: non-blocked room is the primary pool, blocked room is last resort, and blocked
+rows take only `max(0, excess − non-blocked room)`. `unavoidable_excess` is the same quantity the
+measurement uses, so **what `[blk-fill]` prices is exactly what the change would do**.
+
+The safety property that makes it landable, and the one the tests hammer: **with no blocked row
+in a profile, the rule is byte-identical to the unmodified water-fill** (verified on 200 random
+books), and it never changes a profile that contains no blocked row (verified on 200 more). So it
+can only ever move the profiles it is meant to move.
+
+`tests/test_19ii_blocked_fill.py` — 15 checks: mass conserved; a blocked row with roomy
+non-blocked siblings stays exactly at the floor while the unmodified rule lifts it; the exception
+fires when the only under-cap sibling is blocked, and the over-cap row still reaches the cap; and
+both byte-identity properties.
+
+### Next
+
+One run gives the avoidable number. If it is material, the change lands across all five sites
+together behind one switch. If it is ~0, the rule is already satisfied in practice and that is
+worth knowing before touching the shipping path.
