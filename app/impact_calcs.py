@@ -80,7 +80,7 @@ class _Skip(Exception):
     must not be recorded as a failure. Each handler re-checks the flag."""
 
 __build__ = ("2026-08-17b-count-only-pool-search+profile-exporter+staged-enforcement"
-             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zeroprofile+vamp-term-stash+2026-09-01-19gq-gk-int-key+cvp-submarks+19gt-forensic-on-demand+2026-09-03-19ih-sentinel-unclobbered")
+             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zeroprofile+vamp-term-stash+2026-09-01-19gq-gk-int-key+cvp-submarks+19gt-forensic-on-demand+2026-09-03-19ih-sentinel-unclobbered+2026-09-03-19je-cvp-submarks+2026-09-03-19jh-txnterms-on-demand")
 
 
 # [FN-246b]
@@ -1913,7 +1913,26 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # inside this function and are dropped on return, so the reconcile can never compare terms
     # with the in-search projector. Stash the per-(vampMid, period) sums here — nothing is
     # modified and nothing downstream reads this global.
+    #
+    # 19jh: GATED ON `FORENSIC`, like the other four. 19gt made [passthru], [pshare-why],
+    # [vterms] and [move-gate] on-demand and this one was left behind — nobody noticed,
+    # because until 19je split the row it was hidden inside a step named after something
+    # else. [cvp-timing] then put it at 10.0s of an 80.7s projection, the LARGEST single
+    # step, on a run where [forensic] skipped every other stash because the reconciliation
+    # error was 1 unit, inside the float32 noise floor. Ten seconds explaining a number
+    # there was nothing to explain about.
+    #
+    # This is not the switch 19fq deleted. The caller projects with FORENSIC False, reads
+    # the drift off that projection, and projects AGAIN with it True if the drift is real -
+    # so the explanation is never unavailable, it is computed exactly when there is
+    # something to explain. A skipped stash reads "skipped", not None: None means it FAILED
+    # and a reader has to be able to tell those apart.
+    if not FORENSIC:
+        globals()["_LAST_TXN_TERMS"] = "skipped"
+        globals()["_LAST_TXN_DENOM"] = "skipped"
     try:
+        if not FORENSIC:
+            raise _Skip()
         _tt_ct = pd.to_numeric(t0["profile_tot"], errors="coerce").fillna(0.0)
         _tt_bs = pd.to_numeric(t0["base_share"], errors="coerce").fillna(0.0)
         _tt_mv = pd.to_numeric(t0["_move"], errors="coerce").fillna(0.0)
@@ -1963,6 +1982,8 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
             "inn": _tt_ct * _tt_mt * _tt_ps,
             "pool": _tt_ct * _tt_mt,
         }).groupby(["midl", "per"], as_index=False).sum()
+    except _Skip:
+        pass                       # [forensic] 19jh: skipped, not failed — stash already set
     except Exception:  # noqa: BLE001 — a diagnostic must never break the projection
         globals()["_LAST_TXN_TERMS"] = None
 

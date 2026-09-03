@@ -13086,6 +13086,16 @@ def render():
                                     try:
                                         import impact_calcs as _ic_t
                                         _dterms = getattr(_ic_t, "_LAST_TXN_TERMS", None)
+                                        if isinstance(_dterms, str):
+                                            # 19jh: "skipped" is not "failed".
+                                            log("      [txn-terms] NOT COMPUTED, on purpose "
+                                                "(19jh): [forensic] found no reconciliation "
+                                                "error worth explaining, so the delivered "
+                                                "TXN-term stash was skipped along with the other "
+                                                "four - it was 10.0s of the 21:23 run's "
+                                                "projection. Nothing failed. ROUTING_FORENSIC=1 "
+                                                "computes it.")
+                                            _dterms = None
                                         _pj = getattr(_eb, "projector", None)
                                         _prv = locals().get("_pr_enf")
                                         if (_dterms is not None and _pj is not None and _prv is not None
@@ -13939,6 +13949,11 @@ def render():
                                             # ── DENOMINATOR / NUMERATOR PROBE ─────────────────
                                             try:
                                                 _ddD = getattr(_ic_t, "_LAST_TXN_DENOM", None)
+                                                if isinstance(_ddD, str):
+                                                    log("      [denom] NOT COMPUTED, on purpose "
+                                                        "(19jh) - the same gate as [txn-terms] "
+                                                        "above, not a missing stash.")
+                                                    _ddD = None
                                                 _pkD = list(getattr(_pj, "prop_keys", []) or [])
                                                 if _ddD is None or not len(_ddD) or not _pkD:
                                                     log("      [denom] skipped — delivered denominator "
