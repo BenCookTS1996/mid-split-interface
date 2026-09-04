@@ -204,7 +204,8 @@ if _rows2.size:
           "the ban stage ends in a renormalise, which is not the identity")
 
 # ═══ 2. THE ENGINE: armed == unarmed, on a real run_fullmatrix_ga ═════════════════════════
-os.environ.pop("ROUTING_DELIV_DELTA", None)
+# 19kd: nothing to pop - the delta is unconditional and has no env var. The flag is set per
+# arm on the throwaway module `run()` imports.
 _sp = importlib.util.spec_from_file_location("ga_19iz", GA_P)
 ga = importlib.util.module_from_spec(_sp); sys.modules["ga_19iz"] = ga; _sp.loader.exec_module(ga)
 
@@ -291,10 +292,13 @@ KW = dict(reference_shares=meta["reference_kept"], pop_size=16, generations=14,
           obj_full=meta.get("obj_full"))
 
 def run(delta, poison=False, rows_fn=deliver_rows_fn, dmap=DMAP, logs=None):
-    os.environ["ROUTING_DELIV_DELTA"] = "1" if delta else "0"
     POISON["on"] = poison
     _sp2 = importlib.util.spec_from_file_location("ga_run", GA_P)
     m = importlib.util.module_from_spec(_sp2); sys.modules["ga_run"] = m; _sp2.loader.exec_module(m)
+    # 19kd: through the module constant - ROUTING_DELIV_DELTA is deleted. A fresh module per
+    # call, so the flag cannot leak between arms. The OFF arm is KEPT deliberately: it is the
+    # reference every bit-identity check below diffs against.
+    m._DELIV_DELTA_ON = bool(delta)
     _SCAT["buf"] = None
     kw = dict(KW)
     if logs is not None:
@@ -346,13 +350,29 @@ check("3  ...and the run still finishes on the CORRECT split",
 # a caller that wires nothing must be a no-op, not an error
 _l3 = []
 _m3, best_none, _ = run(True, rows_fn=None, dmap=None, logs=_l3)
-check("3  ROUTING_DELIV_DELTA=1 with nothing wired says so and changes no answer",
+check("3  armed with nothing wired says so and changes no answer",
       np.array_equal(bits(best_off), bits(best_none))
       and any("[deliv-delta] NOT USED" in str(x) for x in _l3))
 
 # ═══ 4. the wiring, at source level ══════════════════════════════════════════════════════
-check("4  the delta is DEFAULT OFF until a real run proves it",
-      'os.environ.get("ROUTING_DELIV_DELTA", "0") != "0"' in GA_SRC)
+# 19kd: REVERSED, on Ben's instruction. It WAS default-off, and that cost the 2026-09-04
+# 15:25 run 193s against the 11:47 run for the same 11,840 candidates and the same shipped
+# answer - 22 split(s)/s against 75 - with no line in the log to say why. There is no env var
+# now; a source-level constant that only this test flips is not a switch anyone can forget.
+check("4  the delta is ON by default, with no env var anywhere",
+      "_DELIV_DELTA_ON = True" in GA_SRC
+      and 'os.environ.get("ROUTING_DELIV_DELTA"' not in GA_SRC
+      and 'os.environ.get("ROUTING_EVAL_DELTA"' not in GA_SRC)
+check("4  ...and it is a NAME, not an inlined literal, so the OFF reference survives",
+      'bool(_DELIV_DELTA_ON and _have_full' in GA_SRC)
+# COMMENT-STRIPPED, because 19kd's own comment QUOTES the `elif _DLV["why"]:` it deleted - a
+# raw substring test passes or fails on the strength of its own explanation. That trap has bitten
+# five checks across 19jz, 19ka, 19kb and 19kc.
+_GA_CODE = "\n".join(l for l in GA_SRC.splitlines() if not l.lstrip().startswith("#"))
+check("4  ...and it reports its state EVERY run, armed or not",
+      "[deliv-delta] NOT USED" in _GA_CODE
+      and 'elif _DLV["why"]:' not in _GA_CODE,
+      "the old `elif _DLV[why]` printed nothing at all when the switch defaulted off")
 check("4  it rides on the decode delta's provenance, so it can never be armed alone",
       'if _DLV["on"] and _DLT["on"] and _prov is not None:' in GA_SRC)
 check("4  the bootstrap delivery is COPIED - `_deliver_full` hands back a reused buffer",

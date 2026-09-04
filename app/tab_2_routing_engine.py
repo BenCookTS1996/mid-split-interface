@@ -9513,8 +9513,13 @@ def render():
                                     obj_full=_fm_meta.get("obj_full"),
                                     # 19iz: the subset-capable delivery and the kept->full
                                     # profile map it is addressed with. Both None unless
-                                    # [dlv-map] verified the layouts correspond, and the GA
-                                    # gathers a delivery only when ROUTING_DELIV_DELTA=1.
+                                    # [dlv-map] verified the layouts correspond.
+                                    # 19kd: WIRING THESE IS NOW THE WHOLE DECISION. The GA used
+                                    # to also need ROUTING_DELIV_DELTA=1; that switch is gone
+                                    # and the delta arms whenever both of these are non-None,
+                                    # so [dlv-map]'s check is the only gate left - which is
+                                    # right, because it is a correctness precondition rather
+                                    # than a preference.
                                     deliver_rows_fn=_fm_deliv_rows,
                                     deliver_map=_fm_dlv_map)
                                 _fm_best, _fm_info = _fm_run(_fm_p, **_fm_kw)

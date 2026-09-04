@@ -87,7 +87,20 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-09-04-19js-decodecap-headline-trim+2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim+2026-09-03-19iu-log-batch+2026-09-03-19ix-eval-delta+2026-09-03-19iy-delta-default-on+2026-09-03-19iz-deliv-delta"
+# ── 19kd: THE TWO DELTAS ARE ON, AND THERE IS NO SWITCH ──────────────────────────────────
+# No env var reads these. They are SOURCE-LEVEL constants, which is the distinction Ben asked
+# for: nobody's shell decides whether the search is 3.3x slower, and forgetting to export a
+# variable cannot cost 193s again.
+#
+# NAMES, NOT LITERALS, for the reason 19jx kept `_PROJ_CB_ON` and `_PROJ_LIFT_ON` as names: the
+# OFF path of each is the REFERENCE its own self-check diffs against, and test_19ix / test_19iz
+# run a whole search BOTH ways and assert the shipped split is bit-identical. Inlining `True`
+# would delete that proof - the slow path would still exist and nothing would ever compare
+# against it. The tests set these on a freshly-imported module; the app never does.
+_EVAL_DELTA_ON = True      # 19ix/19iy: gather each child's DECODE from its parents'
+_DELIV_DELTA_ON = True     # 19iz: gather each child's DELIVERY from its parents'
+
+__build__ = "2026-09-04-19kd-deltas-unconditional+2026-09-04-19js-decodecap-headline-trim+2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim+2026-09-03-19iu-log-batch+2026-09-03-19ix-eval-delta+2026-09-03-19iy-delta-default-on+2026-09-03-19iz-deliv-delta"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -1929,9 +1942,20 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # reconciliation error 1, all fifteen bands reading the same delivered value. 11,165 of
     # 11,840 candidates were gathered, 0.6% of profile-decodes were redone, and the per-generation
     # self-check passed on all 319 generations that gathered. The decode went 225.3 -> 69.5
-    # ms/call and the search 413.1s -> 321.8s. ROUTING_EVAL_DELTA=0 reverts to full decodes.
-    _EVAL_DELTA = os.environ.get("ROUTING_EVAL_DELTA", "1") != "0"
-    _DLT = {"dec": None, "prov": None, "on": _EVAL_DELTA, "gathered": 0, "full": 0,
+    # ms/call and the search 413.1s -> 321.8s.
+    #
+    # 19kd - ROUTING_EVAL_DELTA IS DELETED, on Ben's instruction, and it had to go WITH the
+    # deliver delta below rather than instead of it. The two are not independent: the gather at
+    # `if _DLV["on"] and _DLT["on"]` means turning the DECODE delta off turns the DELIVERY delta
+    # off with it. So removing only ROUTING_DELIV_DELTA would have left `ROUTING_EVAL_DELTA=0`
+    # able to cost the same 3.3x it was removed to prevent - the exposure, not just the switch.
+    #
+    # ON UNCONDITIONALLY, AND THE FULL DECODE STAYS. This is the 19jx distinction: the OFF path
+    # here is not a fallback anyone chooses, it is the REFERENCE the per-generation self-check
+    # diffs against, and the path the run drops back to if that check ever fails. Deleting it
+    # would delete the proof. `_DLT["on"]` therefore stays a MUTABLE flag set True, not a
+    # literal - the self-check still writes False to it mid-run.
+    _DLT = {"dec": None, "prov": None, "on": bool(_EVAL_DELTA_ON), "gathered": 0, "full": 0,
             "prof_re": 0, "prof_tot": 0, "checks": 0, "why": "", "t_gather": 0.0,
             "t_full_est": 0.0, "said": False}
 
@@ -2004,16 +2028,39 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # on bit patterns; on any mismatch the delta turns itself off for the process and the run
     # continues on the full delivery. It also rides on the decode delta's provenance, so it is
     # never armed when 19ix is not.
-    # DEFAULT OFF until a real run proves it against the 19iy baseline, exactly as 19ix was.
-    _DLV_ENV = os.environ.get("ROUTING_DELIV_DELTA", "0") != "0"
+    #
+    # 19kd - ROUTING_DELIV_DELTA IS DELETED AND THIS IS ON BY DEFAULT, on Ben's instruction.
+    # IT WAS PROVEN, THEN LOST. Its default was "0", so it only ran when someone remembered to
+    # export the variable - and the 2026-09-04 11:47 run did while the 15:25 run did not. Same
+    # build, same budget, same 11,840 candidates, same shipped answer (success rate 0.615322 in
+    # both), and 75 split(s)/s against 22. `_deliver_full` went 54.7 -> 682.9 ms/call, a 12.5x
+    # on ONE step while every other measured step moved ~2.0x with the machine. That is what a
+    # default-off optimisation costs: about half of a 3.3x, silently.
+    #
+    # ARMED BY WIRING, NOT BY A VARIABLE. It needs `deliver_rows_fn` + `deliver_map`, which
+    # tab_2 passes only after its [dlv-map] line has verified the kept-grain and full-grain
+    # layouts correspond one-to-one, and passes as None when they do not. That check is a real
+    # precondition rather than a preference, so it stays; nobody's shell decides it.
+    #
+    # THE FULL DELIVERY STAYS, for the same reason the full decode does: it is the REFERENCE
+    # the per-generation bit-pattern check diffs against, the fallback if that check fails, and
+    # the path taken for every candidate with no usable parent provenance (675 of 11,840 on the
+    # 11:47 run). `_DLV["on"]` stays a mutable flag for the same reason.
     _DLV = {"arr": None, "last": None,
-            "on": bool(_DLV_ENV and _have_full and callable(deliver_rows_fn)
+            "on": bool(_DELIV_DELTA_ON and _have_full and callable(deliver_rows_fn)
                        and isinstance(deliver_map, dict)),
             "gathered": 0, "full": 0, "prof_re": 0, "prof_tot": 0, "checks": 0,
             "why": "", "said": False}
-    if _DLV_ENV and not _DLV["on"]:
-        _DLV["why"] = ("ROUTING_DELIV_DELTA=1 but the caller wired no subset-capable delivery "
-                       "(deliver_rows_fn / deliver_map), so there was nothing to gather with")
+    if not _DLV["on"]:
+        # 19kd: UNCONDITIONAL now. This used to be `if _DLV_ENV and not _DLV["on"]` - so a run
+        # where the caller wired nothing said NOTHING, because nobody had asked for it. That is
+        # exactly how the 15:25 run lost 193s with no line in a 718-line log to show for it.
+        _DLV["why"] = (
+            "_DELIV_DELTA_ON is False in this module - that is a TEST setting, not something "
+            "the app can do; a real run cannot reach it" if not _DELIV_DELTA_ON else
+            "the caller wired no subset-capable delivery (deliver_rows_fn / deliver_map), so "
+            "there was nothing to gather with - tab_2 passes both as None when its [dlv-map] "
+            "check finds the two profile layouts do not correspond one-to-one")
 
     def _delta_dlv(sh, prov):
         """The DELIVERED population, gathered from the parents' deliveries. None if not possible."""
@@ -3809,7 +3856,9 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # fact that matters - a delta that quietly fell back to the full decode would otherwise look
     # exactly like one that worked.
     globals()["_LAST_DELTA"] = dict(_DLT, dec=None, prov=None, last=None)
-    if _DLT["gathered"] or _DLT["why"]:
+    # 19kd: UNCONDITIONAL. `if _DLT["gathered"] or _DLT["why"]` meant an armed run that
+    # gathered nothing printed nothing - see the [deliv-delta] note below for what that cost.
+    if True:
         _dl_pc = 100.0 * _DLT["prof_re"] / max(_DLT["prof_tot"], 1)
         log("")
         log(f"[fullmatrix-ga] [eval-delta] {_DLT['gathered']:,} candidate(s) had their decode "
@@ -3827,8 +3876,19 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             "the population would be silently wrong rather than loud."
             + ("" if _DLT["on"] else
                f" \u26a0 DISABLED MID-RUN: {_DLT['why']}. Every candidate after that point was "
-               "decoded in full, so this run is correct."))
+               "decoded in full, so this run is correct.")
+            + ("" if _EVAL_DELTA_ON else
+               " \u26a0 _EVAL_DELTA_ON is False in this module - a TEST setting (19kd deleted "
+               "the env var), so a real run cannot reach this."))
     # 19iz: the deliver delta's own report, on the same terms.
+    #
+    # 19kd - IT PRINTS EVERY RUN NOW. It was `if _DLV["gathered"]: ... elif _DLV["why"]:`, and
+    # with the switch defaulting off `why` stayed EMPTY - nobody had asked, so there was nothing
+    # to explain. The result: the single biggest determinant of the 15:25 run's throughput left
+    # no trace at all in a 718-line log, and finding it meant diffing per-call timings across
+    # two runs. A state you cannot read is a state that will surprise you again, so this line is
+    # now on the same footing as [deliv-cap], [stash-q] and [proj-config]: stated every run,
+    # whether or not anything is unusual.
     globals()["_LAST_DELIV_DELTA"] = dict(_DLV, arr=None, last=None)
     if _DLV["gathered"]:
         _dv_pc = 100.0 * _DLV["prof_re"] / max(_DLV["prof_tot"], 1)
@@ -3850,9 +3910,13 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             + ("" if _DLV["on"] else
                f" \u26a0 DISABLED MID-RUN: {_DLV['why']}. Every candidate after that point was "
                "delivered in full, so this run is correct."))
-    elif _DLV["why"]:
+    else:
         log("")
-        log(f"[fullmatrix-ga] [deliv-delta] NOT USED \u2014 {_DLV['why']}.")
+        log("[fullmatrix-ga] [deliv-delta] NOT USED \u2014 "
+            + (_DLV["why"] or "no candidate had a parent to gather from, so every delivery was "
+                              "a full one")
+            + ". This is ON by default and has no switch (19kd); if it is not gathering, that "
+              "is the wiring or the self-check, and both say so above.")
     log("")
     log("[fullmatrix-ga] SEARCH")
     log(f"      candidates      {evaluated:,} split(s) over {len(history):,} generation(s)")

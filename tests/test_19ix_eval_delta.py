@@ -61,10 +61,14 @@ def hooks(colmap, n_row):
     return deliver_full
 
 def run(delta, gens=8, pop=16, seed=4):
-    # 19iy made the delta DEFAULT ON, so "off" now has to be set explicitly - popping the
-    # variable would leave it on and the A/B would compare a run against itself.
-    os.environ["ROUTING_EVAL_DELTA"] = "1" if delta else "0"
+    # 19iy made the delta DEFAULT ON, so "off" has to be set explicitly - leaving it alone
+    # would compare a run against itself.
+    # 19kd: THROUGH THE MODULE CONSTANT, not ROUTING_EVAL_DELTA, which is deleted. `load()`
+    # imports a FRESH module each call, so setting the flag on it before `run_fullmatrix_ga`
+    # is what the env var used to do - and the OFF arm still exists, which is the point:
+    # deleting the slow path would have deleted the reference this whole A/B diffs against.
     m = load("ga_delta_" + ("on" if delta else "off"))
+    m._EVAL_DELTA_ON = bool(delta)
     p, meta = m.problem_from_ctx(ctx, soft_cap_mult=1.0)
     colmap = np.asarray(meta["keep_idx"])[p.order]
     best, info = m.run_fullmatrix_ga(
@@ -111,8 +115,8 @@ check("with the switch off nothing is gathered at all",
 # ── 3. THE GUARD CATCHES A DESYNCHRONISED CACHE ─────────────────────────────────────────
 # Corrupt one row of the parent cache mid-run and confirm the check fires. This is the failure
 # the whole optimisation risks, so it is tested rather than argued.
-os.environ["ROUTING_EVAL_DELTA"] = "1"
 m_bad = load("ga_delta_bad")
+m_bad._EVAL_DELTA_ON = True      # 19kd: was ROUTING_EVAL_DELTA=1
 _orig = m_bad._segment_softmax
 _state = {"n": 0}
 def _poison(logits, ps, pl, ms=None):
@@ -147,7 +151,9 @@ except Exception as _e:
     check("a one-ulp cache corruption is CAUGHT and the delta disables itself", False,
           f"the run raised instead: {type(_e).__name__}: {_e}")
 finally:
-    os.environ["ROUTING_EVAL_DELTA"] = "0"
+    # 19kd: nothing to unset - the flag lives on the throwaway module `load()` just built, so
+    # it cannot leak into the next check the way an env var did.
+    pass
 
 # ── 4. the masks that make it possible cost no extra draws ──────────────────────────────
 m4 = load("ga_delta_masks")
