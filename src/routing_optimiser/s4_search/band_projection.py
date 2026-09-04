@@ -132,7 +132,7 @@ except Exception:  # noqa: BLE001 - no rule available is a refusal, never a brok
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-09-03-19jp-stash-quotient+2026-09-03-19jn-gks-zero-by-slot+2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
+__build__ = ("2026-09-04-19jr-stashq-per-run+2026-09-03-19jp-stash-quotient+2026-09-03-19jn-gks-zero-by-slot+2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -1283,6 +1283,22 @@ def proj_new_run():
     _F32_OK["dt"] = None
     _F32_OK["said"] = False
     _CB_OK["checked"] = False
+    # 19jr: AND THE 19jp STASH COUNTERS. They were not here, so in a warm Streamlit process the
+    # [stash-q] A/B accumulated across RUNS: the 2026-09-04 09:51 log reported 422 ON and 422 OFF
+    # call(s) against a run that dispatched 378 projections in total, i.e. most of what it counted
+    # belonged to an earlier run on a differently-loaded machine. That is precisely the bug this
+    # function exists to prevent - see the float32 drift in the docstring above, which printed the
+    # previous run's figure to four decimals. The RATIO survived it (the arms alternate within
+    # every run, so drift is still shared between them), but the call counts and the ms/call
+    # figures did not, and a line that misstates its own sample size invites the wrong conclusion.
+    #
+    # `ok` is NOT cleared, on the same rule as _CB_OK["use"]: a path disabled for cause stays
+    # disabled for the process. `checked` IS cleared, so the bit-identity self-check re-runs on
+    # THIS run's scaffold rather than resting on the last one's.
+    if _STASH_FACT.get("ok") is not False:
+        _STASH_FACT["checked"] = False
+    _STASH_FACT.update(armed=False, calls=0, on_ms=0.0, on_n=0, off_ms=0.0, off_n=0,
+                       nA=0, bytes=0, dtype="", lanes=0)
     _PROJ_PATH.clear()
     _PROJ_PATH.update({"seen": {}, "calls": 0})
     _PROJ_PAR_SAID.clear()

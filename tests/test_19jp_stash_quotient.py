@@ -309,6 +309,33 @@ check("9  band_projection records 19jp", "19jp-stash-quotient" in BP_SRC)
 check("9  the existing profile-blocked vs flat self-check still guards this",
       "_CB_OK" in BP_SRC and "self-checked against the flat kernel on this scaffold " in BP_SRC)
 
+# ═══ 9b. 19jr: THE COUNTERS ARE PER RUN, NOT PER PROCESS ═════════════════════════════════
+# Streamlit keeps the process alive between runs, so anything not reset by `proj_new_run` is
+# the LAST run's. 19jp missed that: the 2026-09-04 09:51 log reported 422 ON and 422 OFF
+# call(s) on a run that dispatched 378 projections in total. The ratio survived - the arms
+# alternate within every run, so drift is still shared - but the sample size did not.
+bp._STASH_FACT.update(armed=True, checked=True, ok=True, calls=99,
+                      on_ms=500.0, on_n=42, off_ms=800.0, off_n=42,
+                      nA=845790, bytes=118_410_600, dtype="float32", lanes=35)
+bp.proj_new_run()
+check("9b the A/B counters are cleared by proj_new_run, like every other per-run measurement",
+      (bp._STASH_FACT["on_n"] == 0 and bp._STASH_FACT["off_n"] == 0
+       and bp._STASH_FACT["on_ms"] == 0.0 and bp._STASH_FACT["off_ms"] == 0.0
+       and bp._STASH_FACT["calls"] == 0 and bp._STASH_FACT["nA"] == 0
+       and bp._STASH_FACT["bytes"] == 0 and not bp._STASH_FACT["armed"]))
+check("9b ...and the self-check re-runs on the NEW run's scaffold",
+      bp._STASH_FACT["checked"] is False)
+check("9b ...and proj_new_run still clears what it cleared before",
+      bp._PROJ_PATH.get("calls") == 0 and bp._CB_OK["checked"] is False)
+# a path disabled FOR CAUSE stays disabled for the process - the _CB_OK["use"] rule
+bp._STASH_FACT.update(ok=False, checked=True)
+bp.proj_new_run()
+check("9b a self-check that FAILED stays failed - a new run does not re-arm a broken path",
+      bp._STASH_FACT["ok"] is False and bp._STASH_FACT["checked"] is True)
+bp._STASH_FACT.update(ok=None, checked=False)
+check("9b band_projection records 19jr", "19jr-stashq-per-run" in BP_SRC)
+
+
 # ═══ 10. END TO END, through `_project_cb` - the wiring, not just the kernel ══════════════
 # 19jf is why this section exists. That bug was a WIRING bug: the kernel was right and the
 # unit tests passed, and the run died hundreds of lines away on a name the change had made
