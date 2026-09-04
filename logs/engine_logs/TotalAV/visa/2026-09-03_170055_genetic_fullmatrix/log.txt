@@ -1,0 +1,586 @@
+[16:43:03 +   0.1s] ═════════════════════════ RUN DIAGNOSTICS ═════════════════════════
+[16:43:03 +   0.1s]    started 2026-09-03 16:43:03 · python 3.8.10 · pandas 2.0.3 · numpy 1.24.4
+[16:43:03 +   0.1s]    APP_BUILD: 2026-08-19ct
+[16:43:03 +   0.1s]    BACKEND BUILD MARKERS — the NEWEST tag in each module's build history. If one is older than the change you expect, the run is on stale bytecode: clear __pycache__ and relaunch.
+[16:43:03 +   0.1s]       module                newest build tag                             earlier tags
+[16:43:03 +   0.1s]       ───────────────────────────────────────────────────────────────────────────────
+[16:43:03 +   0.1s]       optimiser             2026-09-02-19ie-obj-check                              23
+[16:43:03 +   0.1s]       eligibility           ⚠ 2026-08-19bs-fused-elementwise-blends                 8
+[16:43:03 +   0.1s]       vamp_forecast_pipeline2026-09-02-19ha-baseline-reconciliation-tab             3
+[16:43:03 +   0.1s]       sql_runner            2026-07-04-templated-params                             —
+[16:43:03 +   0.1s]       base                  2026-07-22-bounds-cache                                 2
+[16:43:03 +   0.1s]       genetic_ref           2026-07-17-genetic-revenue-reference                    —
+[16:43:03 +   0.1s]       seed_search           2026-09-01-19go-delivery-faithful-bandgreed            19
+[16:43:03 +   0.1s]       genetic_fullmatrix    2026-09-03-19iu-log-batch                              36
+[16:43:03 +   0.1s]       band_projection       ⚠ 2026-09-03-19iu-log-batch-float32-uncondi            18
+[16:43:03 +   0.1s]       numba_kernels         2026-08-11-ga-numba-persistent-cache                    9
+[16:43:03 +   0.1s]       exact_band_solver     2026-09-03-19ip-log-trim                               26
+[16:43:03 +   0.1s]       rowpar                ⚠ 2026-08-19bo-half-cores                               1
+[16:43:03 +   0.1s]       impact_calcs          2026-09-03-19ih-sentinel-unclobbered                   15
+[16:43:03 +   0.1s]    [loaded] band_projection from /Users/ben.cook/Downloads/routing_optimiser/app/../src/routing_optimiser/s4_search/band_projection.py
+[16:43:03 +   0.1s]    [loaded]   source mtime on disk NOW: 2026-09-03 16:30:42 · size 228,387
+[16:43:03 +   0.1s] 
+[16:43:03 +   0.1s] 
+[16:43:03 +   0.1s]    RUN CONFIG:
+[16:43:03 +   0.1s]       setting                             value
+[16:43:03 +   0.1s]       ────────────────────────────────────────────────────────────────────────────────
+[16:43:03 +   0.1s]       company                             TotalAV
+[16:43:03 +   0.1s]       card scheme                         visa
+[16:43:03 +   0.1s]       attempts window                     2026-06-01 → 2026-08-16
+[16:43:03 +   0.1s]       engine                              genetic_fullmatrix
+[16:43:03 +   0.1s]       engine score grain                  Bank × Currency × RPGT
+[16:43:03 +   0.1s]       optimisation grain                  Bank × Currency × RPGT × pmp × Country
+[16:43:03 +   0.1s]       VAMP cap                            0.06
+[16:43:03 +   0.1s]       exploration floor                   0.01
+[16:43:03 +   0.1s]       max gateway share                   0.97
+[16:43:03 +   0.1s]       smoothing method                    Empirical Bayes
+[16:43:03 +   0.1s]       time decay                          on, 15d half-life
+[16:43:03 +   0.1s]       cross-border penalty                0.6
+[16:43:03 +   0.1s]       max connector pools                 0
+[16:43:03 +   0.1s]       engine params                       (none)
+[16:43:03 +   0.1s]       auto-explore                        True
+[16:43:03 +   0.1s]       RPGT scope                          4 selected: addon sale, annual sub sale, monthly initial, upgrades
+[16:43:03 +   0.1s]       hold unselected RPGTs at baseline   True
+[16:43:03 +   0.1s]       gateway auto-block                  ON, ≥100 consecutive failed attempts
+[16:43:03 +   0.1s] 
+[16:43:03 +   0.1s] 
+[16:43:03 +   0.1s]    PER-MID BAND CONSTRAINTS: 15 configured
+[16:43:03 +   0.1s]       prio MID                           metric type          target  tol   month  RPGT
+[16:43:03 +   0.1s]       --------------------------------------------------------------  -----------------------
+[16:43:03 +   0.1s]       1    Braintree USA - Total AV      vamp   ceiling        1,300  -     M5     ALL
+[16:43:03 +   0.1s]       1    WorldPay - Total AV           vamp   ceiling        1,600  -     M5     ALL
+[16:43:03 +   0.1s]       2    Adyen - TotalAV - NA          txn    range         25,000  20%   M5     ALL
+[16:43:03 +   0.1s]       2    Adyen_TotalAV                 vamp   ceiling        2,500  -     M5     ALL
+[16:43:03 +   0.1s]       2    Adyen_TotalAVPremium          vamp   ceiling        1,700  -     M5     ALL
+[16:43:03 +   0.1s]       2    Adyen_TotalAVPro              vamp   ceiling        1,800  -     M5     ALL
+[16:43:03 +   0.1s]       2    Adyen_TotalAVSecure           vamp   ceiling        1,300  -     M5     ALL
+[16:43:03 +   0.1s]       2    Adyen_TotalAVUltimate         vamp   ceiling        1,800  -     M5     ALL
+[16:43:03 +   0.1s]       2    Adyen_TotalAntivirusOnline    vamp   ceiling        1,800  -     M5     ALL
+[16:43:03 +   0.1s]       2    Adyen_TotalSecurity           vamp   ceiling        1,800  -     M5     ALL
+[16:43:03 +   0.1s]       2    Authorize - Total AV          txn    ceiling       15,000  -     M5     ALL
+[16:43:03 +   0.1s]       2    Braintree EU - Total AV       vamp   ceiling        1,250  -     M5     ALL
+[16:43:03 +   0.1s]       2    Checkout - Total AV           vamp   ceiling        1,300  -     M5     ALL
+[16:43:03 +   0.1s]       2    PaySafe - Total AV            vamp   ceiling        1,300  -     M5     ALL
+[16:43:03 +   0.1s]       2    WoodForest - Total AV         txn    range         20,000  20%   M5     ALL
+[16:43:03 +   0.1s] 
+[16:43:03 +   0.1s] 
+[16:43:03 +   0.1s]    INPUT FILES:
+[16:43:03 +   0.1s]       outputs dir: data/outputs/AUG/TotalAV/visa/  [0.00 MB, mtime 2026-08-31 20:22:51]
+[16:43:03 +   0.1s]       MID list: /Users/ben.cook/Downloads/routing_optimiser/data/mappings/Master_MID_List.csv  [0.09 MB, mtime 2026-08-31 23:04:03]
+[16:43:03 +   0.1s]       MID list encoding: utf-8
+[16:43:03 +   0.1s] ════════════════════════════════════════════════════════════════════
+[16:43:03 +   0.1s] 
+[16:43:03 +   0.1s] ▶ ① Fetch attempts/success data — started
+[16:43:03 +   0.2s] 16:43:03     > SQL attempts_success.sql: loading cached result from /Users/ben.cook/Downloads/routing_optimiser/app/../data/routing_engine_cached_input_data/attempts_success_1ab4cfa672_cedbf554f5.parquet
+[16:43:03 +   0.2s] 16:43:03     > SQL processor_benchmark.sql: loading cached result from /Users/ben.cook/Downloads/routing_optimiser/app/../data/routing_engine_cached_input_data/processor_benchmark_e2f0c1a6b2_cedbf554f5.parquet
+[16:43:04 +   0.2s]    cross-brand fallback success rate: 31 (processor, currency) rate(s) loaded (cache)
+[16:43:04 +   0.2s]       pooled across ALL brands
+[16:43:04 +   0.2s]       used ONLY on gateways where the processor has no same-brand sibling
+[16:43:04 +   0.2s] ✓ ① Fetch attempts/success data — finished in 0.0s
+[16:43:04 +   0.2s] 
+[16:43:04 +   0.2s] ▶ ② Pre-processing — started
+[16:43:09 +   5.9s] 16:43:09        - baseline from vamp_t_period_prorata_export.csv: 1,731,787 row(s) in the file → 51,434 routing profile-row(s) after collapsing to (bank · currency · gateway).
+[16:43:10 +   6.3s] 16:43:10        BASELINE RECONCILIATION — the routing baseline must come from ONE source. These are the same two totals read off both exports:
+[16:43:10 +   6.3s] 16:43:10        metric       pro-rata export          bin_rpgt      variance
+[16:43:10 +   6.3s] 16:43:10        ------------------------------------------------------------
+[16:43:10 +   6.3s] 16:43:10        txn                553,638.0         553,638.0          +0.0
+[16:43:10 +   6.3s] 16:43:10        vamp                15,692.8          15,692.8          +0.0
+[16:43:10 +   6.3s] 16:43:10        ✓ variance is 0 on txn and vamp — single source consistent.
+[16:43:10 +   6.3s] 16:43:10  
+[16:43:10 +   6.3s] 16:43:10  
+[16:43:11 +   7.6s]    [bin-key] 99.4% of 8,402 BIN(s) in forecast data found in the attempts data
+[16:43:11 +   7.6s]              Unmatched BINs have no attempt history of their own.
+[16:43:11 +   7.6s]              gateways are scored on a POOLED AVERAGE instead of a measured success rate
+[16:43:16 +  12.9s]    mis-allocated currency: 0 row(s)  - attempt's currency != Master MID's currency (dropped)
+[16:43:20 +  16.4s] 
+[16:43:20 +  16.4s] 
+[16:43:20 +  16.4s]       RPGT                  in scope     Σ attempts  attempt rows  forecast txn   fc rows
+[16:43:20 +  16.4s]       -----------------------------------------------------------------------------------
+[16:43:20 +  16.4s]       Monthly Renewal       -               853,081       853,081       343,921    21,079
+[16:43:20 +  16.4s]       Monthly Initial       YES             446,930       446,930       124,328    14,500
+[16:43:20 +  16.4s]       Addon Sale            YES             121,447       121,447        38,746     5,668
+[16:43:20 +  16.4s]       Annual Sub Renewal    -                75,150        75,150        16,473     2,800
+[16:43:20 +  16.4s]       Annual Sub Sale       YES              47,106        47,106        13,605     3,139
+[16:43:20 +  16.4s]       Upgrades              YES              51,701        51,701         7,486     2,008
+[16:43:20 +  16.4s]       Addon Renewal         -                18,511        18,511         5,718     1,386
+[16:43:20 +  16.4s]       P6M Renewals          -                 3,584         3,584         3,361       854
+[16:43:20 +  16.4s]       -----------------------------------------------------------------------------------
+[16:43:20 +  16.4s]       TOTAL (all RPGTs)                   1,617,510     1,617,510       553,638    51,434
+[16:43:20 +  16.7s] 
+[16:43:20 +  16.7s] 
+[16:43:20 +  16.7s]    ②·diag DATA SHAPES after pre-processing/filters:
+[16:43:21 +  17.2s]    [require-forecast] 9,018 profile(s) / 18,605 gateway-row(s) dropped - not present in forecast
+[16:43:21 +  17.5s]    risk seeding: 41,406 gateway-profile(s) with NO VAMP data seeded from the opt-grain weighted-avg VAMP rate (currency/global fallback 0.0320) — so 0-VAMP gateways aren't treated as risk-free.
+[16:43:21 +  17.5s]    37 available gateway(s) (from 501; dropped 387 inactive, 0 PayPal, 77 other-brand vs 'TotalAV').
+[16:43:22 +  18.5s]    exploration: injected 68,283 candidate row(s) into eligible profiles
+[16:43:22 +  18.5s]                 EVERY eligible profile (any-BIN eligibility ON) · 37 gateway(s) · auto: currency-capable · seeded at the bank×currency average (weak prior).
+[16:43:28 +  24.7s]    103,762 dense aggregated profile × gateway success rates (full-window rate, 30D eligibility)
+[16:43:28 +  24.7s]    cross-border penalty 60% applied to 13591 gateway profiles (64 cross-border FIDs)
+[16:43:29 +  25.9s]    exploration seeding: 68283 untested gateway profile(s) seeded (attempts=0 → weak/uncertain prior, scored cautiously): 68283 from a same-processor+brand+currency sibling, 0 from a CROSS-BRAND processor benchmark, 0 from the bank×currency average.
+[16:43:30 +  26.2s] ✓ ② Pre-processing — finished in 26.1s
+[16:43:30 +  26.2s] 
+[16:43:30 +  26.2s] ▶ ③ Assemble routing profiles from attempts data — started
+[16:44:11 +  67.7s]    [profile] 14,852 profile problems
+[16:44:11 +  67.7s]              113,166 profile-gateway rows
+[16:44:11 +  67.9s] 
+[16:44:11 +  67.9s] 
+[16:44:11 +  67.9s]    ④·diag ROUTING PROFILES assembled:
+[16:44:11 +  67.9s]       measure                                                count
+[16:44:11 +  67.9s]       ------------------------------------------------------------
+[16:44:11 +  67.9s]       profiles                                              14,852
+[16:44:11 +  67.9s]       gateway-rows                                         154,405
+[16:44:11 +  67.9s]       forecast volume                                      183,844
+[16:44:11 +  67.9s]       gateway-rows on POOLED prior (no attempts)                 0
+[16:44:11 +  67.9s]       auto-explore injected rows                            78,153
+[16:44:11 +  67.9s]       ------------------------------------------------------------
+[16:44:11 +  67.9s] ✓ ③ Assemble routing profiles from attempts data — finished in 41.7s
+[16:44:11 +  67.9s] 
+[16:44:11 +  67.9s] ▶ ④ Search for the split that ships — started
+[16:44:11 +  67.9s]    maximum revenue split reference (build 2026-07-29-vamp-lp-singlegw-fixed-profile-revival+2026-09-02-19gz-max-revenue-split-reference+2026-09-02-19he-floor-carried-into-projector+2026-09-02-19hh-emask-pair-grain+2026-09-02-19hi-log-simplification+2026-09-02-19hk-cell-profile-prose+2026-09-02-19hl-cell-profile-identifiers+2026-09-02-19hm-profile-vocab-complete+2026-09-02-19hn-profile-vocab-audited+2026-09-02-19ho-vocab-no-exceptions+2026-09-02-19hp-log-hierarchy+2026-09-02-19hq-autoblock-diagnosis+2026-09-02-19hr-seed-stage-sections+2026-09-02-19hs-closed-diags+2026-09-02-19ht-emask-pairs-default-on+2026-09-02-19hu-log-tables+2026-09-02-19hv-sfloor-step2+2026-09-02-19hw-diag-fixes+2026-09-02-19hx-knife-edge+2026-09-02-19hz-met-raw-fix+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check)
+[16:44:18 +  75.1s] 
+[16:44:18 +  75.1s]    ── ④·1  BUILD THE PROJECTION SCAFFOLD ─────────────────────────────────────
+[16:44:18 +  75.1s]       MID VAMP rates from pro-rata export (31,507 MID×profile rates).
+[16:44:39 +  95.3s]       [inject] aged frame 1,731,787 → 6,477,850 row(s) (+4,746,063, 3.74x): every movable (t ≤ period) layer now carries a zero-VAMP row for each of the 15 capable MID(s) / 37 gateway(s) that had none, so volume routed to a new MID can pick up the VAMP it causes.
+[16:45:11 + 127.9s]       [rpgt-scope] 18,699 of 42,306 profile(s) held at baseline.
+[16:45:11 + 127.9s]          an UNSCOPED RPGT still carries volume the routing decision could move, and delivery does NOT move it - so the search holds it at baseline too, or it would optimise volume that never actually reroutes.
+[16:45:11 + 127.9s]          scope: addon sale, annual sub sale, monthly initial, upgrades · 54,293 VAMP held · ROUTING_SEARCH_RPGT_SCOPE=0 reverts
+[16:45:14 + 130.2s]       [keep-gate] 1,490 row(s) on SWITCHED-OFF gateways held at baseline.
+[16:45:14 + 130.2s]          11 vampMid(s) are set to receive ZERO volume from 2026-08-01. A gateway that gets no transactions cannot have its existing fraud rerouted - there is nothing to reroute it WITH - so its 122 VAMP stays where it is, in the search exactly as in delivery.
+[16:45:14 + 130.2s]          not modelled: delivery also scales the share down pro-rata for a gateway switched off MID-month; the search treats it as off for the whole month. ROUTING_SEARCH_KEEP=0 reverts.
+[16:45:30 + 146.6s]       candidate-door zero rows injected into cap scaffold: 205,134
+[16:45:31 + 147.7s]       [emask-grain] wallet/USA capability is masked at (vampMid, currency) grain, in the search and in delivery alike:
+[16:45:31 + 147.7s]          89 wallet-incapable pair(s)
+[16:45:31 + 147.7s]          4 USA-only pair(s)
+[16:45:31 + 147.7s]          source: Master_MID_List + routing_restrictions
+[16:45:33 + 149.7s] 
+[16:45:33 + 149.7s] 
+[16:45:33 + 149.7s]       per-MID cap projection scaffold
+[16:45:33 + 149.7s]          origin-month cells (t0)                    1,938,378
+[16:45:33 + 149.7s]          aged cells for capped MIDs                 6,448,135
+[16:45:33 + 149.7s] 
+[16:45:33 + 149.7s] 
+[16:45:33 + 149.7s] 
+[16:45:33 + 149.7s]       ── Scaffold vs pro-rata export Reconciliation ──
+[16:45:33 + 149.7s]          step                                                               delta       running
+[16:45:33 + 149.7s]          --------------------------------------------------------------------------------------
+[16:45:33 + 149.7s]          1  pro-rata export rows on disk                                              6,477,850
+[16:45:33 + 149.7s]          2  collapse to (cur,bin,rpgt,pmp,ctry,mid,period,t)                   +0     6,477,850
+[16:45:33 + 149.7s]          3  drop cells in profiles with no banded MID                         -20     6,477,830
+[16:45:33 + 149.7s]          4  drop t > 0 (aged cohorts; scaffold is t0 only)             -4,744,586     1,733,244
+[16:45:33 + 149.7s]          5  inject candidate-door zero rows                              +205,134     1,938,378
+[16:45:33 + 149.7s]          --------------------------------------------------------------------------------------
+[16:45:33 + 149.7s]          =  SCAFFOLD ROWS the band projector walks                                    1,938,378
+[16:45:33 + 149.7s]          identity check: step 4 + step 5 == scaffold rows → ✓ EXACT
+[16:45:33 + 149.7s] 
+[16:45:33 + 149.7s] 
+[16:45:33 + 149.7s]          profiles: 27,810 profile(s) the search can route into
+[16:45:33 + 149.7s] 
+[16:45:33 + 149.7s]          step  why it moves                                                                    
+[16:45:33 + 149.7s]          --------------------------------------------------------------------------------------
+[16:45:33 + 149.7s]          2     the export can carry more than one row per key; duplicates are summed           
+[16:45:33 + 149.7s]          3     the scaffold only needs profiles a BANDED MID can be routed into — the rest is a constant
+[16:45:33 + 149.7s]          4     only origin-month (t == 0) rows are stored; aged cohorts are re-derived from them
+[16:45:33 + 149.7s]          5     adds a zero-volume row for every profile a banded MID is a candidate door in    
+[16:46:26 + 202.5s] 
+[16:46:26 + 202.5s]       [cap-timing] building the per-MID cap scaffold took 52.8s
+[16:46:26 + 202.5s]          step                                                               seconds    share
+[16:46:26 + 202.5s]          -----------------------------------------------------------------------------------
+[16:46:26 + 202.5s]          origin fcp / pro-rata / moved-pool maps over _P (np.fromiter loo     23.9s    45.3%
+[16:46:26 + 202.5s]          _Pc -> _T0 row-index map (two more string keys, over _T0 and _Pc     16.3s    30.8%
+[16:46:26 + 202.5s]          aggregation keys (_pc_agg / _t0cap: string build + factorize + r      5.6s    10.6%
+[16:46:26 + 202.5s]          scaffold reconciliation table + the two _T0 prop-key strings          3.3s     6.2%
+[16:46:26 + 202.5s]          factorise the _T0 keys + pull the per-row arrays                      3.3s     6.2%
+[16:46:26 + 202.5s]          build the cap tables (a_max_by_mid) + the rest                        0.5s     0.9%
+[16:46:26 + 202.5s]          -----------------------------------------------------------------------------------
+[16:46:26 + 202.5s]          TOTAL                                                                52.8s   100.0%
+[16:46:28 + 205.1s]       eligibility: 1 ban rule(s), 215 wallet-incapable id(s), global wallet share 29.8%; 8 USA-only id(s), global Non-USA share 38.6%.
+[16:46:52 + 228.5s]       GA scores ELIGIBILITY-ADJUSTED shares: 0 banned row(s), wallet=on, USA-only=on (returned split is RAW; enforcement blends once). Set ROUTING_GA_ELIG=0 to disable.
+[16:46:52 + 228.5s]       [elig-grain] capability is a clean yes/no on 100% of rows for wallet and 100% for USA-only (154,405 and 154,405 of 154,405). Each profile is a single payment-method and a single country, so a gateway either can serve it or cannot. The search and delivery apply the same rule, so what is scored is what ships.
+[16:46:53 + 229.8s]       auto-block (pre-GA): 17 bank×gateway pair(s) → 42 blocked row(s) KEPT eligible for the search and capped to the exploration floor inside the delivery transform the search scores through, so the GA sees the cap while it searches. Hard exclusion was removed so exact MID bands cannot be starved into infeasibility.
+[16:47:20 + 256.6s]       [pbp-build] band projector built in 26.8s = 1.0s assembling the scaffold arrays (1,938,378 t0 row(s), 6,448,135 aged row(s)) + 25.8s building the projector over them. One-off per run.
+[16:47:20 + 257.0s]       [inc-build] incidence matrix built in 0.3s — 154,405 non-zero(s) in a 323,063x154,405 matrix.
+[16:47:20 + 257.0s] 
+[16:47:20 + 257.0s] 
+[16:47:20 + 257.0s]       ── [band-setup] the 27.3s between 'auto-block (pre-GA)' and here ──
+[16:47:20 + 257.0s]          step                                                         seconds    share
+[16:47:20 + 257.0s]          -----------------------------------------------------------------------------
+[16:47:20 + 257.0s]          _get_pbp (see [pbp-build] for its own split)                   26.8s    98.4%
+[16:47:20 + 257.0s]          [inc-build] incidence matrix                                    0.3s     1.2%
+[16:47:20 + 257.0s]          G rpgt -> python list                                           0.1s     0.2%
+[16:47:20 + 257.0s]          orig_forecast key normalise (_of)                               0.0s     0.1%
+[16:47:20 + 257.0s]          _bins_by dict over 10,628 forecast key(s)                       0.0s     0.0%
+[16:47:20 + 257.0s]          -----------------------------------------------------------------------------
+[16:47:20 + 257.0s]          TOTAL                                                          27.3s   100.0%
+[16:47:20 + 257.0s] 
+[16:47:20 + 257.0s] 
+[16:47:20 + 257.0s]       [breach-scale] band penalty = 0.3·(is it over?) + 1·overshoot², then multiplied by the band's priority weight.
+[16:47:20 + 257.0s]          term                                     value   bands
+[16:47:20 + 257.0s]          ------------------------------------------------------
+[16:47:20 + 257.0s]          breach_fixed (crossing the limit)          0.3        
+[16:47:20 + 257.0s]          breach_quad (overshoot squared)              1        
+[16:47:20 + 257.0s]          priority P1 weight                           1       2
+[16:47:20 + 257.0s]          priority P2 weight                       0.125      13
+[16:47:20 + 257.0s]          ------------------------------------------------------
+[16:47:20 + 257.0s]          TOTAL bands                                         15
+[16:47:20 + 257.0s] 
+[16:47:20 + 257.0s] 
+[16:47:20 + 257.1s]       full-matrix problem size: 14,852 profiles
+[16:47:20 + 257.1s]                                 154,405 cells (one gateway within a profile)
+[16:47:20 + 257.1s]                                 15 vampMids
+[16:47:22 + 258.2s]       auto-block (pre-enforcement): 17 bank×gateway capped to the exploration floor INSIDE enforcement → the freed volume is redistributed compliantly (no post-hoc VAMP perturbation).
+[16:47:22 + 258.9s]       [blk-fill] band projector: 340 scaffold row(s) matched 17 canonical (bin, vampMid, currency) key(s) from 17 blocked (BIN, gateway) pair(s).
+[16:47:22 + 258.9s]       [block-restrict] blocked-caps will run on 31 of 14,852 profile(s) (0.21%) carrying 266 of 154,405 row(s) — the only profiles a blocked row can reach. Every other profile's output is its input, exactly. SELF-CHECKED against the full-width transform on the first call; ROUTING_BLOCK_RESTRICT=0 reverts.
+[16:47:22 + 258.9s]       [deliv-cap] ON (19fg) — the delivery transform is now block -> eligibility -> CAP at 0.97, matching delivery's own order. Effect is reported at the end of the search.
+[16:47:23 + 259.6s]       [search-floor] presence mask: 151,898 of 154,405 row(s) carry a BASELINE share AND survive eligibility, so those are the rows the engine will floor even where the GA proposes 0 — 2,507 row(s) have a baseline but are wallet/USA-masked and are correctly left at zero (the floor must never un-mask an ineligible gateway).
+[16:47:23 + 259.6s]       [search-floor] OFF (the 19gx default) — the search scores splits WITHOUT the exploration floor the live allocation engine applies at runtime, so it is optimising a split that gets modified before it executes. That is a REAL gap and still worth closing; the 19gw attempt to close it put reconciliation error at 1,457 and is off until it is modelled where delivery actually applies it. 19hv SHIPPED STEP 2 of the replacement: ROUTING_PROJ_SFLOOR=1 models the floor INSIDE the profile-blocked band kernel, where delivery applies it - on the TXN share only, uncapped and renormalised, in its own buffer, leaving the VAMP path on the capped unfloored share exactly as delivery's _vprop is. Default OFF, and while it is armed the profile-blocked self-check is SKIPPED because the flat reference does not floor yet (step 3), so read such a run as an experiment. The old ROUTING_SEARCH_FLOOR=1 is the 19gw version and is still NOT correct - prefer ROUTING_PROJ_SFLOOR.
+[16:47:23 + 259.7s]       [seed-deliv] ON (19go) — all three seed stages score through the DELIVERY transform (blocked-caps → eligibility → cap), the same one the engine selects with and delivery ships. Read [seed-basis] below: RAW and DELIVERED should now agree on which seed is best, and the seed's own delivery projection becomes redundant. ROUTING_SEED_DELIV=0 restores the RAW basis.
+[16:47:23 + 259.7s]       [block-restrict] ✓ SELF-CHECK PASSED on the live split: restricted == full-width, bit for bit (np.array_equal on 1x154,405, not allclose).
+[16:48:16 + 312.2s] 
+[16:48:16 + 312.2s]    ── ④·2  BUILD THE WARM-START SEED ─────────────────────────────────────────
+[16:48:16 + 312.3s]       ── seed stage 1 of 3 · BAND-AWARE CONSTRAINED PROJECTION (per-profile simplex + max-share QP) ──
+[16:48:16 + 312.3s]          basis: DELIVERED
+[16:48:16 + 312.3s]          band breach 0.8811 (revenue-greedy start) → 0.6375
+[16:48:16 + 312.3s]          verdict: 3 of 15 band(s) NOT reached BY THIS OPERATOR (min total breach 0.6375). The per-profile simplex + max-share QP cannot get there; stages 2 and 3 have moves it does not, and routinely clear these. This is NOT a statement that the constraints are infeasible - read the stage 3 verdict and [seed-basis] for that.
+[16:48:16 + 312.3s]          still unmet: Adyen_TotalAV, Braintree USA - Total AV, WorldPay - Total AV
+[16:48:16 + 312.3s] 
+[16:48:16 + 312.3s]       ── seed stage 2 of 3 · EXACT PROJECTOR (successive-LP on the TRUE band values + analytic Jacobian) ──
+[16:48:16 + 312.6s]          exact projector: gradient regularised (vpsum/psum floored at 0.001) — tames the 1/vpsum blow-up so steps are navigable; forward breach stays exact.
+[16:48:20 + 316.3s]          exact projector: 140,961 band-feeding gateways free of 154,405 (base breach 0.01025); successive-LP, up to 40 steps. One-time solve — at BIN grain each step is a large sparse LP, so this can take a few minutes. Stall stop ARMED at 4 consecutive rejected step(s) (ROUTING_SEED_LP_STALL) — this CAN change the seed.
+[16:48:20 + 316.3s] 
+[16:48:20 + 316.3s]               step    trust region    best breach so far
+[16:48:20 + 316.3s]             --------------------------------------------
+[16:48:20 + 316.3s]               1/40            0.25             0.0102549
+[16:48:43 + 339.3s]               2/40           0.375            0.00235261
+[16:48:54 + 350.9s]               3/40          0.1875            0.00235261
+[16:49:02 + 358.8s]               4/40         0.09375            0.00235261
+[16:49:09 + 365.7s]               5/40         0.04688            0.00235261
+[16:49:18 + 374.6s]          [lp-stall] successive-LP step ledger — what the 'in N LP step(s)' line above does NOT say:
+[16:49:18 + 374.6s]             RAN 5 step(s) in 58.3s · 1 ACCEPTED (23.0s) · 4 REJECTED (35.3s). The line above quotes the LAST ACCEPTED step (1), not how many ran.
+[16:49:18 + 374.6s]             stopped because: stall (ROUTING_SEED_LP_STALL=4 consecutive rejections; THIS TRUNCATED THE SOLVE — see the safety line below)
+[16:49:18 + 374.6s]             TRAILING: the last 4 step(s) all failed to improve and cost 35.3s. That is the time a stall stop would have RECLAIMED on this run.
+[16:49:18 + 374.6s]             [lp-why] the rejected steps, and what the LP thought it was buying:
+[16:49:18 + 374.6s]                 step         tr   LP predicted   realised breach       |ds|  projection pull-back
+[16:49:18 + 374.6s]                ----------------------------------------------------------------------------------
+[16:49:18 + 374.6s]                    2      0.375              0        0.00382926       6616             1.111e-12
+[16:49:18 + 374.6s]                    3      0.188              0        0.00265122       3194             1.187e-12
+[16:49:18 + 374.6s]                    4     0.0938              0        0.00244374       2038             1.141e-12
+[16:49:18 + 374.6s]                    5     0.0469              0        0.00242043       1605             1.137e-12
+[16:49:18 + 374.6s]                ----------------------------------------------------------------------------------
+[16:49:18 + 374.6s]                incumbent breach for comparison: 0.00235261. 'LP predicted' is the LP objective - the total overshoot the LINEARISED model says the step reaches; 'realised' is the exact breach after the step is projected back onto the capped simplex and re-evaluated.
+[16:49:18 + 374.6s]                ⇒ READING: 4 of 4 step(s) had the LP predicting a breach at or below half the incumbent (0.002353) - often 0, i.e. FULL COMPLIANCE - and the exact breach then came back no better. THE LINEARISED MODEL IS NOT PREDICTIVE HERE: with far more free shares than constraints the LP can always find a direction that satisfies every band TO FIRST ORDER, and the true 1/vpsum response does not follow it. Halving the trust region does not rescue that - the incumbent is a genuine local minimum, the model just cannot see it - so the rejections after the first are pure cost and a stall stop is FREE. 
+[16:49:18 + 374.6s]                [lp-why] is a DIAGNOSTIC added in 19hw to answer 'why 12 of 13?'. It costs one array copy and one abs-sum per step. Delete it once the answer is acted on.
+[16:49:18 + 374.6s]             WHAT IT WOULD HAVE COST: the longest run of consecutive rejections that a LATER step then justified was stall_min_safe=0. A rejected step is not waste — the trust region halves, so the SAME direction can be accepted at half the size, which is what the region is FOR. A stall stop is free only at K > 0; K=4 is armed.
+[16:49:18 + 374.6s]             ⚠ ARMED, so this run's stall_min_safe is CENSORED: the loop stops at 4 consecutive rejections, so any justified run of 4 or longer could not have been seen (stall_min_safe ≤ 3 by construction). This run is NOT evidence that K is safe — only an UNARMED run (ROUTING_SEED_LP_STALL=0) can measure that.
+[16:49:18 + 374.6s]             ⚠ AND IT BIT: the solve stopped at the stall, not at convergence, so the seed handed to the GA may be worse than an unarmed solve would give. Final breach 0.002353 after 1 accepted step(s).
+[16:49:18 + 374.6s]          breach 0.01025 → 0.002353 in 1 LP step(s); 140961 band-feeding gateways free. Verdict: local min > 0 - the successive-LP cannot descend further FROM HERE. That is a statement about this LP's neighbourhood, not about the constraints: stage 3's move-operator has escaped this and reached 0. Not an infeasibility finding..
+[16:49:18 + 374.7s]          STILL BREACHED after exact projection (3 band(s) — genuinely stuck, no sibling headroom): checkout - total av vamp 1,301 > ceil 1,300 · adyen - totalav - na txn 20,000 < floor 20,000 · woodforest - total av txn 24,001 > ceil 24,000
+[16:49:18 + 374.7s] 
+[16:49:18 + 374.7s]       ── seed stage 3 of 3 · TARGETED MOVE-OPERATOR (shed breached-ceiling MIDs onto co-located lower-risk siblings; exact projector = truth) ──
+[16:49:18 + 374.7s]          targeted-move seed: 2 breached ceiling band(s) over 2 MID(s) — shedding onto co-located siblings with room under EVERY ceiling they hold (15 ceiling(s) tracked, 0 MID(s) with both a VAMP and a TXN ceiling; binding-capacity first; whack-a-mole guarded by a per-recipient per-metric budget + exact-projector line-search; never-worse).
+[16:49:19 + 375.4s]             • checkout - total av [vamp]: 1,301 → 1,103 (ceil 1,300) · ✓ under ceiling
+[16:49:19 + 375.4s]             • woodforest - total av [txn]: 24,001 → 16,491 (ceil 24,000) · ✓ under ceiling
+[16:49:19 + 375.4s]          targeted-move seed: exact breach 0.1125 → 0 in 1 pass(es) (6,349 profile-moves, 824 share). ALL ceilings cleared — a compliant split exists.
+[16:49:19 + 375.4s]          targeted-move seed: stopped after 1 pass(es) — every breached ceiling is now met
+[16:49:19 + 375.4s]          [tmove-cost] stage 0.8s total — 0.1s (17%) in 15 sparse matvec(s) at 8.7 ms each; 0.2s (28%) in 10 penalty pass(es); 0.4s (55%) elsewhere — the per-profile Python loops that BUILD each batch, which no counter here covers.
+[16:49:20 + 376.8s]       ── REACHABLE MINIMUM (route each breached MID toward 0 wherever an eligible sibling can absorb it — the full-matrix engine applies NO hard share floor) ──
+[16:49:20 + 376.8s]          • checkout - total av [vamp]: now 1,303 · reachable-min 809 · ceil 1,300 → < ceil ⇒ REACHABLE ⇒ a stuck solver is the cause (SEARCH bug), not infeasibility
+[16:49:20 + 376.8s]              (what-if only, NOT applied by this engine: with a hard 1% floor the min would be 874)
+[16:49:20 + 376.8s]          • woodforest - total av [txn]: now 24,001 · reachable-min 5,200 · ceil 24,000 → < ceil ⇒ REACHABLE ⇒ a stuck solver is the cause (SEARCH bug), not infeasibility
+[16:49:20 + 376.8s]              (what-if only, NOT applied by this engine: with a hard 1% floor the min would be 6,287)
+[16:49:20 + 376.8s]          (read-only. reachable-min routes the MID toward 0 wherever a sibling can absorb it — valid because the full-matrix decode is a plain softmax with no hard floor. reachable-min < ceiling ⇒ reachable, so a stuck solver is the cause; reachable-min ≥ ceiling ⇒ structurally impossible under this scope.)
+[16:49:21 + 377.5s]       ── VAMP-POSITIVE SIBLING check (a breached VAMP MID's share only lowers its VAMP where a co-located VAMP-positive gateway exists; vshare self-normalises otherwise) ──
+[16:49:21 + 377.5s]          • checkout - total av [vamp]: 1,303 > 1,300 · 180265/180778 of its VAMP profiles have a co-located VAMP-positive sibling → immovable in 513 of 180778 profiles (sole VAMP gateway there)
+[16:49:21 + 377.5s]          (read-only. Where a breached VAMP MID is the SOLE VAMP-positive gateway in a profile, vshare = 1 for any share > 0, so the softmax engine cannot reduce its VAMP there — a structural limit, not a solver bug. Many such profiles ⇒ the fix must add an eligible VAMP-positive recipient or allow zeroing, not more search.)
+[16:49:21 + 377.5s]       ── INCIDENCE SELF-CHECK ✓ all 154,405 share column(s) map to a prop-key (323,063 prop-keys); no share mass dropped ──
+[16:49:25 + 381.2s]       ── SEED GRADIENT (|∂band/∂share| at the seed; ≈0 on the MID's OWN share ⇒ its band can't be moved by its own share — the vshare cliff) ──
+[16:49:25 + 381.2s]          • checkout - total av [vamp]: max|∂/∂own-share| 121 · max|∂/∂any-share| 121  → own-gradient healthy ⇒ its share CAN move its band
+[16:49:25 + 381.2s]          • woodforest - total av [txn]: max|∂/∂own-share| 1.46e+03 · max|∂/∂any-share| 3.91e+03  → own-gradient healthy ⇒ its share CAN move its band
+[16:49:25 + 381.2s]          (read-only. A gradient ≫ volume-scale (≳1e8) is the 1/vpsum degeneracy — the band is on the vshare 0/0 singularity and not navigable; a near-zero gradient is the flat cliff; both mean the search can't move it, for different reasons.)
+[16:49:25 + 382.1s]       ── VPSUM (VAMP denominator per profile; near-zero ⇒ the 1/vpsum gradient blow-up) ──
+[16:49:25 + 382.1s]          • checkout - total av [vamp]: 180,778 profiles · vpsum min 0 p50 0 max 1 · 91,666 below 1e-06 (near-empty → gradient blow-up)
+[16:49:27 + 384.0s]       ── USABLE RECIPIENT (co-located + VAMP-positive + eligible + headroom — the only profiles with a LEGAL VAMP move) ──
+[16:49:27 + 384.0s]          • checkout - total av [vamp]: 180,265/180,778 of its VAMP profiles have a USABLE recipient (VAMP-positive + eligible + headroom)
+[16:49:27 + 384.0s]          (read-only. This intersects co-location + VAMP-positive + eligibility + headroom — the count of profiles where a compliant reroute is actually legal. 0 ⇒ genuinely structural; >0 ⇒ a legal move exists there.)
+[16:49:27 + 384.1s]       [seed-cap] ✓ no seed stage emits a share above the cap 0.97 where the cap can be met (3 stage(s) audited, 0 FORCED row(s) - profiles whose eligible gateways cannot hold 1.0 between them).
+[16:49:28 + 384.2s]       [full-matrix] seed = 'targeted-move'
+[16:49:28 + 384.2s]       [full-matrix] exact breach = 0
+[16:49:28 + 384.3s] 
+[16:49:28 + 384.3s]          seed                      breach RAW  breach DLV      delta   met RAW   met DLV   the two bases
+[16:49:28 + 384.3s]          -------------------------------------------------------------------------------
+[16:49:28 + 384.3s]          (start) revenue-greedy       0.88067           -          -     11/15         -   what the chain starts from, before any seed stage
+[16:49:28 + 384.4s]          band-aware              0.6      0.6375    +0.0375     13/15     12/15   knife-edge (2 vs 3 unmet; the band(s) that differ are within 0.000% of their own limit)
+[16:49:28 + 384.5s]          exact-proj            0.075      0.1125    +0.0375     13/15     12/15   knife-edge (2 vs 3 unmet; the band(s) that differ are within 0.077% of their own limit)
+[16:49:28 + 384.7s]          targeted-move             0           0         +0     15/15     15/15   agree
+[16:49:28 + 384.7s]          ----------------------------------------------------------------------
+[16:49:28 + 384.7s] 
+[16:49:30 + 386.5s] 
+[16:49:30 + 386.5s]    ── ④·3  RUN THE GENETIC SEARCH ────────────────────────────────────────────
+[16:49:30 + 386.5s] 
+[16:49:30 + 386.5s]       [full-matrix] search budget
+[16:49:30 + 386.5s]          seeds                          8
+[16:49:30 + 386.5s]          restarts per seed              2
+[16:49:30 + 386.5s]          generations                   20
+[16:49:30 + 386.5s]          population                    40
+[16:49:30 + 386.5s]          restart mode          Lean (constant-λ, spread-out)
+[16:49:30 + 386.5s]          early stop              DISABLED
+[16:49:30 + 386.5s] 
+[16:49:36 + 392.3s]    [fullmatrix-ga] build 2026-09-03-19io-viol-forced + 2026-09-03-19ip-log-trim + 2026-09-03-19iu-log-batch  (+34 earlier tag(s))
+[16:49:36 + 392.3s]          rows 154,405 · profiles 14,852 · MIDs 15 · evaluator numba
+[16:49:36 + 392.4s]    [fullmatrix-ga] [decode-cap] the capped decode targets cap × (1 - 1e-9), NOT cap, so it pulls down every row above 0.96999999903 - 3,223 row(s) - while only 9 are above the cap itself. The share moved below is the FORMER population's; do not divide it by the latter's count (19im did, and invented a 3.5e-07 defect). The back-off exists so the engineering key can read an exact 0.0 - which ROUTING_DECODE_OBJ no longer needs, since it measures the key on the DELIVERED split.
+[16:49:36 + 392.4s]    [fullmatrix-ga] [decode-cap] ✓ SELF-CHECK PASSED on the live seed: the uncapped decode held 9 row(s) above the cap, the capped decode holds 0, and it is BIT-IDENTICAL to the reference water-fill applied to the uncapped decode (int64 bit-pattern comparison on 1x154,405, stricter than array_equal). Total share moved 6.253e-06; worst profile sum error 8.88e-16 (each profile must still sum to 1 — the water-fill moves share between rows, it never creates or destroys any).
+[16:49:36 + 392.4s]       [deliv-fixed] the delivery transform is NOT idempotent: applying it twice moves 12 of 154,405 entr(ies), worst |Δ| 6.212e-04. RAW and DELIVERED therefore CANNOT be made to agree exactly by emitting the delivered split - there is no fixed point to emit. Expected cause: blocked-caps pins rows to the exploration floor and the 0.97 water-fill that runs after it lifts them off it again ([deliv-cap] counts the same effect). 19ih ANSWERED THE OPEN QUESTION AND THE ANSWER IS 'DO NOT FIX THIS': impact_calcs._cap_rows - the LIVE engine's water-fill - picks recipients with (W > 1e-12) & (~over) & (W < cap - 1e-12) and has NO blocked-row clause, and _apply_blocked_caps runs BEFORE it, so the live engine lifts a floored blocked row exactly as the search does. This non-idempotence is FAITHFUL TO DELIVERY. Excluding blocked rows here would make the search DIVERGE from what ships - the opposite of the goal. If the lift is wrong it is wrong in the live engine first, and _cap_rows is where to change it.
+[16:49:36 + 392.5s]       [viol-forced] the engineering key's MAX-SHARE term on the seed, measured on the RAW decoded split: 0 total, of which 0 comes from 0 row(s) in profiles whose only eligible gateway MUST hold 100% - there is nowhere else for that share to go, and `_cap_rows` leaves those rows alone. EXEMPTED (19io), leaving 0 — so the key's 0 is now REACHABLE and 'viol 0' means compliant. The old key read a flat, unreachable floor for the whole run and ranked it ABOVE conversion. ROUTING_VIOL_FORCED=0 restores the old key.
+[16:49:36 + 392.6s]    [fullmatrix-ga] == [decode-loss] WHAT THE SEED LOSES ENTERING THE LOGIT GENOME (read-only) ==
+[16:49:36 + 392.6s]    [fullmatrix-ga]    0 of 51,707 EXACTLY-ZERO seed row(s) come back NON-ZERO, carrying 0 of share invented from nothing. A logit genome has no finite value for zero, so softmax(log(clip(s, 1e-6))) cannot express one.
+[16:49:36 + 392.6s]    [fullmatrix-ga]    success rate: seed 0.599109 → decoded 0.599109 (-0.000000).
+[16:49:36 + 392.6s]    [fullmatrix-ga]    ROUTING_SEED_ZEROS=1 IS ON: 51,707 row(s) encoded as -inf logits, which the stable softmax turns into exact zeros in BOTH the numpy and numba kernels with no code change to either. The figures above are what remains AFTER that, so they should read ~0; anything else is a defect in this fix. -inf + noise is -inf, so the seed's descendants inherit the zeros, while `_init_pop`'s unanchored exploration children do not — the search space is not narrowed.
+[16:49:36 + 392.6s]    [fullmatrix-ga] mutation rate 0.0100 per profile over 14,852 profiles ⇒ ~149 profile(s) perturbed per exploration child (~37 per refine child, which uses a quarter rate). Ceiling mutation_rate=0.3 does not bind. ROUTING_MUT_RATE overrides.
+[16:49:36 + 392.6s]    [fullmatrix-ga] mutation is BREACH-TARGETED: profiles feeding a still-breached band get a boosted selection probability, so the fixed budget lands on the MIDs that are actually short instead of being spread over every profile. See [mut-target] for the boost, the profile counts and which MIDs are aimed at.
+[16:49:36 + 392.6s]    [fullmatrix-ga] mutation draws: SPARSE + PER-CHILD STREAMS (19bp) — Gaussians are drawn only for the rows actually perturbed (was one per row, ~99% discarded at a 1% profile rate: 8.6M draws per generation), and each child has its own deterministic stream keyed on (seed, seed-index, restart, generation, child). THIS IS A DIFFERENT RANDOM SAMPLE than any run before 19bp, so success rate and the breach will differ — that is the change, not a fault. ROUTING_MUT_FAST=0 restores the old stream exactly.
+[16:49:55 + 412.0s]    [fullmatrix-ga] progress: ~40 splits · gen 0 (seed 1/8 restart 1/2) · best success rate 0.59938 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 2/s
+[16:50:11 + 427.8s]    [fullmatrix-ga] progress: ~215 splits · gen 5 (seed 1/8 restart 1/2) · best success rate 0.59965 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 6/s
+[16:50:26 + 443.1s]    [fullmatrix-ga] progress: ~705 splits · gen 19 (seed 1/8 restart 1/2) · best success rate 0.60040 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 14/s
+[16:50:42 + 458.8s]    [fullmatrix-ga] progress: ~1,200 splits · gen 12 (seed 1/8 restart 2/2) · best success rate 0.60171 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 18/s
+[16:50:58 + 474.6s]    [fullmatrix-ga] progress: ~1,660 splits · gen 4 (seed 2/8 restart 1/2) · best success rate 0.60402 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 20/s
+[16:51:13 + 490.1s]    [fullmatrix-ga] progress: ~2,150 splits · gen 18 (seed 2/8 restart 1/2) · best success rate 0.60495 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 22/s
+[16:51:29 + 505.3s]    [fullmatrix-ga] progress: ~2,645 splits · gen 11 (seed 2/8 restart 2/2) · best success rate 0.60633 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 24/s
+[16:51:44 + 520.4s]    [fullmatrix-ga] progress: ~3,140 splits · gen 4 (seed 3/8 restart 1/2) · best success rate 0.60702 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 25/s
+[16:51:59 + 535.7s]    [fullmatrix-ga] progress: ~3,630 splits · gen 18 (seed 3/8 restart 1/2) · best success rate 0.60808 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 25/s
+[16:52:14 + 550.8s]    [fullmatrix-ga] progress: ~4,090 splits · gen 10 (seed 3/8 restart 2/2) · best success rate 0.60876 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 26/s
+[16:52:30 + 566.8s]    [fullmatrix-ga] progress: ~4,585 splits · gen 3 (seed 4/8 restart 1/2) · best success rate 0.60969 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 26/s
+[16:52:45 + 582.0s]    [fullmatrix-ga] progress: ~5,075 splits · gen 17 (seed 4/8 restart 1/2) · best success rate 0.61023 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 27/s
+[16:53:01 + 597.3s]    [fullmatrix-ga] progress: ~5,570 splits · gen 10 (seed 4/8 restart 2/2) · best success rate 0.61086 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 27/s
+[16:53:17 + 613.4s]    [fullmatrix-ga] progress: ~6,065 splits · gen 3 (seed 5/8 restart 1/2) · best success rate 0.61125 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 27/s
+[16:53:33 + 629.4s]    [fullmatrix-ga] progress: ~6,555 splits · gen 17 (seed 5/8 restart 1/2) · best success rate 0.61173 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 28/s
+[16:53:48 + 644.9s]    [fullmatrix-ga] progress: ~7,050 splits · gen 10 (seed 5/8 restart 2/2) · best success rate 0.61213 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 28/s
+[16:54:04 + 660.7s]    [fullmatrix-ga] progress: ~7,545 splits · gen 3 (seed 6/8 restart 1/2) · best success rate 0.61246 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 28/s
+[16:54:19 + 675.9s]    [fullmatrix-ga] progress: ~7,965 splits · gen 15 (seed 6/8 restart 1/2) · best success rate 0.61284 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 28/s
+[16:54:35 + 692.1s]    [fullmatrix-ga] progress: ~8,425 splits · gen 7 (seed 6/8 restart 2/2) · best success rate 0.61339 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 28/s
+[16:54:51 + 707.4s]    [fullmatrix-ga] progress: ~8,845 splits · gen 19 (seed 6/8 restart 2/2) · best success rate 0.61381 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 28/s
+[16:55:06 + 722.8s]    [fullmatrix-ga] progress: ~9,305 splits · gen 11 (seed 7/8 restart 1/2) · best success rate 0.61400 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 28/s
+[16:55:22 + 738.7s]    [fullmatrix-ga] progress: ~9,800 splits · gen 4 (seed 7/8 restart 2/2) · best success rate 0.61439 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 28/s
+[16:55:37 + 753.8s]    [fullmatrix-ga] progress: ~10,290 splits · gen 18 (seed 7/8 restart 2/2) · best success rate 0.61470 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 29/s
+[16:55:52 + 769.0s]    [fullmatrix-ga] progress: ~10,750 splits · gen 10 (seed 8/8 restart 1/2) · best success rate 0.61486 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 29/s
+[16:56:08 + 784.8s]    [fullmatrix-ga] progress: ~11,175 splits · gen 1 (seed 8/8 restart 2/2) · best success rate 0.61503 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 29/s
+[16:56:24 + 800.3s]    [fullmatrix-ga] progress: ~11,665 splits · gen 15 (seed 8/8 restart 2/2) · best success rate 0.61526 · viol 0.0000 · MID unmet 0 · MID penalty 0.0000 · feasible · 29/s
+[16:56:29 + 805.7s] 
+[16:56:29 + 805.7s]    [decode-cap] the max-share cap is now a PROPERTY OF THE DECODE, not a repair after it. Every path that turns the logit genome into shares — the numpy reference, the fused numpy path and the numba eval kernel — water-fills each profile as it decodes, so an over-cap split is not something a candidate can express. The search does not reject or correct them; they do not exist.
+[16:56:29 + 805.7s]    [decode-cap]    THE RULE is delivery's: the excess goes to each sibling in proportion to (target - share), the room it has left before IT would hit the cap (impact_calcs._cap_rows). Single pass, because Σ(target - share) over a profile's present rows is (present_rows × target) - 1 + excess.
+[16:56:29 + 805.8s]    [decode-cap]    THE ENGINEERING KEY should now read 0.0000 for every candidate, because none can violate. If `viol` above is ever non-zero on the max-share term, the water-fill did not hold and that key is what says so. (This holds because the key is measured on the DECODED split, which is water-filled by construction; ROUTING_DECODE_OBJ moves it onto the delivered one, where a non-zero reading is expected instead.)
+[16:56:29 + 805.8s]    [decode-deliv] the returned split IS the delivered split now (ROUTING_DECODE_DELIV=1): 21,939 of 154,405 row(s) moved, worst |Δ| 0.97, Σ|Δ| 877.2. THAT IS THE [profiles] PART B DISCREPANCY, removed at source - the GA scored this array and now ships it, so scored == shipped by construction rather than by tolerance. 19ic made this unconditional: the 2026-09-02 21:12 run took [profiles] from 6,428 keys to 20 and Σ|Δprop| from 24.4448 to 0.0302 while leaving the success rate, all 15 delivered band values and the reconciliation error UNCHANGED - and the shipped split stopped containing rows above the 0.97 cap. NOT the whole fold: eval_pop still scores the SUCCESS RATE on its own softmax with no block and no eligibility, so the OBJECTIVE is still measured on the undelivered split while the CONSTRAINTS are measured on the delivered one. ROUTING_DECODE_OBJ=1 closes it (19id/19if).
+[16:56:29 + 805.8s] 
+[16:56:29 + 805.8s]       == [gen-gap] THE REAL GENERATION, TIMED IN SITU — the rows below SUM to it, so there is no residual to argue about ==
+[16:56:29 + 805.8s] 
+[16:56:29 + 805.8s]          median 1,086.9 ms · p05 971.7 · p95 1,457.3 · over 320 generation(s)
+[16:56:29 + 805.8s] 
+[16:56:29 + 805.8s]          stage         ms/gen   share     total   what it covers
+[16:56:29 + 805.8s]          ------------------------------------------------------------------------------------
+[16:56:29 + 805.8s]          eval         1,066.7   91.8%    341.3s   _eval_with_bands(children) — the five stages [gen-cost] models
+[16:56:29 + 805.8s]          build           84.8    7.3%     27.1s   history, heartbeat, elites, mut_weight_fn, the per-child loop
+[16:56:29 + 805.8s]          rank             0.0    0.0%      0.0s   _rank
+[16:56:29 + 805.8s]          refresh          0.0    0.0%      0.0s   codebook refit + re-score (0 unless compression is on)
+[16:56:29 + 805.8s]          tail            10.2    0.9%      3.3s   vstack / concatenate re-assembly
+[16:56:29 + 805.8s]          ------------------------------------------------------------------------------------
+[16:56:29 + 805.8s]          heartbeat       15.6    1.3%      5.0s   inside `build`: 26 call(s) at 191 ms — a FULL _deliver_full plus a band report, and the generations that do not fire it pay none of it
+[16:56:29 + 805.8s] 
+[16:56:29 + 805.8s]          START-UP, outside the generation loop: 41.3s over 16 restart(s) at 2.6s each — charged to no stage anywhere else, and it scales with RESTARTS, not generations
+[16:56:29 + 805.8s] 
+[16:56:29 + 805.8s]          start-up step                         total   share   per restart
+[16:56:29 + 805.8s]          -----------------------------------------------------------------
+[16:56:29 + 805.8s]          _init_pop (build the population)       1.4s    3.3%         85 ms
+[16:56:29 + 805.8s]          _eval_with_bands (score it)           40.0s   96.7%      2,499 ms
+[16:56:29 + 805.8s]          remainder (census, bookkeeping)        0.0s    0.0%          0 ms
+[16:56:29 + 805.8s]          -----------------------------------------------------------------
+[16:56:29 + 805.8s] 
+[16:56:29 + 805.8s] 
+[16:56:29 + 805.8s]          == [eval-cost] inside the `eval` row: 381.3s over 336 call(s), largest first — every row is a share of that total, so the column sums to 100% ==
+[16:56:29 + 805.8s] 
+[16:56:29 + 805.8s]          stage                                                                 total   share    ms/call
+[16:56:29 + 805.8s]          ----------------------------------------------------------------------------------------------
+[16:56:29 + 805.8s]          band projection + penalty (the EXACT M5 projector)                   154.2s   40.4%     459.0
+[16:56:29 + 805.8s]          _deliver_full (blocked-caps -> eligibility -> cap, per candidate)    142.0s   37.2%     422.6
+[16:56:29 + 805.8s]          _segment_softmax decode (numpy, feeds deliver + band)                 75.7s   19.9%     225.3
+[16:56:29 + 805.8s]          eval_pop (fused numba: softmax + success rate + engineering viol)      7.3s    1.9%      21.8
+[16:56:29 + 805.8s]          compressibility regulariser (0 unless it is on)                        0.0s    0.0%       0.0
+[16:56:29 + 805.8s]          unaccounted (function entry/exit; the no-band early return)            2.1s    0.5%       6.1
+[16:56:29 + 805.8s]          ----------------------------------------------------------------------------------------------
+[16:56:29 + 805.8s]          the 336 call(s) are one per generation PLUS one per restart, and [gen-gap] charges the per-restart ones to `init` — so they sum to `eval` (341.3s) + the init eval row (40.0s) = 381.3s, not to `eval` alone.
+[16:56:29 + 805.8s] 
+[16:56:29 + 805.8s]          ⇒ Σ generations 371.8s + start-up 41.3s = 413.1s of the search's 413.2s (100.0%). The remainder is outside both loops: seed setup, the one-off self-checks, numba compiles.
+[16:56:29 + 805.8s] 
+[16:56:29 + 805.8s] 
+[16:56:29 + 805.8s]    [fullmatrix-ga] SEARCH
+[16:56:29 + 805.8s]          candidates      11,840 split(s) over 320 generation(s)
+[16:56:29 + 805.9s]          layout          8 seed(s) × 2 restart(s), pop 40
+[16:56:29 + 805.9s]          time            413.1s at 29 split(s)/s
+[16:56:29 + 805.9s] 
+[16:56:29 + 805.9s]    [fullmatrix-ga] RESULT
+[16:56:29 + 805.9s]          success rate    0.615322
+[16:56:29 + 805.9s]          M5 breach       0.000e+00
+[16:56:29 + 805.9s]          engineering     0.000e+00
+[16:56:29 + 805.9s]          feasible        True
+[16:56:29 + 805.9s]          improved        True
+[16:56:29 + 805.9s] 
+[16:56:29 + 805.9s]          prop-keys reachable by the GA: 154,405 of 323,063 (47.8%). The rest have an all-zero incidence row, so prop_raw is 0 there for EVERY candidate.
+[16:56:29 + 805.9s]          scaffold rows masked (excl|emask): 111,027 of 1,932,860
+[16:56:29 + 805.9s]          FROZEN scaffold profiles (psum==0 for every candidate, so their vamp/txn contribution is a constant): 99,674 of 188,786 (52.8%), carrying 954,536 of 1,932,860 rows (49.4%).
+[16:56:29 + 805.9s]          frozen row share 49.4%. It scales with candidate width, because the flat passes it skips are per-candidate — see [lift-ab] for THIS run's measured number.
+[16:56:34 + 810.5s] 
+[16:56:34 + 810.5s]       [proj-config] unavailable (NameError: name 'SG' is not defined) — this is the REPORT only; the projector itself is unaffected.
+[16:56:34 + 810.5s]       [ef-mask] ⚠ exploration floor 1.00%: floor-eligible rows differ between the search's (vampMid, currency) grain (1,821,833 of 1,932,860) and a vampMid-only reconstruction (1,731,878) by 89,955 row(s). Since 19ht both sides mask at the pair grain and 19ip removed the way back, so this should be 0 - a non-zero reading means the two have come apart and the difference lands in RECONCILIATION ERROR.
+[16:56:34 + 810.5s]       [pbp-inside] PopulationBandProjector.__init__ = 25.6s, largest first (these SUM to the constructor, no residual)
+
+      step                                                    time  share   vs the 19fy/19fz baseline
+      --------------------------------------------------------------------------------------------------------------
+      reduced Pc (aged rows, origin remap)                   11.0s   42.8%   
+      _origin_map  [19fy: int64 join]                         4.3s   16.9%   ✓ vs ~13.8s before 19fy/19fz, scaled to this run's rows
+      _static(R) reduced frame  [19fy: int64 codes]           4.0s   15.6%   ✓ vs ~10.7s before 19fy/19fz, scaled to this run's rows
+      prop-key index  [19fz: K strings not nR]                1.4s    5.4%   ✓ vs ~9.0s before 19fy/19fz, scaled to this run's rows
+      banded-row masks (MultiIndex.isin)                      1.3s    5.1%   
+      bands, band_order, per-row band position                1.2s    4.6%   
+      _static(T0) full frame  [19fy: int64 codes]             1.0s    4.0%   ✓ vs ~10.7s before 19fy/19fz, scaled to this run's rows
+      setup (reset_index, column pulls)                       0.9s    3.7%   
+      reduce to relevant profiles (isin + iloc + reset_index)    0.4s    1.7%   
+      scipy csr profile-incidence                             0.0s    0.1%   
+      --------------------------------------------------------------------------------------------------------------
+
+[16:56:34 + 810.6s]       [band-build] aged-row hoist (19cz/19dd/19fs): banded aged rows that are CANDIDATE-INDEPENDENT, summed once into a per-band constant and dropped from the per-candidate loop
+
+      class                   rows   share   what it is
+      ------------------------------------------------------------------------------------------------
+      no-origin             53,593    3.0%   cohorts whose transactions predate the split
+      zero-pool            873,064   49.1%   layers with nothing movable (all FCP 2+ retries, or no fraud at that age)
+      frozen-origin          4,572    0.3%   origin profile is frozen, so psum is 0 there for every candidate
+      ------------------------------------------------------------------------------------------------
+      hoisted              931,229   52.4%
+      still live           845,790   47.6%
+      total              1,777,019  100.0%
+
+[16:56:34 + 810.6s]       [vconst-frozen] 19fs added the THIRD class: 4,572 aged row(s) whose ORIGIN PROFILE IS FROZEN (no GA share column maps to it, so psum is 0 there for every candidate). Their contribution is the same per-band constant the other two classes have, so it is summed once instead of per candidate.
+[16:56:34 + 810.6s]       [band-build] frozen-scaffold LIFT ON: the flat passes skip 954,536 of 1,932,860 rows (49.4%) in 99,674 of 188,786 frozen profiles (52.8%). Bit-identical: those passes are provable no-ops (psum += 0.0, everything else guarded on psum > 0). The nC/nA accumulation loops are NOT touched — reassociating those sums would not be bit-identical — so the realised speedup is below the row share. ROUTING_PROJ_LIFT=0 disables.
+[16:56:34 + 810.6s]       [band-build] profile-blocked layout built: 978,324 live rows in 89,112 profiles (~11.0 rows/profile), 954,536 frozen rows parked in the tail. The multi-pass block now runs one profile at a time (an L1-sized working set) instead of ~15 passes over the whole scaffold, and mvrow / vshare are derived in their only reader instead of being materialised. Bit-identical — stable permutation, so every per-profile sum keeps its order — and self-checked against the flat kernel on this scaffold before any result is used. ROUTING_PROJ_PROFILEBLOCK=0 reverts.
+[16:56:34 + 810.6s]       [band-build] profile-blocked layout built: 1,932,860 live rows in 188,786 profiles (~10.2 rows/profile), 0 frozen rows parked in the tail. The multi-pass block now runs one profile at a time (an L1-sized working set) instead of ~15 passes over the whole scaffold, and mvrow / vshare are derived in their only reader instead of being materialised. Bit-identical — stable permutation, so every per-profile sum keeps its order — and self-checked against the flat kernel on this scaffold before any result is used. ROUTING_PROJ_PROFILEBLOCK=0 reverts.
+[16:56:34 + 810.6s]       [proj-par] candidate-parallel projection OFF — single candidate, so a 1-iteration prange would be pure thread-pool overhead (measured 187 vs 180 ms) (P=1, numba threads=16, lanes=1, scaffold nR=1,932,860). Bit-identical either way — the parallel kernel is verified against the serial one on the live scaffold on its first call.
+[16:56:34 + 810.6s]       [proj-par] candidate-parallel projection ON (P=40, numba threads=16, lanes=40, scaffold nR=1,932,860). Bit-identical either way — the parallel kernel is verified against the serial one on the live scaffold on its first call.
+[16:56:34 + 810.6s]       [proj-par] candidate-parallel SELF-CHECK PASSED on the live scaffold: serial and parallel kernels bit-identical at P=40 (np.array_equal on both vamp and txn, not allclose).
+[16:56:34 + 810.6s]       [proj-par] candidate-parallel projection ON (P=35, numba threads=16, lanes=35, scaffold nR=1,932,860). Bit-identical either way — the parallel kernel is verified against the serial one on the live scaffold on its first call.
+[16:56:34 + 810.6s]       [proj-par] float32 drift RE-MEASURED at the live width P=35, up from P=1 where it was first taken. Lane count changes the order the per-profile sums accumulate in, so a narrow-width figure is not a claim about the search. THE FIGURES ARE ON THE [proj-config] float32 drift LINE - this one does not restate them. The width comparison alone: max drift vamp 0.1018 -> 0.5463, txn 1.272 -> 1.725.
+[16:56:34 + 810.6s]       [lift-ab] frozen-scaffold LIFT measured on THIS run's scaffold at P=35: ON 134.8 ms/call vs OFF 181.3 ms/call ⇒ 1.345x (+46.5 ms per call; best of 3 INTERLEAVED round(s), ON/OFF/ON/OFF, so machine drift is shared between the arms instead of landing on one). MACHINE NOISE on these same rounds: the within-arm spread is 11.1% (ON 11.1%, OFF 5.5%) - identical code, so that much movement is noise by construction. The bar is therefore 11.1%, not a fixed 5%. The +34.5% difference CLEARS it, so this is real. Outputs are BIT-IDENTICAL (np.array_equal on vamp AND txn), which is the lift's whole claim: the passes it skips are provable no-ops. It scales with candidate width, because the flat passes it skips are per-candidate, so this number is this run's, not a constant. ROUTING_PROJ_LIFT=0 reverts.
+[16:56:34 + 810.6s]       [deliv-cap] the cap fired on 841 of 848 delivery call(s), repairing 9,892,637 (candidate, profile) pair(s) that eligibility zeroing had lifted past 0.97. Total share moved 2.888e+05; largest single-row move 0.03. EVERY one of those is a split the pre-19fg search scored as compliant and delivery then had to correct — that gap is what this closes.
+[16:56:34 + 810.6s]       [deliv-cap] (candidate, profile) pair(s) where the cap is unsatisfiable (live rows hold less room than the excess): 2,260,541 — left at baseline, exactly as _cap_rows leaves a row with fewer than 2 present gateways. Entries still over the cap after the single pass, where one pass should have sufficed: 0.
+[16:56:34 + 810.6s]       [blk-fill] WHAT THE 0.97 WATER-FILL PUTS BACK ON BANK-BLOCKED ROWS, measured on 20 sampled delivery call(s) covering 108 (candidate, profile) pair(s): 0 pair(s) lifted a blocked row, 0 blocked (candidate, row) entr(ies) received share, Σ 0, largest single lift 0.
+[16:56:34 + 810.6s]       [blk-fill] OF THAT, 0 was UNAVOIDABLE — the profile's NON-blocked recipients held less room than the excess, so the cap could not have held without a blocked row, which is exactly the exception the rule allows. THE AVOIDABLE PART IS 0 — i.e. NOTHING. On this run every lift onto a blocked row was already required to hold the cap, so the rule would change no share here. Confirm across a run with more blocked pairs before concluding it is free.
+[16:56:34 + 810.6s]       [blk-fill] STATUS: the rule did NOT apply, so the numbers above are what it WOULD remove.
+[16:56:34 + 810.6s]          [blk-fill] rule OFF (ROUTING_BLOCK_NOFILL unset). Blocked rows are water-fill recipients like any other, which is what every build before 19ij did; [blk-fill] prices what that costs.
+[16:56:34 + 810.6s]       [blk-fill] the other four water-fills report their own figures: [blk-fill] delivered (_cap_rows, what ships), [blk-fill] VAMP forecast (_max_share_waterfill) and [blk-fill] band projector (the fitness cap, both kernels plus the numpy reference). All five have to agree, or GA-fitness stops matching delivered - which is why arming is refused until every one of them is wired.
+[16:56:34 + 810.9s] 
+[16:56:34 + 810.9s]    ── ④·4  CHOOSE WHAT SHIPS ─────────────────────────────────────────────────
+[16:56:34 + 810.9s]       ── [never-worse] projecting BOTH candidates through the FULL delivery chain (the same one the authoritative reconcile uses). This is the slow, honest basis: the GA's own fitness is blind to delivery drift, so the two cannot be compared on it. Two full projections — and as of 19fi the reconcile REUSES whichever of the two belongs to the split that ships, so the run pays for two in total rather than three. ──
+[16:59:02 + 958.8s]       [emask-grain] FACT: (vampMid, currency) pairs - NOT APPLIED, no consumer ran: frame is ENFORCED (7-tuple), so the prop_raw zeroing is skipped; exploration_floor=0 so the floor block is skipped.
+[16:59:02 + 958.8s]       [blk-fill] delivered water-fill (_cap_rows): 0.0149617 of share was handed to bank-blocked rows over 2 sweep(s), of which 0.0149183 could not have gone anywhere else (the profile had no other under-cap recipient) and 4.33962e-05 is AVOIDABLE - a non-blocked sibling had room for it and did not get it. That last number is what the rule would move on the shipping path.
+[16:59:02 + 958.8s]          [blk-fill] rule OFF (ROUTING_BLOCK_NOFILL unset). Blocked rows are water-fill recipients like any other, which is what every build before 19ij did; [blk-fill] prices what that costs.
+[16:59:02 + 958.8s]       [blk-fill] VAMP forecast water-fill (_max_share_waterfill): 0 onto 336 blocked row(s) over 0 sweep(s), 0 unavoidable, 0 AVOIDABLE.
+[16:59:02 + 958.8s]       [proj-memo] 'GA output' projected in 95.4s = 2.6s enforced_prop_items/build_split_exports + 92.8s compute_vamp_prepost_granular.
+[16:59:02 + 958.8s] 
+[16:59:02 + 958.8s]       [cvp-timing] inside compute_vamp_prepost_granular: 91.8s of the 92.8s above, largest first (the remainder is function entry/exit)
+[16:59:02 + 958.8s] 
+[16:59:02 + 958.8s]          step                                                              time   share
+[16:59:02 + 958.8s]          ------------------------------------------------------------------------------
+[16:59:02 + 958.8s]          exploration floor + max-share cap + the txn-terms stash          16.1s   17.5%
+[16:59:02 + 958.8s]          _inject_backfill_rows (zero-baseline recipients)                 15.8s   17.3%
+[16:59:02 + 958.8s]          inject_capable_rows (zero rows for capable doors)                10.8s   11.8%
+[16:59:02 + 958.8s]          aged-frame merges (_gf at origination + _pr_app at appearance)    9.1s    9.9%
+[16:59:02 + 958.8s]          Σ_pshare per aged group (groupby-transform on the [gk-code] in    9.0s    9.8%
+[16:59:02 + 958.8s]          collapse groupby (8 string keys)                                  7.2s    7.9%
+[16:59:02 + 958.8s]          final collapse back to the reported grain                         5.7s    6.2%
+[16:59:02 + 958.8s]          key normalise (string strip/lower on 6 columns)                   4.3s    4.7%
+[16:59:02 + 958.8s]          t0 slice + the prop merge                                         3.2s    3.5%
+[16:59:02 + 958.8s]          read_csv (the pro-rata export off disk)                           1.9s    2.1%
+[16:59:02 + 958.8s]          per-profile transforms (profile_tot / _at / base_share / prop_    1.4s    1.5%
+[16:59:02 + 958.8s]          _apply_keep (switch-off gating; per-row Python loop)              0.7s    0.8%
+[16:59:02 + 958.8s]          recipient share + move fractions (_move / _pshare / VAMP_Post)    0.5s    0.6%
+[16:59:02 + 958.8s]          prop frame build (prop_items -> DataFrame + keys)                 0.3s    0.3%
+[16:59:02 + 958.8s]          conservation check                                                0.2s    0.3%
+[16:59:02 + 958.8s]          [passthru] fired-set stash (7-column string key + 2 groupbys)     0.0s    0.0%
+[16:59:02 + 958.8s]          [pshare-why] recipient-share stash                                0.0s    0.0%
+[16:59:02 + 958.8s]          [move-gate] five one-gate-lifted variants + stash                 0.0s    0.0%
+[16:59:02 + 958.8s]          ------------------------------------------------------------------------------
+[16:59:02 + 958.8s] 
+[16:59:02 + 958.8s]          The [pshare-why] and [vterms] steps are the Search-vs-Delivery Reconciliation Breakdown's inputs. They are NOT optional and have no switch (19fq) — they are the only explanation of the reconciliation error. What IS conditional inside [vterms] is its three COUNTERFACTUALS, which are skipped while the shipped and replayed VAMP agree.
+[16:59:02 + 958.8s]          [gk-code] ON — 858,108 group(s) over 6,534,862 row(s), and VERIFIED bit-identical to the string key (int64 bit-pattern comparison on Σ_pshare, stricter than array_equal). The check itself cost 2.4s — one string groupby, i.e. the thing being removed. ROUTING_GKCODE_VERIFY=0 drops it once you have seen this line; ROUTING_GKCODE_VERIFY=1 brings it back.
+[16:59:03 + 959.2s]       [never-worse] GA output projected in 148.3s
+[16:59:03 + 959.3s]       [f32-floor] float32 is ON, so the reconciliation detector is no longer exact. Measured on THIS run's scaffold at P=35: up to 9.5 unit(s) of drift (1.65 vamp + 7.88 txn) come from float32 alone. The bar for 'this run does not reconcile' is raised to that, so rounding does not trigger a 159s forensic re-projection — and a REAL disagreement smaller than it is now invisible. That is the price of the setting, stated as a number. The float32 projector is unconditional as of 19iu, so this floor is a property of the build, not of a setting.
+[16:59:03 + 959.3s]       [forensic] scored and delivered agree to 1.11 unit(s) across 15 banded MID(s), inside the bar of 10 — so the four attribution stashes were NOT computed and this projection was ~77s cheaper. They explain a reconciliation error; there is no reconciliation error. [vterms], [pshare-why], [move-gate] and [passthru] will report themselves as not-computed rather than empty.
+[16:59:03 + 959.3s]       [nw-skip] the GA output delivers 0 breach unit(s), so the seed 'targeted-move' was NOT projected — it cannot win a comparison against 0 (the delivered breach is a sum of non-negative overages, so the seed's is ≥ 0 whatever it is). That is the ordering of the reals, not a tolerance. Saved one full delivery projection (~155s on the 2026-09-01 20:21 run).
+[16:59:03 + 959.3s]       [nw-skip] COST: the rejected candidate's drift is not attributed below, because a candidate can only be measured in the pass that projected it. Set ROUTING_NW_SKIP_SEED=0 to project both when the seed's drift is the question.
+[16:59:03 + 959.3s] 
+[16:59:03 + 959.3s]       ── [never-worse] GA output vs the seed it started from, decided on the DELIVERED breach ALONE (19an) ──
+[16:59:03 + 959.3s] 
+[16:59:03 + 959.3s]          candidate               delivered     scored     drift    GA-fitness
+[16:59:03 + 959.3s]          --------------------------------------------------------------------
+[16:59:03 + 959.3s]          seed targeted-move      not proj.          —         —             0
+[16:59:03 + 959.3s]          GA output                       0          0        +0             0
+[16:59:03 + 959.3s]          --------------------------------------------------------------------
+[16:59:03 + 959.3s]          ✓ the shipped candidate's drift is 0.0 unit(s) — scored and delivered agree on it, so the delivered figures below are reproducible.
+[16:59:03 + 959.3s]          rule: DELIVERED breach alone — the GA output is at 0 and 0 is the minimum ⇒ ships the GA OUTPUT.
+[16:59:03 + 959.3s]          ⇒ SHIPPING THE GA OUTPUT. The search earned its keep.
+[16:59:03 + 959.4s]       [full-matrix] delivered split EXACT M5 band breach = 0  (0 = all month bands met; compare to the tilt per-MID breakdown above — should be consistent).
+[16:59:04 + 960.9s]       ── IN-SEARCH per-RPGT VAMP on the DELIVERED split (diff vs tab-3 VAMP_Post to localise the projection gap) ──
+[16:59:04 + 960.9s]          • braintree usa - total av [vamp] in-search total 1,303 (ceil 1,300): monthly renewal 802; addon sale 151; monthly initial 114; no-origin 109; annual sub renewal 74; addon renewal 25; upgrades 18; annual sub sale 5; p6m renewals 5
+[16:59:04 + 960.9s]          (read-only. Compare each RPGT to tab-3's VAMP_Post for the same MID; the RPGT with the biggest in-search-vs-tab-3 difference is where the two projections diverge — the source of the scored-vs-delivered gap.)
+[16:59:04 + 960.9s]       [elig-nocap] the select was skipped on 6,377 of 6,404 blend call(s) (99.6%) and genuinely NEEDED on 27 — some profile had no capable gateway. The guard still shipped the identical answer; it just paid for the select on those calls.
+[16:59:04 + 960.9s]       [row-par] deliver(elig): VERIFIED bit-identical threaded, 8 thread(s) of 16 usable core(s) — HALF by default since 19bo, so numba's projector pool is not contending with this one; ROUTING_ROW_PARALLEL_WORKERS pins it — over 35 candidate(s) (int64 bit-pattern comparison on 35x154,405, stricter than array_equal). The transform is candidate-independent, so each thread performs the same operations in the same order on its own rows. ROUTING_ROW_PARALLEL=0 reverts. Used on 334 of 365 call(s).
+[16:59:04 + 960.9s]       [row-par] softmax: VERIFIED bit-identical threaded, 8 thread(s) of 16 usable core(s) — HALF by default since 19bo, so numba's projector pool is not contending with this one; ROUTING_ROW_PARALLEL_WORKERS pins it — over 40 candidate(s) (int64 bit-pattern comparison on 40x154,405, stricter than array_equal). The transform is candidate-independent, so each thread performs the same operations in the same order on its own rows. ROUTING_ROW_PARALLEL=0 reverts. Used on 335 of 369 call(s).
+[16:59:04 + 960.9s]       [eligibility] restricted blends SELF-CHECK PASSED: ✓ bit-identical to the reference on the live operator (int64 bit-pattern comparison on 1x154,405, stricter than array_equal). w: 35.3% of rows are in changeable profiles, above the 25% cut-off — kept FULL-WIDTH; u: 39.2% of rows are in changeable profiles, above the 25% cut-off — kept FULL-WIDTH; fused elementwise passes ON (ROUTING_ELIG_FUSE=0 reverts to the 19bm numpy chain). ROUTING_ELIG_RESTRICT=0 reverts.
+[16:59:04 + 960.9s]       [full-matrix] evaluated 11,840 candidate splits over 320 generations (pop 40); success rate 0.61532 viol=0.0000 feasible=True improved_over_compliant_seed=True
+[16:59:04 + 960.9s]       ④ EFFICIENCY (full-matrix GA — the delivered search):
+[16:59:04 + 960.9s]          result     : success rate 0.61532 · viol 0.0000 · feasible=True
+[16:59:04 + 960.9s]          search cost: 11,840 candidate splits in 413s (29/s throughput)
+[16:59:05 + 961.5s]       [drop-measure] delivered explode: split has 154,405 row(s); the INNER merge against orig_forecast drops 0 of them across 0 distinct ('currency', 'parent_bank', '_rk', 'pmp', 'ctry') key(s). Stashed for the [blend-profiles] intersection — the split is UNCHANGED by this block.
+[16:59:05 + 961.6s]       [block-ctry] blocked-caps redistribution groups by ('rpgt', 'currency', 'bin', 'pmp', 'ctry'), matching the search's profile grain — DEFAULT ON since 2026-08-19o (default, no env var set). A blocked row's freed share stays inside its own country profile instead of spreading across USA/Non-USA. This IS a deployed-split change vs pre-19o runs, and it is the last unit of reconciliation error. ROUTING_BLOCK_CTRY=0 reverts.
+[16:59:32 + 988.2s] 
+[16:59:32 + 988.2s]    ── ④·5  DELIVER AND RECONCILE ─────────────────────────────────────────────
+[16:59:32 + 988.2s]       [reconcile] tab-3 parity: no backup catch-all configured · 11 switched-off vampMid(s), month_0=2026-08-01, scoped_rpgts=4
+[16:59:33 + 989.8s]       [rung] shipped split rolled onto the band scaffold's own prop-keys (6-part keys · Σshare mapped 14,852.0 of 14,852.0 (100.0%)). The scored↔delivered gap can now be bisected into SPLIT divergence (GA-fitness → shipped) and PROJECTOR divergence (shipped → delivered).
+[16:59:40 + 996.2s]          [recon-breakdown] NOT COMPUTED, on purpose (the stash reads 'skipped'). The breakdown explains a reconciliation error, and [forensic] above found none worth explaining, so the ~77s of attribution stashes were skipped. Nothing failed. ROUTING_FORENSIC=1 computes them anyway.
+[16:59:55 +1011.2s]       [profiles] PART A skipped — no dropped-row stash this run, so there are no profiles to identify. Look for a [drop-measure] line above.
+[16:59:55 +1011.2s]       [profiles] PART B: 20 prop-key(s) differ between the split the GA SCORED and the one it SHIPS, Σ|Δprop| 0.0302 — below the 0.5 bar, so the per-profile keys are not listed. RECONCILIATION ERROR is the check that matters on a difference this small.
+[16:59:55 +1011.3s]       [full-matrix] RECONCILED delivered M5 (AUTHORITATIVE — the EXACT tab-3 projection on the ENFORCED split; == tab-3 'Now'). Each breach is SPLIT into the two independent failures it contains:
+[16:59:55 +1011.3s]          · SEARCH SHORTFALL = GA-fitness − limit   → the GA SAW this and did not clear it. Search / scope problem, NOT a reconciliation failure. NEGATIVE = the GA had headroom.
+[16:59:55 +1011.3s]          · DELIVERY DRIFT   = delivered − GA-fitness → scored != delivered. The GA is BLIND to this. THIS is the reconciliation target.
+[16:59:55 +1011.3s]          Both are signed so that POSITIVE always means 'further past the limit', and the two ALWAYS sum exactly to the breach.
+[16:59:55 +1011.3s] 
+[16:59:55 +1011.3s]          15 band(s) WITHIN their limits (raw → GA-fitness → shipped → enforced → delivered)
+[16:59:55 +1011.3s] 
+[16:59:55 +1011.3s]          MID                            metric   delivered                      band   drift   chain
+[16:59:55 +1011.3s]          ----------------------------------------------------------------------------------------------------
+[16:59:55 +1011.3s]          braintree usa - total av         vamp       1,300                ceil 1,300      +0   all stages agree
+[16:59:55 +1011.3s]          worldpay - total av              vamp       1,582                ceil 1,600      +0   all stages agree
+[16:59:55 +1011.3s]          adyen_totalavpro                 vamp       1,451                ceil 1,800      +0   all stages agree
+[16:59:55 +1011.3s]          adyen_totalavpremium             vamp       1,332                ceil 1,700      +0   all stages agree
+[16:59:55 +1011.3s]          checkout - total av              vamp       1,215                ceil 1,300      +0   all stages agree
+[16:59:55 +1011.3s]          adyen_totalav                    vamp       2,322                ceil 2,500      +0   all stages agree
+[16:59:55 +1011.3s]          adyen - totalav - na              txn      20,656ceil 30,000 / floor 20,000      +0   all stages agree
+[16:59:55 +1011.3s]          adyen_totalavultimate            vamp       1,192                ceil 1,800      +0   all stages agree
+[16:59:55 +1011.3s]          woodforest - total av             txn      23,992ceil 24,000 / floor 16,000      +0   all stages agree
+[16:59:55 +1011.3s]          authorize - total av              txn      10,287               ceil 15,000      -0   all stages agree
+[16:59:55 +1011.3s]          adyen_totalsecurity              vamp         811                ceil 1,800      +0   all stages agree
+[16:59:55 +1011.3s]          paysafe - total av               vamp       1,155                ceil 1,300      +0   all stages agree
+[16:59:55 +1011.3s]          adyen_totalantivirusonline       vamp       1,750                ceil 1,800      +0   all stages agree
+[16:59:55 +1011.3s]          adyen_totalavsecure              vamp       1,060                ceil 1,300      +0   all stages agree
+[16:59:55 +1011.3s]          braintree eu - total av          vamp       1,172                ceil 1,250      +0   all stages agree
+[16:59:55 +1011.3s]          ----------------------------------------------------------------------------------------------------
+[16:59:55 +1011.3s] 
+[16:59:57 +1014.1s]          [rung] TXN  over 3 band(s): all three terms are 0 at display resolution (Σ 0.322) — nothing to attribute.
+[16:59:57 +1014.1s]          [rung] VAMP over 12 band(s): Σ|SPLIT| 0 (0%) · Σ|ENFORCEMENT| 0 (0%) · Σ|PROJECTION MATH| 1 (100%) · worst = —
+[16:59:57 +1014.1s]          [rung] VAMP reading: SPLIT = the GA scored a split it does not ship · ENFORCEMENT = build_split_exports + backup blend rewrote the proposed shares before any projection · PROJECTION MATH = identical shares, two different M5 models. Pair this with the [rung2] GRAIN DISPERSION line: a big ENFORCEMENT term with high dispersion is a GRAIN problem (run at profile), not a code bug.
+[17:00:12 +1028.6s]          ══ RECONCILIATION ERROR (the number to drive to ~0): Σ|delivered − GA-fitness| = 1 across 15 band(s) · worst = adyen_totalav (0). Until this is small, no breach figure and no feasibility verdict means anything.
+[17:00:12 +1028.7s]          ══ float32 NOISE FLOOR 9.5 unit(s), measured on this run's own scaffold at P=35 (1.65 vamp + 7.88 txn). 1 is INSIDE it, so this run reconciles as well as float32 permits — it is NOT evidence of a defect, and it is NOT proof of correctness either: a real bug up to 9.5 unit(s) would look the same. The float32 projector is unconditional as of 19iu, so this floor is a property of the build and cannot be turned off to get an exact detector back.
+[17:00:12 +1028.7s]          all bands WITHIN limits on the delivered split.
+[17:00:13 +1030.0s]       ── GA single variation (dial 0): MIDs over cap=0 (informational — no cap enforced), succ=0.6141, risk=0.0314
+[17:00:13 +1030.0s]       GA total wall time: 2m 07s (one full-matrix GA; no dials, no tilts, no enforcement pass).
+[17:00:54 +1070.8s] ✓ ④ Search for the split that ships — finished in 1002.9s
+[17:00:54 +1070.8s] 
+[17:00:54 +1070.8s] ▶ ⑤ Pre-calculate impact frames for all variations — started
+[17:00:55 +1071.3s] ✓ ⑤ Pre-calculate impact frames for all variations — finished in 0.5s
+[17:00:55 +1071.3s] ✅ Total run time 1071.3s

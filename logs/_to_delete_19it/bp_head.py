@@ -132,7 +132,7 @@ except Exception:  # noqa: BLE001 - no rule available is a refusal, never a brok
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-09-04-19kb-moveable-counter+2026-09-04-19ka-ui-removals+2026-09-04-19jz-config-files-tab+2026-09-04-19jy-scaffold-timing+2026-09-04-19jx-lift-and-profileblock-unconditional+2026-09-04-19jw-bandbuild-log-trim+2026-09-04-19jv-stashq-unconditional+2026-09-04-19jr-stashq-per-run+2026-09-03-19jp-stash-quotient+2026-09-03-19jn-gks-zero-by-slot+2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
+__build__ = ("2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -187,50 +187,6 @@ _VSHARE_ALLROWS = os.environ.get("ROUTING_VSHARE_ALLROWS", "1") != "0"
 # absent MID's share. Removing it from DELIVERY is not an option: test_recon616 measures the leak
 # it prevents, so the pass is load-bearing and belongs in both. ROUTING_AGE_RENORM=0 reverts.
 _AGE_RENORM = os.environ.get("ROUTING_AGE_RENORM", "1") != "0"
-
-# -- 19jp: STASHED QUOTIENT (the profile-blocked kernel's nA phase) ----------------------------
-# The age renormalise and the nA accumulation compute THE SAME QUOTIENT twice. Pass 2 evaluates
-# `_pshare[o] / _vpsum[_cg0]` to build `_gks`; pass 3 evaluates it again, under the same guard,
-# to build `psh`. Each evaluation costs three RANDOM gathers - `_pshare[o]`, `vcpos_c[o]` and
-# `_vpsum[_cg]` - and [proj-inside] puts the nA phase at ~44% of a projection, of which ~92% is
-# gathers rather than bandwidth (measured, 19jl). Stashing pass 2's answer in a j-indexed array
-# turns pass 3's three random gathers into one SEQUENTIAL read.
-#
-# BIT-IDENTICAL BY CONSTRUCTION, and the reason is worth stating: the stash holds the SAME
-# EXPRESSION, in the SAME dtype as `pshare`, and the reader divides it by `_gks[...]` exactly as
-# the original divided `(_pshare[o] / _vpsum[_cg])` by `_gsum`. No operand, no order and no
-# intermediate precision changes. The one assumption is that a stashed quotient is never
-# negative (it is a share over a positive denominator), which is what makes the two negative
-# SENTINELS unambiguous - and that assumption is TESTED on the live scaffold on the first armed
-# call, not asserted.
-#
-# COST: one float array of (lanes x nA) in `pshare`'s dtype. `[stash-q]` prints the actual bytes.
-#
-# 19jv: ROUTING_STASH_Q IS GONE AND THE STASH IS UNCONDITIONAL, on Ben's instruction. It was a
-# switch because it was unproven; it is proven, so the switch was only a way to forget to set it.
-#
-# WHAT PROVED IT. Two interleaved A/B runs on the live scaffold, arms alternating call by call so
-# machine drift is shared between them rather than landing on one:
-#     2026-09-04 09:51   ON  61.8 ms/call   OFF  94.0 ms/call   1.521x
-#     2026-09-04 11:47   ON 107.2 ms/call   OFF 167.3 ms/call   1.561x
-# The second is the one to trust: the first run's counters were still per-PROCESS, so its sample
-# spanned two runs (fixed in 19jr). The 11:47 run's 177 ON / 177 OFF calls against 374 dispatched
-# projections is a count that can be checked, and it is the run that took the search to 158.5s
-# and 75 splits/s from 221.0s and 54/s before any of this.
-#
-# THE A/B WENT WITH THE SWITCH. It existed to answer one question, it answered it twice, and an
-# alternating arm costs half the win on every run it measures.
-#
-# WHAT DID NOT GO: the kernel's OFF path, and the first-call self-check that runs both arms on
-# the live scaffold and diffs them. Deleting the slow path would have deleted the proof - the
-# same trap that stops PROJ_PARALLEL and PROJ_PROFILEBLOCK from being collapsed - so the OFF arm
-# stays reachable from `_stashq_selfcheck` and nowhere else. A failed check still disarms the
-# stash for the process and ships the untouched answer, loudly.
-#
-# Precedent for a proven change losing its switch entirely: 19gv (ROUTING_DECODE_CAP) and
-# 19iu (ROUTING_PROJ_FLOAT32).
-_STASH_FACT = {"armed": False, "checked": False, "ok": None, "bad": 0,
-               "nA": 0, "bytes": 0, "dtype": "", "lanes": 0, "why": ""}
 _BP_COLLAPSE_SAID = {}
 
 
@@ -241,7 +197,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                           cap_c, cap_ctot, cap_base, pc_gc, pc_gk, vconst,
                           nprofile, nband, cap, nlane, live_rows, live_profiles,
                           vamp, txn, psum, vpsum, moved, pr, pshare, vshare, mvrow, nzc, exc,
-                          rsum, gks, rsp, rsb, blk, blkuse):
+                          rsum, gks):
     """Bit-identical numba equivalent of PopulationBandProjector.project_pop: flat passes over
     the reduced scaffold with per-profile scratch (nprofile), no dense (P × nR) arrays. ~7× faster on
     the real scaffold. cap_row is pre-filtered to non-excl rows (excl txn contributions are 0).
@@ -317,9 +273,6 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
         for _b in range(nband):
             vamp[p, _b] += vconst[_b]
         _nzc = nzc[q]; _exc = exc[q]; _rsum = rsum[q]
-        # 19it: the blocked-row rule's two extra per-profile pools. Indexed unconditionally
-        # (numba types the whole body), used only when blkuse > 0.
-        _rsp = rsp[q]; _rsb = rsb[q]
         for _ci in range(nLC):
             c = live_profiles[_ci]
             _psum[c] = 0.0; _moved[c] = 0.0
@@ -374,47 +327,17 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
                 for _ci in range(nLC):
                     c = live_profiles[_ci]
                     _rsum[c] = 0.0
-                    if blkuse > 0:
-                        _rsp[c] = 0.0
-                        _rsb[c] = 0.0
                 for _ri in range(nLR):
                     r = live_rows[_ri]
                     c = gcode[r]
                     if _psum[c] > 0.0 and _nzc[c] >= 2.0 and _pshare[r] > 1e-12 and _pshare[r] < cap - 1e-12:
                         _rsum[c] += cap - _pshare[r]
-                        # 19it: the SAME room, split by whether the recipient is bank-blocked.
-                        # `_rsum` keeps accumulating everything, so the unarmed path below is
-                        # byte-for-byte the pre-19it kernel. The two pools are accumulated in
-                        # the same ROW ORDER as the numpy reference's masked profile sums
-                        # (`_profilesum(where(blk, 0, room))`), because adding 0.0 is exact -
-                        # which is what lets _cap_pshare stay the bit-identical reference the
-                        # self-checks diff against.
-                        if blkuse > 0:
-                            if blk[r]:
-                                _rsb[c] += cap - _pshare[r]
-                            else:
-                                _rsp[c] += cap - _pshare[r]
                 for _ri in range(nLR):
                     r = live_rows[_ri]
                     c = gcode[r]
                     if (_psum[c] > 0.0 and _nzc[c] >= 2.0 and _pshare[r] > 1e-12
                             and _pshare[r] < cap - 1e-12 and _rsum[c] > 1e-12):
-                        if blkuse > 0 and _rsb[c] > 1e-12:
-                            # THE RULE. Non-blocked recipients take min(excess, their room);
-                            # blocked ones take only the shortfall - which is exactly the case
-                            # where the cap could not otherwise hold. Same factor-then-multiply
-                            # association as blocked_fill._factors, so the numpy reference and
-                            # this kernel agree bit for bit.
-                            _ep = _exc[c] if _exc[c] < _rsp[c] else _rsp[c]
-                            _ef = _exc[c] - _rsp[c]
-                            if _ef < 0.0:
-                                _ef = 0.0
-                            if blk[r]:
-                                _pshare[r] += (cap - _pshare[r]) * (_ef / _rsb[c])
-                            elif _rsp[c] > 1e-12:
-                                _pshare[r] += (cap - _pshare[r]) * (_ep / _rsp[c])
-                        else:
-                            _pshare[r] += (cap - _pshare[r]) / _rsum[c] * _exc[c]
+                        _pshare[r] += (cap - _pshare[r]) / _rsum[c] * _exc[c]
         # ---- vshare from the (capped) ROUTED share (0 in inactive profiles) ----
         for _ci in range(nLC):
             c = live_profiles[_ci]
@@ -459,23 +382,8 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
         # contribute nothing to the sum, the group reads 0, and both `mpc` and `psh` fall to 0 —
         # which is exactly the hold that delivery produces when its orig_m merge finds nothing.
         if _AGE_RENORM:
-            # 19jn: ZERO THE SLOTS, NOT THE ROWS. This used to walk all nA aged rows to clear
-            # `_gks[pc_gk[j]]`, which is one full pass over the biggest array in the kernel to
-            # clear an accumulator with one slot PER GROUP. [proj-inside] puts the nA phase at
-            # ~48% of a projection and this is one of its three passes.
-            #
-            # BIT-IDENTICAL, and for a reason worth stating plainly: the only reads of `_gks`
-            # below are `_gks[pc_gk[j]]`, so the slots this now clears that the old loop did not
-            # are slots nothing ever looks at. Clearing more of a scratch buffer cannot change an
-            # answer. `pc_gk` is a factorize code in 0.._n_gk-1 and `gks` is allocated
-            # (lanes, _n_gk), so the range covers every slot the loop below can reach.
-            #
-            # VERIFIED UNDER REAL NUMBA before shipping, serial AND parallel=True: the
-            # slot-wise clear on a per-lane row view inside a prange body compiles, and is
-            # bit-identical to the per-row clear it replaces. Pre-poisoning the slots the
-            # codes never name changes nothing, which is the same claim from the other side.
-            for _z in range(_gks.shape[0]):
-                _gks[_z] = 0.0
+            for j in range(nA):
+                _gks[pc_gk[j]] = 0.0
             for j in range(nA):
                 o = pc_org[j]
                 if o >= 0:
@@ -570,7 +478,7 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
                     cap_rowc, cap_band, cap_c, cap_ctot, cap_base,
                     pc_orgc, pc_vc, pc_pool, pc_band, pc_heldfac, pc_gc, pc_gkc, vconst,
                     cap, nlane, vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks,
-                    ef_c, efloor, usefloor, pshf, blk_c, blkuse, qst, usestash):
+                    ef_c, efloor, usefloor, pshf):
     P = prop_raw.shape[0]
     nCl = profiles.shape[0]; nC = cap_rowc.shape[0]; nA = pc_orgc.shape[0]
     vamp[:, :] = 0.0; txn[:, :] = 0.0
@@ -588,11 +496,6 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
         # and write of `_pshf` below is inside an `if usefloor > 0`.
         qf = q if usefloor > 0 else 0
         _pshf = pshf[qf]
-        # 19jp: same INT-ternary discipline as `qf` above - never an array ternary. When the
-        # stash is off, `qst` is the (1, 1) dummy and `qs` is 0, so this is a valid 1-element
-        # row that nothing indexes: every read and write of `_qst` sits inside `usestash > 0`.
-        qs = q if usestash > 0 else 0
-        _qst = qst[qs]
         _gks = gks[q]
         for _b in range(vconst.shape[0]):        # 19cz — see the flat kernel
             vamp[p, _b] += vconst[_b]
@@ -634,40 +537,13 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
                             if _pshare[i] > cap + 1e-12:
                                 _pshare[i] = cap
                         rs = 0.0
-                        rsp = 0.0
-                        rsb = 0.0
                         for i in range(s, e):
                             if _pshare[i] > 1e-12 and _pshare[i] < cap - 1e-12:
                                 rs += cap - _pshare[i]
-                                # 19it: the blocked-row rule. This kernel walks a profile's rows
-                                # contiguously, so the two pools are plain scalars - no extra
-                                # buffer, and the accumulation order is the profile's own row
-                                # order, which is what keeps it equal to the flat kernel.
-                                if blkuse > 0:
-                                    if blk_c[i]:
-                                        rsb += cap - _pshare[i]
-                                    else:
-                                        rsp += cap - _pshare[i]
                         if rs > 1e-12:
-                            if blkuse > 0 and rsb > 1e-12:
-                                ep = exc if exc < rsp else rsp
-                                ef = exc - rsp
-                                if ef < 0.0:
-                                    ef = 0.0
-                                fp = 0.0
-                                if rsp > 1e-12:
-                                    fp = ep / rsp
-                                ff = ef / rsb
-                                for i in range(s, e):
-                                    if _pshare[i] > 1e-12 and _pshare[i] < cap - 1e-12:
-                                        if blk_c[i]:
-                                            _pshare[i] += (cap - _pshare[i]) * ff
-                                        else:
-                                            _pshare[i] += (cap - _pshare[i]) * fp
-                            else:
-                                for i in range(s, e):
-                                    if _pshare[i] > 1e-12 and _pshare[i] < cap - 1e-12:
-                                        _pshare[i] += (cap - _pshare[i]) / rs * exc
+                            for i in range(s, e):
+                                if _pshare[i] > 1e-12 and _pshare[i] < cap - 1e-12:
+                                    _pshare[i] += (cap - _pshare[i]) / rs * exc
                 # ---- 19hv: the TXN share, delivery's rule, into its OWN buffer ----
                 # Eligible = present in the profile (base>0 or a proposal) AND not masked
                 # (`ef_c` is `pw > 0`, i.e. keep & ~emask & ~excl). Delivery's `_elig_f` omits
@@ -732,152 +608,64 @@ def _cb_kernel_impl(prop_raw, propidx_c, pw_c, base_c, mv_c, vcpos_c,
         # under the same two guards the reader below uses; anything else would sum a different
         # quantity from the one it divides.
         if _AGE_RENORM:
-            # 19jn: ZERO THE SLOTS, NOT THE ROWS. This used to walk all nA aged rows to clear
-            # `_gks[pc_gkc[j]]`, which is one full pass over the biggest array in the kernel to
-            # clear an accumulator with one slot PER GROUP. [proj-inside] puts the nA phase at
-            # ~48% of a projection and this is one of its three passes.
-            #
-            # BIT-IDENTICAL, and for a reason worth stating plainly: the only reads of `_gks`
-            # below are `_gks[pc_gkc[j]]`, so the slots this now clears that the old loop did not
-            # are slots nothing ever looks at. Clearing more of a scratch buffer cannot change an
-            # answer. `pc_gkc` is a factorize code in 0.._n_gk-1 and `gks` is allocated
-            # (lanes, _n_gk), so the range covers every slot the loop below can reach.
-            #
-            # VERIFIED UNDER REAL NUMBA before shipping, serial AND parallel=True: the
-            # slot-wise clear on a per-lane row view inside a prange body compiles, and is
-            # bit-identical to the per-row clear it replaces. Pre-poisoning the slots the
-            # codes never name changes nothing, which is the same claim from the other side.
-            for _z in range(_gks.shape[0]):
-                _gks[_z] = 0.0
-            if usestash > 0:
-                # 19jp: THE SAME SUM, WITH THE QUOTIENT KEPT. `_qst[j]` carries either the
-                # quotient itself (>= 0) or one of exactly two sentinels:
-                #   -1.0  no aged origin, or the held-move guard is false  -> mpc 0, psh 0
-                #   -2.0  the held-move guard holds but this row is not VAMP-eligible
-                #         (vcpos <= 0.5)                                   -> mpc heldfac, psh 0
-                # Note the implication that makes two sentinels enough: the psh guard is the mpc
-                # guard AND `vcpos_c[o] > 0.5`, so a row that passes the psh guard always passes
-                # the mpc guard, and the nonnegative branch needs no extra state.
-                #
-                # THE SENTINELS ARE SAFE BECAUSE THE QUOTIENT IS A SHARE OVER A POSITIVE
-                # DENOMINATOR - `_vpsum[_cg0] > 0.0` is in the guard and `_pshare` is built from
-                # proposals, caps and floors that are all nonnegative. That is the ONE assumption
-                # in this change, so it is not left as a comment: the first armed call counts
-                # stashed values that are negative and are neither exactly -1.0 nor exactly -2.0,
-                # and disarms the whole path if it finds any.
-                for j in range(nA):
-                    o = pc_orgc[j]
-                    if o >= 0:
-                        _cg0 = pc_gc[j]
-                        _ps0 = _psum[_cg0]; _vp0 = _vpsum[_cg0]
-                        if _ps0 > 0.0 and vcpos_c[o] > 0.5 and _vp0 > 0.0:
-                            _qv = _pshare[o] / _vp0
-                            _gks[pc_gkc[j]] += _qv
-                            _qst[j] = _qv
-                        else:
-                            # the held-move guard, spelled exactly as the nA loop spells it
-                            if _VAMP_CONSERVE:
-                                _mok = _ps0 > 0.0 and _vp0 > 0.0
-                            else:
-                                _mok = _ps0 > 0.0
-                            if _mok:
-                                _qst[j] = -2.0
-                            else:
-                                _qst[j] = -1.0
-                    else:
-                        _qst[j] = -1.0
-            else:
-                for j in range(nA):
-                    o = pc_orgc[j]
-                    if o >= 0:
-                        _cg0 = pc_gc[j]
-                        if _psum[_cg0] > 0.0 and vcpos_c[o] > 0.5 and _vpsum[_cg0] > 0.0:
-                            _gks[pc_gkc[j]] += _pshare[o] / _vpsum[_cg0]
-        # ---- nA: vshare derived instead of read, under the SAME two guards ----
-        # 19jp: TWO BODIES, DELIBERATELY SIDE BY SIDE. The `else` below is the original loop,
-        # character for character, so the OFF path is the revert rather than a re-derivation of
-        # it. `_AGE_RENORM` is a module constant numba folds, so with the renormalise off this
-        # whole branch disappears and the original runs - which it must, because the stash is
-        # WRITTEN by the renormalise pass and would be stale without it.
-        if _AGE_RENORM and usestash > 0:
             for j in range(nA):
-                _sv = _qst[j]
-                _gsum = _gks[pc_gkc[j]]
-                if _gsum <= 1e-12:
-                    # no live recipient at this age -> PASS THROUGH, exactly what `o = -1` did.
-                    # This test comes FIRST because it overrides the stash: `_gks` is only
-                    # complete after pass 2 has walked every row, so pass 2 cannot know it.
-                    mpc = 0.0
-                    psh = 0.0
-                elif _sv >= 0.0:
-                    mpc = pc_heldfac[j]
-                    psh = _sv / _gsum
-                elif _sv > -1.5:                 # -1.0
-                    mpc = 0.0
-                    psh = 0.0
-                else:                            # -2.0
-                    mpc = pc_heldfac[j]
-                    psh = 0.0
-                vamp[p, pc_band[j]] += pc_vc[j] * (1.0 - mpc) + pc_pool[j] * psh
-        else:
+                _gks[pc_gkc[j]] = 0.0
             for j in range(nA):
                 o = pc_orgc[j]
-                if _AGE_RENORM:
-                    _gsum = _gks[pc_gkc[j]]
-                    if _gsum <= 1e-12:
-                        o = -1
-                else:
-                    _gsum = 1.0
                 if o >= 0:
-                    _cg = pc_gc[j]
-                    if _VAMP_CONSERVE:
-                        mpc = (pc_heldfac[j] if (_psum[_cg] > 0.0 and _vpsum[_cg] > 0.0) else 0.0)
-                    else:
-                        mpc = pc_heldfac[j] if _psum[_cg] > 0.0 else 0.0
-                    if _psum[_cg] > 0.0 and vcpos_c[o] > 0.5 and _vpsum[_cg] > 0.0:
-                        psh = _pshare[o] / _vpsum[_cg] / _gsum
-                    else:
-                        psh = 0.0
+                    _cg0 = pc_gc[j]
+                    if _psum[_cg0] > 0.0 and vcpos_c[o] > 0.5 and _vpsum[_cg0] > 0.0:
+                        _gks[pc_gkc[j]] += _pshare[o] / _vpsum[_cg0]
+        # ---- nA: vshare derived instead of read, under the SAME two guards ----
+        for j in range(nA):
+            o = pc_orgc[j]
+            if _AGE_RENORM:
+                _gsum = _gks[pc_gkc[j]]
+                if _gsum <= 1e-12:
+                    o = -1
+            else:
+                _gsum = 1.0
+            if o >= 0:
+                _cg = pc_gc[j]
+                if _VAMP_CONSERVE:
+                    mpc = (pc_heldfac[j] if (_psum[_cg] > 0.0 and _vpsum[_cg] > 0.0) else 0.0)
                 else:
-                    mpc = 0.0
+                    mpc = pc_heldfac[j] if _psum[_cg] > 0.0 else 0.0
+                if _psum[_cg] > 0.0 and vcpos_c[o] > 0.5 and _vpsum[_cg] > 0.0:
+                    psh = _pshare[o] / _vpsum[_cg] / _gsum
+                else:
                     psh = 0.0
-                vamp[p, pc_band[j]] += pc_vc[j] * (1.0 - mpc) + pc_pool[j] * psh
+            else:
+                mpc = 0.0
+                psh = 0.0
+            vamp[p, pc_band[j]] += pc_vc[j] * (1.0 - mpc) + pc_pool[j] * psh
     return vamp, txn
 
 
 _cb_kernel = _njit(cache=False)(_cb_kernel_impl)
 _cb_kernel_par = _njit(cache=False, parallel=True)(_cb_kernel_impl)
+# 19hm: renamed with the OLD NAME STILL HONOURED. A switch name is a user contract — it is
+# typed at a prompt and written into notes — so renaming it outright would silently stop
+# obeying an instruction someone had already recorded. New name wins; old name still works.
+def _env_switch(_new, _old, _default):
+    """Read a renamed kill switch, honouring the old spelling and SAYING SO.
 
-# 19it: BOTH kernels now carry the blocked mask, so this build claims both sites. Registered
-# here, below the compiles, because that is where the claim becomes true. With these two,
-# blocked_fill.arming_verdict can reach 5 of 5 and ROUTING_BLOCK_NOFILL=1 actually arms the
-# rule - `_cap_pshare` (the numpy reference the self-checks diff against) moved in 19is, so
-# there is no path left where one of these three disagrees with the other two.
-if _BFM is not None:
-    _BFM.register("band_kernel_flat")
-    _BFM.register("band_kernel_profile")
-# ── 19jx: ROUTING_PROJ_PROFILEBLOCK IS GONE. The profile-blocked kernel is unconditional. ──
-#
-# It has been default ON since 19bt and self-checked against the flat kernel on the live
-# scaffold on its first call of every run since. The switch was the revert path for a change
-# that stopped needing one.
-#
-# `_env_switch` went with it: this was its only caller, so the ROUTING_PROJ_CELLBLOCK
-# compatibility alias (19hm) goes too. That alias existed to keep honouring an instruction
-# someone might already have written down; there is no longer an instruction to honour.
-#
-# WHAT DID NOT GO — and this is the whole reason a switch could be deleted here at all: the
-# FLAT KERNEL. It is the reference `_CB_OK`'s self-check diffs the profile-blocked output
-# against, before any result is used, on every run. Deleting the slow path would delete the
-# proof. `_pop_band_kernel` is still called directly by that check, `_CB_OK["use"]` still
-# disables the fast path for the process on a failure or an exception, and `[proj-config]`
-# still reports requested-vs-in-effect. Nothing about the verification changed; only the env
-# var is gone.
-#
-# `_PROJ_CB_ON` stays a module-level NAME rather than becoming a literal, because the
-# requested-vs-in-effect line reads it and tests flip it in-process the way `lift_ab_report`
-# flips `_PROJ_LIFT_ON`.
-_PROJ_CB_ON = True
+    src/ must not import app/, so this is a local twin of app_common.env_switch rather than a
+    shared call. It prints for the same reason: deleting the alias is the one change in the
+    cell->profile rename that could SILENTLY ignore an instruction already written down.
+    """
+    v = os.environ.get(_new)
+    if v is not None:
+        return v
+    lv = os.environ.get(_old)
+    if lv is not None:
+        print(f"[band_projection] [deprecated-switch] {_old}={lv} was honoured. Rename it to "
+              f"{_new} — the old spelling is a compatibility shim and will be removed.")
+        return lv
+    return _default
+
+
+_PROJ_CB_ON = _env_switch("ROUTING_PROJ_PROFILEBLOCK", "ROUTING_PROJ_CELLBLOCK", "1") != "0"
 # 19bz: FLOAT32, OPT-IN. See the module patch note. This is the ONE setting in the projector that
 # changes the answer, so it defaults OFF, it announces itself in the run log, and it measures its
 # own drift on the live scaffold every run instead of quoting a remembered figure.
@@ -892,19 +680,9 @@ _PROJ_CB_ON = True
 #   * [proj-config] prints the measured drift rather than a remembered figure,
 #   * RECONCILIATION ERROR is the end-to-end proof, exactly as it was for 19fs: delivery is an
 #     untouched float64 path, so if float32 moved anything that matters it stops reading 0.
-# Reconciliation reads about the drift rather than 0 as a RESULT of this setting, which is why
-# the self-check's measured Σ|Δ| is printed beside it every run.
-# 19iu: ROUTING_PROJ_FLOAT32 IS GONE and float32 is unconditional. It was a switch because
-# the drift it introduces was ACCEPTED rather than free, and the way back existed to prove the
-# drift was the only difference. It has been default-on since 19gt, the per-run self-check below
-# measures the drift against the float64 kernel on THIS run's scaffold every time, and that
-# measurement - not the switch - is what makes the setting safe to keep.
-#
-# WHAT IS LOST, stated rather than discovered later: a float64 run was the only way to read
-# RECONCILIATION ERROR without this drift in it, so the ~9.5-unit float32 noise floor can no
-# longer be removed by flipping a variable. The self-check's own Σ|Δ| across the bands is the
-# replacement measure of that floor, and it is printed by [proj-config] every run.
-_PROJ_F32 = True
+# If reconciliation is non-zero on the next run, set ROUTING_PROJ_FLOAT32=0 and re-run before
+# reading anything else — that is the first thing to rule out.
+_PROJ_F32 = os.environ.get("ROUTING_PROJ_FLOAT32", "1") != "0"
 _F32_OK = {"use": _PROJ_F32, "said": False, "dv": None, "dt": None}
 # `use` is flipped off for the process by the live self-check. `sweeps` is the water-fill sweep
 # high-water mark: the ONE case where per-profile convergence could differ from the shipped kernel's
@@ -1041,19 +819,10 @@ _BUILD_NOTES = []
 # switch because half of it is not a smaller step, it is a wrong one.
 _SFLOOR_ON = os.environ.get("ROUTING_PROJ_SFLOOR", "0") != "0"
 _SFLOOR_FACT = {"armed": bool(_SFLOOR_ON), "applied": False, "floor": 0.0, "rows": 0}
-# FROZEN-SCAFFOLD LIFT. ON by default since 2026-08-19ae. The unlifted path is the SAME BODY
-# with arange() index arrays - a true revert, not a similar path - which is why `lift_ab_report`
-# can still measure against it.
-# 19jx: ROUTING_PROJ_LIFT IS GONE. The frozen-scaffold lift is unconditional.
-#
-# Default ON since 19ae, and the passes it skips are provable no-ops - `psum += 0.0` is exact,
-# and everything downstream of it is guarded on `psum > 0`. `[lift-ab]` re-proves the outputs
-# bit-identical on the live scaffold every run and shouts if they ever differ.
-#
-# STILL A MUTABLE MODULE GLOBAL, deliberately: `lift_ab_report` toggles it around its OFF arm
-# and restores it, which is how the unlifted index arrays are still reachable. Making it a
-# literal True would delete the measurement that justifies it.
-_PROJ_LIFT_ON = True
+# FROZEN-SCAFFOLD LIFT switch. ON by default as of 2026-08-19ae; ROUTING_PROJ_LIFT=0 restores the
+# full-range kernel, which is the same body with arange() index arrays — a true revert, not a
+# similar path.
+_PROJ_LIFT_ON = os.environ.get("ROUTING_PROJ_LIFT", "1") != "0"
 
 # CHUNKED-PARALLEL PROJECTION (2026-08-19az). ON by default. When P exceeds the lane cap, split the
 # candidate range into cap-sized parallel calls instead of declining to the serial kernel — the
@@ -1109,17 +878,12 @@ def proj_config():
     _f32_eff = bool(_F32_OK.get("use"))
     _f32_word = ("ON \u2014 this run's answer is NOT exact" if _f32_eff
                  else "off (float64, exact)")
-    out = ["PROJECTOR CONFIGURATION (stated every run, whether or not anything is unusual)",
-           " ",
-           " " + f"{'setting':<24}value",
-           " " + "-" * 62,
-           " " + f"{'profile-blocked kernel':<24}" + ("ON" if _cb_eff else "OFF"),
-           " " + f"{'float32':<24}" + _f32_word,
-           " " + f"{'lane cap':<24}" + str(_PROJ_LANE_CAP),
-           " " + f"{'chunking':<24}" + ("ON" if _PROJ_CHUNK_ON else "off"),
-           " " + f"{'candidate-parallel':<24}" + ("ON" if _PROJ_PAR_ON else "off"),
-           " " + "-" * 62,
-           " "]
+    out = ["PROJECTOR CONFIGURATION (stated every run, whether or not anything is unusual): "
+           "profile-blocked kernel " + ("ON" if _cb_eff else "OFF")
+           + " \u00b7 float32 " + _f32_word
+           + " \u00b7 lane cap " + str(_PROJ_LANE_CAP)
+           + " \u00b7 chunking " + ("ON" if _PROJ_CHUNK_ON else "off")
+           + " \u00b7 candidate-parallel " + ("ON" if _PROJ_PAR_ON else "off") + "."]
 
     # REQUESTED vs IN EFFECT — a different sentence, because only one of the two is a bug.
     if _PROJ_CB_ON and not _cb_eff:
@@ -1135,10 +899,9 @@ def proj_config():
     # THE ENVIRONMENT NOW vs WHAT THE MODULE READ AT IMPORT. These switches are read once, at
     # import. Setting one after the app has started does nothing at all, and there was no way to
     # see that from the log.
-    # 19jx: ROUTING_PROJ_PROFILEBLOCK dropped from this list because the switch no longer
-    # exists. A line telling someone their env var was read at import, for a var nothing reads,
-    # is the same fault 19ju removed three of.
-    for _nm, _im in (("ROUTING_PROJ_CHUNK", _PROJ_CHUNK_ON),
+    for _nm, _im in (("ROUTING_PROJ_FLOAT32", _PROJ_F32),
+                     ("ROUTING_PROJ_PROFILEBLOCK", _PROJ_CB_ON),
+                     ("ROUTING_PROJ_CHUNK", _PROJ_CHUNK_ON),
                      ("ROUTING_PROJ_PARALLEL", _PROJ_PAR_ON)):
         _raw = os.environ.get(_nm)
         _dflt = True                                   # 19gt: every projector switch defaults ON
@@ -1152,10 +915,10 @@ def proj_config():
                        "nothing \u2014 quit the app fully and relaunch it.")
 
     if not _PROJ_F32:
-        # 19iu: unreachable - `_PROJ_F32` is a constant True now. Kept so the branch below
-        # still reads as a pair, and so a future re-introduction has somewhere to land.
-        out.append("float32 is OFF in this process. The projector is running the exact float64 "
-                   "path \u2014 correct, and paying roughly double the memory traffic.")
+        out.append("float32 is OFF because ROUTING_PROJ_FLOAT32=0 is set in this process. It "
+                   "defaults ON since 19gt, so something set it: `routing.env` is read by "
+                   "run.command AT LAUNCH only. The projector is running the exact float64 path "
+                   "\u2014 correct, and paying roughly double the memory traffic.")
 
     # 19ch: THE PATH ACTUALLY TAKEN, recorded rather than derived. [kernel-ab] restates the
     # dispatch rule to describe the live path; on 2026-08-25 19:14 its answer and [proj-par]'s
@@ -1166,23 +929,19 @@ def proj_config():
                    "not been called since the last reset. If the search has finished, that is "
                    "itself the finding.")
     else:
-        out.append("PATHS TAKEN this run, RECORDED at dispatch rather than derived from the "
-                   "dispatch rule: "
-                   + format(int(_PROJ_PATH.get("calls", 0)), ",") + " call(s) over "
-                   + str(len(_seen)) + " path(s), lane cap "
+        out.append("projection PATHS TAKEN this run, RECORDED at dispatch (not derived from the "
+                   "rule \u2014 compare with what [kernel-ab] says the live path is; they "
+                   "disagreed on 2026-08-25 19:14 and nothing could settle it): "
+                   + str(int(_PROJ_PATH.get("calls", 0))) + " call(s) over "
+                   + str(len(_seen)) + " distinct path(s), cap "
                    + str(int(_PROJ_PATH.get("cap", _PROJ_LANE_CAP))) + ", numba threads "
-                   + str(int(_PROJ_PATH.get("nthr", 0))))
-        out.append(" ")
-        out.append(" " + f"{'kernel':<18}{'P':>5}{'mode':>21}{'lanes':>7}{'nlane':>7}"
-                         f"{'calls':>9}")
-        out.append(" " + "-" * 68)
+                   + str(int(_PROJ_PATH.get("nthr", 0))) + ".")
         for _k, _n in sorted(_seen.items(), key=lambda kv: (-kv[1], str(kv[0]))):
-            _mode = ("CHUNKED" if _k[3] else
-                     ("candidate-parallel" if _k[2] else "serial"))
-            out.append(" " + f"{str(_k[0]):<18}{str(_k[1]):>5}{_mode:>21}"
-                             f"{str(_k[4]):>7}{str(_k[5]):>7}{format(_n, ','):>9}")
-        out.append(" " + "-" * 68)
-        out.append(" ")
+            out.append("   " + _k[0] + " \u00b7 P=" + str(_k[1])
+                       + " \u00b7 " + ("CHUNKED" if _k[3] else
+                                        ("candidate-parallel" if _k[2] else "serial"))
+                       + " \u00b7 lanes=" + str(_k[4]) + " \u00b7 nlane=" + str(_k[5])
+                       + "  \u2014 " + format(_n, ",") + " call(s)")
 
     # WHAT IS ACTUALLY VERIFIED, as opposed to merely switched on.
     if _cb_eff:
@@ -1226,26 +985,17 @@ def proj_config():
         # is the line that says so.
         for _m in ([_F32_OK["live"]] if isinstance(_F32_OK.get("live"), dict) else _seen):
             out.append("float32 drift at P=" + str(_m["at_P"])
-                       + (" (THE LIVE SEARCH WIDTH)" if _m is _F32_OK.get("live")
-                          else " (the first projection's width)")
-                       + ", measured against the float64 kernel on this run's own scaffold")
-            out.append(" ")
-            # 19iv: the prefix is a NAME, not an inline literal - an f-string expression
-            # part cannot contain a backslash on this Python, which is how the first attempt
-            # at this table went out with `SG`/`DL` (patch-script locals) baked into it and
-            # took the whole [proj-config] block down with a NameError.
-            _sgdl = "\u03a3|\u0394| "
-            out.append(" " + f"{'metric':<8}{'worst single band':>22}{'band column':>14}"
-                             f"{'across all bands':>20}")
-            out.append(" " + "-" * 64)
-            out.append(" " + f"{'vamp':<8}{format(_m['dv'], '.4g'):>22}"
-                             f"{str(_m['dv_band'] + 1) + ' of ' + str(_m['nb']):>14}"
-                             f"{_sgdl + format(_m['dv_sum'], '.4g'):>20}")
-            out.append(" " + f"{'txn':<8}{format(_m['dt'], '.4g'):>22}"
-                             f"{str(_m['dt_band'] + 1) + ' of ' + str(_m['nb']):>14}"
-                             f"{_sgdl + format(_m['dt_sum'], '.4g'):>20}")
-            out.append(" " + "-" * 64)
-            out.append(" ")
+                       + ("  (THE LIVE SEARCH WIDTH)" if _m is _F32_OK.get("live")
+                          else "  (the first projection's width)")
+                       + ": WORST SINGLE BAND max|\u0394vamp| " + format(_m["dv"], ".4g")
+                       + " on band column " + str(_m["dv_band"] + 1) + " of " + str(_m["nb"])
+                       + ", max|\u0394txn| " + format(_m["dt"], ".4g")
+                       + " on band column " + str(_m["dt_band"] + 1)
+                       + ". ACROSS ALL " + str(_m["nb"]) + " BANDS (same candidate): "
+                       + "\u03a3|\u0394vamp| " + format(_m["dv_sum"], ".4g") + " over "
+                       + str(_m["dv_nover"]) + " band(s), \u03a3|\u0394txn| "
+                       + format(_m["dt_sum"], ".4g") + " over " + str(_m["dt_nover"])
+                       + " band(s).")
         if _F32_OK.get("live") is False:
             out.append("float32 drift could not be re-measured at the live width this run "
                        "(see [proj-par]); the figure above is the first projection's, at its own "
@@ -1307,22 +1057,6 @@ def proj_new_run():
     _F32_OK["dt"] = None
     _F32_OK["said"] = False
     _CB_OK["checked"] = False
-    # 19jr: AND THE 19jp STASH FACTS. They were not here, so in a warm Streamlit process the
-    # [stash-q] A/B accumulated across RUNS: the 2026-09-04 09:51 log reported 422 ON and 422 OFF
-    # call(s) against a run that dispatched 378 projections in total, i.e. most of what it counted
-    # belonged to an earlier run on a differently-loaded machine. That is precisely the bug this
-    # function exists to prevent - see the float32 drift in the docstring above, which printed the
-    # previous run's figure to four decimals.
-    #
-    # 19jv retired the A/B, so the timing counters are gone; what is left still has to be per-run,
-    # because the SELF-CHECK is the thing that must re-run on each run's own scaffold.
-    #
-    # `ok` is NOT cleared, on the same rule as _CB_OK["use"]: a path disabled for cause stays
-    # disabled for the process. `checked` IS cleared, so the bit-identity self-check re-runs on
-    # THIS run's scaffold rather than resting on the last one's.
-    if _STASH_FACT.get("ok") is not False:
-        _STASH_FACT["checked"] = False
-    _STASH_FACT.update(armed=False, nA=0, bytes=0, dtype="", lanes=0)
     _PROJ_PATH.clear()
     _PROJ_PATH.update({"seen": {}, "calls": 0})
     _PROJ_PAR_SAID.clear()
@@ -1579,121 +1313,6 @@ def _grp_codes(df, cols):
             return None
         key = key * _k + _c2
     return pd.factorize(key, use_na_sentinel=False)[0]
-
-
-# ── 19jb: THE OTHER HALF OF THE INT-KEY TRICK ────────────────────────────────────────────────
-# `_grp_codes` above answers "which rows of THIS frame share a tuple". The three functions
-# below answer the other half - "which row of frame A carries the same tuple as this row of
-# frame B" - which is what every `.set_index([...]).to_dict()` + `.get(tuple)` and every
-# `a + "|" + b + ...` join key in tab_2's scaffold build is really asking. [cap-timing] put
-# those at 39.9s of a 51.7s table: a tuple-keyed dict pays a Python tuple construction and a
-# hash per row, and a 7-part string key pays a ~60-character concatenation per row before
-# pandas starts hashing. An int64 key pays neither.
-#
-# NOTHING DOWNSTREAM NEEDS A BIT-IDENTITY ARGUMENT, and that is the point. The key decides
-# only WHICH source row a destination row reads; the value it then reads is the same float,
-# gathered instead of hashed. No arithmetic changes and no float sum is reassociated - the
-# difference between this and re-labelling a groupby, which does need the argument.
-def joint_col_codes(frames, cols, *, stringify=False, sep=None):
-    """Per-column integer codes for several frames at once, COMPARABLE ACROSS THEM.
-
-    `frames` is a list of mappings (DataFrames or plain dicts of arrays) each providing every
-    name in `cols`; a mapping rather than a frame is what lets one table's `_per` line up with
-    another's `_om`. Returns `(percol, rads, lens)` - `percol[i][j]` the int64 codes of frame
-    i, column `cols[j]`; `rads[j]` the number of distinct values of that column over ALL the
-    frames; `lens[i]` each frame's row count. None when it cannot promise the identity below.
-
-    THE PROMISE. Two rows - in the same frame or in different ones - get the same code in
-    column j IFF their values there are equal (`stringify=False`, which is TUPLE equality,
-    what `set_index(...).to_dict()` uses) or stringify alike (`stringify=True`, what a
-    `"|"`-join uses, where int 403163 and str "403163" are one key). A caller replacing a
-    join should also pass `sep="|"`: a value CONTAINING the separator makes that join
-    ambiguous and MERGES tuples this does not, so this declines rather than quietly fixing
-    what ships.
-
-    Each frame's RAW values are factorized first (cheap - a categorical column is already
-    codes), only the UNIQUES are stringified when asked, and the CONCATENATED uniques are
-    re-factorized so every frame's codes land in one shared namespace.
-
-    A column holding nulls takes an exact per-column `astype(str)`, because pd.factorize
-    collapses None and NaN into ONE missing value while `astype(str)` renders them "None" and
-    "nan" - the trap `_grp_codes` documents.
-    """
-    if not frames:
-        return [], [], []
-    lens = [int(len(np.asarray(pd.Series(_f[cols[0]])))) for _f in frames] if cols else \
-        [0 for _f in frames]
-    percol = [[] for _ in frames]
-    rads = []
-    for _c in cols:
-        _raw, _uniq = [], []
-        for _f in frames:
-            _col = pd.Series(np.asarray(_f[_c]))
-            if stringify or bool(_col.isna().any()):
-                _sc, _su = pd.factorize(_col.astype(str), use_na_sentinel=False)
-            else:
-                _sc, _su = pd.factorize(_col, use_na_sentinel=False)
-            _raw.append(np.asarray(_sc, np.int64))
-            _uniq.append(np.asarray(_su, object))
-        _allu = np.concatenate(_uniq) if _uniq else np.zeros(0, object)
-        if sep is not None and any(str(sep) in str(_x) for _x in _allu):
-            return None
-        _g, _gu = pd.factorize(pd.Series(_allu), use_na_sentinel=False)
-        _g = np.asarray(_g, np.int64)
-        _off = 0
-        for _i, _u in enumerate(_uniq):
-            _m = _g[_off:_off + _u.size]
-            _off += _u.size
-            percol[_i].append(_m[_raw[_i]] if _raw[_i].size else np.zeros(0, np.int64))
-        rads.append(max(int(_gu.size), 1))
-    return percol, rads, lens
-
-
-def mix_codes(parts, rads, n=None):
-    """Mixed-radix combine per-column codes into ONE int64 key. None on overflow past 2**62.
-
-    `parts[j]` must already be in 0 .. rads[j]-1 - `joint_col_codes` guarantees that, and an
-    integer column can be offset by its own minimum to join in. The combination is a bijection
-    on the code tuples, so two rows share a key IFF they share every code."""
-    _tot = 1
-    for _k in rads:
-        _k = int(_k)
-        if _k < 1 or _tot > (2 ** 62) // _k:
-            return None
-        _tot *= _k
-    _n = int(n if n is not None else (len(parts[0]) if parts else 0))
-    _key = np.zeros(_n, np.int64)
-    for _p, _k in zip(parts, rads):
-        _key = _key * int(_k) + np.asarray(_p, np.int64)
-    return _key
-
-
-def joint_lookup(src_key, src_val, dst_key, *, default=0.0, keep="last"):
-    """`{k: v for k, v in zip(src_key, src_val)}` then `[m.get(k, default) for k in dst_key]`,
-    without the Python loop.
-
-    `keep` says which source row wins a duplicate key, and it is not a detail: a dict built by
-    `set_index(...).to_dict()` keeps the LAST, while a `drop_duplicates()` before it keeps the
-    FIRST. Both patterns are in tab_2's scaffold build, so both are spelled out here rather
-    than assumed.
-
-    Values are GATHERED, never combined, so the result is bit-identical to the dict version
-    wherever the two keys induce the same equivalence - which is `joint_col_codes`' promise.
-
-    MISSING IS NOT NaN. `reindex(...).fillna(default)` would also overwrite a value that IS
-    NaN in the source, which the dict version returns untouched. So the miss is taken from the
-    INDEXER, not from the value."""
-    _sv = np.asarray(src_val)
-    _s = pd.Series(np.arange(_sv.shape[0]), index=np.asarray(src_key, np.int64))
-    _s = _s[~_s.index.duplicated(keep=keep)]
-    _pos = _s.index.get_indexer(np.asarray(dst_key, np.int64))
-    _src_pos = _s.to_numpy()
-    _out = np.full(int(np.asarray(dst_key).shape[0]), default,
-                   dtype=np.result_type(_sv.dtype, np.asarray(default).dtype))
-    _hit = _pos >= 0
-    if _hit.any():
-        _out[_hit] = _sv[_src_pos[_pos[_hit]]]
-    return _out
 
 
 # [FN-012]
@@ -1956,212 +1575,34 @@ def lift_ab_report(proj, reps=3):
     # a reading off it is named as a contaminated measurement instead.
     _impossible = _sp < 1.0 - _floor
     _real = (_sp - 1.0) > _floor
-    # 19jw: the numbers, the bar, the verdict. Dropped: why interleaving shares the drift
-    # (that is how the measurement is built, not a result), and that the ratio scales with
-    # candidate width (true of every per-candidate figure in this log). The two BAD verdicts
-    # keep every word - an impossible ratio and a bit-identity failure are the only outcomes
-    # here that need someone to do something.
-    _pnote(f"[lift-ab] frozen-scaffold LIFT at P={_P}: ON {ms_on:.1f} ms/call vs OFF "
-           f"{ms_off:.1f} ms/call = {_sp:.3f}x ({(ms_off - ms_on):+.1f} ms), best of {_rounds} "
-           f"interleaved round(s). Noise bar {_floor:.1%} (within-arm spread on identical code). "
-           + (f"The +{_sp - 1.0:.1%} difference CLEARS it - real. " if _real else
+    _pnote(f"[lift-ab] frozen-scaffold LIFT measured on THIS run's scaffold at P={_P}: "
+           f"ON {ms_on:.1f} ms/call vs OFF {ms_off:.1f} ms/call ⇒ {_sp:.3f}x "
+           f"({(ms_off - ms_on):+.1f} ms per call; best of {_rounds} INTERLEAVED round(s), "
+           f"ON/OFF/ON/OFF, so machine drift is shared between the arms instead of landing on "
+           f"one). "
+           + (f"MACHINE NOISE on these same rounds: the within-arm spread is {_noise:.1%} "
+              f"(ON {_spr_on:.1%}, OFF {_spr_off:.1%}) - identical code, so that much movement is "
+              f"noise by construction. The bar is therefore {_floor:.1%}, not a fixed 5%. ")
+           + (f"The +{_sp - 1.0:.1%} difference CLEARS it, so this is real. " if _real else
               f"\u26a0 THE MEASUREMENT SAYS THE LIFT MADE IT {1.0 - _sp:.1%} SLOWER, WHICH CANNOT "
               "HAPPEN: it only skips passes that are provable no-ops, and the outputs are checked "
               "bit-identical below, so there is no work it could have added. This is the CLOCK, "
               "not the lift - something else on the machine moved across the rounds. Treat this "
               "run's ratio as UNMEASURED and do not quote it in either direction. "
               if _impossible else
-              f"The {abs(_sp - 1.0):.1%} difference does NOT clear it - this run cannot tell the "
-              "two apart, so treat the ratio as 1.0x and do not quote it. ")
-           + ("Outputs BIT-IDENTICAL."
+              f"The {abs(_sp - 1.0):.1%} difference does NOT clear it \u2014 this run cannot tell "
+              "the two apart, so treat the ratio as 1.0x and do not quote it. ")
+           + ("Outputs are BIT-IDENTICAL (np.array_equal on vamp AND txn), which is the lift's "
+              "whole claim: the passes it skips are provable no-ops. "
               if _same else
               "⚠ OUTPUTS DIFFER between lift ON and lift OFF. The lift is supposed to be "
-              "bit-identical, so this is a DEFECT, not a rounding artefact — report it. 19jx "
-              "deleted the switch, so the revert is `_PROJ_LIFT_ON = False` in the source."))
+              "bit-identical, so this is a DEFECT, not a rounding artefact — ROUTING_PROJ_LIFT=0 "
+              "and report it. ")
+           + "It scales with candidate width, because the flat passes it skips are per-candidate, "
+             "so this number is this run's, not a constant. ROUTING_PROJ_LIFT=0 reverts.")
     return {"P": _P, "ms_on": ms_on, "ms_off": ms_off, "speedup": _sp,
             "identical": _same, "above_floor": _real, "impossible": _impossible,
             "noise": _noise, "floor": _floor, "reps": int(_rounds)}
-
-
-# 19jd: `[proj-inside]` keeps a reference to the last real kernel call so it can replay it.
-# References, not copies - the buffers already belong to the projector and the proposal is the
-# one `[lift-ab]` already holds. ROUTING_PROJ_INSIDE=0 stops the stash and the report with it.
-_PI_ON = os.environ.get("ROUTING_PROJ_INSIDE", "1") != "0"
-
-
-def stashq_report():
-    """`[stash-q]` - what the 19jp stashed quotient did on THIS run. Returns lines; never raises.
-
-    Returns a line in EVERY state, including off and including armed-but-never-run. A switch
-    that prints nothing when it does nothing is indistinguishable from a switch that is wired
-    wrong, and this file has already paid for that once ([lift-ab] printed a skip every run for
-    weeks because of a scope error nobody could see in the log).
-    """
-    try:
-        f = _STASH_FACT
-        if not f.get("armed"):
-            # NOT ARMED is now the interesting case - the stash is unconditional, so this means
-            # something upstream of it did not run. 19jv: there is no OFF branch any more.
-            if not _AGE_RENORM:
-                _why = ("the age renormalise is OFF (ROUTING_AGE_RENORM=0), and that pass is "
-                        "where the quotient is computed - there is nothing to stash")
-            elif f.get("ok") is False:
-                _why = "the self-check failed earlier in this process and disarmed it"
-            else:
-                # 19jx: the switch is gone, so the only way the profile-blocked kernel does
-                # not run is that it DECLINED or its self-check disabled it - both of which say
-                # so on their own lines.
-                _why = ("the profile-blocked kernel never ran (it declined, or its self-check "
-                        "disabled it), or this scaffold has no aged rows")
-            return [f"[stash-q] NOT RUNNING: {_why}. The nA pass re-derived the quotient the "
-                    "age-renormalise pass had already computed, which is correct and slower."]
-        _ok = f.get("ok")
-        if _ok is False:
-            return ["[stash-q] *** SELF-CHECK FAILED - the stash is DISABLED for this process "
-                    "and the ORIGINAL nA pass is what ran"
-                    + (f" ({f.get('why')})" if f.get("why") else
-                       f", {f.get('bad', 0):,} sentinel collision(s)") + ". Report this."]
-        if _ok is not True:
-            return ["[stash-q] NOT YET CHECKED - the stash is armed but has not completed a "
-                    "call, so no result reported here came from it."]
-        # 19jv: ONE LINE on the ordinary path. The switch is gone and the A/B is retired, so what
-        # is left to say is the size of the buffer this run allocated and that the check passed -
-        # both facts about THIS run. The measured 1.561x lives in the source note, not the log:
-        # it cannot be re-measured now that there is no second arm to alternate with.
-        return [f"[stash-q] ON (unconditional since 19jv, measured 1.561x) - "
-                f"{f.get('nA', 0):,} aged row(s) x {f.get('lanes', 0)} lane(s) of "
-                f"{f.get('dtype', '?')} = {f.get('bytes', 0) / 1e6:,.1f} MB of stash. "
-                "SELF-CHECK PASSED on this run's scaffold: bit-identical to the original nA "
-                "pass on vamp and txn, every sentinel valid."]
-    except Exception as _e:                        # noqa: BLE001
-        return [f"[stash-q] NOT REPORTED ({type(_e).__name__}: {_e}) - MEASUREMENT ONLY, the "
-                "run and the projector are unaffected."]
-
-
-def proj_inside_report(proj, reps=3):
-    """WHERE A PROJECTION'S MILLISECONDS GO, measured on this run's own scaffold.
-
-    The projector is 70% of every evaluation and had no per-call breakdown at all - the same
-    blind spot `[cap-timing]` had before 19ja, and for the same reason: nobody could see inside
-    it. `[pbp-inside]` splits the CONSTRUCTOR, which is a one-off 25s; this splits the 486 ms
-    that runs 336 times.
-
-    HOW, and this is what makes it trustworthy. Every row is THE SAME COMPILED KERNEL called
-    with one of its own input arrays truncated to length zero. The kernel's three big loops are
-    `for ci in range(profiles.shape[0])`, `for j in range(cap_rowc.shape[0])` and
-    `for j in range(pc_orgc.shape[0])`, so a zero-length array makes that loop do nothing while
-    every other line is untouched. Nothing is recompiled (same dtype, same ndim, same
-    contiguity), no branch is edited, and no variant is a re-implementation that could drift.
-    The water-fill is switched off the same way, with `cap = 1.0`, because the kernel guards it
-    with `if cap < 1.0` - a scalar of the same dtype, so again no recompile.
-
-    THE OUTPUTS ARE GARBAGE AND ARE DISCARDED. This is a cost measurement, not a projection;
-    the truncated calls compute a wrong answer on purpose. The buffers they write are the
-    per-lane scratch the next real call overwrites anyway, and the frozen slots the lift primes
-    are never in `profiles`, so nothing they touch survives.
-
-    INTERLEAVED, like `[lift-ab]`, and for the reason today's run demonstrated: the machine
-    moved ~30% between two runs of identical code. Rounds are round-robin across the variants so
-    drift is shared, the minimum is the least-contaminated sample, and the within-variant spread
-    is printed as the bar any difference has to clear.
-
-    Returns a dict, or None when there is nothing to measure. Never raises - it is a report.
-    """
-    st = getattr(proj, "_pi_call", None)
-    if st is None:
-        return None
-    try:
-        _k, _pr, _args, _cap, _n, _bufs, _tail = st
-        _A = list(_args)
-        _empty = lambda _i: [(_x[:0] if _i2 in _i else _x) for _i2, _x in enumerate(_A)]
-        _PROF = {5, 6, 7}                      # profiles / cstart / ccnt
-        _TXN = {8, 9, 10, 11, 12}              # cap_rowc / cap_band / cap_c / cap_ctot / cap_base
-        _AGED = {13, 14, 15, 16, 17, 18, 19}   # pc_orgc / vc / pool / band / heldfac / gc / gkc
-        # THE DTYPE OF THE 1.0 MATTERS. `cap` is np.float32 on a float32 run, and passing a
-        # PYTHON float there compiles a SECOND specialisation - measured: 1 signature before,
-        # 2 after. That timing would be a compile, not a water-fill. A zero-length slice of a
-        # C-contiguous array does NOT recompile (measured, serial and parallel).
-        _cap1 = type(_cap)(1.0) if not isinstance(_cap, float) else 1.0
-        _VAR = {
-            "full":     (_A, _cap),
-            "no_aged":  (_empty(_AGED), _cap),
-            "no_txn":   (_empty(_TXN), _cap),
-            "no_prof":  (_empty(_PROF), _cap),
-            "fixed":    (_empty(_PROF | _TXN | _AGED), _cap),
-            "no_wf":    (_A, _cap1),
-        }
-        _ms = {_kk: [] for _kk in _VAR}
-
-        def _one(_a, _c):
-            _k(_pr, *_a, _c, _n, *_bufs, *_tail)          # settle / re-prime the caches
-            _t0 = _time_mod.perf_counter()
-            _k(_pr, *_a, _c, _n, *_bufs, *_tail)
-            return (_time_mod.perf_counter() - _t0) * 1e3
-
-        _rounds = max(2, int(reps))
-        for _r in range(_rounds):
-            for _kk, (_a, _c) in _VAR.items():
-                _ms[_kk].append(_one(_a, _c))
-        _t = {_kk: min(_v) for _kk, _v in _ms.items()}
-        _spread = max((max(_v) - min(_v)) / max(min(_v), 1e-9) for _v in _ms.values())
-    except Exception as _e:                     # noqa: BLE001 - a report must not break a run
-        _pnote(f"[proj-inside] NOT MEASURED ({type(_e).__name__}: {_e}) - MEASUREMENT ONLY, the "
-               "run and the projector are unaffected.")
-        return None
-    finally:
-        proj._pi_call = None
-        # the truncated calls left the per-lane scratch holding a wrong answer; force the lift
-        # to re-prime so the next real projection cannot read any of it.
-        proj._lift_primed = None
-
-    _full = _t["full"]
-    _rows = [("profile loop: proposals, per-row shares, vpsum",
-              _full - _t["no_prof"], int(_args[6].shape[0]), "profile(s)"),
-             ("   of which the max-share water-fill", _full - _t["no_wf"], -1, ""),
-             ("nA: aged VAMP accumulation + the age renormalise",
-              _full - _t["no_aged"], int(_args[13].shape[0]), "aged row(s)"),
-             ("nC: t0 TXN accumulation", _full - _t["no_txn"], int(_args[8].shape[0]),
-              "t0 row(s)"),
-             ("fixed: entry, buffer zeroing, the per-band constant",
-              _t["fixed"], -1, "")]
-    # the water-fill is INSIDE the profile loop, so it is a sub-row and must not be summed twice
-    _sum = sum(_v for _l, _v, _c, _u in _rows if not _l.startswith("   "))
-    # 19jg: the table is RETURNED for the caller to log, NOT pushed through `_pnote`.
-    # `_pnote` queues into _PROJ_PAR_NOTES, which tab_2 drains under a "[proj-par]" prefix, so
-    # every row of the 19jd table came out as `[proj-par]    nA: aged VAMP ...`. The error
-    # paths above keep _pnote: they are one line each and start with their own tag, which the
-    # drain leaves alone.
-    _out = []
-    _out.append("")
-    _out.append(f"[proj-inside] WHERE A PROJECTION'S {_full:,.1f} ms GOES, measured on THIS "
-                f"run's own scaffold at P={_n} (best of {_rounds} INTERLEAVED round(s))")
-    _out.append("")
-    _out.append(f"   {'phase':<52}{'ms/call':>10}{'share':>8}   what it walks")
-    _out.append(f"   {'-' * 52}{'-' * 10}{'-' * 8}   {'-' * 24}")
-    for _l, _v, _c, _u in _rows:
-        _out.append(f"   {_l[:52]:<52}{_v:>8.1f}ms{100.0 * _v / max(_full, 1e-9):>7.1f}%   "
-                    + (f"{_c:,} {_u}" if _c >= 0 else ""))
-    _out.append(f"   {'-' * 52}{'-' * 10}{'-' * 8}   {'-' * 24}")
-    _out.append(f"   {'TOTAL of the four phases':<52}{_sum:>8.1f}ms"
-                f"{100.0 * _sum / max(_full, 1e-9):>7.1f}%")
-    _out.append(f"   {'residual (a phase costs less alone than in company)':<52}"
-                f"{_full - _sum:>8.1f}ms{100.0 * (_full - _sum) / max(_full, 1e-9):>7.1f}%")
-    _out.append("")
-    _out.append(f"      MACHINE NOISE on these rounds: the worst within-variant spread is "
-                f"{_spread:.1%} - the same code timed twice - so a row smaller than that is "
-                "not separable from the clock. The residual is not an error: the phases share "
-                "memory bandwidth and a cache, so removing one makes the others cheaper than "
-                "they are together, and a large residual means the kernel is bandwidth-bound "
-                "rather than that a phase is missing.")
-    _out.append("      EVERY ROW IS THE SAME COMPILED KERNEL with one of its own input arrays "
-                "truncated to zero length, so no code path changed and nothing was recompiled. "
-                "The answers those calls produce are wrong on purpose and are discarded. "
-                "ROUTING_PROJ_INSIDE=0 skips the whole block.")
-    for _l in _out:
-        print("[band_projection] " + _l if _l else "[band_projection]")
-    return {"P": int(_n), "full_ms": float(_full), "spread": float(_spread),
-            "phases": {_l: float(_v) for _l, _v, _c, _u in _rows},
-            "residual_ms": float(_full - _sum), "lines": _out}
 
 
 # [FN-015]
@@ -2571,19 +2012,27 @@ class PopulationBandProjector:
                 self._ef_delivery_like = _ef_dl
                 _mm = int(np.count_nonzero(_ef_dl != self._ef_ok))
                 self._ef_mismatch = _mm
-                # 19iw: ONE LINE, and only the half that is still a fact about THIS run.
-                # What went: the comparison against `_ef_dl`, a vampMid-only reconstruction of
-                # the mask delivery used BEFORE 19ht. That is not the mask delivery uses now,
-                # so its 89,955-row difference is the size of the over-blocking the OLD test
-                # would cause - permanent history, and 19iu wrongly gated a ⚠ on it being 0.
-                # What stays: how many rows the floor would actually reach, which is a live
-                # number that moves with the book. The comparison is still computed and both
-                # halves are stashed (`_ef_delivery_like`, `_ef_mismatch`).
                 if self._efloor > 0.0:
-                    _bnote(f"[ef-mask] exploration floor {self._efloor:.2%} carried into the "
-                           f"projector (stored, not applied): "
-                           f"{int(self._ef_ok.sum()):,} of {len(self._ef_ok):,} scaffold row(s) "
-                           "are floor-eligible.")
+                    _bnote(
+                        f"[ef-mask] exploration floor {self._efloor:.2%} carried into the "
+                        f"projector (STEP 1: stored, not applied). Floor-eligible rows: "
+                        f"{int(self._ef_ok.sum()):,} of {len(self._ef_ok):,} by the SEARCH's "
+                        f"(vampMid, currency)-grain capability mask, "
+                        f"{int(_ef_dl.sum()):,} by DELIVERY's coarser vampMid-only mask — "
+                        f"{_mm:,} row(s) differ."
+                        + (" ZERO disagreement, so the two eligibility sets are the same set on "
+                           "this data and the grain difference is harmless here."
+                           if _mm == 0 else
+                           " READ THIS AS HISTORY, NOT AS A DECISION (19hu). Since 19ht DELIVERY "
+                           "IS ON THE SAME (vampMid, currency) grain as the search by default, "
+                           "and build_split_exports has been finer still - fid-grain - since "
+                           "2026-08-17, so the search-vs-delivery disagreement on this axis is 0 "
+                           "by construction and [emask-grain] above says so. The count here is "
+                           "what the OLD coarse vampMid-only test would have disagreed by, which "
+                           "is worth keeping as the size of the over-blocking that was removed. "
+                           "19ip deleted the switch that could put delivery back on the coarse "
+                           "test, so this number is history for good and cannot become a live "
+                           "gap again."))
             elif self._efloor > 0.0:
                 _bnote(f"[ef-mask] exploration floor {self._efloor:.2%} carried into the "
                        f"projector (STEP 1: stored, not applied). Floor-eligible rows: "
@@ -2652,7 +2101,6 @@ class PopulationBandProjector:
         _ofull = pc_to_t0[pc_keep]
         self._pc_org = np.where(_ofull >= 0, full2red[np.where(_ofull >= 0, _ofull, 0)], -1)
         pc_mid_k = pc_mid[pc_keep]; pc_per_k = pc_per[pc_keep]
-        _pbp_mark("  reduced Pc: slice the banded aged rows + remap origin")
 
         # ---- APPEARANCE-MONTH TIMING (#3 scored==delivered) -------------------------------------
         # The tab-3 DELIVERED projection (compute_vamp_prepost_granular) applies the go-live pro_rata
@@ -2720,7 +2168,6 @@ class PopulationBandProjector:
                            + Pc["per"].astype(str)).to_numpy()[pc_keep]
         self._pc_prapp = (_pr_by_profile.reindex(_pc_profilekey).fillna(0.0).to_numpy(float)
                           if len(pc_keep) else np.zeros(0, float))
-        _pbp_mark("  reduced Pc: appearance pro_rata per aged row (the reindex)")
 
         # 19cx — the AGED GROUP: (profile, APPEARANCE period, age). This is delivery's `_gk`
         # (_sub + ["period", "t"]) and NOT the origin key above — the renormalise is taken across
@@ -2782,20 +2229,6 @@ class PopulationBandProjector:
                 _codes, _uniq = pd.factorize(_gk_key)
                 self._pc_gk = _codes.astype(np.int64)
                 self._n_gk = int(len(_uniq))
-            # 19jn: how much the slot-wise clear is worth, stated rather than assumed. The old
-            # loop wrote once per AGED ROW to clear an accumulator with one slot per GROUP, so
-            # the saving is exactly the difference between these two numbers, once per candidate.
-            try:
-                _gz_n = int(getattr(self, "_n_gk", 0) or 0)
-                _gz_a = int(np.asarray(getattr(self, "_pc_gk", ())).size)
-                if _gz_a:
-                    _bnote(f"[gks-zero] the age-renormalise accumulator is cleared per SLOT now, "
-                           f"not per row: {_gz_n:,} group slot(s) against {_gz_a:,} aged row(s) "
-                           f"({100.0 * _gz_n / max(_gz_a, 1):.0f}%). That is one of the nA phase's "
-                           "three passes, and [proj-inside] puts nA at about half a projection. "
-                           "Bit-identical: the extra slots it clears are slots nothing reads.")
-            except Exception:  # noqa: BLE001 - a note must never break a build
-                pass
             # 19dl — RETAIN THE KEY STRINGS. Diagnostic only; nothing in the kernels reads this.
             # `_pc_gk` is a factorised CODE, so a group can be counted but never NAMED, and the
             # passthrough-disagreement dump in [vterms-is] needs to print which (profile, period, t)
@@ -2808,7 +2241,7 @@ class PopulationBandProjector:
             self._pc_gk_keys = np.zeros(0, dtype=object)
 
         # band order + per-band groupings (vectorised map to band index)
-        _pbp_mark("  reduced Pc: the aged-group key + its distinct-group names")
+        _pbp_mark("reduced Pc (aged rows, origin remap)")
         self.band_order = sorted(bandset)
         self._B = len(self.band_order)
         _bpos = {b: k for k, b in enumerate(self.band_order)}
@@ -2857,22 +2290,14 @@ class PopulationBandProjector:
                     _tag = (f"  ⚠ EXPECTED ~{_after:.1f}s at this row count (was ~{_before:.1f}s) — "
                             "this step did NOT speed up: the fast path declined (a value containing "
                             "'|', or a radix overflow), or this module is stale")
-                # 19ix: the ✓ half is gone. "this step is as fast as 19fy/19fz made it" was
-                # true on every run for weeks, so the column was a tick beside four of ten rows
-                # and blank beside the rest. The ⚠ stays: a step that did NOT speed up is the
-                # only thing the comparison can tell anyone, and it is still computed for all
-                # four - the guard is intact, it just says nothing when there is nothing wrong.
-            _lines.append(f"{str(_lbl)[:56]:<56}{_d:>7.1f}s"
-                          f"{100.0 * _d / max(_pbp_tot, 1e-9):>7.1f}%"
-                          + (f"   {_tag.strip()}" if _tag.strip() else ""))
+                else:
+                    _tag = f"  ✓ vs ~{_before:.1f}s before 19fy/19fz, scaled to this run's rows"
+            _lines.append(f"{_d:8.1f}s  ({100.0 * _d / max(_pbp_tot, 1e-9):5.1f}%)  {_lbl}{_tag}")
         _bnote("[pbp-inside] PopulationBandProjector.__init__ = "
-               f"{_pbp_tot:.1f}s, largest first (these SUM to the constructor, no residual)"
-               + "\n"
-               + "\n      " + f"{'step':<56}{'time':>8}{'share':>7}"
-               + "\n      " + "-" * 71
-               + "\n      " + "\n      ".join(_lines)
-               + "\n      " + "-" * 71
-               + "\n")
+               f"{_pbp_tot:.1f}s, largest first (these SUM to the constructor, no residual):\n      "
+               + "\n      ".join(_lines)
+               + "\n      Ordered largest-first, not in execution order — the point is which step "
+                 "to attack next. A ⚠ above is the answer to 'why did [band-setup] not fall'.")
 
     # [FN-020]
     def project_pop_from_props(self, props):
@@ -3003,53 +2428,41 @@ class PopulationBandProjector:
                 _vconst)                                              # vconst (19cz)
             self._ix32 = dict(_ixs)
             _n_nar = int(_ixs.get("narrowed", 0)); _n_ref = int(_ixs.get("refused", 0))
-            # 19iu: the index-width line is gone. It said "N arrays narrowed, largest index
-            # 0.09% of the int32 ceiling, ample margin, values unchanged" on every run since
-            # 19bi. An index that does NOT fit is refused at `_ix32` and left int64, so the
-            # only news here would be a refusal - which is what this now prints, and only then.
-            if _n_ref:
-                _bnote(f"index width: {_n_ref} array(s) DID NOT FIT int32 and were left at "
-                       f"int64 (correct, not a failure). Largest index "
-                       f"{_ixs.get('hi', 0):,} against the {_I32_MAX:,} ceiling. Values are "
-                       "unchanged either way, so the projection is bit-identical; only the "
-                       "bytes moved per index change.")
+            _bnote(f"index width: {_n_nar} array(s) narrowed to int32, "
+                  f"{_n_ref} kept at int64. Largest index {_ixs.get('hi', 0):,} of the "
+                  f"{_I32_MAX:,} int32 ceiling "
+                  f"({_ixs.get('hi', 0) / _I32_MAX:.4%} of it) — "
+                  + ("ample margin. " if _n_ref == 0 else
+                     "SOME ARRAY DID NOT FIT and was left int64 (correct, not a failure). ")
+                  + "Values are unchanged, so the projection is bit-identical; only the bytes "
+                    "moved per index change. Adopted 19bi from [kernel-ab] variant G.")
             _h = self._nb_hoist
-            # 19iu: a table. The three classes and their two totals were embedded in a
-            # paragraph that then explained what each class means and what to read it against;
-            # the classes keep a short gloss each, the reading instructions go.
-            _hb_tot = max(_h["total"], 1)
-            _bnote("aged-row hoist (19cz/19dd/19fs): banded aged rows that are "
-                   "CANDIDATE-INDEPENDENT, summed once into a per-band constant and dropped "
-                   "from the per-candidate loop"
-                   + "\n"
-                   + "\n      " + f"{'class':<16}{'rows':>12}{'share':>8}   what it is"
-                   + "\n      " + "-" * 96
-                   + "\n      " + f"{'no-origin':<16}{_h['no_origin']:>12,}"
-                   + f"{100.0 * _h['no_origin'] / _hb_tot:>7.1f}%   cohorts whose transactions "
-                     "predate the split"
-                   + "\n      " + f"{'zero-pool':<16}{_h['zero_pool']:>12,}"
-                   + f"{100.0 * _h['zero_pool'] / _hb_tot:>7.1f}%   layers with nothing movable "
-                     "(all FCP 2+ retries, or no fraud at that age)"
-                   + "\n      " + f"{'frozen-origin':<16}{_h['frozen']:>12,}"
-                   + f"{100.0 * _h['frozen'] / _hb_tot:>7.1f}%   origin profile is frozen, so "
-                     "psum is 0 there for every candidate"
-                   + "\n      " + "-" * 96
-                   + "\n      " + f"{'hoisted':<16}{_h['static']:>12,}"
-                   + f"{100.0 * _h['static'] / _hb_tot:>7.1f}%"
-                   + "\n      " + f"{'still live':<16}{_h['live']:>12,}"
-                   + f"{100.0 * _h['live'] / _hb_tot:>7.1f}%"
-                   + "\n      " + f"{'total':<16}{_h['total']:>12,}{100.0:>7.1f}%"
-                   + "\n")
-            # 19jw: SILENT WHEN IT APPLIES. The table directly above already carries the
-            # count on its `frozen-origin` row, and "summed once instead of per candidate" is
-            # what the whole table is about - the line restated a number and a design. What is
-            # left is the case that can go WRONG, and it stays loud.
-            if not _h["frozen_known"]:
-                _bnote(f"[vconst-frozen] NOT APPLIED - {_h['frozen']:,} frozen-origin aged "
-                       "row(s) could not be identified: the GA incidence had not reached the "
-                       "projector when these arrays were built. set_lift_incidence() "
-                       "invalidates this cache, so a later build picks it up - if this line "
-                       "persists, that call is not happening.")
+            _bnote(f"aged-row hoist (19cz/19dd/19fs): no-origin "
+                  f"{_h['no_origin']:,} + zero-pool {_h['zero_pool']:,} + FROZEN-ORIGIN "
+                  f"{_h['frozen']:,} = {_h['static']:,} of {_h['total']:,} "
+                  f"banded aged row(s) ({100.0 * _h['static'] / max(_h['total'], 1):.1f}%) are "
+                  f"CANDIDATE-INDEPENDENT — `no-origin` are cohorts whose transactions "
+                  f"predate the split, `zero-pool` are layers with nothing movable to hand out "
+                  f"(fraud that is all FCP 2+ retries, or no fraud at that age at all). Both are "
+                  f"summed once into a per-band constant and dropped from the per-candidate loop; "
+                  f"{_h['live']:,} row(s) remain live. This shrinks the ONE "
+                  "pass the loop always made AND the two the 19cy age renormalise adds, so read "
+                  "[gen-gap]'s `eval` row against the previous run before concluding anything "
+                  "about what the renormalise cost.")
+            _bnote(f"[vconst-frozen] 19fs added the THIRD class: "
+                  f"{_h['frozen']:,} aged row(s) whose ORIGIN PROFILE IS FROZEN (no GA share "
+                  f"column maps to it, so psum is 0 there for every candidate). "
+                  + (# 19gs: the verification narrative is gone. It was a live question for
+                     # four runs and has been settled since 19gm deleted the kill switch;
+                     # RECONCILIATION ERROR remains the end-to-end check either way, and it is
+                     # printed on its own line at the end of every run.
+                     "Their contribution is the same per-band constant the other two classes "
+                     "have, so it is summed once instead of per candidate."
+                     if _h["frozen_known"] else
+                     "NOT APPLIED: the GA incidence had not reached the projector when these "
+                     "arrays were built, so frozen profiles could not be identified. "
+                     "set_lift_incidence() invalidates this cache, so a later build picks it "
+                     "up - if this line persists, that call is not happening."))
         return self._nbcache
 
     # [FN-022]
@@ -3088,12 +2501,7 @@ class PopulationBandProjector:
                      # and zeroed per candidate only at the codes the scaffold touches — see the
                      # kernel note. max(1, ...) so a scaffold with no aged rows still allocates a
                      # valid array rather than a zero-length one numba would have to type.
-                     np.zeros((lanes, max(1, int(getattr(self, "_n_gk", 0) or 0)))),
-                     # 19it: the blocked-row rule's two per-profile pools (non-blocked room,
-                     # blocked room). float64 like every other pool here - the rule adds no
-                     # dtype of its own, so float32 (which lives in the profile-blocked path,
-                     # where these are plain scalars) is untouched by it.
-                     np.zeros((lanes, nprofile)), np.zeros((lanes, nprofile)))
+                     np.zeros((lanes, max(1, int(getattr(self, "_n_gk", 0) or 0)))))
             self._nbbuf_fixed = fixed
             self._nbbuf_lanes = lanes
         vt = getattr(self, "_nbbuf_vt", None)
@@ -3124,8 +2532,7 @@ class PopulationBandProjector:
 
         Needs the incidence to know which prop-keys are reachable. `set_lift_incidence()` supplies
         it; without it the lift is OFF and the full ranges are returned, which is exactly the
-        pre-19ae kernel. 19jx deleted ROUTING_PROJ_LIFT, so the only other way off is setting
-        the module global `_PROJ_LIFT_ON` - which is what `lift_ab_report` does for its OFF arm.
+        pre-19ae kernel. ROUTING_PROJ_LIFT=0 also forces it off.
         """
         nR = len(self._gcode)
         nprofile = int(self._ngc)
@@ -3147,15 +2554,15 @@ class PopulationBandProjector:
                 ~profile_live[np.asarray(self._gcode, np.int64)])[0].astype(np.int64)
             self._lift_frozen_profiles = np.where(~profile_live)[0].astype(np.int64)
             self._lift_primed = None
-            # 19jw: the counts and the switch. Why the skipped passes are no-ops, and why the
-            # win is below the row share, are settled design - and [lift-ab] measures the win
-            # on this run's own scaffold a few lines later.
-            _bnote(f"frozen-scaffold LIFT ON: skips "
+            _bnote(f"frozen-scaffold LIFT ON: the flat passes skip "
                   f"{len(self._lift_frozen_rows):,} of {nR:,} rows "
                   f"({len(self._lift_frozen_rows) / max(nR, 1):.1%}) in "
                   f"{len(self._lift_frozen_profiles):,} of {nprofile:,} frozen profiles "
-                  f"({len(self._lift_frozen_profiles) / max(nprofile, 1):.1%}) - provable no-ops "
-                  "(19jx: unconditional, no switch).")
+                  f"({len(self._lift_frozen_profiles) / max(nprofile, 1):.1%}). Bit-identical: those "
+                  "passes are provable no-ops (psum += 0.0, everything else guarded on psum > 0). "
+                  "The nC/nA accumulation loops are NOT touched — reassociating those sums would "
+                  "not be bit-identical — so the realised speedup is below the row share. "
+                  "ROUTING_PROJ_LIFT=0 disables.")
         # PRIME (idempotent per buffer identity + lane count).
         if buffers is not None:
             key = (id(buffers[2]), int(lanes))
@@ -3338,23 +2745,24 @@ class PopulationBandProjector:
             # misstates its own configuration is how a wrong conclusion gets drawn from a right
             # number.
             if chunk:
-                # 19jw: was fourteen lines. The counts and the switch are what a run needs; the
-                # scratch arithmetic, the history of the hardcoded 3.196x, and the pointer at
-                # [kernel-ab] row H are all settled and none of them can differ between runs.
-                _why = (f"ON, CHUNKED — P={P} over the lane cap {_PROJ_LANE_CAP}, so "
+                _why = (f"ON, CHUNKED — P={P} exceeds the lane cap "
+                        f"{_PROJ_LANE_CAP}, so the population runs as "
                         f"{-(-P // _PROJ_LANE_CAP)} parallel call(s) of at most "
-                        f"{_PROJ_LANE_CAP}. Scratch is the cap's "
-                        f"({len(self._gcode) * 4 * 8 * _PROJ_LANE_CAP / 1e9:.2f} GB), not P's "
-                        f"({len(self._gcode) * 4 * 8 * P / 1e9:.2f} GB). Bit-identical; "
-                        "ROUTING_PROJ_CHUNK=0 reverts")
+                        f"{_PROJ_LANE_CAP} candidates instead of declining to serial. "
+                        f"Scratch is {len(self._gcode) * 4 * 8 * _PROJ_LANE_CAP / 1e9:.2f} GB "
+                        f"(the cap's), not "
+                        f"{len(self._gcode) * 4 * 8 * P / 1e9:.2f} GB (P's). Its WORTH is "
+                        "re-measured live every run by [kernel-ab] row H (chunking OFF) at this "
+                        "run's own width — a hardcoded 3.196x sat here until 19bf while H read "
+                        "4.5x on the same log, which is one number too many. Bit-identical "
+                        "either way. ROUTING_PROJ_CHUNK=0 reverts")
             elif par:
                 _why = "ON"
             elif not _PROJ_PAR_ON:
                 _why = "OFF — ROUTING_PROJ_PARALLEL=0"
             elif P <= 1:
-                # 19jw: the 187-vs-180 ms measurement that justified this is settled and lives
-                # in the block comment above the decision, not on a line printed every run.
-                _why = "OFF — single candidate, so a 1-iteration prange is pure pool overhead"
+                _why = ("OFF — single candidate, so a 1-iteration prange would be pure "
+                        "thread-pool overhead (measured 187 vs 180 ms)")
             elif nthr <= 1:
                 _why = ("OFF — numba sees 1 thread. Expected inside a joblib/loky worker, where "
                         "inner_max_num_threads=1 sets NUMBA_NUM_THREADS=1; outside one it means "
@@ -3364,11 +2772,11 @@ class PopulationBandProjector:
             # `nlane` stays 1 on the chunked path (it is set per chunk inside the driver), so
             # printing it here said "lanes=1" for a run using 8 — a log that misstates its own
             # configuration is how a wrong conclusion gets drawn from a right number.
-            # 19jw: shortened. [proj-config] PATHS TAKEN tabulates every dispatch of the run -
-            # kernel, P, mode, lanes, nlane and a call count - so what this line adds that the
-            # table cannot is the REASON, and nothing else. Bit-identity is asserted by the
-            # self-check below, which prints its own verdict.
-            _pnote(f"candidate-parallel {_why} (P={P}, lanes={_lanes}, {nthr} numba thread(s))")
+            _pnote(f"candidate-parallel projection {_why} (P={P}, numba threads={nthr}, "
+                   f"lanes={_lanes}, scaffold nR={len(self._gcode):,}). Bit-identical either "
+                   "way — "
+                   "the parallel kernel is verified against the serial one on the live scaffold "
+                   "on its first call.")
         if (par or chunk) and not _PROJ_PAR_SAID.get("verified"):
             # IN-RUN SELF-CHECK, once per process, on the REAL data. Everything asserting
             # bit-identity so far was measured in a container on synthetic arrays; this proves it
@@ -3387,11 +2795,10 @@ class PopulationBandProjector:
                        + tuple(np.zeros((1, _nc)) for _ in range(3))
                        + tuple(np.zeros((1, _nR)) for _ in range(4))
                        + tuple(np.zeros((1, _nc)) for _ in range(3))
-                       + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),)   # 19cy gks
-                       + tuple(np.zeros((1, _nc)) for _ in range(2)))    # 19it rsp, rsb
+                       + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),))   # 19cy gks
                 _lrv, _lcv = self._lift_arrays(1, _vb)
                 _vv, _vt = _pop_band_kernel(prop_raw, *a, _nc, _B, float(self._cap), 1,
-                                            _lrv, _lcv, *_vb, *self._blk_args())
+                                            _lrv, _lcv, *_vb)
                 _vv, _vt = _vv.copy(), _vt.copy()
                 if chunk:
                     # Verify the path that will ACTUALLY run, not a stand-in for it. The chunked
@@ -3401,14 +2808,15 @@ class PopulationBandProjector:
                 else:
                     _lrp, _lcp = self._lift_arrays(P, buf)
                     _pv, _pt = _pop_band_kernel_par(prop_raw, *a, _nc, _B, float(self._cap), P,
-                                                    _lrp, _lcp, *buf, *self._blk_args())
+                                                    _lrp, _lcp, *buf)
                 _match = np.array_equal(_vv, _pv) and np.array_equal(_vt, _pt)
                 del _vb
                 if _match:
-                    _pnote("candidate-parallel SELF-CHECK PASSED: serial == "
+                    _pnote("candidate-parallel SELF-CHECK PASSED on the live scaffold: serial and "
                            + ("CHUNKED " if chunk else "")
-                           + f"parallel at P={P}, bit for bit on vamp and txn"
-                           + (f", over {-(-P // _lanes)} chunk(s) of at most {_lanes}." if chunk
+                           + f"parallel kernels bit-identical at P={P} (np.array_equal on both "
+                             "vamp and txn, not allclose)"
+                           + (f" over {-(-P // _lanes)} chunk(s) of at most {_lanes}." if chunk
                               else "."))
                     _path_note("flat(self-check)", P, par, chunk, _lanes if chunk else P,
                                nlane, nthr)
@@ -3455,7 +2863,7 @@ class PopulationBandProjector:
         _lr, _lc = self._lift_arrays(nlane, buf)
         _kern = _pop_band_kernel_par if par else _pop_band_kernel
         return _kern(prop_raw, *a, int(self._ngc), int(self._B), float(self._cap), nlane,
-                     _lr, _lc, *buf, *self._blk_args())
+                     _lr, _lc, *buf)
 
     # [FN-023c]
     def _cb_arrays(self, a):
@@ -3507,15 +2915,6 @@ class PopulationBandProjector:
             cb = {
                 "key": key, "ok": True, "nLR": int(cm.size), "perm": perm, "pos": pos,
                 "profiles": _ix32(profiles), "cstart": _ix32(cstart[profiles]), "ccnt": _ix32(cnt[profiles]),
-                # 19it: the blocked mask, PERMUTED into this layout. Built from `perm` here
-                # rather than by the caller, for the same reason every other _c array is: a
-                # second place that permutes is a second place that can permute wrongly, and a
-                # mis-permuted mask would apply the rule to the wrong rows silently.
-                "blk_c": np.ascontiguousarray(
-                    (getattr(self, "_pblk", None)
-                     if getattr(self, "_pblk", None) is not None
-                     and len(getattr(self, "_pblk")) == nR
-                     else np.zeros(nR, bool))[perm]),
                 "propidx_c": _ix32(np.asarray(a[0], np.int64)[perm]),
                 "pw_c": np.ascontiguousarray(np.asarray(a[1], np.float64)[perm]),
                 "base_c": np.ascontiguousarray(np.asarray(a[3], np.float64)[perm]),
@@ -3536,17 +2935,14 @@ class PopulationBandProjector:
                 "primed": None,
             }
             self._cb = cb
-            # 19jw: shorter, and it SAYS WHICH LAYOUT IT IS. Two are built per run - the
-            # lifted one the search uses and the unlifted one the self-check needs - and both
-            # printed the same sentence with different numbers, which reads as a bug rather
-            # than as two objects. `froz.size == 0` is the unlifted one by construction.
-            _bnote("profile-blocked layout built"
-                  + (" (LIFTED - this is the one the search runs)" if froz.size else
-                     " (unlifted, the self-check's reference)")
-                  + f": {cb['nLR']:,} live rows in {profiles.size:,} profiles "
-                  f"(~{cb['nLR'] / max(profiles.size, 1):.1f}/profile), {froz.size:,} frozen "
-                  "parked. Bit-identical, self-checked against the flat kernel every run "
-                  "(19jx: unconditional, no switch).")
+            _bnote(f"profile-blocked layout built: {cb['nLR']:,} live rows in "
+                  f"{profiles.size:,} profiles (~{cb['nLR'] / max(profiles.size, 1):.1f} rows/profile), "
+                  f"{froz.size:,} frozen rows parked in the tail. The multi-pass block now runs "
+                  "one profile at a time (an L1-sized working set) instead of ~15 passes over the "
+                  "whole scaffold, and mvrow / vshare are derived in their only reader instead of "
+                  "being materialised. Bit-identical — stable permutation, so every per-profile sum "
+                  "keeps its order — and self-checked against the flat kernel on this scaffold "
+                  "before any result is used. ROUTING_PROJ_PROFILEBLOCK=0 reverts.")
             return cb
         except Exception as _cbe:                  # noqa: BLE001
             self._cb = {"key": key, "ok": False}
@@ -3652,78 +3048,6 @@ class PopulationBandProjector:
         self._sfl_buf = buf
         return buf
 
-    # [FN-023d3]
-    def _stashq_buf(self, lanes, nA, dtype, armed):
-        """The `qst` lane buffer for the 19jp stashed quotient, or a typing-only dummy.
-
-        THE DTYPE IS NOT COSMETIC. The stashed value is `_pshare[o] / _vpsum[c]` and its reader
-        divides it by `_gks[...]`. On a float32 run that first division is float32; widening the
-        stash to float64 would store a float32 result in a float64 slot (exact) and then divide
-        in float64 (NOT the same rounding), and the answer would move. Same dtype as `pshare`,
-        always.
-
-        Not primed, and that is the one way this differs from `_sfloor_buf`: every slot is
-        written by the renormalise pass before any slot is read - the two loops walk the same
-        `range(nA)` - so there is no frozen tail to seed.
-        """
-        key = (int(lanes), int(nA), np.dtype(dtype).str, bool(armed))
-        if getattr(self, "_stq_key", None) == key:
-            return self._stq_buf
-        buf = np.zeros((int(lanes), int(nA)), dtype) if armed else np.zeros((1, 1), dtype)
-        self._stq_key = key
-        self._stq_buf = buf
-        return buf
-
-    # [FN-023d4]
-    def _stashq_selfcheck(self, run, tail_on, tail_off, qst, use_stash):
-        """First live call with the 19jp stash armed: RUN BOTH ARMS AND DIFF THEM.
-
-        Same discipline as the candidate-parallel and profile-blocked self-checks: a rewritten
-        kernel is only trustworthy diffed against the original on the SAME inputs in the SAME
-        run, on the real scaffold, before any result is used. A mock at live shapes measured
-        1.44x; a mock cannot prove bit-identity on this run's data.
-
-        TWO things are checked, not one. `np.array_equal` on vamp and txn is the answer. The
-        second is the sentinel assumption: every negative value in the stash must be exactly
-        -1.0 or exactly -2.0, because anything else in (-inf, 0) would be a real quotient that
-        decodes as a sentinel - the single way this change could be silently wrong.
-
-        The shipped arm runs LAST so `_pi_call` (what `[proj-inside]` replays) records the arm
-        this call actually returned. On failure the stash is disarmed for the process and the
-        OFF answer is returned: OFF is the shipped default, so the fallback is the untouched
-        kernel, and it says so rather than continuing quietly.
-        """
-        _STASH_FACT["checked"] = True
-        try:
-            _first, _second = ((tail_off, tail_on) if use_stash else (tail_on, tail_off))
-            _av, _at = run(_first)
-            _av, _at = np.asarray(_av).copy(), np.asarray(_at).copy()
-            _bv, _bt = run(_second)
-            _q = np.asarray(qst)
-            _bad = int(np.count_nonzero((_q < 0.0) & (_q != -1.0) & (_q != -2.0)))
-            _same = bool(np.array_equal(_av, _bv) and np.array_equal(_at, _bt))
-            _STASH_FACT.update(ok=bool(_same and _bad == 0), bad=_bad)
-            if _same and _bad == 0:
-                _pnote("[stash-q] SELF-CHECK PASSED on the live scaffold at nA="
-                       f"{int(_q.shape[1]):,}: the stashed-quotient nA pass and the original are "
-                       "bit-identical on BOTH vamp and txn (np.array_equal, not allclose), and "
-                       "every negative stashed value is exactly one of the two sentinels.")
-                return _bv, _bt
-            _dv = float(np.abs(_av.astype(float) - np.asarray(_bv, float)).max()) if _av.size else 0.0
-            _dt = float(np.abs(_at.astype(float) - np.asarray(_bt, float)).max()) if _at.size else 0.0
-            _pnote("*** [stash-q] SELF-CHECK FAILED - "
-                   f"max|dvamp|={_dv:.6e} max|dtxn|={_dt:.6e}, and {_bad:,} stashed value(s) "
-                   "collided with a sentinel. The stashed quotient is DISABLED for the rest of "
-                   "this process and the ORIGINAL nA pass is being used, so this run's numbers "
-                   "are the pre-19jp numbers. Report this.")
-            return (_av, _at) if use_stash else (_bv, _bt)
-        except Exception as _se:                   # noqa: BLE001
-            _STASH_FACT.update(ok=False, why=f"{type(_se).__name__}: {_se}")
-            _pnote(f"[stash-q] self-check could not run ({type(_se).__name__}: {_se}) - the "
-                   "stashed quotient is DISABLED for this process and the original nA pass runs. "
-                   "Correct, just not faster.")
-            return run(tail_off)
-
     # [FN-023d2]
     def _f32_drift(self, prop_raw, a, nprofile, P, v32, t32):
         """How far the float32 projector's answer sits from the float64 one, AT THIS WIDTH.
@@ -3741,11 +3065,9 @@ class PopulationBandProjector:
                + tuple(np.zeros((1, nprofile)) for _ in range(3))
                + tuple(np.zeros((1, _nR)) for _ in range(4))
                + tuple(np.zeros((1, nprofile)) for _ in range(3))
-               + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),)   # 19cy gks
-               + tuple(np.zeros((1, nprofile)) for _ in range(2)))    # 19it rsp, rsb
+               + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),))   # 19cy gks
         _lr, _lc = self._lift_arrays(1, _vb)
-        _rv, _rt = _pop_band_kernel(prop_raw, *a, nprofile, _B, float(self._cap), 1, _lr, _lc,
-                                    *_vb, *self._blk_args())
+        _rv, _rt = _pop_band_kernel(prop_raw, *a, nprofile, _B, float(self._cap), 1, _lr, _lc, *_vb)
         out = {"at_P": int(P), "nb": int(_B)}
         for _nm, _ref, _got in (("v", _rv, v32), ("t", _rt, t32)):
             _ad = np.abs(np.asarray(_ref, np.float64) - np.asarray(_got, np.float64))
@@ -3821,65 +3143,24 @@ class PopulationBandProjector:
         _SFLOOR_FACT.update(armed=bool(_SFLOOR_ON), applied=bool(_sfl_armed),
                             floor=float(_sfl_flo),
                             rows=int(np.count_nonzero(np.asarray(cb["ef_c"]) > 0.0)))
-        # 19it: the blocked-row rule. `blk_c` is a bool array, so it never joins the float
-        # dtype unification the note above is about; `_blk_use` is the only switch.
-        _blk_c = cb["blk_c"]
-        _blk_use = 1 if getattr(self, "_blk_armed", False) else 0
 
-        # 19jp: STASHED QUOTIENT. Armed only when the switch is on AND the age renormalise is
-        # on (that pass is where the quotient is computed, so without it there is nothing to
-        # stash) AND the scaffold has aged rows AND no earlier self-check has failed in this
-        # process. The buffer is allocated whenever ARMED, not whenever USED, so the A/B's OFF
-        # ticks do not free and re-allocate ~100 MB every other call. A (1, 1) dummy and a
-        # (lanes, nA) buffer are the same numba type - 2-D, C-contiguous, same dtype - so
-        # neither arming nor alternating triggers a recompile.
-        _nA_st = int(np.asarray(cb["pc_orgc"]).shape[0])
-        # 19jv: no switch. Armed whenever the renormalise pass that computes the quotient runs,
-        # the scaffold has aged rows, and no self-check has failed in this process.
-        _stash_armed = bool(_AGE_RENORM and _nA_st > 0 and _STASH_FACT["ok"] is not False)
-        _qst = self._stashq_buf(_lanes, _nA_st, pshare.dtype, _stash_armed)
-        _use_stash = _stash_armed
-        _base_tail = (_ef_in, _sfl_efl, _sfl_use, _sfl_pshf, _blk_c, _blk_use)
-        _tail_on = _base_tail + (_qst, 1)
-        _tail_off = _base_tail + (_qst, 0)
-        _tail_dflt = _tail_on if _use_stash else _tail_off
-        _STASH_FACT.update(armed=_stash_armed, nA=_nA_st, lanes=int(_lanes),
-                           dtype=np.dtype(pshare.dtype).name,
-                           bytes=int(_qst.nbytes) if _stash_armed else 0)
-
-        def _run(_tl=None):
-            # 19jp: the tail is a PARAMETER now, so the self-check drives both arms through the
-            # one code path that actually ships - chunking, lane counts, `_pi_call` and all -
-            # instead of a second call site that could drift from it.
-            _tail = _tail_dflt if _tl is None else _tl
+        def _run():
             if chunk:
                 for _s0 in range(0, P, _lanes):
                     _s1 = min(_s0 + _lanes, P)
                     _n = _s1 - _s0
                     _k = _cb_kernel if _n == 1 else _cb_kernel_par
-                    # 19jd: named so `[proj-inside]` can replay THIS call. The expression was
-                    # already evaluated exactly once here; naming it adds no work.
-                    _pr_c = np.ascontiguousarray(_pr_in[_s0:_s1])
-                    _bufs = (vamp[_s0:_s1], txn[_s0:_s1], psum, vpsum, moved, pr, pshare,
-                             sw, gks)
-                    _k(_pr_c, *_args, cap, _n, *_bufs, *_tail)
-                    if _PI_ON:
-                        self._pi_call = (_k, _pr_c, _args, cap, _n, _bufs, _tail)
+                    _k(np.ascontiguousarray(_pr_in[_s0:_s1]), *_args, cap, _n,
+                       vamp[_s0:_s1], txn[_s0:_s1], psum, vpsum, moved, pr, pshare, sw, gks,
+                       _ef_in, _sfl_efl, _sfl_use, _sfl_pshf)
                 return vamp, txn
             _k = _cb_kernel_par if par else _cb_kernel
-            _bufs = (vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks)
-            if _PI_ON:
-                self._pi_call = (_k, _pr_in, _args, cap, (P if par else 1), _bufs, _tail)
-            return _k(_pr_in, *_args, cap, (P if par else 1), *_bufs, *_tail)
+            return _k(_pr_in, *_args, cap, (P if par else 1),
+                      vamp, txn, psum, vpsum, moved, pr, pshare, sw, gks,
+                      _ef_in, _sfl_efl, _sfl_use, _sfl_pshf)
 
         try:
-            if _stash_armed and not _STASH_FACT["checked"]:
-                _v, _t = self._stashq_selfcheck(_run, _tail_on, _tail_off, _qst, _use_stash)
-            else:
-                # 19jv: no timing wrapper. The A/B it fed is retired - it answered its question
-                # twice (1.521x, then 1.561x on clean per-run counters) and an alternating arm
-                # costs half the win on every run it measures.
-                _v, _t = _run()
+            _v, _t = _run()
         except Exception as _cbe:                  # noqa: BLE001
             _CB_OK["use"] = False
             _pnote(f"profile-blocked projection FAILED to run ({type(_cbe).__name__}: {_cbe}) — "
@@ -3910,11 +3191,9 @@ class PopulationBandProjector:
                        + tuple(np.zeros((1, nprofile)) for _ in range(3))
                        + tuple(np.zeros((1, _nR)) for _ in range(4))
                        + tuple(np.zeros((1, nprofile)) for _ in range(3))
-                       + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),)   # 19cy gks
-                       + tuple(np.zeros((1, nprofile)) for _ in range(2)))    # 19it rsp, rsb
+                       + (np.zeros((1, max(1, int(getattr(self, "_n_gk", 0) or 0)))),))   # 19cy gks
                 _lrv, _lcv = self._lift_arrays(1, _vb)
-                _rv, _rt = _pop_band_kernel(prop_raw, *a, nprofile, _B, cap, 1, _lrv, _lcv,
-                                            *_vb, *self._blk_args())
+                _rv, _rt = _pop_band_kernel(prop_raw, *a, nprofile, _B, cap, 1, _lrv, _lcv, *_vb)
                 del _vb                      # the tuple name only; _rv/_rt still hold its arrays
                 # 19cd: THE FLOAT32 BRANCH COMES FIRST. It used to come after the bit comparison
                 # below, and that comparison hard-coded `.view(np.int64)` on arrays that are
@@ -3947,15 +3226,24 @@ class PopulationBandProjector:
                         "dt_sum": float(_ad_t[_it[0]].sum()),
                         "dt_nover": int((_ad_t[_it[0]] > 0.0).sum())}
                     _F32_OK["dv"], _F32_OK["dt"] = _dv, _dt2
-                    # 19iu: the paragraph that stood here argued the accept/revert decision
-                    # for float32 - what drift was accepted, on what evidence, and how to
-                    # revert. There is no revert any more (the switch is gone) and the decision
-                    # is made, so the only thing worth printing is the MEASURED drift, which
-                    # [proj-config]'s float32 row does every run in a form that can be compared
-                    # between runs. RECONCILIATION ERROR reads about this drift rather than 0,
-                    # and that is the setting, not a regression - it is stated where the
-                    # reconciliation number is printed.
-                    pass
+                    _pnote("*** FLOAT32 PROJECTOR IS ON (ROUTING_PROJ_FLOAT32=1). This is the one "
+                           "setting that CHANGES THE ANSWER, and it is on because a drift was "
+                           "ACCEPTED, not because it is free \u2014 so read the size below rather "
+                           "than assuming the size it was accepted at. (The figure accepted on "
+                           "2026-08-24, '~2 transactions', came from [kernel-ab] row F, which "
+                           "times a FLAT float32 kernel on a copy of prop_raw. This path is the "
+                           "profile-blocked one on the live scaffold and on 2026-08-25 it measured "
+                           "about 7x that.) Measured on THIS run's "
+                           f"scaffold against the float64 kernel: max|\u0394vamp| {_dv:.4g}, "
+                           f"max|\u0394txn| {_dt2:.4g} at P={P}. TWO CONSEQUENCES. (1) "
+                           "RECONCILIATION ERROR will no longer read 0: it is "
+                           "\u03a3|delivered \u2212 GA-fitness|, GA-fitness now comes from this "
+                           "float32 kernel and delivery is still float64, so it will read about "
+                           "the drift above. That is the setting, not a regression \u2014 but the "
+                           "number also stops being able to detect a REAL reconciliation bug at "
+                           "that magnitude. (2) The search is chaotic, so this run's trajectory "
+                           "diverges from a float64 run's; only the end results compare. "
+                           "ROUTING_PROJ_FLOAT32=0 restores exactness.")
                     return _v, _t
                 # bit patterns, not np.array_equal: array_equal calls -0.0 == 0.0, and -0.0 is
                 # exactly the value for which x + 0.0 == x fails. `_bitview` picks the integer
@@ -3982,11 +3270,11 @@ class PopulationBandProjector:
                 _pnote(f"*** profile-blocked self-check could not run ({type(_cve).__name__}: "
                        f"{_cve}) \u2014 falling back to the flat kernel for this process rather "
                        "than trusting an unverified path. READ THIS BEFORE READING ANY TIMING "
-                       "BELOW: the flat kernel is the SLOW one, and float32 lives inside this "
-                       "same path, so it is off for this run too and no float32 drift will be "
-                       "measured. The run is CORRECT and roughly half speed. Report this line "
-                       "rather than reading the [gen-cost] split as the engine's real cost "
-                       "profile.")
+                       "BELOW: the flat kernel is the SLOW one, and the float32 projector lives "
+                       "inside this same path, so if ROUTING_PROJ_FLOAT32=1 it is off for this run "
+                       "too and no float32 banner will print. The run is CORRECT and roughly half "
+                       "speed. Report this line rather than reading the [gen-cost] split as the "
+                       "engine's real cost profile.")
                 return None
         # 19cf: RE-MEASURE THE DRIFT AT THE LIVE WIDTH, once. The self-check above runs on the
         # FIRST profile-blocked projection, at whatever P that call happens to use — P=1 on
@@ -4024,15 +3312,16 @@ class PopulationBandProjector:
                 # count changes the order the per-profile sums accumulate in, so a narrow-width
                 # figure is not a claim about the search - so it states exactly that and points at
                 # the line that carries the figures.
-                # 19jw: the width comparison alone, which is the one thing this line knows
-                # and no other line does. Why lane count moves it, and the pointer at
-                # [proj-config], were four clauses to introduce two numbers.
-                _pnote("float32 drift re-measured at the live width P=" + str(int(P))
-                       + " (first taken at P=" + str(int(_fst.get("at_P", 0))) + "): vamp "
+                _pnote("float32 drift RE-MEASURED at the live width P=" + str(int(P))
+                       + ", up from P=" + str(int(_fst.get("at_P", 0))) + " where it was first "
+                       "taken. Lane count changes the order the per-profile sums accumulate in, so "
+                       "a narrow-width figure is not a claim about the search. THE FIGURES ARE ON "
+                       "THE [proj-config] float32 drift LINE - this one does not restate them. The "
+                       "width comparison alone: max drift vamp "
                        + format(float(_fst.get("dv", 0.0)), ".4g") + " -> "
                        + format(_lv["dv"], ".4g") + ", txn "
                        + format(float(_fst.get("dt", 0.0)), ".4g") + " -> "
-                       + format(_lv["dt"], ".4g") + ". Figures on the [proj-config] line.")
+                       + format(_lv["dt"], ".4g") + ".")
             except Exception as _f32e:                 # noqa: BLE001
                 _pnote("float32 drift could not be re-measured at the live width ("
                        + type(_f32e).__name__ + ": " + str(_f32e) + "). NOTHING IS DISABLED by "
@@ -4041,14 +3330,10 @@ class PopulationBandProjector:
                        "measurement's, at its own width.")
         if int(sw.max()) >= 50 and not _CB_OK.get("shouted"):
             _CB_OK["shouted"] = True
-            # 19jx: this told the reader to set a switch that no longer exists, on the ONE
-            # path where the profile-blocked kernel is not provably identical - the worst place
-            # to give an instruction that cannot be followed. The flat kernel is still there;
-            # reaching it now means `_PROJ_CB_ON = False` in the source.
             _pnote("*** profile-blocked water-fill hit the 50-sweep cap. That is the one case where "
                    "per-profile convergence is NOT provably identical to the flat kernel's global "
-                   "loop. Compare against the flat kernel before trusting these numbers - set "
-                   "`_PROJ_CB_ON = False` in band_projection (19jx deleted the env var).")
+                   "loop. Re-run with ROUTING_PROJ_PROFILEBLOCK=0 and compare before trusting these "
+                   "numbers.")
         _CB_OK["sweeps"] = max(int(_CB_OK.get("sweeps", 0)), int(sw.max()))
         return _v, _t
 
@@ -4078,20 +3363,8 @@ class PopulationBandProjector:
             _n = _s1 - _s0
             _kern = _pop_band_kernel if _n == 1 else _pop_band_kernel_par
             _kern(np.ascontiguousarray(prop_raw[_s0:_s1]), *a, nprofile, B, cap, _n,
-                  _lr, _lc, vamp[_s0:_s1], txn[_s0:_s1], *buf[2:], *self._blk_args())
+                  _lr, _lc, vamp[_s0:_s1], txn[_s0:_s1], *buf[2:])
         return vamp, txn
-
-    # [FN-19it]
-    def _blk_args(self):
-        """(blk, blkuse) for the kernels. `blk` is ALWAYS a real (nR,) bool array - all-False
-        when nothing is blocked - so numba types one signature either way; `blkuse` is the only
-        thing that changes, and it is 0 unless the rule is armed at every site AND this
-        projector actually holds a mask. One accessor, because six call sites passing their own
-        idea of the mask is how a rule ends up applied at four water-fills out of five."""
-        _b = getattr(self, "_pblk", None)
-        if _b is None or len(_b) != len(self._gcode):
-            _b = np.zeros(len(self._gcode), bool)
-        return _b, (1 if getattr(self, "_blk_armed", False) else 0)
 
     # [FN-024]
     def _profilesum(self, x):

@@ -775,6 +775,10 @@ def render():
                 # any more except by unticking a box that should not have existed. `vamp_cap` is
                 # now always a float, so every `if vamp_cap is not None` downstream is simply
                 # always true rather than wrong.
+                # 19kb: `_v3` takes the rest of the row so the moveable-M5 counter it holds can
+                # sit RIGHT-ALIGNED against the panel's right edge (Ben's instruction) - the
+                # alignment is done in the counter's own HTML, not by a spacer column, because a
+                # spacer would have to be re-guessed every time the counter's text length changes.
                 _v1, _v3 = st.columns([2, 8])
                 _moveable_slot = _v3.empty()          # moveable-M5-txn counter (filled after the editor)
                 vamp_cap_pct = _v1.number_input("VAMP cap (%)", min_value=0.01, max_value=20.0,
@@ -966,22 +970,39 @@ def render():
             params["mid_constraints"] = clean_records
             params["mid_base_totals"] = _base_totals
 
-            # ---- Moveable M5 transaction budget + per-MID feasibility (rendered beside the VAMP-cap
-            #      checkbox / below it). Updates live as constraints are edited. ----
+            # ---- Moveable M5 transaction budget + per-MID feasibility (rendered beside the
+            #      VAMP-cap input, hard right). Updates live as constraints are edited. ----
+            #
+            # 19kb, on Ben's instruction: RIGHT-ALIGNED against the Risk Constraints panel's right
+            # edge, the counter on ONE line, and every part of it in dark ink.
+            #
+            # `text-align:right` on the wrapper + `white-space:nowrap` on the counter line: the
+            # alignment is what moves it right, and the nowrap is what keeps it one line. Both are
+            # needed - right-aligned text still wraps, and 'Moveable M5 txn budget: 227,788 /
+            # 232,872 (selected RPGTs)' is long enough to break over two lines at this font size.
+            #
+            # ALL DARK INK cost something, and here is what: the remaining-budget number used to
+            # turn RED when it went negative. That signal is NOT lost - the '⚠ growth constraints
+            # exceed the moveable M5 pool by N txns' line directly beneath it still fires, still
+            # in red, and says in words what the colour used to say in one number. Losing the
+            # colour and keeping the sentence is the right way round; losing both would not be.
+            _INK_ = "var(--tav-ink)"
             try:
                 if not _m5_by_mid:
                     _moveable_slot.markdown(
-                        "<div style='font-size:0.78rem; color:#6b7280; line-height:1.2;'>Moveable M5 txn: "
+                        f"<div style='font-size:0.78rem; color:{_INK_}; line-height:1.2; "
+                        "text-align:right; white-space:nowrap;'>Moveable M5 txn: "
                         "<i>run once to populate</i></div>", unsafe_allow_html=True)
                 else:
                     _mv_total, _mv_left, _mv_warn = _m5_moveable_budget(
                         _m5_by_mid, clean_records, _m5_min_vamp)
-                    _mv_clr = "#e63748" if _mv_left < -1e-6 else "#0B1F3A"
                     # Counter line + any warnings rendered TOGETHER in the same slot, so the warnings
                     # sit directly beneath the "… / … (selected RPGTs)" text.
-                    _html = (f"<div style='font-size:0.78rem; line-height:1.2;'>Moveable M5 txn budget: "
-                             f"<b style='color:{_mv_clr}'>{_mv_left:,.0f}</b> "
-                             f"<span style='color:#6b7280'>/ {_mv_total:,.0f} (selected RPGTs)</span></div>")
+                    _html = (f"<div style='font-size:0.78rem; line-height:1.2; color:{_INK_}; "
+                             f"text-align:right; white-space:nowrap;'>Moveable M5 txn budget: "
+                             f"<b style='color:{_INK_}'>{_mv_left:,.0f}</b> "
+                             f"<span style='color:{_INK_}'>/ {_mv_total:,.0f} "
+                             "(selected RPGTs)</span></div>")
                     # This counter is an M5 pool tool BY DESIGN: it only reflects Txn constraints set at
                     # M5. If the user has entered Txn constraints at another month (M0–M4), say so plainly
                     # here so an ignored constraint doesn't look like a silent failure — the engine still
@@ -995,11 +1016,15 @@ def render():
                     for _wn, _wb, _wnote in _mv_warn:
                         _wl.append(f"<div>⚠ <b>{_wn}</b>: {_wnote}.</div>")
                     if _wl:
-                        _html += ("<div style='color:#e63748; font-size:0.74rem; line-height:1.25; "
-                                  "margin-top:2px;'>" + "".join(_wl) + "</div>")
+                        # 19kb: right-aligned with the counter above it, but NOT nowrap - a
+                        # warning naming a vampMid and a shortfall is long, and forcing it onto
+                        # one line would push it off the panel instead of wrapping. It stays RED:
+                        # this is the signal the counter's number used to carry.
+                        _html += (f"<div style='color:#e63748; font-size:0.74rem; line-height:1.25; "
+                                  "margin-top:2px; text-align:right;'>" + "".join(_wl) + "</div>")
                     if _non_m5_txn:
-                        _html += ("<div style='color:#6b7280; font-size:0.72rem; line-height:1.25; "
-                                  f"margin-top:2px;'>Note: {_non_m5_txn} non-M5 Txn constraint"
+                        _html += (f"<div style='color:{_INK_}; font-size:0.72rem; line-height:1.25; "
+                                  f"margin-top:2px; text-align:right;'>Note: {_non_m5_txn} non-M5 Txn constraint"
                                   f"{'s' if _non_m5_txn != 1 else ''} not shown — this counter only "
                                   "reflects M5. The engine still enforces them.</div>")
                     _moveable_slot.markdown(_html, unsafe_allow_html=True)
