@@ -87,7 +87,7 @@ except Exception:                                   # noqa: BLE001
             return f
         return _wrap
 
-__build__ = "2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim+2026-09-03-19iu-log-batch+2026-09-03-19ix-eval-delta+2026-09-03-19iy-delta-default-on+2026-09-03-19iz-deliv-delta"
+__build__ = "2026-09-04-19js-decodecap-headline-trim+2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim+2026-09-03-19iu-log-batch+2026-09-03-19ix-eval-delta+2026-09-03-19iy-delta-default-on+2026-09-03-19iz-deliv-delta"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -3454,18 +3454,25 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # ── [decode-cap] 19gu: the cap, now that it is part of the decode ────────────────────
     if _DECODE_CAP:
         log("")
-        log("[decode-cap] the max-share cap is now a PROPERTY OF THE DECODE, not a repair after "
-            "it. Every path that turns the logit genome into shares — the numpy reference, the "
-            "fused numpy path and the numba eval kernel — water-fills each profile as it decodes, "
-            "so an over-cap split is not something a candidate can express. The search does not "
-            "reject or correct them; they do not exist.")
         # 19hs: three paragraphs deleted here - "WHAT THIS REPLACED" (a description of
         # [ms-repair]: it decoded the whole population, water-filled and re-encoded through log(),
         # cost 91.3s and three decodes per generation), "NOT BIT-IDENTICAL to the pre-19gu search",
         # and "19gv DELETED `_repair_maxshare` and its ~380 lines". All three describe code that
         # does not exist, printed on every run. There is no decode-then-repair path to revert to
         # and no switch pretending there is, so there is nothing to compare against either.
-        log("[decode-cap]    THE RULE is delivery's: the excess goes to "
+        #
+        # 19js: AND THE HEADLINE IS GONE TOO, on Ben's instruction. "the max-share cap is now a
+        # PROPERTY OF THE DECODE, not a repair after it" is a design statement that has been true
+        # and unconditional since 19gu - it cannot differ between runs, so it carried no
+        # information a reader of a RUN needs. It is settled, and settled things belong in the
+        # source, which is where the block comment at [decode-cap] 19gu already keeps it.
+        #
+        # The two lines below OUTLIVE it because they are not the same kind of statement: one
+        # names the rule a reader has to know to check the numbers, and the other says what
+        # reading to expect and what a different reading would mean. Both are de-indented now -
+        # they were sub-paragraphs of a headline that no longer prints, and an orphaned "   THE
+        # RULE is delivery's" reads as a line whose parent went missing.
+        log("[decode-cap] THE MAX-SHARE RULE is delivery's: the excess goes to "
             "each sibling in proportion to (target - share), the room it has left before IT would "
             "hit the cap (impact_calcs._cap_rows). Single pass, because Σ(target - share) over a "
             "profile's present rows is (present_rows × target) - 1 + excess.")
@@ -3477,7 +3484,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             # hold 100%, which no routing can bring under the cap - and 19io exempts them. The
             # 14:19 run read 0.0000 with the split unchanged. So 0 is the expected reading
             # again on the delivered basis too, and a non-zero one is a finding.
-            log("[decode-cap]    THE ENGINEERING KEY should read 0.0000 even though "
+            log("[decode-cap] THE ENGINEERING KEY should read 0.0000 even though "
                 "ROUTING_DECODE_OBJ measures it on the DELIVERED split. Delivery does leave "
                 "rows above the cap - a profile with less room than the excess cannot absorb "
                 "it - but every such row that is STRUCTURALLY forced there is exempted by "
@@ -3489,7 +3496,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 "better-converting one - which is why an unreachable floor here was so "
                 "expensive.")
         else:
-            log("[decode-cap]    THE ENGINEERING KEY should now read 0.0000 for every candidate, "
+            log("[decode-cap] THE ENGINEERING KEY should now read 0.0000 for every candidate, "
                 "because none can violate. If `viol` above is ever non-zero on the max-share "
                 "term, the water-fill did not hold and that key is what says so. (This holds "
                 "because the key is measured on the DECODED split, which is water-filled by "
