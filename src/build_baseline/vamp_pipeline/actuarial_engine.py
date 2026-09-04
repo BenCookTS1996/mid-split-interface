@@ -8,6 +8,17 @@ from typing import Dict, Any, Tuple, List
 
 from .utils import setup_logger
 
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_INJECT_FROM_SIBLINGS = True   # was ROUTING_INJECT_FROM_SIBLINGS, default '1'
+_SW_OVERRIDE_ORIGIN_CUTOFF = True   # was ROUTING_OVERRIDE_ORIGIN_CUTOFF, default '1'
+_SW_ZERO_BAD_VAMP_LABELS = True   # was ROUTING_ZERO_BAD_VAMP_LABELS, default '1'
+
 logger = setup_logger(__name__)
 
 class ActuarialEngine:
@@ -346,7 +357,7 @@ class ActuarialEngine:
         # they absorb it; where it has none the sum is 0, 0/0 -> NaN -> fillna(0), and the VAMP
         # is dropped. That drop is the intended rule, and _apply_magic_lock reports its size.
         self._ai01_zeroed_rows = 0
-        if os.environ.get("ROUTING_ZERO_BAD_VAMP_LABELS", "1") != "0":
+        if _SW_ZERO_BAD_VAMP_LABELS:
             _inj = self._inject_from_siblings_fids()
             if _inj and 'gatewayFid' in dist_base.columns:
                 _m = dist_base['gatewayFid'].astype(str).str.strip().str.lower().isin(_inj)
@@ -435,7 +446,7 @@ class ActuarialEngine:
                 f"and they are dropped - that VAMP is attributed to them by construction and is "
                 f"the same unusable data. Their real VAMP is inferred in ai02. "
                 f"({_in:,.2f} in -> {_out:,.2f} out)")
-            logger.info("     ROUTING_ZERO_BAD_VAMP_LABELS=0 restores the previous behaviour.")
+            logger.info("     `_SW_ZERO_BAD_VAMP_LABELS = False` restores the previous behaviour.")
 
         return merged_profile
 
@@ -449,8 +460,8 @@ class ActuarialEngine:
         This runs AFTER _apply_magic_lock has already set these gateways to zero (ai01), so the
         number written here is their whole VAMP - there is nothing underneath it to double count.
         """
-        if os.environ.get("ROUTING_INJECT_FROM_SIBLINGS", "1") == "0":
-            logger.info("   > inject_from_siblings DISABLED (ROUTING_INJECT_FROM_SIBLINGS=0) - "
+        if (not _SW_INJECT_FROM_SIBLINGS):
+            logger.info("   > inject_from_siblings DISABLED (`_SW_INJECT_FROM_SIBLINGS = False`) - "
                         "flagged gateways keep whatever the waterfall gave them.")
             return df
 
@@ -534,7 +545,7 @@ class ActuarialEngine:
         if no_rate > 0:
             logger.info(f"        note: {no_rate:,.0f} transaction(s) sat in groups with no sibling "
                         f"rate available and received no injection.")
-        logger.info("     ROUTING_INJECT_FROM_SIBLINGS=0 disables this.")
+        logger.info("     `_SW_INJECT_FROM_SIBLINGS = False` disables this.")
         return df
 
     def _execute_waterfall_routing(self, profile_vamps: pd.DataFrame, vamp_dist_cols: List[str]) -> pd.DataFrame:
@@ -658,8 +669,8 @@ class ActuarialEngine:
         gateway still TAKES transactions and is merely barred from holding VAMP — deleting fraud
         on live volume would be a different and much worse bug.
         """
-        if os.environ.get("ROUTING_OVERRIDE_ORIGIN_CUTOFF", "1") == "0":
-            logger.info("   > override origin cutoff DISABLED (ROUTING_OVERRIDE_ORIGIN_CUTOFF=0) "
+        if (not _SW_OVERRIDE_ORIGIN_CUTOFF):
+            logger.info("   > override origin cutoff DISABLED (`_SW_OVERRIDE_ORIGIN_CUTOFF = False`) "
                         "- switched-off gateways keep any forecast VAMP the waterfall gave them.")
             return df
 
@@ -733,7 +744,7 @@ class ActuarialEngine:
                         "on the switch-off date and their forecasts already carry its fraud, so "
                         "redistributing would double-count. The book total falls by this amount "
                         "and every per-row vamp_fcast has been recomputed from its surviving age "
-                        "profiles. ROUTING_OVERRIDE_ORIGIN_CUTOFF=0 reverts.")
+                        "profiles. `_SW_OVERRIDE_ORIGIN_CUTOFF = False` reverts.")
         else:
             logger.info("   > override origin cutoff: nothing to remove - no switched-off gateway "
                         "carried forecast VAMP with an origin after its effective date.")

@@ -138,8 +138,12 @@ check("D1: delivered profiles do NOT sum to 1; the renormalised copy does",
       f"delivered min {float(psum_full.min()):.6f}")
 
 # ══ 3. D2 — THE SEED IS ON THE SAME BASIS AS ITS CHALLENGERS ═════════════════════════════
-os.environ["ROUTING_DECODE_OBJ"] = "1"
+# 19kg: no environment variable to set. `_DECODE_OBJ` survives as a NAME so a test can
+# still arm the delivered-basis objective; `_OBJ_FACT["armed"]` is derived from it at import,
+# so it has to be re-derived here rather than left reading the import-time value.
 mod2 = load("ga_armed", GA)
+mod2._DECODE_OBJ = True
+mod2._OBJ_FACT["armed"] = True
 p2, meta2, colmap2 = build(mod2)
 _KS, _KC = p2.profile_start, p2.profile_len
 dfull2, gath2 = make_hooks(colmap2, N_ROW)

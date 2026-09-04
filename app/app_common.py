@@ -280,49 +280,15 @@ class StreamlitLogHandler(logging.Handler):
             pass
 
 
-# [FN-235c] 19hm — RENAMED KILL SWITCHES, WITH THEIR OLD NAMES STILL ACCEPTED.
-_SWITCH_ALIASES = {
-    # 19jx: ROUTING_PROJ_PROFILEBLOCK -> ROUTING_PROJ_CELLBLOCK removed. The NEW name was
-    # deleted with the switch, so the alias pointed a legacy spelling at nothing - and it
-    # would have printed a "was honoured" line for a setting that changed nothing.
-    "ROUTING_DOOR_COVER_PROFILES": "ROUTING_DOOR_COVER_CELLS",
-    "ROUTING_ROW_PARALLEL_MIN_PROFILES": "ROUTING_ROW_PARALLEL_MIN_CELLS",
-    "ROUTING_CA_ZEROPROFILE": "ROUTING_CA_ZEROCELL",
-}
-_SWITCH_LEGACY_USED: dict = {}
-
-
-def env_switch(name, default=None):
-    """Read a ROUTING_* switch by its CURRENT name, falling back to its old one.
-
-    The profile->profile rename (19hk/19hl/19hm) reaches these four switch names too, and a
-    switch name is a USER CONTRACT: it gets typed at a shell prompt and written down in
-    notes and tickets. Renaming it outright would silently stop honouring an instruction
-    someone had already recorded — the switch would read as unset and the run would look
-    fine while doing the opposite of what was asked.
-
-    So both spellings work, the new one wins, and `_SWITCH_LEGACY_USED` records any old
-    spelling that was actually honoured so the run log can say so rather than leaving the
-    reader to wonder which name took effect.
-    """
-    v = os.environ.get(name)
-    if v is not None:
-        return v
-    legacy = _SWITCH_ALIASES.get(name)
-    if legacy:
-        lv = os.environ.get(legacy)
-        if lv is not None:
-            _SWITCH_LEGACY_USED[legacy] = (name, lv)
-            # 19ho: SAY SO. The alias is the ONE place the old vocabulary survives, and it
-            # survives on purpose — deleting it is the only change in this whole rename that
-            # could SILENTLY ignore an instruction someone has already written down (the switch
-            # would read as unset, the run would look fine, and it would do the opposite of what
-            # was asked). Keeping it quiet is the other failure mode, so it is now loud: every
-            # legacy read prints once, names its replacement, and the run log lists them.
-            print(f"[deprecated-switch] {legacy}={lv} was honoured. Rename it to {name} — "
-                  "the old spelling is a compatibility shim and will be removed.")
-            return lv
-    return default
+# 19kg: `env_switch`, `_SWITCH_ALIASES` and `_SWITCH_LEGACY_USED` are DELETED.
+# They existed because a switch name is a USER CONTRACT - it gets typed at a shell prompt and
+# written down in notes - so the 19hk/19hl/19hm profile rename kept the old spellings working
+# and said so in the log. There is no contract left to honour: no environment variable changes
+# a run any more, and every setting they guarded is now a named constant in the module that
+# uses it. Keeping the shim would have been the one thing worse than deleting it - a reader
+# that answers a spelling nobody reads, and a "was honoured" line for a setting that changed
+# nothing. The three aliases it carried were ROUTING_DOOR_COVER_CELLS,
+# ROUTING_ROW_PARALLEL_MIN_CELLS and ROUTING_CA_ZEROCELL.
 
 
 # [FN-235b] 19hh
@@ -1075,7 +1041,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # BOTH self-check against the original on their FIRST live call
                            # and, on any mismatch, revert for the run and shout — the
                            # fallback ships the KNOWN-GOOD path, it does not hide it.
-                           # ROUTING_BLOCK_RESTRICT=0 / ROUTING_ELIG_INPLACE=0 revert.
+                           # `_SW_BLOCK_RESTRICT = False` / `_SW_ELIG_INPLACE = False` revert.
                            # NOTE eligibility is shared with the TILT engine
                            # (seed_search), which is why the check is on the function.
                            # 19bi/bj, on Ben's instructions from the 14:09 run.
@@ -1146,7 +1112,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # now need room under EVERY ceiling they hold, each budget in
                            # its own units, ranked by binding share-capacity; the donor
                            # orders profiles by whichever of ITS metrics is worst over.
-                           # Never-worse untouched. ROUTING_TMOVE_ALLBANDS=0 ignores
+                           # Never-worse untouched. `_SW_TMOVE_ALLBANDS = False` ignores
                            # recipients' txn ceilings. Floors still out of scope.
                            # 19bd: (a) solve_targeted_moves' "strictly better" now says it is
                            # the RAW basis, and [seed-basis] names any stage that is better on
@@ -1218,7 +1184,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # bit-identical, and re-verified IN-RUN by the once-per-process
                            # self-check, which now diffs _project_chunked itself against
                            # the serial kernel rather than a stand-in for it.
-                           # ROUTING_PROJ_CHUNK=0 is a true revert (asserted).
+                           # `_SW_PROJ_CHUNK = False` is a true revert (asserted).
                            # [kernel-ab]/[kernel-ga] follow the adopted path: A IS the
                            # chunked path and H flips to CHUNKING OFF — its
                            # counterfactual, the same convention as B (LIFT OFF). Every
@@ -1258,7 +1224,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            #  # POP 40 CHANGES THE CODE PATH. children = pop -
                            # min(6, max(1, pop//8)), and the projector declines
                            # candidate-parallelism once children exceed
-                           # ROUTING_PROJ_LANES=8 — so pop 40 runs the SERIAL compile
+                           # `_SW_PROJ_LANES = 8` — so pop 40 runs the SERIAL compile
                            # at P=35. [kernel-ab] hardcoded P=3 and the PARALLEL
                            # compile, correct only at pop 4, and [kernel-ga] patched
                            # only the parallel dispatcher so every variant row would
@@ -1323,7 +1289,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # DESTROYING the moved VAMP (measured 165 of 165), so the GA was
                            # scoring a fraud reduction that does not happen. All three
                            # in-search paths. BEHAVIOUR CHANGE — expect worse-looking VAMP.
-                           # ROUTING_VAMP_CONSERVE=0 reverts;
+                           # `_SW_VAMP_CONSERVE = False` reverts;
                            # 19ar: kernel variants C/D/E/F retired (all measured, none
                            # worth a row) + the fastmath compile deleted with E;
                            # [kernel-ga] the timing column was labelled "speed" — it times
@@ -1352,7 +1318,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # fitness, + tie-break on reproducibility inside 5%
                            # (ROUTING_NW_TOL). 11:34 shipped +405/616-recon over +411/3
                            # because the deciding basis was blind to delivery drift.
-                           # BEHAVIOUR CHANGE. ROUTING_NW_DELIVERED=0 reverts;
+                           # BEHAVIOUR CHANGE. `_SW_NW_DELIVERED = False` reverts;
                            # [kernel-ab] E fastmath + F float32 as MEASURED variants, so
                            # the accuracy cost is a number not a claim (neither shipped;
                            # ROUTING_KERNEL_AB_PREC=0 skips just these two);
@@ -1372,7 +1338,7 @@ APP_BUILD = "2026-08-19ct"  # 19bl: REPAIR. 19bk wrote eligibility.py from a sta
                            # targeting: VAMP/TXN CAPACITY not presence, budget-neutral (19ab was
                            # a no-op that tripled mutation); grain log labels; [frozen-scaffold]
                            # measurement; mutation rate = one explicit number
-                           # (dead 60/n_profiles term removed, ROUTING_MUT_RATE added);
+                           # (dead 60/n_profiles term removed, `_SW_MUT_RATE` added);
                            # breach-TARGETED mutation (profiles feeding a breached band get a
                            # boosted selection probability); breach_fixed 0.3; 4 silent
                            # fallbacks -> raise; scipy hard;

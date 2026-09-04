@@ -93,10 +93,13 @@ check("3  ...and drops the list of four stashes that name themselves below",
 check("3  [nw-skip] is ONE line, not two",
       "[nw-skip] GA output delivers 0 breach, so the " in T2
       and "[nw-skip] COST:" not in T2)
-check("3  ...and still names the switch that projects both - a LIVE one",
-      "ROUTING_NW_SKIP_SEED=0 " in T2
-      and 'environ.get("ROUTING_NW_SKIP_SEED"' in T2,
-      "unlike the two above, this switch is actually read")
+# 19kg: the switch is gone; the setting is a source constant. What 19ju was protecting is
+# unchanged and still worth pinning - the line names a revert that EXISTS and is actually read.
+check("3  ...and still names the revert that projects both - one that exists and is read",
+      "`_SW_NW_SKIP_SEED = False` " in T2
+      and "_nw_skip_ok = _SW_NW_SKIP_SEED" in T2
+      and "_SW_NW_SKIP_SEED = True" in T2,
+      "unlike the two above, this setting is actually read")
 
 # ═══ 4. nothing else broke ═══════════════════════════════════════════════════════════════
 check("4  both files compile",

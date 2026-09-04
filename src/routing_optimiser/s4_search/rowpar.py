@@ -17,8 +17,8 @@ threaded first call would race those writes and could print a verdict twice. So 
 call 2 runs serial AND threaded and compares int64 bit patterns, and only then does threading take
 over. A mismatch reverts to serial for the process and records why.
 
-Switches: ROUTING_ROW_PARALLEL=0 disables it everywhere. ROUTING_ROW_PARALLEL_WORKERS pins the
-thread count (default: every core the process may use). ROUTING_ROW_PARALLEL_MIN_ROWS and
+Switches: `_SW_ROW_PARALLEL = False` disables it everywhere. `_SW_ROW_PARALLEL_WORKERS` pins the
+thread count (default: every core the process may use). `_SW_ROW_PARALLEL_MIN_ROWS` and
 ..._MIN_PROFILES set the size below which threading is pure overhead.
 """
 from __future__ import annotations
@@ -30,26 +30,26 @@ import numpy as _np
 
 __build__ = "2026-08-19bo-half-cores+2026-08-19bn-row-parallel"
 
-_RP_ON = _os.environ.get("ROUTING_ROW_PARALLEL", "1") != "0"
-_RP_WORKERS = int(_os.environ.get("ROUTING_ROW_PARALLEL_WORKERS", "0") or 0)
-_RP_MIN_ROWS = int(_os.environ.get("ROUTING_ROW_PARALLEL_MIN_ROWS", "4") or 4)
-# below ~1M profiles the thread hand-off costs more than the work it hands off
-# 19hm: renamed, old name still honoured (see band_projection's note on switch contracts).
-def _rp_env_switch(_new, _old, _default):
-    """Renamed switch, old spelling still honoured and announced (see band_projection's twin)."""
-    v = _os.environ.get(_new)
-    if v is not None:
-        return v
-    lv = _os.environ.get(_old)
-    if lv is not None:
-        print(f"[rowpar] [deprecated-switch] {_old}={lv} was honoured. Rename it to {_new} — "
-              "the old spelling is a compatibility shim and will be removed.")
-        return lv
-    return _default
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_ROW_PARALLEL = True   # was ROUTING_ROW_PARALLEL, default '1'
+_SW_ROW_PARALLEL_MIN_PROFILES = 1000000   # was ROUTING_ROW_PARALLEL_MIN_PROFILES, default '1000000'
+_SW_ROW_PARALLEL_MIN_ROWS = 4   # was ROUTING_ROW_PARALLEL_MIN_ROWS, default '4'
+_SW_ROW_PARALLEL_WORKERS = 0   # was ROUTING_ROW_PARALLEL_WORKERS, default '0'
 
-
-_RP_MIN_PROFILES = int(_rp_env_switch(
-    "ROUTING_ROW_PARALLEL_MIN_PROFILES", "ROUTING_ROW_PARALLEL_MIN_CELLS", "1000000") or 1000000)
+_RP_ON = _SW_ROW_PARALLEL
+_RP_WORKERS = _SW_ROW_PARALLEL_WORKERS
+_RP_MIN_ROWS = _SW_ROW_PARALLEL_MIN_ROWS
+# below ~1M profiles the thread hand-off costs more than the work it hands off.
+# 19kg: `_rp_env_switch` DELETED with the switches it read. It existed to honour the pre-19hm
+# spelling ROUTING_ROW_PARALLEL_MIN_CELLS at a shell prompt; no spelling is read any more, so
+# a compatibility shim for one of them is dead weight that would print a promise nothing keeps.
+_RP_MIN_PROFILES = _SW_ROW_PARALLEL_MIN_PROFILES
 
 _POOL = [None]
 _STATE = {}
@@ -81,7 +81,7 @@ def workers() -> int:
     because it times each stage repeatedly in a tight round-robin, so every stage runs warm.
 
     The returns are strongly diminishing anyway — on a 2-core container 4 threads beat 16 by 1.49x —
-    so half the cores should keep most of the 1.45x. ROUTING_ROW_PARALLEL_WORKERS pins it."""
+    so half the cores should keep most of the 1.45x. `_SW_ROW_PARALLEL_WORKERS` pins it."""
     if _RP_WORKERS > 0:
         return _RP_WORKERS
     return max(2, cores() // 2)
@@ -159,11 +159,11 @@ def row_parallel(fn, X, name: str, enabled: bool = True):
             st["msg"] = (f"[row-par] {name}: VERIFIED bit-identical threaded, {len(sl)} thread(s) "
                          f"of {cores()} usable core(s) — HALF by default since 19bo, so numba's "
                          f"projector pool is not contending with this one; "
-                         f"ROUTING_ROW_PARALLEL_WORKERS pins it — "
+                         f"`_SW_ROW_PARALLEL_WORKERS` pins it — "
                          f"over {P} candidate(s) (int64 bit-pattern comparison on {P}x"
                          f"{Xa.shape[1]:,}, stricter than array_equal). The transform is "
                          "candidate-independent, so each thread performs the same operations in "
-                         "the same order on its own rows. ROUTING_ROW_PARALLEL=0 reverts.")
+                         "the same order on its own rows. `_SW_ROW_PARALLEL = False` reverts.")
         else:
             st["phase"] = -1
             _mx = float(_np.abs(_np.asarray(ref) - got).max()) if ref.shape == got.shape else -1.0

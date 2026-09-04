@@ -34,6 +34,17 @@ from app_common import (ss, PROJECT_ROOT, SQL_DIR, CACHE_DIR, GCP_PROJECT, DEFAU
 from impact_calcs import blocked_keys_for as _blk_keys_for
 
 
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_BACKUP_BLEND = True   # was ROUTING_BACKUP_BLEND, default '1'
+_SW_INJECT_CAPABLE = True   # was ROUTING_INJECT_CAPABLE, default '1'
+_SW_PROJ_FLOOR = False   # was ROUTING_PROJ_FLOOR, default '0'
+
 # [FN-19ir]
 def _blk_keys_t3():
     """The run's bank-blocked rows, as the canonical (bin, vampMid, currency) key.
@@ -588,7 +599,7 @@ def render():
                 _renorm_share(_enf, ["rpgt", "currency", "bin"])
                 # Backup catch-all re-adds (e.g. Braintree) at gateway grain, per (rpgt,currency,bank).
                 _bc = ss.get("backup_catchall") or {}
-                if _bc and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
+                if _bc and _SW_BACKUP_BLEND:
                     from collections import defaultdict as _dd
                     from routing_optimiser.s5_deliver.backup_blend import blend_profile_shares as _bcs
                     _acc, _cnt = _dd(lambda: _dd(float)), _dd(int)
@@ -1423,7 +1434,7 @@ def render():
                         _m0_r = str(date.today().replace(day=1))
 
                     _wc_r = ss.get("wallet_ctx") or {}
-                    _floor_r = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"
+                    _floor_r = (0.0 if (not _SW_PROJ_FLOOR)
                                 else float(ss.get("exploration_floor", 0.0) or 0.0))
                     _wcp_r, _uop_r, _ = _cap_pairs(
                         os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"),
@@ -3459,7 +3470,7 @@ def render():
             if os.path.exists(pp_path):
                 # Reuse the granular projection already computed for the VAMP table above
                 # (identical args) instead of projecting again.
-                _gr_floor3 = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"
+                _gr_floor3 = (0.0 if (not _SW_PROJ_FLOOR)
                               else float(ss.get("exploration_floor", 0.0) or 0.0))
                 _wcp3, _uop3, _ = _cap_pairs(
                     os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"),
@@ -4302,7 +4313,7 @@ def render():
                     import impact_calcs as _ic_cap
                     _capability = None
                     _cap_sig = "off"
-                    if os.environ.get("ROUTING_INJECT_CAPABLE", "1") != "0":
+                    if _SW_INJECT_CAPABLE:
                         try:
                             _rjp = input_json_path("routing_restrictions.json")
                             _rj = {}
@@ -4373,18 +4384,18 @@ def render():
                     # BACKUP-BLEND: fold the backup files' catch-all (BIN=Other) re-adds into the
                     # proposed shares so the projection matches what the pipeline ACTUALLY routes
                     # (tab 5) — e.g. Braintree re-added at 10.6% where the split zeroed it. No-op
-                    # unless a backup folder is set on tab 1. Kill-switch: ROUTING_BACKUP_BLEND=0.
+                    # unless a backup folder is set on tab 1. Kill-switch: `_SW_BACKUP_BLEND = False`.
                     _bcatch = ss.get("backup_catchall") or {}
-                    if _bcatch and _proj_prop and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
+                    if _bcatch and _proj_prop and _SW_BACKUP_BLEND:
                         try:
                             from routing_optimiser.s5_deliver.backup_blend import blend_prop_items as _bpi
                             _proj_prop = _bpi(_proj_prop, _bcatch, fid2vamp)
                         except Exception:  # noqa: BLE001
                             pass   # any failure → keep the un-blended enforced split
                     # Exploration floor for the projection (replicates the engine's per-profile floor so
-                    # 0%-rule incumbents keep >= floor). Kill-switch: ROUTING_PROJ_FLOOR=0 disables it
+                    # 0%-rule incumbents keep >= floor). Kill-switch: `_SW_PROJ_FLOOR = False` disables it
                     # (to compare against the old flat-rule projection). Default = the run's floor.
-                    _proj_floor = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"
+                    _proj_floor = (0.0 if (not _SW_PROJ_FLOOR)
                                    else float(ss.get("exploration_floor", 0.0) or 0.0))
                     _wcp0, _uop0, _ = _cap_pairs(
                         os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv"),

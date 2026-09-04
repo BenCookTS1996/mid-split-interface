@@ -24,7 +24,9 @@ import pandas as pd
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-os.environ["ROUTING_PROJ_FLOAT32"] = "0"   # identity needs ONE dtype on both sides
+# 19kg: ROUTING_PROJ_FLOAT32 was deleted before this commit; float32 is a source-level
+# setting now. The identity below needs ONE dtype on both sides, which `_ident` enforces
+# directly by comparing dtypes rather than by asking for a dtype in the environment.
 
 FAIL = []
 def check(n, ok, d=""):
@@ -79,10 +81,10 @@ def _fresh(env, **flags):
 
 
 def _run(bp, keys, armed, P=6, seed=3):
-    if armed:
-        os.environ["ROUTING_BLOCK_NOFILL"] = "1"
-    else:
-        os.environ.pop("ROUTING_BLOCK_NOFILL", None)
+    # 19kg: no environment variable to set. `_SW_BLOCK_NOFILL` is the setting, and it survives
+    # as a NAME on the module that reads it for exactly this reason - so a test can still drive
+    # both paths. Set on the module, not the environment, and read at call time either way.
+    bp._SW_BLOCK_NOFILL = bool(armed)
     T0, Pc = _scaffold()
     proj = bp.PopulationBandProjector(T0, Pc, np.zeros(0), [("adyen_tav", 0)],
                                       max_share=CAP, by_profile=True)

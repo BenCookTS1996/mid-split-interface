@@ -8,6 +8,15 @@ from typing import Dict, Any, List, Tuple
 
 from .utils import setup_logger
 
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_FCP1_FROM_FORECAST = True   # was ROUTING_FCP1_FROM_FORECAST, default '1'
+
 logger = setup_logger(__name__)
 
 __build__ = "2026-07-19-prorata-export-fcp1-per-profile+reconcile-guard"
@@ -476,7 +485,7 @@ class ExportManager:
         # fcpNumber/attemptNumber split and is not the actuals scaled up. Applying a ratio from
         # the first to a volume from the second mixes two populations; measured, that misplaced
         # 3,083 M5 transactions and explained ~95% of the tab-3 vs Validate per-MID gap.
-        _ff_on = os.environ.get("ROUTING_FCP1_FROM_FORECAST", "1") != "0"
+        _ff_on = _SW_FCP1_FROM_FORECAST
         _fd = getattr(self, "forecast_df", None)
         _vi_cols = ([c for c in _fd.columns if re.match(r'^fc_vi_trx_m\d+$', str(c))]
                     if isinstance(_fd, pd.DataFrame) and not _fd.empty else [])
@@ -553,7 +562,7 @@ class ExportManager:
         _tot_v = float(g["_tot"].sum())
         logger.info(f"   > fcp1_frac source: {_src} · {len(g):,} profile(s) · volume-weighted "
                     f"mean {(float(g['_el'].sum()) / _tot_v if _tot_v > 0 else 1.0):.4f}"
-                    + ("" if _from_fcast else "  <- ROUTING_FCP1_FROM_FORECAST=0 or no forecast "
+                    + ("" if _from_fcast else "  <- `_SW_FCP1_FROM_FORECAST = False` or no forecast "
                                               "frame passed; tab 3 and the GA will disagree with "
                                               "the delivered split by ~1% per MID."))
         _out = ["vampMid", "RPGT", "BIN", "Currency"] + \

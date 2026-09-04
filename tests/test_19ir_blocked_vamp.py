@@ -83,10 +83,13 @@ _saved = set(bf._WIRED)
 try:
     for _s in bf.SITES:
         bf.register(_s)
-    os.environ["ROUTING_BLOCK_NOFILL"] = "1"
+    # 19kg: no environment variable to set. The setting survives as `impact_calcs._SW_BLOCK_NOFILL`
+    # so a test can still arm the rule; restored in the `finally` exactly as the env var was.
+    _sw0 = ic._SW_BLOCK_NOFILL
+    ic._SW_BLOCK_NOFILL = True
     ruled = ic._max_share_waterfill(sh.copy(), t0, grp, CAP, live, blocked=blk)
 finally:
-    os.environ.pop("ROUTING_BLOCK_NOFILL", None)
+    ic._SW_BLOCK_NOFILL = _sw0
     bf._WIRED.clear(); bf._WIRED.update(_saved)
 check("ARMED: the blocked row in a profile WITH a roomy sibling stays where it was",
       abs(ruled[2] - sh[2]) < 1e-15, f"{ruled[2]:.9f} vs {sh[2]:.9f} (unarmed {priced[2]:.9f})")

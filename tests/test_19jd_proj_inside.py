@@ -189,7 +189,7 @@ check("4  a broken stash is reported, not raised, and still cleans up",
 
 # ═══ 5. the wiring ══════════════════════════════════════════════════════════════════════
 check("5  the stash is behind a switch and holds references, not copies",
-      'os.environ.get("ROUTING_PROJ_INSIDE", "1") != "0"' in BP_SRC
+      "_PI_ON = _SW_PROJ_INSIDE" in BP_SRC
       and 'self._pi_call = (_k, _pr_in, _args, cap, (P if par else 1), _bufs, _tail)' in BP_SRC)
 check("5  the chunked path stashes too, and names its slice instead of re-slicing",
       "_pr_c = np.ascontiguousarray(_pr_in[_s0:_s1])" in BP_SRC

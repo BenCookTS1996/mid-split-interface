@@ -47,7 +47,7 @@ Key structural facts verified in `_project_capped`:
     `mv = where(psum > 0 AND vpsum > 0, pr·fcp, 0)` as of 2026-08-19aq — the vpsum test is the
     CONSERVATION guard: a profile that is routed but has no VAMP-positive door has vshare == 0
     everywhere, so moving the VAMP out would destroy it (delivery has always held it instead).
-    ROUTING_VAMP_CONSERVE=0 restores the psum-only gate. In a profile where the candidate assigns ZERO to every
+    `_SW_VAMP_CONSERVE = False` restores the psum-only gate. In a profile where the candidate assigns ZERO to every
     gateway (zero-volume historical profile, or every gateway zeroed by the wallet/USA `emask`),
     NOTHING moves — each MID holds 100 % of its own VAMP. This gate is candidate-dependent,
     so the VAMP held-cohort is NOT a single static offset: it is `Σvc` (constant) MINUS a
@@ -159,6 +159,23 @@ except Exception:                      # noqa: BLE001
 
 _GRPK = ["cur", "bin", "rpgt", "pmp", "ctry", "per"]
 
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_AGE_RENORM = True   # was ROUTING_AGE_RENORM, default '1'
+_SW_BLOCK_NOFILL = False   # was ROUTING_BLOCK_NOFILL, default '0'
+_SW_PROJ_CHUNK = True   # was ROUTING_PROJ_CHUNK, default '1'
+_SW_PROJ_INSIDE = True   # was ROUTING_PROJ_INSIDE, default '1'
+_SW_PROJ_LANES = 64   # was ROUTING_PROJ_LANES, default '64'
+_SW_PROJ_PARALLEL = True   # was ROUTING_PROJ_PARALLEL, default '1'
+_SW_PROJ_SFLOOR = False   # was ROUTING_PROJ_SFLOOR, default '0'
+_SW_VAMP_CONSERVE = True   # was ROUTING_VAMP_CONSERVE, default '1'
+_SW_VSHARE_ALLROWS = True   # was ROUTING_VSHARE_ALLROWS, default '1'
+
 # ── VAMP CONSERVATION GATE (2026-08-19aq) ─────────────────────────────────────────────────────
 # The VAMP move used to be gated on the origin profile being ROUTED (psum > 0) alone. In a profile that
 # is routed but has NO VAMP-positive door, vshare is 0 for every row, so the moved-out VAMP had
@@ -169,13 +186,13 @@ _GRPK = ["cur", "bin", "rpgt", "pmp", "ctry", "per"]
 #
 # Read ONCE at import so numba treats it as a compile-time constant and folds the branch away —
 # a new kernel ARGUMENT would shift every positional index that [kernel-ab] and [kernel-ga]
-# derive from the signature. ROUTING_VAMP_CONSERVE=0 restores the pre-19aq gate for an A/B.
-_VAMP_CONSERVE = os.environ.get("ROUTING_VAMP_CONSERVE", "1") != "0"
+# derive from the signature. `_SW_VAMP_CONSERVE = False` restores the pre-19aq gate for an A/B.
+_VAMP_CONSERVE = _SW_VAMP_CONSERVE
 # 19cu — the vshare denominator. DELIVERY sums prop_raw over EVERY row of the profile-month;
 # in-search summed it over `vcpos` (vampCount > 0) rows only. Default 1 = match delivery.
-# ROUTING_VSHARE_ALLROWS=0 restores the vcpos-masked denominator for an A/B. Module-level, so
+# `_SW_VSHARE_ALLROWS = False` restores the vcpos-masked denominator for an A/B. Module-level, so
 # numba folds it at compile time — which is why these kernels must stay cache=False.
-_VSHARE_ALLROWS = os.environ.get("ROUTING_VSHARE_ALLROWS", "1") != "0"
+_VSHARE_ALLROWS = _SW_VSHARE_ALLROWS
 # 19cx — the AGE-BY-AGE renormalise. Delivery re-bases the redistribution share a SECOND time,
 # over the aged group (profile, period, t): compute_vamp_prepost_granular does
 #     _psum   = pp.groupby(_gk)["_pshare"].transform("sum")
@@ -185,8 +202,8 @@ _VSHARE_ALLROWS = os.environ.get("ROUTING_VSHARE_ALLROWS", "1") != "0"
 # wherever a MID has no row at a given age (ordinary: VAMP arrives from cohorts that age out at
 # different rates) delivery re-bases the survivors up to 1 and the search does not, leaking the
 # absent MID's share. Removing it from DELIVERY is not an option: test_recon616 measures the leak
-# it prevents, so the pass is load-bearing and belongs in both. ROUTING_AGE_RENORM=0 reverts.
-_AGE_RENORM = os.environ.get("ROUTING_AGE_RENORM", "1") != "0"
+# it prevents, so the pass is load-bearing and belongs in both. `_SW_AGE_RENORM = False` reverts.
+_AGE_RENORM = _SW_AGE_RENORM
 
 # -- 19jp: STASHED QUOTIENT (the profile-blocked kernel's nA phase) ----------------------------
 # The age renormalise and the nA accumulation compute THE SAME QUOTIENT twice. Pass 2 evaluates
@@ -520,7 +537,7 @@ def _pop_band_kernel_impl(prop_raw, propidx, pw, gcode, base, mv_s, vcpos, ctot,
 # cache=FALSE as of 19aq, and this is NOT optional. `_VAMP_CONSERVE` is a module-level
 # global, so numba folds its VALUE into the compiled code — but the value is NOT part of
 # the on-disk cache identity. With cache=True the serial kernel served whatever the flag
-# was on the run that first compiled it, so flipping ROUTING_VAMP_CONSERVE silently did
+# was on the run that first compiled it, so flipping `_SW_VAMP_CONSERVE` silently did
 # NOTHING to this compile. test_proj_parallel caught it: the parallel kernel (cache=False)
 # honoured the flag and the serial one did not, and the two disagreed by 1.462 units of
 # VAMP while the log claimed the serial path was the exact revert. A kill-switch that
@@ -850,7 +867,7 @@ _cb_kernel_par = _njit(cache=False, parallel=True)(_cb_kernel_impl)
 
 # 19it: BOTH kernels now carry the blocked mask, so this build claims both sites. Registered
 # here, below the compiles, because that is where the claim becomes true. With these two,
-# blocked_fill.arming_verdict can reach 5 of 5 and ROUTING_BLOCK_NOFILL=1 actually arms the
+# blocked_fill.arming_verdict can reach 5 of 5 and `_SW_BLOCK_NOFILL = True` actually arms the
 # rule - `_cap_pshare` (the numpy reference the self-checks diff against) moved in 19is, so
 # there is no path left where one of these three disagrees with the other two.
 if _BFM is not None:
@@ -961,20 +978,20 @@ _LOADED_SENTINEL = "19dt"
 # +9.1%), so this is a real comparison and not a hot-machine artefact. Twice the scratch (0.29 ->
 # 0.58 GB) and twice the bandwidth pressure for nothing. The idle cores are NOT free here: memory
 # bandwidth is the shared limit across lanes, which is the same reason the float32 variant F is the
-# only [kernel-ab] idea that ever clears the floor. ROUTING_PROJ_LANES=16 restores the experiment.
+# only [kernel-ab] idea that ever clears the floor. `_SW_PROJ_LANES = 16` restores the experiment.
 # 19by: 8 -> 16, ADOPTED ON A MEASUREMENT. [stage-ab] row L timed the projector at both widths on
 # the live scaffold at the live width on 2026-08-24 20:55: 253.0 -> 240.0 ms, 7 of 7 paired rounds,
 # p=0.016, bit-identical on int64 patterns. 19bo reverted 16 -> 8 and that was CORRECT AT THE TIME:
 # the flat kernel was memory-bandwidth-bound, so extra lanes bought nothing (530.7 vs 536.5 ms).
 # 19bt's profile-blocked kernel made the projector compute-bound, and that is exactly why the eight
-# idle cores now pay. Cost: 0.58 GB of scratch instead of 0.29 GB. ROUTING_PROJ_LANES=8 reverts.
+# idle cores now pay. Cost: 0.58 GB of scratch instead of 0.29 GB. `_SW_PROJ_LANES = 8` reverts.
 # 19cg: 16 -> 32, ADOPTED ON TWO MEASUREMENTS THAT AGREE. [stage-ab] row L, which times the
 # projector at the shipped cap against DOUBLE it on the live scaffold at the live width:
 #   2026-08-25 15:48   +3.5%,  9 of 11 paired rounds, p=0.065, bit-identical
 #   2026-08-25 16:50   +3.6%, 11 of 11 paired rounds, p=0.001, bit-identical, floor +-0.7%
 # Worth ~1% of a generation ([gen-cost] put the projector at 28.3%).
 # COST: 1.16 GB of projector scratch instead of 0.58 GB. That is the whole downside and it is not a
-# speed one. ROUTING_PROJ_LANES=16 reverts.
+# speed one. `_SW_PROJ_LANES = 16` reverts.
 # WHAT DISAGREED, and why it does not count: 2026-08-25 07:39 read -3.3% at 3/11 — a scaffold of
 # 929,430 rows against these two's 1,128,484, on a machine whose [kernel-ab] floor read +-8.7% that
 # run against +-0.7% here. Different shape, worse measurement. The row auto-doubles the SHIPPED cap,
@@ -986,10 +1003,10 @@ _LOADED_SENTINEL = "19dt"
 # the second parallel call for a 3-candidate tail is what cost the 3.4%. That is why the row now
 # DECLINES once the cap already covers the candidate width, instead of proposing 128.
 # COST: the scratch is P lanes' worth (~1.26 GB at P=35 on this scaffold) rather than the cap's.
-# ROUTING_PROJ_LANES=32 reverts.
+# `_SW_PROJ_LANES = 32` reverts.
 import time as _time_mod   # 19fw: [lift-ab] timing
-_PROJ_LANE_CAP = max(1, int(os.environ.get("ROUTING_PROJ_LANES", "64") or 64))
-_PROJ_PAR_ON = os.environ.get("ROUTING_PROJ_PARALLEL", "1") != "0"
+_PROJ_LANE_CAP = max(1, _SW_PROJ_LANES)
+_PROJ_PAR_ON = _SW_PROJ_PARALLEL
 _PROJ_PAR_SAID = {}
 
 # WHY A NOTE LIST AND NOT JUST print(). tab_2_routing_engine's `log()` is a CLOSURE defined inside the
@@ -1039,7 +1056,7 @@ _BUILD_NOTES = []
 # produce a third object matching neither side. So arming this moves the search's TXN share on
 # BOTH axes at once - floored AND uncapped - which is what it takes to match delivery. It is one
 # switch because half of it is not a smaller step, it is a wrong one.
-_SFLOOR_ON = os.environ.get("ROUTING_PROJ_SFLOOR", "0") != "0"
+_SFLOOR_ON = _SW_PROJ_SFLOOR
 _SFLOOR_FACT = {"armed": bool(_SFLOOR_ON), "applied": False, "floor": 0.0, "rows": 0}
 # FROZEN-SCAFFOLD LIFT. ON by default since 2026-08-19ae. The unlifted path is the SAME BODY
 # with arange() index arrays - a true revert, not a similar path - which is why `lift_ab_report`
@@ -1062,8 +1079,8 @@ _PROJ_LIFT_ON = True
 # [kernel-ab] row H re-measures chunking's worth every run at the run's own width (4.5x on
 # 2026-08-23). Measured 3.196x when this was written, on the live scaffold
 # at P=35, bit-identical (max|Δ| 0.0 on both vamp and txn) and re-verified in-run by the
-# once-per-process self-check. ROUTING_PROJ_CHUNK=0 restores the decline-to-serial path exactly.
-_PROJ_CHUNK_ON = os.environ.get("ROUTING_PROJ_CHUNK", "1") != "0"
+# once-per-process self-check. `_SW_PROJ_CHUNK = False` restores the decline-to-serial path exactly.
+_PROJ_CHUNK_ON = _SW_PROJ_CHUNK
 
 
 # [FN-010b]
@@ -1132,24 +1149,11 @@ def proj_config():
                    "lives in is not running. Fix that first; the float32 switch alone cannot do "
                    "anything.")
 
-    # THE ENVIRONMENT NOW vs WHAT THE MODULE READ AT IMPORT. These switches are read once, at
-    # import. Setting one after the app has started does nothing at all, and there was no way to
-    # see that from the log.
-    # 19jx: ROUTING_PROJ_PROFILEBLOCK dropped from this list because the switch no longer
-    # exists. A line telling someone their env var was read at import, for a var nothing reads,
-    # is the same fault 19ju removed three of.
-    for _nm, _im in (("ROUTING_PROJ_CHUNK", _PROJ_CHUNK_ON),
-                     ("ROUTING_PROJ_PARALLEL", _PROJ_PAR_ON)):
-        _raw = os.environ.get(_nm)
-        _dflt = True                                   # 19gt: every projector switch defaults ON
-        _now = _dflt if _raw is None else (_raw != "0")
-        if bool(_now) != bool(_im):
-            out.append("*** " + _nm + " reads "
-                       + ("unset" if _raw is None else repr(_raw))
-                       + " in this process's environment NOW, but the module read "
-                       + ("ON" if _im else "off") + " AT IMPORT, and the import is what counts. "
-                       "These switches are read ONCE. Setting one after the app has started does "
-                       "nothing \u2014 quit the app fully and relaunch it.")
+    # 19kg: THE "ENVIRONMENT NOW vs AT IMPORT" WARNING IS DELETED. It existed because these
+    # switches were read once at import, so setting one after the app had started did nothing
+    # and nothing in the log said so. No environment variable is read at all now - the settings
+    # are the constants at the top of this module - so the warning could only ever fire on a
+    # variable nothing reads, which is the exact fault it was written to catch.
 
     if not _PROJ_F32:
         # 19iu: unreachable - `_PROJ_F32` is a constant True now. Kept so the branch below
@@ -1198,7 +1202,7 @@ def proj_config():
     # exploration_floor to have reached the projector. The two differ on any run that arms the
     # switch without a floor configured, and that run must not read as "the floor is modelled".
     if _SFLOOR_FACT["applied"]:
-        out.append("*** EXPLORATION FLOOR IS IN THE SEARCH (ROUTING_PROJ_SFLOOR=1, floor "
+        out.append("*** EXPLORATION FLOOR IS IN THE SEARCH (`_SW_PROJ_SFLOOR = True`, floor "
                    + format(_SFLOOR_FACT["floor"], ".2%") + " over "
                    + format(_SFLOOR_FACT["rows"], ",") + " floor-eligible row(s)). The TXN share "
                    "the profile-blocked kernel scores is now delivery's: UNCAPPED, floored, "
@@ -1206,9 +1210,9 @@ def proj_config():
                    "reads the capped, unfloored `_pshare`, because delivery's _vprop does too. "
                    "THIS MOVES THE DELIVERED NUMBER and the profile-blocked self-check is skipped "
                    "while it is armed (the flat reference does not floor yet). Experiment, not a "
-                   "delivered number. ROUTING_PROJ_SFLOOR=0 reverts.")
+                   "delivered number. `_SW_PROJ_SFLOOR = False` reverts.")
     elif _SFLOOR_ON:
-        out.append("*** ROUTING_PROJ_SFLOOR=1 WAS REQUESTED AND IS NOT IN EFFECT - no non-zero "
+        out.append("*** `_SW_PROJ_SFLOOR = True` WAS REQUESTED AND IS NOT IN EFFECT - no non-zero "
                    "exploration floor reached the projector, so there is nothing to apply and the "
                    "search is still scoring an unfloored split. Check the exploration floor in "
                    "RUN CONFIG and that tab_2 passes it through.")
@@ -1985,8 +1989,8 @@ def lift_ab_report(proj, reps=3):
 
 # 19jd: `[proj-inside]` keeps a reference to the last real kernel call so it can replay it.
 # References, not copies - the buffers already belong to the projector and the proposal is the
-# one `[lift-ab]` already holds. ROUTING_PROJ_INSIDE=0 stops the stash and the report with it.
-_PI_ON = os.environ.get("ROUTING_PROJ_INSIDE", "1") != "0"
+# one `[lift-ab]` already holds. `_SW_PROJ_INSIDE = False` stops the stash and the report with it.
+_PI_ON = _SW_PROJ_INSIDE
 
 
 def stashq_report():
@@ -2003,7 +2007,7 @@ def stashq_report():
             # NOT ARMED is now the interesting case - the stash is unconditional, so this means
             # something upstream of it did not run. 19jv: there is no OFF branch any more.
             if not _AGE_RENORM:
-                _why = ("the age renormalise is OFF (ROUTING_AGE_RENORM=0), and that pass is "
+                _why = ("the age renormalise is OFF (`_SW_AGE_RENORM = False`), and that pass is "
                         "where the quotient is computed - there is nothing to stash")
             elif f.get("ok") is False:
                 _why = "the self-check failed earlier in this process and disarmed it"
@@ -2156,7 +2160,7 @@ def proj_inside_report(proj, reps=3):
     _out.append("      EVERY ROW IS THE SAME COMPILED KERNEL with one of its own input arrays "
                 "truncated to zero length, so no code path changed and nothing was recompiled. "
                 "The answers those calls produce are wrong on purpose and are discarded. "
-                "ROUTING_PROJ_INSIDE=0 skips the whole block.")
+                "`_SW_PROJ_INSIDE = False` skips the whole block.")
     for _l in _out:
         print("[band_projection] " + _l if _l else "[band_projection]")
     return {"P": int(_n), "full_ms": float(_full), "spread": float(_spread),
@@ -2597,12 +2601,12 @@ class PopulationBandProjector:
                    f"({type(_efe).__name__}: {_efe}). `_ef_ok` is still built; only the "
                    "delivery-grain cross-check is missing.")
         # 19db — `vcpos` is now the VAMP-ELIGIBILITY mask: may this row RECEIVE redistributed VAMP?
-        #   ROUTING_VSHARE_ALLROWS=1 (default): every row may, EXCEPT MIDs whose VAMP is overridden
+        #   `_SW_VSHARE_ALLROWS = True` (default): every row may, EXCEPT MIDs whose VAMP is overridden
         #       to zero (gateway_volume_overrides `apply_to: "vamp"`). Delivery honours that
         #       override (19cv); without the same mask here the search would hand those MIDs VAMP
         #       that delivery refuses — the divergence 19cu removed, re-created in the opposite
         #       direction. WoodForest 690 and Authorize 227 on the 2026-08-28 14:39 run.
-        #   ROUTING_VSHARE_ALLROWS=0: the historical `vampCount > 0` gate, kept for an A/B.
+        #   `_SW_VSHARE_ALLROWS = False`: the historical `vampCount > 0` gate, kept for an A/B.
         # ONE mask, threaded through all five in-search paths — a second one alongside it is how
         # the vcpos gate and delivery's unmasked denominator drifted apart in the first place.
         if _VSHARE_ALLROWS:
@@ -3257,7 +3261,7 @@ class PopulationBandProjector:
         self._blk_armed = False
         if _BFM is not None:
             self._blk_armed, self._blk_msg = _BFM.arming_verdict(
-                os.environ.get("ROUTING_BLOCK_NOFILL", "0") != "0")
+                _SW_BLOCK_NOFILL)
             self._blk_armed = bool(self._blk_armed and self._pblk.any())
         self._nbcache = None
         self._cb = None
@@ -3297,7 +3301,7 @@ class PopulationBandProjector:
             return self.project_pop(prop_raw)
         P = int(prop_raw.shape[0])
         # CANDIDATE-PARALLEL decision (2026-08-19y). All four conditions are load-bearing:
-        #   _PROJ_PAR_ON       ROUTING_PROJ_PARALLEL=0 reverts to the serial compile of the SAME
+        #   _PROJ_PAR_ON       `_SW_PROJ_PARALLEL = False` reverts to the serial compile of the SAME
         #                      body — the revert path, asserted bit-identical by the test.
         #   P > 1              a 1-candidate prange is pure thread-pool overhead (measured 187 vs
         #                      180 ms), so score_of/report calls stay serial.
@@ -3321,10 +3325,10 @@ class PopulationBandProjector:
             if _k not in _PROJ_PAR_SAID:
                 _PROJ_PAR_SAID[_k] = True
                 _pnote(f"candidate-parallel projection DECLINED: P={P} exceeds "
-                       f"ROUTING_PROJ_LANES={_PROJ_LANE_CAP} (per-lane scratch is "
+                       f"`_SW_PROJ_LANES` = {_PROJ_LANE_CAP} (per-lane scratch is "
                        f"{len(self._gcode) * 4 * 8 / 1e6:.1f} MB, so P lanes would be "
                        f"{len(self._gcode) * 4 * 8 * P / 1e6:,.0f} MB) and chunking is OFF "
-                       "(ROUTING_PROJ_CHUNK=0). Running serial.")
+                       "(`_SW_PROJ_CHUNK = False`). Running serial.")
         a = self._nb_arrays()
         _lanes = (_PROJ_LANE_CAP if chunk else (P if par else 1))
         buf = self._nb_buffers(P, _lanes)
@@ -3333,8 +3337,8 @@ class PopulationBandProjector:
         if _k2 not in _PROJ_PAR_SAID:
             _PROJ_PAR_SAID[_k2] = True
             # Name the ACTUAL reason it is off. The first version of this line always blamed
-            # ROUTING_PROJ_PARALLEL, so a P=1 call or a lane-cap decline printed "OFF ...
-            # ROUTING_PROJ_PARALLEL=0 forces serial" while that var was untouched — a log that
+            # `_SW_PROJ_PARALLEL`, so a P=1 call or a lane-cap decline printed "OFF ...
+            # `_SW_PROJ_PARALLEL = False` forces serial" while that var was untouched — a log that
             # misstates its own configuration is how a wrong conclusion gets drawn from a right
             # number.
             if chunk:
@@ -3346,11 +3350,11 @@ class PopulationBandProjector:
                         f"{_PROJ_LANE_CAP}. Scratch is the cap's "
                         f"({len(self._gcode) * 4 * 8 * _PROJ_LANE_CAP / 1e9:.2f} GB), not P's "
                         f"({len(self._gcode) * 4 * 8 * P / 1e9:.2f} GB). Bit-identical; "
-                        "ROUTING_PROJ_CHUNK=0 reverts")
+                        "`_SW_PROJ_CHUNK = False` reverts")
             elif par:
                 _why = "ON"
             elif not _PROJ_PAR_ON:
-                _why = "OFF — ROUTING_PROJ_PARALLEL=0"
+                _why = "OFF — `_SW_PROJ_PARALLEL = False`"
             elif P <= 1:
                 # 19jw: the 187-vs-180 ms measurement that justified this is settled and lives
                 # in the block comment above the decision, not on a line printed every run.
@@ -3360,7 +3364,7 @@ class PopulationBandProjector:
                         "inner_max_num_threads=1 sets NUMBA_NUM_THREADS=1; outside one it means "
                         "the machine or NUMBA_NUM_THREADS is limiting us to a single core")
             else:
-                _why = f"OFF — P={P} exceeds the lane cap ROUTING_PROJ_LANES={_PROJ_LANE_CAP}"
+                _why = f"OFF — P={P} exceeds the lane cap `_SW_PROJ_LANES` = {_PROJ_LANE_CAP}"
             # `nlane` stays 1 on the chunked path (it is set per chunk inside the driver), so
             # printing it here said "lanes=1" for a run using 8 — a log that misstates its own
             # configuration is how a wrong conclusion gets drawn from a right number.
@@ -3781,7 +3785,7 @@ class PopulationBandProjector:
         if sw is None or sw.size < max(_lanes, 1):
             sw = self._cb_sw = np.zeros(max(_lanes, 1), np.int64)
         # 19hv: ARMED only when the switch is on AND a floor was actually supplied. Both, because
-        # ROUTING_PROJ_SFLOOR with exploration_floor 0 would arm a no-op and the log would claim
+        # `_SW_PROJ_SFLOOR` with exploration_floor 0 would arm a no-op and the log would claim
         # the floor is modelled - the intent-vs-fact error this file already warns about twice.
         _sfl_armed = bool(_SFLOOR_ON and float(getattr(self, "_efloor", 0.0) or 0.0) > 0.0)
         _sfl_use = 1 if _sfl_armed else 0
@@ -3891,7 +3895,7 @@ class PopulationBandProjector:
             # profile-blocking for the process - taking float32 down with it, which is exactly
             # what happened on 2026-08-24. Skip it and say so; do not let it fail.
             _CB_OK["checked"] = True
-            _pnote("profile-blocked SELF-CHECK NOT RUN because ROUTING_PROJ_SFLOOR=1 is armed. "
+            _pnote("profile-blocked SELF-CHECK NOT RUN because `_SW_PROJ_SFLOOR = True` is armed. "
                    "The flat kernel is the reference and it does not model the exploration floor "
                    "yet (step 3 of docs/scope_exploration_floor_in_search.md §12), so a diff "
                    "against it would fail by construction and disabling this path would take "
@@ -4004,7 +4008,7 @@ class PopulationBandProjector:
             # [f32-floor] would raise the reconciliation bar by it - hiding a real disagreement
             # behind a number that is not float32's. Refuse to measure rather than mis-attribute.
             _F32_OK["live"] = False
-            _pnote("float32 drift NOT RE-MEASURED at the live width because ROUTING_PROJ_SFLOOR=1 "
+            _pnote("float32 drift NOT RE-MEASURED at the live width because `_SW_PROJ_SFLOOR = True` "
                    "is armed: the reference is the flat kernel, which does not model the floor, so "
                    "the figure would be float32 drift PLUS the floor and [f32-floor] would raise "
                    "the reconciliation bar by it. The first-width figure stands; it was taken "

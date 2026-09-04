@@ -126,7 +126,10 @@ check("3  the [denom] reader does the same",
       and "[denom] NOT COMPUTED, on purpose" in T2
       and re.search(r"isinstance\(_ddD, str\)[\s\S]{0,400}?_ddD = None", T2) is not None)
 check("3  ...and each says how to get it back, or points at the one that does",
-      "ROUTING_FORENSIC=1 " in T2 and "the same gate as [txn-terms] " in T2)
+      # 19kg: the revert is a source edit now, not an env var. The phrase straddles a source
+      # line break, so match the half that carries the instruction.
+      "Nothing failed. `_SW_FORENSIC = '1'` " in T2
+      and "the same gate as [txn-terms] " in T2)
 
 # ═══ 4. the module still imports and the flag is real ════════════════════════════════════
 import impact_calcs as ic

@@ -69,18 +69,18 @@ check("no blocked pairs leaves NO column (absence of information, not a False cl
       "_blocked" not in no_pairs.columns)
 
 # ── 2. the export is BIT-IDENTICAL with the column, without it, and with the rule asked for
-def _export(_df, **env):
-    _old = {k: os.environ.get(k) for k in env}
-    os.environ.update({k: v for k, v in env.items()})
+# 19kg: the settings this used to set in the environment are module constants on the module
+# that reads them, so `**sw` rebinds them there and restores them exactly as the env dance did.
+def _export(_df, **sw):
+    _old = {k: getattr(ic, k) for k in sw}
+    for k, v in sw.items():
+        setattr(ic, k, v)
     try:
         _ex = ic.build_split_exports(_df, "TotalAV", "2026-01-01", max_share=CAP)
         return {k: v.copy() for k, v in _ex.items()}
     finally:
         for k, v in _old.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+            setattr(ic, k, v)
 
 def _numbers(ex):
     _o = []
@@ -91,7 +91,7 @@ def _numbers(ex):
 
 base = _export(split)
 withcol = _export(out)
-asked = _export(out, ROUTING_BLOCK_NOFILL="1")
+asked = _export(out, _SW_BLOCK_NOFILL=True)
 _b, _w, _a = _numbers(base), _numbers(withcol), _numbers(asked)
 check("the export is bit-identical whether or not the split carries _blocked",
       len(_b) == len(_w) and all(np.array_equal(np.nan_to_num(x).view(np.int64),

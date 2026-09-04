@@ -37,6 +37,15 @@ from app_common import (ss, PROJECT_ROOT, GCP_PROJECT, input_json_path,
                         RPGT_LIST, COMPANIES, StreamlitLogHandler, _switched_off_gateways)
 
 
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_TAB1_PATHPARSE = True   # was ROUTING_TAB1_PATHPARSE, default '1'
+
 # [FN-293]
 def render():
     _bb, _vs = st.tabs(["Build Baseline", "Validate Split"])
@@ -184,7 +193,7 @@ def render():
                     # folder higher up an absolute path cannot outrank the real one.
                     _pp_sch = _pp_co = None
                     _pp_mo = None                      # (MONTH_LABEL, month_number)
-                    if os.environ.get("ROUTING_TAB1_PATHPARSE", "1") != "0":
+                    if _SW_TAB1_PATHPARSE:
                         _pp_known = {str(_c).replace(" ", "").lower(): str(_c) for _c in COMPANIES}
                         for _pp in parts:
                             _ppl = str(_pp).strip().lower()

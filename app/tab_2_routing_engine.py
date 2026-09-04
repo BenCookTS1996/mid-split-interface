@@ -21,6 +21,50 @@ from routing_optimiser import (HardConstraints, OptimiserSettings, SoftConstrain
                                gateway_success_rates, load_forecast, load_success_data,
                                optimise_split, portfolio_summary, run_sql_file)
 
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_BACKUP_BLEND = True   # was ROUTING_BACKUP_BLEND, default '1'
+_SW_BLOCK_CTRY = True   # was ROUTING_BLOCK_CTRY, default '1'
+_SW_BLOCK_NOFILL = False   # was ROUTING_BLOCK_NOFILL, default '0'
+_SW_BLOCK_RESTRICT = True   # was ROUTING_BLOCK_RESTRICT, default '1'
+_SW_CA_REACH = True   # was ROUTING_CA_REACH, default '1'
+_SW_DELIV_CAP = True   # was ROUTING_DELIV_CAP, default '1'
+_SW_DELIV_FUSE = True   # was ROUTING_DELIV_FUSE, default '1'
+_SW_DELIV_INJECT = True   # was ROUTING_DELIV_INJECT, default '1'
+_SW_DOOR_COVER_PROFILES = True   # was ROUTING_DOOR_COVER_PROFILES, default '1'
+_SW_DROP_MEASURE = True   # was ROUTING_DROP_MEASURE, default '1'
+_SW_FORENSIC = 'auto'   # was ROUTING_FORENSIC, default 'auto'
+_SW_FULL_DOOR_COVER = True   # was ROUTING_FULL_DOOR_COVER, default '1'
+_SW_GA_ELIG = True   # was ROUTING_GA_ELIG, default '1'
+_SW_MIDLIST_ACTIVE = False   # was ROUTING_MIDLIST_ACTIVE, default '0'
+_SW_MIDLIST_FILTER = True   # was ROUTING_MIDLIST_FILTER, default '1'
+_SW_MIDLIST_WALLET = True   # was ROUTING_MIDLIST_WALLET, default '1'
+_SW_MUT_BOOST = 3.0   # was ROUTING_MUT_BOOST, default '3'
+_SW_MUT_COVER = 0.9   # was ROUTING_MUT_COVER, default '0.9'
+_SW_MUT_RATE = 0.01   # was ROUTING_MUT_RATE, default ''
+_SW_MUT_TARGET = True   # was ROUTING_MUT_TARGET, default '1'
+_SW_NW_DELIVERED = True   # was ROUTING_NW_DELIVERED, default '1'
+_SW_NW_SKIP_SEED = True   # was ROUTING_NW_SKIP_SEED, default '1'
+_SW_PROFILES = True   # was ROUTING_PROFILES, default '1'
+_SW_PROFILES_N = 8   # was ROUTING_PROFILES_N, default '8'
+_SW_PROJ_FLOOR = False   # was ROUTING_PROJ_FLOOR, default '0'
+_SW_RECONCILE_M5 = True   # was ROUTING_RECONCILE_M5, default '1'
+_SW_RECON_BAR = 1.0   # was ROUTING_RECON_BAR, default '1'
+_SW_RECON_RELEASE = True   # was ROUTING_RECON_RELEASE, default '1'
+_SW_S2PR_SCATTER = True   # was ROUTING_S2PR_SCATTER, default '1'
+_SW_SEARCH_FLOOR = False   # was ROUTING_SEARCH_FLOOR, default '0'
+_SW_SEARCH_KEEP = True   # was ROUTING_SEARCH_KEEP, default '1'
+_SW_SEARCH_RPGT_SCOPE = True   # was ROUTING_SEARCH_RPGT_SCOPE, default '1'
+_SW_SEED_CHAIN = True   # was ROUTING_SEED_CHAIN, default '1'
+_SW_SEED_DELIV = True   # was ROUTING_SEED_DELIV, default '1'
+_SW_SEED_DIAG = True   # was ROUTING_SEED_DIAG, default '1'
+_SW_VAMP_OFF = True   # was ROUTING_VAMP_OFF, default '1'
+
 try:    # 19is: the search's own water-fill (`_fm_cap`) implements the blocked-row rule, so this
         # build CLAIMS the site. Registration is a property of the build, not of the moment a
         # site runs - the five water-fills fire at different points and no single moment sees
@@ -44,9 +88,6 @@ from app_common import capability_pairs as _cap_pairs
 from app_common import capability_company_view as _cap_view      # 19jq
 from app_common import capability_fid_brand as _cap_fid_brand    # 19jq
 from app_common import newest_build_tag as _newest_tag           # 19jq
-# 19ho: ONE reader for the four renamed kill switches, so the deprecation warning for an old
-# spelling fires from a single place rather than four inline fallbacks.
-from app_common import env_switch as _env_switch
 from app_common import run_company            # 19ea: ONE reader for the run's brand
 # 19ft: ONE resolver for config/inputs, so a mastercard run reads the mastercard copy.
 from app_common import input_json_path
@@ -620,10 +661,10 @@ def render():
                 # floor-free, so applying one in the projection re-adds VAMP the routing
                 # removed and can make ceilings look infeasible.
                 # setdefault, not assignment: every consumer already defaults to these, and
-                # this keeps the shell override (ROUTING_BACKUP_BLEND=0) that the
+                # this keeps the shell override (`_SW_BACKUP_BLEND = False`) that the
                 # scored-vs-delivered A/B still uses.
-                os.environ.setdefault("ROUTING_BACKUP_BLEND", "1")
-                os.environ.setdefault("ROUTING_PROJ_FLOOR", "0")
+                os.environ.setdefault("`_SW_BACKUP_BLEND`", "1")
+                os.environ.setdefault("`_SW_PROJ_FLOOR`", "0")
 
                 # --- Compression shaping (drives the pool compression in tab 3 / configs) ---
                 _cm1, _cm2 = st.columns(2)
@@ -1407,7 +1448,7 @@ def render():
                               + " IN FULL below. These stayed quiet under the line-by-line rule "
                                 "because each of their own checks passed on its own terms \u2014 "
                                 "which is precisely how the blocks that explain a run-level "
-                                "number can all fall silent at once. ROUTING_RECON_RELEASE=0 "
+                                "number can all fall silent at once. `_SW_RECON_RELEASE = False` "
                                 "disables this. ──")
                     for _f in _rel:
                         _log_open.add(_f)
@@ -2951,16 +2992,16 @@ def render():
                     #   • brand mismatch     — fid's brand != the run's company    → drop  [HARD]
                     #   • IsActive=FALSE     — REPORT-ONLY: logs what it WOULD remove and how much
                     #                          baseline volume rides on it, changes nothing.
-                    #                          Enforce with ROUTING_MIDLIST_ACTIVE=1.     [REPORT]
+                    #                          Enforce with `_SW_MIDLIST_ACTIVE = True`.     [REPORT]
                     # processWallet is gated after the profile expansion below (it needs the pmp
                     # column, so it only bites at profile grain).
                     # VOLUME IS CONSERVED: a dropped row's volume is redistributed across the
                     # surviving doors of the SAME profile, never deleted — the demand is real even if
                     # that particular door cannot serve it. Profiles the gates would empty are left
                     # untouched (an unroutable profile is worse than a bad door).
-                    # Kill-switch: ROUTING_MIDLIST_FILTER=0 disables the whole block.
+                    # Kill-switch: `_SW_MIDLIST_FILTER = False` disables the whole block.
                     _mf_wallet = {}
-                    if (os.environ.get("ROUTING_MIDLIST_FILTER", "1") != "0"
+                    if (_SW_MIDLIST_FILTER
                             and "gateway" in agg_forecast.columns):
                         try:
                             from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg_mf
@@ -3014,7 +3055,7 @@ def render():
                                         if (_mf_brand and _runb) else pd.Series(False, index=_ix))
                             _d_act = (pd.Series([not _mf_act.get(_g, True) for _g in _gl], index=_ix)
                                       if _mf_act else pd.Series(False, index=_ix))
-                            _act_on = os.environ.get("ROUTING_MIDLIST_ACTIVE", "0") == "1"
+                            _act_on = _SW_MIDLIST_ACTIVE
                             _hard = _d_excl | _d_cur | _d_brand | (_d_act if _act_on else False)
                             # ---- never leave a profile with no candidate --------------------------
                             _ckf = [_c for _c in ["rpgt", "currency", "bin"] if _c in agg_forecast.columns]
@@ -3038,9 +3079,9 @@ def render():
                                 log(f"   [midlist-filter] IsActive=FALSE in Master_MID_List: {len(_ai)} "
                                     f"gateway(s) on {int(_d_act.sum()):,} candidate row(s) carrying "
                                     f"{float(_ai['sum'].sum()):,.0f} of baseline forecast volume — "
-                                    + ("ENFORCED (dropped; ROUTING_MIDLIST_ACTIVE=1)." if _act_on else
+                                    + ("ENFORCED (dropped; `_SW_MIDLIST_ACTIVE = True`)." if _act_on else
                                        "REPORT-ONLY, nothing removed. Check the list below against reality, "
-                                       "then set ROUTING_MIDLIST_ACTIVE=1 to enforce."))
+                                       "then set `_SW_MIDLIST_ACTIVE = True` to enforce."))
                                 for _fk, _fr in _ai.head(20).iterrows():
                                     log(f"      {_fk}: {float(_fr['sum']):,.0f} baseline volume across "
                                         f"{int(_fr['size']):,} candidate row(s)")
@@ -3073,7 +3114,7 @@ def render():
                                     "doors of the same profile (demand is real even where that door can't serve "
                                     "it), so no profile total changed. These rows could never ship, so they were "
                                     "consuming decision variables and share mass the band projector cannot "
-                                    "see. Kill-switch: ROUTING_MIDLIST_FILTER=0.")
+                                    "see. Kill-switch: `_SW_MIDLIST_FILTER = False`.")
                             else:
                                 log("   [midlist-filter] no candidate row failed a Master_MID_List gate "
                                     "(currency / brand" + (" / IsActive" if _act_on else "") + ").")
@@ -3111,9 +3152,9 @@ def render():
                         # that can actually serve it: scored == shippable on this axis, fewer
                         # decision variables, and share mass the projector can see.
                         # Volume is conserved (redistributed within the profile) and a profile
-                        # that would be emptied is left alone. Kill-switch: ROUTING_MIDLIST_WALLET=0.
+                        # that would be emptied is left alone. Kill-switch: `_SW_MIDLIST_WALLET = False`.
                         _mf_w = locals().get("_mf_wallet") or {}
-                        if (_mf_w and os.environ.get("ROUTING_MIDLIST_WALLET", "1") != "0"
+                        if (_mf_w and _SW_MIDLIST_WALLET
                                 and "pmp" in _agg_sc.columns and "gateway" in _agg_sc.columns):
                             try:
                                 from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg_w
@@ -3158,7 +3199,7 @@ def render():
                                         + f"); their {_vw:,.0f} profile volume was REDISTRIBUTED across the "
                                         "wallet-capable doors of the same profile. Previously these stayed "
                                         "candidates and were zeroed only AFTER the GA had spent share on them. "
-                                        "Kill-switch: ROUTING_MIDLIST_WALLET=0.")
+                                        "Kill-switch: `_SW_MIDLIST_WALLET = False`.")
                                 else:
                                     log("   [midlist-wallet] no wallet-incapable candidate found in a "
                                         "GOOGLEPAY/APPLEPAY profile.")
@@ -3333,7 +3374,7 @@ def render():
                             # compressibility λ removal, so the cost argument no longer applies —
                             # but the wrong-frame argument does, and it is the reason for the arm.
                             if (_EXKEEP.get("arm")
-                                    and os.environ.get("ROUTING_DROP_MEASURE", "1") != "0"):
+                                    and _SW_DROP_MEASURE):
                                 try:
                                     _dmk = (_mp[["currency", "parent_bank", "_rk"]]
                                             .drop_duplicates().assign(_dmm=1))
@@ -3775,7 +3816,7 @@ def render():
                     import impact_calcs as _ic
                     _capability = None
                     if (_pp_full is not None
-                            # 19hx: ROUTING_INJECT_CAPABLE deleted on Ben's instruction. Its
+                            # 19hx: `_SW_INJECT_CAPABLE` deleted on Ben's instruction. Its
                             # default was ON and that is what is kept — the injection is now
                             # unconditional wherever the capability frame exists.
                             ):
@@ -3830,9 +3871,9 @@ def render():
                     # they move POST. That is the `different rows in the group` mechanism Part A is looking
                     # for, and it is now testable rather than argued.
                     #
-                    # ROUTING_DELIV_INJECT=0 reverts delivery to the raw export.
+                    # `_SW_DELIV_INJECT = False` reverts delivery to the raw export.
                     _deliv_cap = (_capability
-                                  if os.environ.get("ROUTING_DELIV_INJECT", "1") != "0" else None)
+                                  if _SW_DELIV_INJECT else None)
                     # 19gs: rewritten. The old wording described the 19du BUG rather than what
                     # the line reports, so it read as a warning every run while saying nothing
                     # about this run.
@@ -3857,9 +3898,9 @@ def render():
                     # call in this file did not, so both sat ~11 units per band BELOW what tab 3 ships and
                     # agreed with each other while doing it — four bands the 15:28 run called compliant are
                     # over their ceiling on tab 3.
-                    # ROUTING_VAMP_OFF=0 reverts BOTH sides at once, never one, which is the state this fixes.
+                    # `_SW_VAMP_OFF = False` reverts BOTH sides at once, never one, which is the state this fixes.
                     _vamp_off_mids = (_ic.build_vamp_off_mids(fid2vamp, ss.get("gateway_volume_overrides"))
-                                      if os.environ.get("ROUTING_VAMP_OFF", "1") != "0" else frozenset())
+                                      if _SW_VAMP_OFF else frozenset())
                     # 19gs: rewritten. Says what it is FOR, and stays one short line in the
                     # normal case (nothing configured) instead of narrating the 19dw bug.
                     if _vamp_off_mids:
@@ -3869,7 +3910,7 @@ def render():
                             "Applied in the search AND in every delivered figure below, so the "
                             "two agree: "
                             + ", ".join(sorted(_vamp_off_mids))
-                            + ". ROUTING_VAMP_OFF=0 reverts.")
+                            + ". `_SW_VAMP_OFF = False` reverts.")
                     # 19hx: the [vamp-off] NOTHING-TO-REPORT branch is deleted, `else` and all.
                     # The branch above still fires when a MID IS set to receive zero fraud, which
                     # is the only case worth a line.
@@ -3899,10 +3940,10 @@ def render():
                     # superset of G's doors, so coverage is complete BY CONSTRUCTION; any extra row
                     # simply receives 0 share and contributes nothing to VAMP or txn.
                     # Keys match band_projection._prop_key exactly (rpgt LOWER-CASED).
-                    # Kill-switch: ROUTING_FULL_DOOR_COVER=0 restores the baseline-anchored set.
+                    # Kill-switch: `_SW_FULL_DOOR_COVER = False` restores the baseline-anchored set.
                     _door_pairs = None      # DataFrame(_ck, _mid, _midl) — (profile, banded MID) doors
                     _door_profiles = set()     # the _cur|_bin|_rkl profiles those doors live in
-                    if _capped_l and os.environ.get("ROUTING_FULL_DOOR_COVER", "1") != "0":
+                    if _capped_l and _SW_FULL_DOOR_COVER:
                         try:
                             _f2v_l = {str(_k).strip().lower(): str(_v).strip()
                                       for _k, _v in (fid2vamp or {}).items()}
@@ -3933,8 +3974,8 @@ def render():
                                     f"(profile, banded-MID) pair(s) across {len(_door_profiles):,} profile(s) "
                                     f"for {_dc['_midl'].nunique()} banded MID(s). The scaffold will cover "
                                     "ALL of these, so the incidence can no longer DROP share the split "
-                                    "routes. Replaces ROUTING_TXN_FULLCOVER. Kill-switch: "
-                                    "ROUTING_FULL_DOOR_COVER=0.")
+                                    "routes. Replaces the old blanket txn full-cover. Revert with "
+                                    "`_SW_FULL_DOOR_COVER = False` in tab_2_routing_engine.py.")
                         except Exception as _dce:  # noqa: BLE001
                             _door_pairs, _door_profiles = None, set()
                             log(f"   [door-cover] candidate-door set FAILED ({type(_dce).__name__}: "
@@ -3996,8 +4037,8 @@ def render():
                         # the projector's _fcp[origin] (VAMP), and _fcp_orig_map -> _mvraw (the POOL) — so
                         # zeroing it here gates exactly the set delivery's two lines gate. Gating the
                         # movable fraction WITHOUT the pool would make fraud arrive that never left.
-                        # ROUTING_SEARCH_RPGT_SCOPE=0 reverts.
-                        if os.environ.get("ROUTING_SEARCH_RPGT_SCOPE", "1") != "0" and _sel_rpgts:
+                        # `_SW_SEARCH_RPGT_SCOPE = False` reverts.
+                        if _SW_SEARCH_RPGT_SCOPE and _sel_rpgts:
                             from routing_optimiser.s4_search import band_projection as _bpsc
                             _scfn = getattr(_bpsc, "rpgt_scope_mask", None)
                             if _scfn is None:
@@ -4035,7 +4076,7 @@ def render():
                                     "actually reroutes.")
                                 log(f"      scope: {', '.join(sorted(_sel_rpgts))} \u00b7 "
                                     f"{float(np.asarray(_P['_vc'], float)[_hitP].sum()):,.0f} VAMP "
-                                    f"held \u00b7 ROUTING_SEARCH_RPGT_SCOPE=0 reverts")
+                                    f"held \u00b7 `_SW_SEARCH_RPGT_SCOPE = False` reverts")
                         # 19dr — SWITCHED-OFF GATEWAYS, EXPLICITLY, IN THE SEARCH. A gateway on a volume
                         # override of target 0 gets no transactions, so fraud already on its books cannot
                         # be rerouted — there is nothing to reroute it WITH. Delivery encodes that as
@@ -4060,8 +4101,8 @@ def render():
                         # (`_T0` and `_fcp_orig_map` are both built from `_P["_t"] == 0`) appearance IS
                         # origination, which is the month delivery evaluates `_keep` on.
                         #
-                        # ROUTING_SEARCH_KEEP=0 reverts.
-                        if os.environ.get("ROUTING_SEARCH_KEEP", "1") != "0":
+                        # `_SW_SEARCH_KEEP = False` reverts.
+                        if _SW_SEARCH_KEEP:
                             try:
                                 _keOv = ss.get("gateway_volume_overrides") or {}
                                 _feffK = {}
@@ -4100,7 +4141,7 @@ def render():
                                 log("      not modelled: delivery also scales the share down "
                                     "pro-rata for a gateway switched off MID-month; the search "
                                     "treats it as off for the whole month. "
-                                    "ROUTING_SEARCH_KEEP=0 reverts.")
+                                    "`_SW_SEARCH_KEEP = False` reverts.")
                             except Exception as _keE:  # noqa: BLE001
                                 log(f"   [keep-gate] \u26a0 NOT APPLIED ({type(_keE).__name__}: {_keE}). The search is "
                                     "running WITHOUT the switched-off-gateway gate and will reroute fraud from "
@@ -4115,17 +4156,16 @@ def render():
                         # row of its own): without them the profile is dropped from _P entirely, so the
                         # injection below has no profiles to hang a receiving row on and the
                         # incidence drops that share. Every MID of a kept profile is retained, so
-                        # psum/vpsum stay exact. Kill-switch: ROUTING_DOOR_COVER_PROFILES=0.
+                        # psum/vpsum stay exact. Kill-switch: `_SW_DOOR_COVER_PROFILES = False`.
                         # 19hm: renamed, old name still honoured.
-                        if _door_profiles and _env_switch(
-                                "ROUTING_DOOR_COVER_PROFILES", "1") != "0":
+                        if _door_profiles and _SW_DOOR_COVER_PROFILES:
                             _keep = _keep | (_door_profiles & set(_profilek.unique()))
                             if len(_keep) != _keep_base:
                                 log(f"   [door-cover] scaffold profiles {_keep_base:,} → {len(_keep):,} "
                                     f"(+{len(_keep) - _keep_base:,} candidate-door-only profile(s)). This is "
                                     "the COST of full coverage — the per-generation projection scales "
                                     "with scaffold rows, so expect a slower search. Kill-switch: "
-                                    "ROUTING_DOOR_COVER_PROFILES=0.")
+                                    "`_SW_DOOR_COVER_PROFILES = False`.")
                         _P = _P[_profilek.isin(_keep)].copy()
                         _rc["scoped"] = int(len(_P))        # [scaffold-recon] step 3
                         _rc["profiles"] = int(len(_keep))
@@ -5139,14 +5179,14 @@ def render():
                     # The catch-all is pooled (unweighted mean over pmp/Country) to the optimiser's
                     # coarser currency×bank×rpgt grain and mapped fid→vampMid ONCE here; the exact
                     # per-pmp/Country blend is applied in the tab-3 projection (Stage 3). Empty ⇒
-                    # no blend. ROUTING_BACKUP_BLEND=0 disables. NOTE: this steers the GA's band/
+                    # no blend. `_SW_BACKUP_BLEND = False` disables. NOTE: this steers the GA's band/
                     # badness objective; the hard VAMP-cap enforcement still runs on the raw split.
                     # (Restored 2026-08-04: this setup block was dropped during the tab split, which
                     # left _bcs4/_bpool_rpgt/_bpool_all undefined → every per-MID band path raised a
                     # NameError and silently fell back to "post-enforcement only" / "no cap enforced".)
                     _bpool_rpgt, _bpool_all, _bcs4 = {}, {}, None
                     _bcatch_ga = ss.get("backup_catchall") or {}
-                    if _bcatch_ga and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
+                    if _bcatch_ga and _SW_BACKUP_BLEND:
                         try:
                             from routing_optimiser.s5_deliver.backup_blend import blend_profile_shares as _bcs4
                             from collections import defaultdict as _dd4
@@ -5944,7 +5984,7 @@ def render():
                             except Exception as _e:  # noqa: BLE001
                                 log(f"   [Warning] VAMP floor-route calc failed ({_e}); dial-0 risk-min unclamped.")
                                 _vfloor_route = np.zeros(len(_mids_u))
-                        # --- ELIGIBILITY IN THE SEARCH (optional, ROUTING_GA_ELIG=0 to disable) ---
+                        # --- ELIGIBILITY IN THE SEARCH (optional, `_SW_GA_ELIG = False` to disable) ---
                         # Fold the SAME bans + wallet/USA-only capability enforcement applies
                         # (apply_restrictions) into a static per-row operator so the GA SCORES the
                         # actually-routable shares, instead of a split eligibility later perturbs.
@@ -5953,7 +5993,7 @@ def render():
                         # Applied ONLY in the scoring path (_obj_viol/_mid_over) — the returned best stays
                         # the RAW decode so enforcement blends exactly once (wallet/USA blend isn't
                         # idempotent). No-op when no eligibility is configured or the build fails.
-                        # DEFAULT ON (set ROUTING_GA_ELIG=0 to disable). The GA scores the ACTUALLY-
+                        # DEFAULT ON (set `_SW_GA_ELIG = False` to disable). The GA scores the ACTUALLY-
                         # routable shares every generation, so it optimises what actually gets deployed.
                         # The genetic_numba kernel implements the eligibility stage (numba_kernels.
                         # _fused_eval), so this KEEPS the fast Numba kernel — verify() still cross-checks
@@ -5962,7 +6002,7 @@ def render():
                         # The returned best stays the RAW decode, so end-of-run enforcement still blends
                         # eligibility exactly once.
                         _elig_op = None
-                        if (os.environ.get("ROUTING_GA_ELIG", "1") != "0"
+                        if (_SW_GA_ELIG
                                 and (_elig_rules or _wallet_incapable or _usa_only)):
                             try:
                                 from routing_optimiser.s3_problem.eligibility import build_elig_operator as _build_elig_op
@@ -5999,7 +6039,7 @@ def render():
                                 log(f"   GA scores ELIGIBILITY-ADJUSTED shares: {int(_elig_op['ban'].sum())} banned "
                                     f"row(s), wallet={'on' if _elig_op['has_w'] else 'off'}, "
                                     f"USA-only={'on' if _elig_op['has_u'] else 'off'} (returned split is RAW; "
-                                    "enforcement blends once). Set ROUTING_GA_ELIG=0 to disable.")
+                                    "enforcement blends once). Set `_SW_GA_ELIG = False` to disable.")
                                 _sc_mark("_build_elig_op")
                                 # 19bl: this counter is the CANARY for the 19bk clobber. It read
                                 # 147,944/245,409 (60%) on every run up to 16:01 and 0/1 (0%) at
@@ -6034,7 +6074,7 @@ def render():
                             # the only evidence the flag had taken effect was the ABSENCE of the
                             # "GA scores ELIGIBILITY-ADJUSTED shares" line — easy to miss, and easy to
                             # mistake a var that never reached the process for a completed experiment.
-                            log("   GA eligibility DISABLED (ROUTING_GA_ELIG=0) — DIAGNOSTIC ONLY. The GA "
+                            log("   GA eligibility DISABLED (`_SW_GA_ELIG = False`) — DIAGNOSTIC ONLY. The GA "
                                 "now scores RAW pre-eligibility shares: the profile-grain wallet / USA-only "
                                 "FRACTIONAL blend is not applied in-search. Delivery still applies it, so "
                                 "DELIVERY DRIFT is EXPECTED TO MOVE. A material change confirms the "
@@ -6119,7 +6159,7 @@ def render():
                         # reroute (they are per-traffic-type capability rules, not whole-gateway exclusions,
                         # so a hard 0 would wrongly drop the capable traffic they ARE allowed to serve).
                         # Sourced from the eligibility operator's per-row ban mask; no-op if eligibility is
-                        # disabled (ROUTING_GA_ELIG=0 — bans then still enforced at delivery via _restrict)
+                        # disabled (`_SW_GA_ELIG = False` — bans then still enforced at delivery via _restrict)
                         # or nothing is banned.
                         if _elig_op is not None and _elig_op.get("ban") is not None:
                             _ban_mask = np.asarray(_elig_op["ban"], float) > 0.5
@@ -6628,7 +6668,7 @@ def render():
                         try:
                             _bc_raw = ss.get("backup_catchall") or {}
                             if (_bc_raw and _fm_catch_eps > 0
-                                    and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0"):
+                                    and _SW_BACKUP_BLEND):
                                 _cc_fids = {}
                                 for (_cu, _rp, _pm, _ct), _gw in _bc_raw.items():
                                     _cc_fids.setdefault((str(_cu).strip().lower(),
@@ -6698,7 +6738,7 @@ def render():
                             # precomputed operator ctx["elig_op"], whose profile segments match the
                             # projector's). Without it the GA scored the RAW pre-eligibility split, so
                             # the live 'MID unmet' UNDER-counted vs tab 3's delivered breakdown (e.g. 3
-                            # vs 5). No-op if eligibility is disabled (ROUTING_GA_ELIG=0 / elig_op None).
+                            # vs 5). No-op if eligibility is disabled (`_SW_GA_ELIG = False` / elig_op None).
                             from routing_optimiser.s3_problem.eligibility import apply_elig_pop as _apply_elig_pop
                             from routing_optimiser.s4_search.rowpar import row_parallel as _fm_rowpar
                             _fm_elig_op = ctx.get("elig_op")
@@ -6799,8 +6839,7 @@ def render():
                             # left-to-right. Gather the hit profiles' rows, run the SAME
                             # expression, scatter back.
                             _fm_blk_hit = _fm_blk_rows = _fm_blk_scs = _fm_blk_scc = None
-                            _FM_BLK_RESTRICT = os.environ.get(
-                                "ROUTING_BLOCK_RESTRICT", "1") != "0"
+                            _FM_BLK_RESTRICT = _SW_BLOCK_RESTRICT
                             if _fm_blk_row is not None and _FM_BLK_RESTRICT:
                                 try:
                                     _bh_profile_of = np.repeat(np.arange(_fm_bcs.size),
@@ -6821,7 +6860,7 @@ def render():
                                         "row(s) — the only profiles a blocked row can reach. "
                                         "Every other profile's output is its input, exactly. "
                                         "SELF-CHECKED against the full-width transform on "
-                                        "the first call; ROUTING_BLOCK_RESTRICT=0 reverts.")
+                                        "the first call; `_SW_BLOCK_RESTRICT = False` reverts.")
                                 except Exception as _bhE:  # noqa: BLE001
                                     _fm_blk_rows = None
                                     log(f"   [block-restrict] index build FAILED "
@@ -6954,7 +6993,7 @@ def render():
                                 _fm_rp_ok = True
                             if not _fm_rp_ok:
                                 log("   [row-par] delivery NOT threaded: the in-place "
-                                    "eligibility twin (ROUTING_ELIG_INPLACE=1) shares "
+                                    "eligibility twin (`_SW_ELIG_INPLACE = True`) shares "
                                     "scratch across calls, so it cannot be run "
                                     "concurrently. Unset it to thread `deliver`, which is "
                                     "worth far more than the twin's 1.05x.")
@@ -6998,12 +7037,12 @@ def render():
                             # with fewer than 2 present gateways).
                             #
                             # Pure, so rowpar's verify-by-running-twice stays valid.
-                            # ROUTING_DELIV_CAP=0 restores the pre-19fg order. That switch
+                            # `_SW_DELIV_CAP = False` restores the pre-19fg order. That switch
                             # exists for ONE reason — so this run's delta can be attributed
                             # separately from 19fe's during the verification cycle — and
                             # should be deleted once the default is trusted.
                             _DCAP = {
-                                "on": bool(os.environ.get("ROUTING_DELIV_CAP", "1") != "0"
+                                "on": bool(_SW_DELIV_CAP
                                            and float(ctx.get("max_share", 1.0) or 1.0) < 1.0),
                                 "cap": float(ctx.get("max_share", 1.0) or 1.0),
                                 "said": False, "profiles": 0, "moved": 0.0, "worst": 0.0,
@@ -7037,7 +7076,7 @@ def render():
                             try:
                                 from routing_optimiser.s4_search import blocked_fill as _bfm0
                                 _bf_ok, _bf_msg = _bfm0.arming_verdict(
-                                    os.environ.get("ROUTING_BLOCK_NOFILL", "0") != "0")
+                                    _SW_BLOCK_NOFILL)
                                 _bfm0.saw_mask("_fm_cap", _fm_blk_row is not None,
                                                f"{int(np.asarray(_fm_blk_row).sum()):,} row(s) "
                                                "blocked in the search's own row order"
@@ -7050,12 +7089,12 @@ def render():
                                                    f"({type(_bfE).__name__}: {_bfE})")
                             if not _DCAP["on"]:
                                 log("   [deliv-cap] OFF — "
-                                    + ("ROUTING_DELIV_CAP=0, so the search caps the genome "
+                                    + ("`_SW_DELIV_CAP = False`, so the search caps the genome "
                                        "BEFORE eligibility and never re-caps, while "
                                        "delivery caps AFTER. A profile where eligibility "
                                        "zeroing lifts a survivor past the cap is scored "
                                        "differently from what ships."
-                                       if os.environ.get("ROUTING_DELIV_CAP", "1") == "0"
+                                       if (not _SW_DELIV_CAP)
                                        else f"max_share is "
                                             f"{float(ctx.get('max_share', 1.0) or 1.0):.4g}, "
                                             "so there is no cap to apply."))
@@ -7192,7 +7231,7 @@ def render():
                             # wallet/USA 0-1 mask, exact on 100% of rows per [elig-grain]. Where the two
                             # sets differ, RECONCILIATION ERROR is what will say so.
                             #
-                            # ROUTING_SEARCH_FLOOR=0 reverts this AND the matching reconcile projection
+                            # `_SW_SEARCH_FLOOR = False` reverts this AND the matching reconcile projection
                             # in one switch — they have to move together or they measure different
                             # objects.
                             # ── DEFAULT OFF as of 19gx. THE 2026-09-02 00:22 RUN FAILED. ──
@@ -7226,9 +7265,9 @@ def render():
                             # so a search that ignores it optimises a split that gets modified
                             # before it executes. The fix is to model the floor where delivery
                             # applies it — on prop_share inside the projection both sides share —
-                            # not on the share vector. ROUTING_SEARCH_FLOOR=1 re-enables this
+                            # not on the share vector. `_SW_SEARCH_FLOOR = True` re-enables this
                             # version for experiments; do not ship on it.
-                            _SFLOOR_ON = (os.environ.get("ROUTING_SEARCH_FLOOR", "0") != "0"
+                            _SFLOOR_ON = (_SW_SEARCH_FLOOR
                                           and float(floor or 0.0) > 0.0)
                             _SFLOOR = float(floor or 0.0) if _SFLOOR_ON else 0.0
 
@@ -7319,7 +7358,7 @@ def render():
                                     "GA would abandon, and the GA can now see that abandoning them does "
                                     "not actually remove their VAMP. Watch for bands that were met and no "
                                     "longer are — a MID the GA drove to 0 now keeps a floor's worth. "
-                                    "ROUTING_SEARCH_FLOOR=0 reverts this AND the matching reconcile "
+                                    "`_SW_SEARCH_FLOOR = False` reverts this AND the matching reconcile "
                                     "projection, which move together.")
                             else:
                                 log("   [search-floor] OFF (the 19gx default) — the search scores splits "
@@ -7329,7 +7368,7 @@ def render():
                                     "to close it put reconciliation error at 1,457 and is off until it is "
                                     "modelled where delivery actually applies it"
                                     + (". 19hv SHIPPED STEP 2 of the replacement: "
-                                       "ROUTING_PROJ_SFLOOR=1 models the floor INSIDE the "
+                                       "`_SW_PROJ_SFLOOR = True` models the floor INSIDE the "
                                        "profile-blocked band kernel, where delivery applies it - "
                                        "on the TXN share only, uncapped and renormalised, in its "
                                        "own buffer, leaving the VAMP path on the capped unfloored "
@@ -7337,8 +7376,8 @@ def render():
                                        "while it is armed the profile-blocked self-check is "
                                        "SKIPPED because the flat reference does not floor yet "
                                        "(step 3), so read such a run as an experiment. The old "
-                                       "ROUTING_SEARCH_FLOOR=1 is the 19gw version and is still "
-                                       "NOT correct - prefer ROUTING_PROJ_SFLOOR."
+                                       "`_SW_SEARCH_FLOOR = True` is the 19gw version and is still "
+                                       "NOT correct - prefer `_SW_PROJ_SFLOOR`."
                                        if float(floor or 0.0) > 0.0
                                        else "; the exploration floor is 0 on this run, so there is "
                                             "nothing to model."))
@@ -7388,10 +7427,10 @@ def render():
                         # delivery has no Jacobian to give it — so stage 2 PROPOSES on the linear
                         # model and JUDGES on delivery.
                         #
-                        # BEHAVIOURAL. It changes which seed is produced. ROUTING_SEED_DELIV=0
+                        # BEHAVIOURAL. It changes which seed is produced. `_SW_SEED_DELIV = False`
                         # passes deliver_fn=None to all three and restores the pre-19go seed byte
                         # for byte, fast line-search included.
-                        _SEED_DELIV = os.environ.get("ROUTING_SEED_DELIV", "1") != "0"
+                        _SEED_DELIV = _SW_SEED_DELIV
                         _seed_dlv = (locals().get("_fm_deliv") if _SEED_DELIV else None)
                         if _seed_dlv is not None:
                             log("   [seed-deliv] ON (19go) — all three seed stages score through "
@@ -7399,9 +7438,9 @@ def render():
                                 "same one the engine selects with and delivery ships. Read "
                                 "[seed-basis] below: RAW and DELIVERED should now agree on which "
                                 "seed is best, and the seed's own delivery projection becomes "
-                                "redundant. ROUTING_SEED_DELIV=0 restores the RAW basis.")
+                                "redundant. `_SW_SEED_DELIV = False` restores the RAW basis.")
                         elif not _SEED_DELIV:
-                            log("   [seed-deliv] OFF by ROUTING_SEED_DELIV=0 — the seed stages "
+                            log("   [seed-deliv] OFF by `_SW_SEED_DELIV = False` — the seed stages "
                                 "score the RAW split while the engine selects on the DELIVERED "
                                 "one. Expect [seed-basis] to report a gap between the bases; that "
                                 "is this switch, not a regression.")
@@ -7796,14 +7835,14 @@ def render():
                                     _move_G = None
                                     log(f"   targeted move-operator seed skipped: "
                                         f"{type(_me).__name__}: {_me}")
-                                # ── READ-ONLY SEED DIAGNOSTICS (ROUTING_SEED_DIAG) ──────────────────
+                                # ── READ-ONLY SEED DIAGNOSTICS (`_SW_SEED_DIAG`) ──────────────────
                                 # Eight report blocks that change NO share: reachable
                                 # minimum, VAMP-positive sibling, the four root-cause
                                 # reports, co-location, and the seed unmet-band summary. Measured
                                 # ~15.8s on the 2026-08-25 20:35 run. Worth that while a seed
                                 # question is open; worth nothing once it is closed — the same
                                 # shape as [kernel-ab] and [stage-ab], and switched the same way.
-                                _sd_on = os.environ.get("ROUTING_SEED_DIAG", "1") != "0"
+                                _sd_on = _SW_SEED_DIAG
                                 # ── 19gs: NINE REPORTS THAT ANSWER ONE QUESTION ──────────────
                                 # Every one of these blocks answers "why can't this BREACHED band
                                 # be cleared?". With nothing breached they each print a header, a
@@ -7902,14 +7941,14 @@ def render():
                                         "concentration, scoped-vs-frozen and co-location. Each "
                                         "one explains a BREACHED band; there is no breached band. "
                                         "They return automatically the moment one breaches "
-                                        "(~10s). ROUTING_SEED_DIAG=0 also suppresses them when "
+                                        "(~10s). `_SW_SEED_DIAG = False` also suppresses them when "
                                         "there IS one.")
                                 elif not _sd_on:
                                     # A SKIPPED diagnostic and a FAILED one must not read alike
                                     # (19ce D4; 19cj's skipped ban stage). These blocks are the
                                     # evidence for whether a band is genuinely unreachable, so
                                     # their absence has to be stated, not inferred.
-                                    log("   [seed-diag] SKIPPED by ROUTING_SEED_DIAG=0 \u2014 the "
+                                    log("   [seed-diag] SKIPPED by `_SW_SEED_DIAG = False` \u2014 the "
                                         "reachable-minimum, VAMP-sibling, "
                                         "incidence self-check, seed-gradient, vpsum, "
                                         "usable-recipient, co-location and seed unmet-band blocks "
@@ -8265,10 +8304,10 @@ def render():
                                 # POSITIVE share (which OVERRIDES the catch-all) or route the risk elsewhere. Reuses
                                 # the already-pooled _bpool_rpgt/_bpool_all (same pooling as the tilt path's
                                 # _blend_ga), so scored == deployed by construction. No-op (raw passthrough) when no
-                                # backup is configured or ROUTING_BACKUP_BLEND=0 — identical to prior behaviour.
+                                # backup is configured or `_SW_BACKUP_BLEND = False` — identical to prior behaviour.
                                 _fm_blend_pr = None
                                 if (_fm_use_exact and (_bpool_rpgt or _bpool_all)
-                                        and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0"):
+                                        and _SW_BACKUP_BLEND):
                                     try:
                                         import scipy.sparse as _spb
                                         _pk_b = [str(_k) for _k in _fm_eb.projector.prop_keys]
@@ -8398,8 +8437,8 @@ def render():
                                             "a backup catch-all is configured, so the prop vector is "
                                             "folded after it is built and the scatter would not be "
                                             "what ships")
-                                    elif os.environ.get("ROUTING_S2PR_SCATTER", "1") == "0":
-                                        _fm_s2pr_buf["why"] = "ROUTING_S2PR_SCATTER=0"
+                                    elif (not _SW_S2PR_SCATTER):
+                                        _fm_s2pr_buf["why"] = "`_SW_S2PR_SCATTER = False`"
                                     elif _fm_inc is None:
                                         _fm_s2pr_buf["why"] = "no incidence matrix on the hook"
                                     else:
@@ -8423,7 +8462,7 @@ def render():
                                                 "exactly 1.0. So prop_raw is a scatter, not a matmul "
                                                 "- no sum to reassociate, no multiply to reorder. "
                                                 "Self-checked against the matmul on the first live "
-                                                "call; ROUTING_S2PR_SCATTER=0 reverts.")
+                                                "call; `_SW_S2PR_SCATTER = False` reverts.")
                                         else:
                                             _fm_s2pr_buf["why"] = (
                                                 f"the incidence is NOT a permutation on this build "
@@ -8622,7 +8661,7 @@ def render():
                                     #                        siblings, STARTS FROM the best above
                                     # The comparison below is kept as a NEVER-WORSE GUARD, not a
                                     # contest: if a later stage regresses, the earlier one is used.
-                                    if os.environ.get("ROUTING_SEED_CHAIN", "1") != "0":
+                                    if _SW_SEED_CHAIN:
                                         try:
                                             # ORDER MATTERS. `_fm_cands` is in PREFERENCE order
                                             # (targeted-move first, because it is normally best);
@@ -8897,14 +8936,14 @@ def render():
                                                     f"({_r2:.5f} → {_d2:.5f}, Δ "
                                                     f"+{_d2 - _r2:.5f}), and the seed stages "
                                                     "are on the RAW basis this run "
-                                                    "(ROUTING_SEED_DELIV=0). So this stage "
+                                                    "(`_SW_SEED_DELIV = False`). So this stage "
                                                     "optimised a target the engine does not "
                                                     "select on and can report 'strictly "
                                                     "better' for what the engine scores as a "
                                                     "regression. Selection rejects it (see "
                                                     "[seed-chain]) so nothing bad ships, but "
                                                     "the stage is wasted. Unset "
-                                                    "ROUTING_SEED_DELIV.")
+                                                    "`_SW_SEED_DELIV`.")
                                             else:
                                                 # 19hu: nothing to say here any more. 19hs cut
                                                 # this to the two scores; the table above now
@@ -8963,7 +9002,7 @@ def render():
                                     # keep_idx, not a law, so it is tested here rather than
                                     # inherited from the run that measured it.
                                     _FUSE_DELIV = {
-                                        "use": bool(os.environ.get("ROUTING_DELIV_FUSE", "1") != "0"
+                                        "use": bool(_SW_DELIV_FUSE
                                                     and _fm_blk_row is not None
                                                     and _fm_blk_ok.get("use")
                                                     and len(np.asarray(_fm_colmap).ravel())
@@ -8972,8 +9011,8 @@ def render():
                                     if not _FUSE_DELIV["use"]:
                                         _FUSE_DELIV["msg"] = (
                                             "[deliv-fuse] OFF \u2014 "
-                                            + ("ROUTING_DELIV_FUSE=0"
-                                               if os.environ.get("ROUTING_DELIV_FUSE", "1") == "0"
+                                            + ("`_SW_DELIV_FUSE = False`"
+                                               if (not _SW_DELIV_FUSE)
                                                else ("no blocked rows to cap, so there is nothing to "
                                                      "fuse" if _fm_blk_row is None
                                                      else ("the restricted blocked-caps path is not in "
@@ -9027,7 +9066,7 @@ def render():
                                                         "array_equal). One full-width read and write "
                                                         "removed per delivery; [deliv-cost] measured the "
                                                         "copy at 93% of the 18.1 ms blocked-caps row. "
-                                                        "ROUTING_DELIV_FUSE=0 reverts.")
+                                                        "`_SW_DELIV_FUSE = False` reverts.")
                                                     _d = _got
                                                 else:
                                                     _FUSE_DELIV["use"] = False
@@ -9428,10 +9467,9 @@ def render():
                                 # reduceat is safe on p.profile_start (FullMatrixProblem.build sorts
                                 # rows by profile, so segments ARE ascending and contiguous — unlike
                                 # the projector's gcode, which is not sorted; see [frozen-scaffold]).
-                                _fm_mut_boost = float(os.environ.get("ROUTING_MUT_BOOST", "3") or 3)
-                                _fm_mut_on = os.environ.get("ROUTING_MUT_TARGET", "1") != "0"
-                                _fm_mut_cover = min(0.999, max(0.05, float(
-                                    os.environ.get("ROUTING_MUT_COVER", "0.9") or 0.9)))
+                                _fm_mut_boost = _SW_MUT_BOOST
+                                _fm_mut_on = _SW_MUT_TARGET
+                                _fm_mut_cover = min(0.999, max(0.05, _SW_MUT_COVER))
                                 _fm_spec_mass = None
                                 _sp_list = list(getattr(_fm_eb_pen, "specs", []) or [])
                                 try:
@@ -9499,7 +9537,7 @@ def render():
                                     # BUDGET-NEUTRAL: w is divided by its mean, so expected
                                     # mutated profiles = rate x n_profiles, UNCHANGED. Targeting
                                     # redistributes the budget; it does not inflate it. That is
-                                    # what makes ROUTING_MUT_TARGET=0 a clean A/B instead of one
+                                    # what makes `_SW_MUT_TARGET = False` a clean A/B instead of one
                                     # confounded with "more mutation" — the defect that made the
                                     # 21:24 run uninterpretable.
                                     # SELF-CORRECTING: if the target set is EVERY profile then
@@ -9574,7 +9612,7 @@ def render():
                                     # returns - no _fm_gather, so no per-profile renormalise
                                     # (which is right for the compress distortion and WRONG for
                                     # the success rate) and no 439s of gather in the hot loop.
-                                    # Read only when ROUTING_DECODE_OBJ=1; None is a supported
+                                    # Read only when `_SW_DECODE_OBJ = True`; None is a supported
                                     # fallback that the GA's [obj-basis] line flags out loud.
                                     obj_full=_fm_meta.get("obj_full"),
                                     # 19iz: the subset-capable delivery and the kept->full
@@ -9863,7 +9901,7 @@ def render():
                                                     log("      [proj-inside] NOT MEASURED: the "
                                                         "projector held no recorded kernel call "
                                                         "(the profile-blocked path never ran, or "
-                                                        "ROUTING_PROJ_INSIDE=0). The projector is "
+                                                        "`_SW_PROJ_INSIDE = False`). The projector is "
                                                         "unaffected - only its breakdown is "
                                                         "missing.")
                                                 else:
@@ -10093,14 +10131,13 @@ def render():
                                     _mt_wmax = float(_fm_mut_stat.get("wmax", 1.0) or 1.0)
                                     _mt_wmin = float(_fm_mut_stat.get("wmin", 1.0) or 1.0)
                                     _mt_tot = int(_fm_p.n_profiles)
-                                    _mt_rate = min(float(os.environ.get("ROUTING_MUT_RATE", "")
-                                                         or 0.01), 0.3)
+                                    _mt_rate = min(_SW_MUT_RATE, 0.3)
                                     _mt_share = float(_fm_mut_stat.get("share", 0.0) or 0.0)
                                     _mt_names = ", ".join(sorted(
                                         {str(_sp_list[_i].midl) for _i in _mt_m
                                          if 0 <= _i < len(_sp_list)})) or "none"
                                     if not _fm_mut_on:
-                                        log("   [mut-target] OFF — ROUTING_MUT_TARGET=0, so "
+                                        log("   [mut-target] OFF — `_SW_MUT_TARGET = False`, so "
                                             f"mutation was UNIFORM over all {_mt_tot:,} profiles. "
                                             "This is the A/B baseline: because targeting is "
                                             "budget-neutral as of 2026-08-19ad, a targeted run "
@@ -10129,7 +10166,7 @@ def render():
                                             "the specific failure of build 19ab (a uniform ×3). "
                                             "Cause is usually that the breached bands' routable "
                                             "capacity is spread evenly across every profile. Lower "
-                                            f"ROUTING_MUT_COVER (currently {_fm_mut_cover:.2f}) to "
+                                            f"`_SW_MUT_COVER` (currently {_fm_mut_cover:.2f}) to "
                                             "concentrate on fewer, higher-capacity profiles.")
                                     else:
                                         log(f"   [mut-target] ON (boost ×{_fm_mut_boost:g}, cover "
@@ -10145,8 +10182,8 @@ def render():
                                             "have mean 1, so the expected number of perturbed "
                                             f"profiles is still ~{_mt_rate * _mt_tot:,.0f} — the same "
                                             "as a uniform run. Targeting redistributes the budget, "
-                                            "it does not add to it, so ROUTING_MUT_TARGET=0 is a "
-                                            "clean A/B. ROUTING_MUT_BOOST / ROUTING_MUT_COVER tune "
+                                            "it does not add to it, so `_SW_MUT_TARGET = False` is a "
+                                            "clean A/B. `_SW_MUT_BOOST` / `_SW_MUT_COVER` tune "
                                             "the concentration.")
                                 except Exception as _mte:  # noqa: BLE001
                                     log(f"   [mut-target] summary skipped "
@@ -10463,14 +10500,12 @@ def render():
                                     # move together: `_fm_deliv` models the floor and this does
                                     # not, and the two are measuring different objects — the error
                                     # would read the whole floor and the run would look broken.
-                                    # ROUTING_PROJ_FLOOR still forces it on independently, for the
+                                    # `_SW_PROJ_FLOOR` still forces it on independently, for the
                                     # one case worth having it: proving the floor's size against a
                                     # search that does not model it.
-                                    _pj_sfloor = (os.environ.get("ROUTING_SEARCH_FLOOR", "0")
-                                                  != "0")
+                                    _pj_sfloor = _SW_SEARCH_FLOOR
                                     _pj_floor = (float(ss.get("exploration_floor", 0.0) or 0.0)
-                                                 if (_pj_sfloor or os.environ.get(
-                                                     "ROUTING_PROJ_FLOOR", "0") != "0")
+                                                 if (_pj_sfloor or _SW_PROJ_FLOOR)
                                                  else 0.0)
                                     _PJ_MEMO = {}          # split-hash -> (ep, m5 frame, {_LAST_*: value})
 
@@ -10580,7 +10615,7 @@ def render():
                                             country_pres=_wc.get("country_pres", {}),
                                             max_share=float(_wc.get("max_share", 0.97)))
                                         _bc = ss.get("backup_catchall") or {}
-                                        if _bc and _ep and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
+                                        if _bc and _ep and _SW_BACKUP_BLEND:
                                             _ep = _pj_bpi(_ep, _bc, _wc.get("fid2vamp") or fid2vamp)
                                         _t1 = _pjt.perf_counter()
                                         _ppp = os.path.join(out_dir, "vamp_t_period_prorata_export.csv")
@@ -10751,10 +10786,10 @@ def render():
                                                         "reverted to the string key for that "
                                                         "groupby, but the FOUR others below it "
                                                         "still used the int key, so this run's "
-                                                        "delivered VAMP is NOT trustworthy. 19ju: "
-                                                        "this used to say 'set ROUTING_GKCODE=0', "
-                                                        "which is not a switch that exists - fix "
-                                                        "the key in _gk_codes and re-run.")
+                                                        "delivered VAMP is NOT trustworthy. There "
+                                                        "is nothing to turn off - the int64 key is "
+                                                        "how this groupby works. Fix the key in "
+                                                        "_gk_codes and re-run.")
                                                 elif _gkc.get("why"):
                                                     # 19ju: SILENT on the ordinary path. The int64
                                                     # key ran and was not verified, which since
@@ -10780,7 +10815,7 @@ def render():
                                         if len(_PJ_MEMO) > 3:                    # only ever 2 candidates + slack
                                             _PJ_MEMO.pop(next(iter(_PJ_MEMO)))
                                         return _ep, _g5
-                                    _nw_units = os.environ.get("ROUTING_NW_DELIVERED", "1") != "0"
+                                    _nw_units = _SW_NW_DELIVERED
 
                                     def _nw_scored_units(_sv):
                                         """Band breach in UNITS on the SCORED (in-search) basis,
@@ -10813,7 +10848,7 @@ def render():
                                         _gr = _explode(_endpoint_agg(np.asarray(_sv, float)))
                                         if _blk_pairs_pre:
                                             _gk = None
-                                            if os.environ.get("ROUTING_BLOCK_CTRY", "1") != "0":
+                                            if _SW_BLOCK_CTRY:
                                                 _gk = tuple(_c for _c in ("rpgt", "currency",
                                                                           "bin", "pmp", "ctry")
                                                             if _c in _gr.columns)
@@ -10935,7 +10970,7 @@ def render():
                                         # projection returns. The error line below re-derives it through the
                                         # authoritative reconcile; if the two ever disagree, THAT is a defect
                                         # and [forensic] says so rather than quietly re-projecting.
-                                        _fx_on = os.environ.get("ROUTING_FORENSIC", "auto")
+                                        _fx_on = _SW_FORENSIC
                                         _pj_ic_m = __import__("impact_calcs")
                                         _pj_ic_m.FORENSIC = (_fx_on == "1")
                                         _nw_t0 = _nw_time.perf_counter()
@@ -10945,7 +10980,7 @@ def render():
                                         log(f"   [never-worse] GA output projected in "
                                             f"{_nw_t1 - _nw_t0:.1f}s")
                                         try:
-                                            _fx_bar = float(os.environ.get("ROUTING_RECON_BAR", "1") or 1)
+                                            _fx_bar = _SW_RECON_BAR
                                         except Exception:  # noqa: BLE001
                                             _fx_bar = 1.0
                                         # ── [f32-floor] 19gv: DO NOT RE-PROJECT TO EXPLAIN ROUNDING ────
@@ -10989,15 +11024,15 @@ def render():
                                                 "AGAIN with the attribution stashes on, because a run that "
                                                 "cannot prove it reconciles is a run that needs them.")
                                         if _fx_on == "1":
-                                            log("   [forensic] ROUTING_FORENSIC=1 — the four attribution "
+                                            log("   [forensic] `_SW_FORENSIC = '1'` — the four attribution "
                                                 "stashes ran on the first projection, whether or not there "
                                                 "is anything to attribute. Costs ~77s.")
                                         elif _fx_on == "0":
-                                            log("   [forensic] ROUTING_FORENSIC=0 — the four attribution "
+                                            log("   [forensic] `_SW_FORENSIC = '0'` — the four attribution "
                                                 "stashes are OFF and will NOT be computed even if this run "
                                                 "fails to reconcile. [vterms], [pshare-why], [move-gate] and "
                                                 "[passthru] will be absent below, and the reconciliation "
-                                                "error will have no explanation. Unset it.")
+                                                "error will have no explanation. Set it back to 'auto'.")
                                         elif _fx_drift is not None and _fx_drift <= _fx_bar:
                                             # 19ju: the four stashes explain a reconciliation error and
                                             # there is not one - that is the whole line. Which four they
@@ -11041,10 +11076,9 @@ def render():
                                         # candidate in the pass that projected it, so on a skipped
                                         # run the seed's drift is not attributed — it is not
                                         # measured. That is stated below rather than left as a
-                                        # missing block. ROUTING_NW_SKIP_SEED=0 projects both, which
+                                        # missing block. `_SW_NW_SKIP_SEED = False` projects both, which
                                         # is what to set when the seed's drift is the question.
-                                        _nw_skip_ok = os.environ.get("ROUTING_NW_SKIP_SEED",
-                                                                     "1") != "0"
+                                        _nw_skip_ok = _SW_NW_SKIP_SEED
                                         _nw_seed_skipped = bool(_nw_skip_ok and _nw_dg is not None
                                                                 and _nw_dg <= 0.0)
                                         _nw_ds = _nw_bs = _nw_sts = None
@@ -11057,7 +11091,7 @@ def render():
                                             log(f"   [nw-skip] GA output delivers 0 breach, so the "
                                                 f"seed '{_fm_sname}' was not projected — it cannot "
                                                 "beat 0. Saved one delivery projection; the seed's "
-                                                "own drift goes unmeasured. ROUTING_NW_SKIP_SEED=0 "
+                                                "own drift goes unmeasured. `_SW_NW_SKIP_SEED = False` "
                                                 "projects both.")
                                         else:
                                             _nw_ds, _nw_bs, _nw_sts = _nw_delivered_units(
@@ -11117,11 +11151,11 @@ def render():
                                                 "reproducible.")
                                         log(f"      rule: {_nw_rule} ⇒ ships the GA OUTPUT.")
                                     elif _nw_dg is None or _nw_ds is None:
-                                        # ROUTING_NW_DELIVERED=0. Say plainly that the decision is
+                                        # `_SW_NW_DELIVERED = False`. Say plainly that the decision is
                                         # being made on the basis that got it wrong, rather than
                                         # printing a confident line either way.
                                         log("   ── [never-worse] ⚠ DECIDING ON THE GA-FITNESS "
-                                            "BASIS (ROUTING_NW_DELIVERED=0) ──")
+                                            "BASIS (`_SW_NW_DELIVERED = False`) ──")
                                         log("      That basis is BLIND to delivery drift. On "
                                             "2026-08-22 11:34 it ranked the seed 2.15x better and "
                                             "shipped +405 delivered with 616 reconciliation "
@@ -11544,7 +11578,7 @@ def render():
                                             log("   " + _rpm)
                                     else:
                                         log(f"   [row-par] NOT USED this search "
-                                            f"(ROUTING_ROW_PARALLEL=0, or the population is below "
+                                            f"(`_SW_ROW_PARALLEL = False`, or the population is below "
                                             f"the size floor, or {_rp_mod.workers()} usable "
                                             "core(s) means there is nothing to split across). "
                                             "`deliver` and `softmax` ran single-threaded.")
@@ -11562,7 +11596,7 @@ def render():
                                         pass       # the restricted path ran; the twin is switched off
                                     else:
                                         log("   [eligibility] the in-place transform did NOT run this "
-                                            "search (no operator built, or ROUTING_ELIG_INPLACE=0), "
+                                            "search (no operator built, or `_SW_ELIG_INPLACE = False`), "
                                             "so the allocating path shipped. That is the reference "
                                             "path — the answer is unaffected, only the speed.")
                                 except Exception as _epE:  # noqa: BLE001
@@ -11661,21 +11695,18 @@ def render():
                             # attempts in the 30D window — the only BIN with enough on BOTH sides
                             # for the pooling to bite — which is why the [block-why] probe, before it
                             # was deleted on 2026-08-19t, reached exactly one BIN.
-                            # ROUTING_BLOCK_CTRY=0 restores the pooled behaviour exactly.
+                            # `_SW_BLOCK_CTRY = False` restores the pooled behaviour exactly.
                             _bwGK = None
-                            if os.environ.get("ROUTING_BLOCK_CTRY", "1") != "0":
+                            if _SW_BLOCK_CTRY:
                                 _bwGK = tuple(c for c in ("rpgt", "currency", "bin", "pmp", "ctry")
                                               if c in _ga_gran.columns)
                                 log(f"   [block-ctry] blocked-caps redistribution groups by "
                                     f"{_bwGK}, matching the search's profile grain — DEFAULT ON "
                                     "since 2026-08-19o"
-                                    + (" (explicitly set)"
-                                       if os.environ.get("ROUTING_BLOCK_CTRY") is not None
-                                       else " (default, no env var set)")
-                                    + ". A blocked row's freed share stays inside its own country "
+                                    ". A blocked row's freed share stays inside its own country "
                                     "profile instead of spreading across USA/Non-USA. This IS a "
                                     "deployed-split change vs pre-19o runs, and it is the last unit "
-                                    "of reconciliation error. ROUTING_BLOCK_CTRY=0 reverts.")
+                                    "of reconciliation error. `_SW_BLOCK_CTRY = False` reverts.")
                             _ga_gran, _ = _apply_blocked_caps(_ga_gran, _blk_pairs_pre, float(floor),
                                                               site="reconcile (_ga_gran)",
                                                               bin_to_bank=bin_to_bank,
@@ -11693,8 +11724,8 @@ def render():
                         # one-shot runs the EXACT tab-3 pipeline (enforced_prop_items →
                         # compute_vamp_prepost_granular) on the delivered split, so the reported delivered
                         # M5 == tab-3. Read-only; fully guarded (never breaks the run). Kill-switch:
-                        # ROUTING_RECONCILE_M5=0 (skips the ~148 MB re-projection).
-                        if os.environ.get("ROUTING_RECONCILE_M5", "1") != "0":
+                        # `_SW_RECONCILE_M5 = False` (skips the ~148 MB re-projection).
+                        if _SW_RECONCILE_M5:
                             try:
                                 # 19ga: enforced_prop_items / compute_vamp_prepost_granular were
                                 # imported here and never used — [proj-memo] (19fi) took over this
@@ -11705,14 +11736,14 @@ def render():
                                 _rec_brand = str((ss.get("forecast_settings", {}) or {}).get("company", "TotalAV"))
                                 _rec_gl = str(ss.get("split_go_live_date", ""))
                                 _rec_scoped = tuple(locals().get("_sel_rpgts") or ())
-                                _rec_floor = (0.0 if os.environ.get("ROUTING_PROJ_FLOOR", "0") == "0"
+                                _rec_floor = (0.0 if (not _SW_PROJ_FLOOR)
                                               else float(ss.get("exploration_floor", 0.0) or 0.0))
                                 # 19fi: THE SHARED, MEMOISED CHAIN. `_comp_gran` IS the shipped
                                 # split, and [never-worse] just projected it under one of its two
                                 # candidate names — so this is normally a cache hit and the whole
                                 # enforced_prop_items -> blend -> cvp chain is skipped. When
                                 # enforcement is on, or the guard was disabled
-                                # (ROUTING_NW_DELIVERED=0), it misses and runs for real; either
+                                # (`_SW_NW_DELIVERED = False`), it misses and runs for real; either
                                 # way the arguments are the ones [proj-memo] owns, so this call and
                                 # the guard's cannot drift apart again.
                                 # `_rec_ep` comes back ALREADY BLENDED, which is why the blend
@@ -11746,7 +11777,7 @@ def render():
                                 # change that every caller shares; (b) the split has NO row →
                                 # a profile universe must be threaded into blend_prop_items at each
                                 # call site instead. MEASUREMENT ONLY.
-                                if os.environ.get("ROUTING_CA_REACH", "1") != "0":
+                                if _SW_CA_REACH:
                                     try:
                                         _crS = {str(_r).strip().lower()
                                                 for _r in (locals().get("_sel_rpgts") or ())}
@@ -11854,7 +11885,7 @@ def render():
                                                 "offline they are 16,592 profiles / 67% of t0 volume "
                                                 "against 176 / 0.2% for the scoped set. The "
                                                 "catch-all must NOT reroute frozen baseline volume "
-                                                "— set ROUTING_CA_ZEROPROFILE=0 and treat every "
+                                                "— set `_SW_CA_ZEROPROFILE = False` and treat every "
                                                 "delivered number in this run as suspect.")
                                     elif _caz is not None:
                                         log("   [ca-zeroprofile] 0 placeholders — no profile in this "
@@ -11872,12 +11903,11 @@ def render():
                                     # renormalise an already-renormalised profile.
                                     _rec_notes.append(
                                         "backup catch-all blended inside [proj-memo]"
-                                        if (_rec_bc and os.environ.get(
-                                            "ROUTING_BACKUP_BLEND", "1") != "0")
+                                        if (_rec_bc and _SW_BACKUP_BLEND)
                                         else ("backup catch-all present but DISABLED "
-                                              "(ROUTING_BACKUP_BLEND=0)" if _rec_bc
+                                              "(`_SW_BACKUP_BLEND = False`)" if _rec_bc
                                               else "no backup catch-all configured"))
-                                elif _rec_bc and _rec_ep and os.environ.get("ROUTING_BACKUP_BLEND", "1") != "0":
+                                elif _rec_bc and _rec_ep and _SW_BACKUP_BLEND:
                                     try:
                                         from routing_optimiser.s5_deliver.backup_blend import (
                                             blend_prop_items as _rec_bpi)
@@ -11906,7 +11936,7 @@ def render():
                                                           "— drift will be overstated vs tab 3")
                                 elif _rec_bc:
                                     _rec_notes.append("backup catch-all present but DISABLED "
-                                                      "(ROUTING_BACKUP_BLEND=0)")
+                                                      "(`_SW_BACKUP_BLEND = False`)")
                                 # 19fi: switched-off vampMids + effective-date gating come from
                                 # [proj-memo], which computed them ONCE for the guard and this
                                 # block together. This is the fix for the real defect the memo
@@ -11932,7 +11962,7 @@ def render():
                                 # guard's projections, so all three calls stash the same way and
                                 # the memo key means the same thing for each. Kept here as a
                                 # belt-and-braces idempotent write for the paths where the guard
-                                # never ran (ROUTING_NW_DELIVERED=0).
+                                # never ran (`_SW_NW_DELIVERED = False`).
                                 try:
                                     import impact_calcs as _ic_rq
                                     _ic_rq._RECON_MIDS = {
@@ -12005,7 +12035,7 @@ def render():
                                             _elig_by_midl = {}
                                     # ── RUNG B: the SHIPPED split, through the IN-SEARCH projector ──────
                                     # GA-fitness and delivered differ in TWO independent ways at once and
-                                    # the ROUTING_GA_ELIG A/B could not separate them (turning eligibility
+                                    # the `_SW_GA_ELIG` A/B could not separate them (turning eligibility
                                     # off in-search also changed what the GA converged to, so the shipped
                                     # split moved as well — the flip from +1,904 to -4,030 is therefore
                                     # NOT attributable to the projection alone).
@@ -12412,7 +12442,7 @@ def render():
                                                 "error worth explaining, so the delivered "
                                                 "TXN-term stash was skipped along with the other "
                                                 "four - it was 10.0s of the 21:23 run's "
-                                                "projection. Nothing failed. ROUTING_FORENSIC=1 "
+                                                "projection. Nothing failed. `_SW_FORENSIC = '1'` "
                                                 "computes it.")
                                             _dterms = None
                                         _pj = getattr(_eb, "projector", None)
@@ -12603,7 +12633,7 @@ def render():
                                                         "[forensic] above found none worth "
                                                         "explaining, so the ~77s of attribution "
                                                         "stashes were skipped. Nothing failed. "
-                                                        "ROUTING_FORENSIC=1 computes them anyway.")
+                                                        "`_SW_FORENSIC = '1'` computes them anyway.")
                                                 elif _dvt is None or not _vcp.size or not _porg.size:
                                                     log("      ⚠ [recon-breakdown] UNAVAILABLE, and "
                                                         "not by the forensic gate: "
@@ -13679,10 +13709,9 @@ def render():
                                         # PART B prints the discrepancy keys FULL; [step2] truncates
                                         # them at 44 chars, which cuts the pmp/ctry/MID tail off
                                         # exactly where the profile is identified.
-                                        if os.environ.get("ROUTING_PROFILES", "1") != "0":
+                                        if _SW_PROFILES:
                                             try:
-                                                _prN = max(1, int(
-                                                    os.environ.get("ROUTING_PROFILES_N", "8") or 8))
+                                                _prN = max(1, _SW_PROFILES_N)
                                                 _dcP = _EXKEEP.get("drop_cnt") or {}
                                                 _dTri = {}
                                                 for _t, _n in _dcP.items():
@@ -13894,7 +13923,7 @@ def render():
                                                                "  ⇒ the discrepancy is on profiles that "
                                                                "DO ship, so it is INDEPENDENT of the "
                                                                "drop and needs its own fix — see "
-                                                               "ROUTING_BLOCK_CTRY, which is DEFAULT "
+                                                               "`_SW_BLOCK_CTRY`, which is DEFAULT "
                                                                "ON since 19o — so with it unset this "
                                                                "should read 0 keys."))
                                                     elif _pb_loud:
@@ -14368,7 +14397,7 @@ def render():
                                             # NOT A FAILURE when no catch-all is configured.
                                             # Step 1 IS the backup-catch-all blend: `_pr_nb` comes
                                             # from `_m_before`, which is only assigned inside
-                                            # `if _rec_bc and _rec_ep and ROUTING_BACKUP_BLEND` —
+                                            # `if _rec_bc and _rec_ep and `_SW_BACKUP_BLEND` —
                                             # i.e. only when a catch-all exists. With none
                                             # configured there is no blend, so step 1 is
                                             # identically ZERO, not unmeasured. Saying "a vector is
@@ -14611,7 +14640,7 @@ def render():
                                         #             (incidence coverage, pro_rata timing, vshare,
                                         #             profile_tot) — also a scoring fix.
                                         # Neither term can be attributed by an A/B that changes the
-                                        # search (ROUTING_GA_ELIG=0 moved the shipped split too), which
+                                        # search (`_SW_GA_ELIG = False` moved the shipped split too), which
                                         # is exactly why this is measured in-run instead.
                                         try:
                                             # 4-STEP ADDITIVE CHAIN. Each step changes exactly ONE thing
@@ -14749,7 +14778,7 @@ def render():
                                                     _ar_on = bool(getattr(_bp_mod, "_AGE_RENORM", True))
                                                     # 19df FIX — READ THE FACT, NOT THE INTENT.
                                                     # This was `os.environ.get(
-                                                    # "ROUTING_DELIV_MAXSHARE","1") != "0"`, which
+                                                    # "`_SW_DELIV_MAXSHARE`","1") != "0"`, which
                                                     # is the env var's DEFAULT and says nothing
                                                     # about whether any caller actually passed a
                                                     # max_share. On 2026-08-29 07:45 it printed
@@ -14794,7 +14823,7 @@ def render():
                                                            "  ⚠ DELIVERY RAN UNCAPPED on this "
                                                            "projection (no max_share reached "
                                                            "compute_vamp_prepost_granular, or "
-                                                           "ROUTING_DELIV_MAXSHARE=0), so this "
+                                                           "`_SW_DELIV_MAXSHARE = False`), so this "
                                                            "carries the cap AND the floor together "
                                                            "and the 19df fix is NOT in effect")
                                                         + ("" if float(_vtd.get("cfpsok",
@@ -15255,8 +15284,7 @@ def render():
                                         # here — a thousand lines after those families were
                                         # written and held.
                                         try:
-                                            _rc_bar = float(os.environ.get(
-                                                "ROUTING_RECON_BAR", "1") or 1)
+                                            _rc_bar = _SW_RECON_BAR
                                         except Exception:  # noqa: BLE001
                                             _rc_bar = 1.0
                                         # 19gv: the SAME raised bar the [forensic] gate uses. The
@@ -15265,7 +15293,7 @@ def render():
                                         # ten families to attribute it buries the run log.
                                         if _rc_f32:
                                             _rc_bar = max(_rc_bar, float(_rc_f32["bound"]))
-                                        if (os.environ.get("ROUTING_RECON_RELEASE", "1") != "0"
+                                        if (_SW_RECON_RELEASE
                                                 and float(_sum_absdrift) > _rc_bar):
                                             _log_release(
                                                 f"RECONCILIATION ERROR is {_sum_absdrift:,.0f}, "
@@ -15388,14 +15416,14 @@ def render():
                                 # SAME grain choice as the delivered `_ga_gran` site — if these two
                                 # ever disagree, the tabs show a split the reconcile never scored.
                                 _vgk = None
-                                if os.environ.get("ROUTING_BLOCK_CTRY", "1") != "0":
+                                if _SW_BLOCK_CTRY:
                                     # NOT `getattr(...) or []` — a pandas Index has no truth value,
                                     # and `Index or []` raises "The truth value of a Index is
                                     # ambiguous". That is exactly what the 19:46 run hit: the whole
                                     # auto-block application was skipped with
                                     # "[Warning] auto-block detection skipped (ValueError: …)", so the
                                     # tab variations shipped WITHOUT blocked caps. Introduced by me in
-                                    # 2026-08-18l and only reachable with ROUTING_BLOCK_CTRY=1, which
+                                    # 2026-08-18l and only reachable with `_SW_BLOCK_CTRY = True`, which
                                     # is why the three runs before it were clean.
                                     _v0 = variations[0].get("split") if variations else None
                                     _vc0 = getattr(_v0, "columns", None)

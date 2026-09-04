@@ -33,6 +33,15 @@ import os
 
 import pandas as pd
 
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_VAMP_SHRINK = True   # was ROUTING_VAMP_SHRINK, default '1'
+
 logger = logging.getLogger(__name__)
 
 # Pipeline "pre" (baseline / do-nothing) columns in effective_rate_impact.csv
@@ -437,12 +446,12 @@ def _normalise_pre(df: pd.DataFrame) -> pd.DataFrame:
     d = (d.groupby(["rpgt", "currency", "bin", "gateway"], as_index=False)
            .agg(volume=("volume", "sum"), _vamps=("_vamps", "sum")))
 
-    # RISK RATE: hierarchical empirical-Bayes shrinkage (default on; ROUTING_VAMP_SHRINK=0
+    # RISK RATE: hierarchical empirical-Bayes shrinkage (default on; `_SW_VAMP_SHRINK = False`
     # disables → raw ratio). Fixes noisy thin-profile rates (e.g. 0.74 VAMP on 1.2 txns → raw
     # 61.55%) by pulling them toward the stable BANK-level rate; high-volume profiles stay put.
     _raw_rr = (d["_vamps"] / d["volume"].replace(0, pd.NA)).fillna(0.0)
     global _LAST_VAMP_SHRINK
-    if os.environ.get("ROUTING_VAMP_SHRINK", "1") != "0" and len(d) >= 2:
+    if _SW_VAMP_SHRINK and len(d) >= 2:
         try:
             _rr, _lvls = _hier_vamp_shrink(d)
             d["risk_rate"] = _rr

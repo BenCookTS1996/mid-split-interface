@@ -460,7 +460,7 @@ def arming_verdict(requested):
     refusal and runs the old behaviour - never half of the new one.
     """
     if not requested:
-        return False, ("[blk-fill] rule OFF (ROUTING_BLOCK_NOFILL unset). Blocked rows are "
+        return False, ("[blk-fill] rule OFF (`_SW_BLOCK_NOFILL` unset). Blocked rows are "
                        "water-fill recipients like any other, which is what every build before "
                        "19ij did; [blk-fill] prices what that costs.")
     _miss = missing()
@@ -476,4 +476,4 @@ def arming_verdict(requested):
                   f"{len(SITES)} water-fill(s) ({', '.join(wired())}): a bank-blocked gateway "
                   "stays at the exploration floor, and receives water-fill ONLY where its "
                   "profile has no other under-cap recipient with room - i.e. only where the "
-                  "0.97 cap could not otherwise hold. ROUTING_BLOCK_NOFILL=0 reverts.")
+                  "0.97 cap could not otherwise hold. `_SW_BLOCK_NOFILL = False` reverts.")

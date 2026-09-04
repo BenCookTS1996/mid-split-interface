@@ -133,13 +133,16 @@ _saved = set(bf._WIRED)
 try:
     for _s in bf.SITES:
         bf.register(_s)
-    os.environ["ROUTING_BLOCK_NOFILL"] = "1"
+    # 19kg: no environment variable to set - the setting is `_SW_BLOCK_NOFILL` on the module
+    # that reads it, restored in the `finally` exactly as the env var was.
+    _sw0 = bp._SW_BLOCK_NOFILL
+    bp._SW_BLOCK_NOFILL = True
     proj.set_blocked_keys({("111111", "woodforest_tav", "usd"),
                            ("222222", "woodforest_tav", "usd")})
     check("ARMED: the projector reports the rule as armed", proj._blk_armed)
     _armed = proj._cap_pshare(_sh.copy(), _act)
 finally:
-    os.environ.pop("ROUTING_BLOCK_NOFILL", None)
+    bp._SW_BLOCK_NOFILL = _sw0
     bf._WIRED.clear(); bf._WIRED.update(_saved)
 
 check("ARMED: the blocked row with a roomy sibling is left exactly where it was",

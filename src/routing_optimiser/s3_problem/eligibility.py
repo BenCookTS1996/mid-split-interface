@@ -42,6 +42,19 @@ __build__ = ("2026-08-19bs-fused-elementwise-blends"
 WALLET_VALUES = {"googlepay", "applepay"}
 
 
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_ELIG_FAST = True   # was ROUTING_ELIG_FAST, default '1'
+_SW_ELIG_FUSE = True   # was ROUTING_ELIG_FUSE, default '1'
+_SW_ELIG_INPLACE = False   # was ROUTING_ELIG_INPLACE, default '0'
+_SW_ELIG_RESTRICT = True   # was ROUTING_ELIG_RESTRICT, default '1'
+_SW_ELIG_RESTRICT_MAXHIT = 0.25   # was ROUTING_ELIG_RESTRICT_MAXHIT, default '0.25'
+
 # [FN-053]
 def load_usa_only(path: str) -> frozenset:
     """Explicit list of gatewayFids that can ONLY process country='USA'.
@@ -535,15 +548,15 @@ def _fu_renorm(X, seg, co, out):
     return out
 
 
-_FU_ON = (_os.environ.get("ROUTING_ELIG_FUSE", "1") != "0") and _E_HAVE_NB
+_FU_ON = _SW_ELIG_FUSE and _E_HAVE_NB
 # `use` is flipped OFF for the process by the live self-check in `apply_elig_pop` on any mismatch,
 # the same way the restriction and the in-place twin are governed. `why` is read into the run log.
 _FU_OK = {"use": _FU_ON, "why": (
-    "fused elementwise passes ON (ROUTING_ELIG_FUSE=0 reverts to the 19bm numpy chain)"
+    "fused elementwise passes ON (`_SW_ELIG_FUSE = False` reverts to the 19bm numpy chain)"
     if _FU_ON else
     ("fused elementwise passes OFF — numba is unavailable in this process, so the numpy chain "
      "runs; correct, just ~2x dearer" if not _E_HAVE_NB else
-     "fused elementwise passes OFF — ROUTING_ELIG_FUSE=0"))}
+     "fused elementwise passes OFF — `_SW_ELIG_FUSE = False`"))}
 
 
 def _co_build(cc):
@@ -668,18 +681,18 @@ def _blend_pop(X: np.ndarray, incap: np.ndarray, wf: np.ndarray,
 # The trailing `_renorm_pop` is deliberately NOT restricted: its input does not sum to exactly 1.0,
 # so dividing by the profile sum changes bits even in an untouched profile.
 # TWO SWITCHES, because these are two independent ideas and one of them is much better than the
-# other. ROUTING_ELIG_FAST=0 reverts to the untouched reference helpers entirely (the
-# profile-grain rewrite AND the restriction). ROUTING_ELIG_RESTRICT=0 keeps the profile-grain
+# other. `_SW_ELIG_FAST = False` reverts to the untouched reference helpers entirely (the
+# profile-grain rewrite AND the restriction). `_SW_ELIG_RESTRICT = False` keeps the profile-grain
 # rewrite — the unconditional ~1.7x — and only switches off the hit-profile restriction.
-_FAST_ON = _os.environ.get("ROUTING_ELIG_FAST", "1") != "0"
-_RX_ON = _os.environ.get("ROUTING_ELIG_RESTRICT", "1") != "0"
+_FAST_ON = _SW_ELIG_FAST
+_RX_ON = _SW_ELIG_RESTRICT
 # MEASURED CUT-OFF, not a guess. Gathering the changeable columns costs ~57 ms at 40% of a
 # 35 x 242,670 array, which is the price of a whole full-width operation, and the scatter back costs
 # again. Sweeping the hit fraction at the live shape:
 #     5% -> 1.83x    21% -> 1.53x    40% -> 0.87x    60% -> 0.92x    80% -> 0.77x
 # so above roughly a quarter the restriction LOSES. Ship it only below the crossover; the profile-grain
 # rewrite above is the unconditional win and does not care about the hit fraction.
-_RX_MAXHIT = float(_os.environ.get("ROUTING_ELIG_RESTRICT_MAXHIT", "0.25") or 0.25)
+_RX_MAXHIT = _SW_ELIG_RESTRICT_MAXHIT
 _RX_OK = {"checked": False, "use": _FAST_ON, "msg": "", "note": ""}
 
 # 19bq: how often the no-capable-gateway select was SKIPPED as unreachable vs actually needed.
@@ -731,7 +744,7 @@ def _rx_build(op):
           # answer, not a slow one.
           "co": _co_build(cc) if _FU_OK["use"] else None}
     if not _RX_ON:
-        rx["why"].append("hit-profile restriction OFF (ROUTING_ELIG_RESTRICT=0); the profile-grain "
+        rx["why"].append("hit-profile restriction OFF (`_SW_ELIG_RESTRICT = False`); the profile-grain "
                          "rewrite still applies")
         return rx
     for _k, _wfk in (("w", "w_wf"), ("u", "u_wf")):
@@ -963,10 +976,10 @@ def _apply_elig_pop_alloc(Xa, op, cs, cc):
 # 1043 -> 997 ms — which matches Ben's live 840 -> 879 ms, i.e. a wash. `np.take(out=)` is
 # genuinely slower than `np.repeat` (50.8 vs 23.3 ms per call) and there are ~7 of them per
 # call; with 23,418 profiles that penalty eats the whole allocation saving. So this stays as code
-# behind a switch (ROUTING_ELIG_INPLACE=1) rather than shipping ~150 lines of new risk for 5%.
+# behind a switch (`_SW_ELIG_INPLACE = True`) rather than shipping ~150 lines of new risk for 5%.
 # The real prize is elsewhere: restrict each blend to the profiles that can actually change, the
 # same argument that took blocked-caps from 312 to 21.5 ms.
-_EP_INPLACE = _os.environ.get("ROUTING_ELIG_INPLACE", "0") != "0"
+_EP_INPLACE = _SW_ELIG_INPLACE
 # `msg` is read by tab_2_routing_engine and put in the RUN LOG. 19bk only print()ed it, so the single
 # line that says whether the fast path is bit-identical never appeared in the log Ben reads.
 _EP_OK = {"checked": False, "use": _EP_INPLACE, "msg": ""}
@@ -981,7 +994,7 @@ def apply_elig_pop(X: np.ndarray, op: dict) -> np.ndarray:
     Two implementations, one meaning. `_apply_elig_pop_alloc` is the original and the reference;
     the in-place twin reuses scratch and was measured 4.10x on a 35 x 221,649 fixture. The twin
     self-checks against the reference on its first call and reverts for the process lifetime on any
-    mismatch. ROUTING_ELIG_INPLACE=0 forces the reference."""
+    mismatch. `_SW_ELIG_INPLACE = False` forces the reference."""
     Xa = np.asarray(X, dtype=float)
     single = Xa.ndim == 1
     if single:
@@ -1014,7 +1027,7 @@ def apply_elig_pop(X: np.ndarray, op: dict) -> np.ndarray:
                     _good, _why = _rx_verdict(ref, out, rx, Xa.shape[0], Xa.shape[1])
                     if _good:
                         _RX_OK["msg"] = ("[eligibility] restricted blends SELF-CHECK PASSED: "
-                                         + _why + " ROUTING_ELIG_RESTRICT=0 reverts.")
+                                         + _why + " `_SW_ELIG_RESTRICT = False` reverts.")
                     else:
                         _RX_OK["use"] = False
                         _FU_OK["use"] = False      # 19bs: revert BOTH, then say which were on
@@ -1026,7 +1039,7 @@ def apply_elig_pop(X: np.ndarray, op: dict) -> np.ndarray:
                             "of a profile => that profile's blend is the identity) does not hold on "
                             "this data. Do not treat this as cosmetic: report it. Both the "
                             "hit-profile restriction AND the 19bs fused elementwise passes were in "
-                            "play, so both are now off; re-run with ROUTING_ELIG_FUSE=0 to tell "
+                            "play, so both are now off; re-run with `_SW_ELIG_FUSE = False` to tell "
                             "them apart.")
                     print(_RX_OK["msg"])
                 return out[0] if single else out
@@ -1055,7 +1068,7 @@ def apply_elig_pop(X: np.ndarray, op: dict) -> np.ndarray:
                     "[eligibility] \u2713 in-place transform SELF-CHECK PASSED: bit-identical to "
                     f"the allocating path on the live operator (np.array_equal on {P}x"
                     f"{Xa.shape[1]:,}, not allclose). ~28 full-width temporaries per call removed. "
-                    "ROUTING_ELIG_INPLACE=0 forces the allocating path.")
+                    "`_SW_ELIG_INPLACE = False` forces the allocating path.")
                 print(_EP_OK["msg"])
             else:
                 _mx = float(np.abs(ref - cur).max())

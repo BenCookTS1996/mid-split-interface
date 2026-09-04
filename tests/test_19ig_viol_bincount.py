@@ -25,10 +25,10 @@ CASES = [
     ("wide mids         P=4  R=2000   M=300",4, 2000, 300),
 ]
 
-os.environ["ROUTING_VIOL_BINCOUNT"] = "1"
+# 19kg: there is no environment variable to set any more. The flag survives as a NAME
+# for exactly this reason - a test can still A/B the two code paths by rebinding it.
 new = load("ga_bc", GA)
-os.environ["ROUTING_VIOL_BINCOUNT"] = "0"
-old = load("ga_addat", GA)
+old = load("ga_addat", GA); old._VIOL_BINCOUNT = False
 check("the switch actually selects different code",
       new._VIOL_BINCOUNT is True and old._VIOL_BINCOUNT is False)
 
@@ -46,7 +46,6 @@ for label, P, R, M in CASES:
           "" if same else f"max|d| {float(np.abs(a_n - a_o).max()):.3e}")
 
 # the self-check the run relies on must actually fire and must PASS
-os.environ["ROUTING_VIOL_BINCOUNT"] = "1"
 fresh = load("ga_sc", GA)
 check("self-check has not fired before the first call",
       fresh._VIOL_FACT["checked"] is False and fresh._VIOL_FACT["msg"] == "")
@@ -61,10 +60,8 @@ check("self-check does not re-run on the second call",
                        fresh._VIOL_FACT["msg"] == before)[1])(fresh._VIOL_FACT["msg"]))
 
 # and _violation itself must agree end to end
-os.environ["ROUTING_VIOL_BINCOUNT"] = "1"
 v_new = load("ga_v1", GA)
-os.environ["ROUTING_VIOL_BINCOUNT"] = "0"
-v_old = load("ga_v0", GA)
+v_old = load("ga_v0", GA); v_old._VIOL_BINCOUNT = False
 N_ROW, M = 6000, 11
 starts = np.arange(0, N_ROW, 10, dtype=np.int64)
 ctx = {"n_row": N_ROW, "n_mid": M,

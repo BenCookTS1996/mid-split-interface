@@ -20,6 +20,21 @@ import streamlit as st
 
 from app_common import load_mid_list, _norm_cols, _renorm_share, _fid2vamp_from  # memoised MID reader + helpers
 
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_BLOCK_NOFILL = False   # was ROUTING_BLOCK_NOFILL, default '0'
+_SW_CA_ZEROPROFILE = True   # was ROUTING_CA_ZEROPROFILE, default '1'
+_SW_COARSE_PROP_FALLBACK = False   # was ROUTING_COARSE_PROP_FALLBACK, default '0'
+_SW_COMPRESS_PARALLEL = 0   # was ROUTING_COMPRESS_PARALLEL, default '0'
+_SW_DELIV_MAXSHARE = True   # was ROUTING_DELIV_MAXSHARE, default '1'
+_SW_EXPORT_ROUND = False   # was ROUTING_EXPORT_ROUND, default '0'
+_SW_FID2VAMP_BRAND = True   # was ROUTING_FID2VAMP_BRAND, default '1'
+
 try:    # 19iq: THE BLOCKED-ROW WATER-FILL RULE. See routing_optimiser/s4_search/blocked_fill.py.
     from routing_optimiser.s4_search import blocked_fill as _BFM
     _BFM.register("_cap_rows")
@@ -571,7 +586,7 @@ def _inject_backfill_rows(pp, prop, prop_name_map=None, mark=None):
 #
 # Completing the movable layers fixes that at the source. It also makes the two projectors agree
 # WITHOUT the age renormalise: on the 19da fixture, injection alone takes
-# Sigma|delivered - in-search| to 0.000000 with ROUTING_AGE_RENORM=0, and turning the renormalise
+# Sigma|delivered - in-search| to 0.000000 with `_SW_AGE_RENORM = False`, and turning the renormalise
 # back on leaves every delivered value identical — it is a genuine no-op on a complete frame, so
 # it stays in as a guard rather than as the mechanism.
 #
@@ -890,7 +905,7 @@ def _max_share_waterfill(shares, t0, grp, cap, live, blocked=None):
     _armed = False
     if _blk is not None:
         _armed, _amsg = _BFM.arming_verdict(
-            os.environ.get("ROUTING_BLOCK_NOFILL", "0") != "0")
+            _SW_BLOCK_NOFILL)
         _meas = {"on_blocked": 0.0, "unavoidable": 0.0, "avoidable": 0.0, "sweeps": 0,
                  "rows": int(_blk.sum()), "armed": bool(_armed), "msg": str(_amsg)}
     # (1) computed ONCE — the kernel does not refresh it between sweeps.
@@ -1044,8 +1059,8 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
         # An unmatched profile now keeps prop_raw = NaN → 0 just below, so prop_sum = 0
         # there, _move = 0, and the profile is HELD AT BASELINE — exactly what the band
         # scaffold does for a profile it cannot represent.
-        # Kill-switch: ROUTING_COARSE_PROP_FALLBACK=1 restores it.
-        if os.environ.get("ROUTING_COARSE_PROP_FALLBACK", "0") == "1":
+        # Kill-switch: `_SW_COARSE_PROP_FALLBACK = True` restores it.
+        if _SW_COARSE_PROP_FALLBACK:
             for _fk in (["Currency", "BIN", "_rpgtl", "_ctry", "_vml"],
                         ["Currency", "BIN", "_rpgtl", "_pmp", "_vml"],
                         ["Currency", "BIN", "_rpgtl", "_vml"]):
@@ -1247,7 +1262,7 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # functions, no code patched to produce it.
     #
     # THIS CHANGES WHAT SHIPS. The delivered M5 is the authoritative number and this moves it.
-    # ROUTING_DELIV_MAXSHARE=0 reverts.
+    # `_SW_DELIV_MAXSHARE = False` reverts.
     #
     # NO-OP WHEN THE CAP DOES NOT BIND, by construction: with no row over the cap the capped
     # share is prop_raw / prop_sum, so vshare = (prop_raw/prop_sum) / Σ(prop_raw/prop_sum) =
@@ -1260,13 +1275,13 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # cf_ps read 5,128.8 against an 829 reconciliation error and could not be taken at face value.
     #
     # `_LAST_DELIV_MAXSHARE` RECORDS WHAT ACTUALLY HAPPENED, not what was configured. The 19df
-    # log line first keyed off ROUTING_DELIV_MAXSHARE alone and so announced "the CAP is now
+    # log line first keyed off `_SW_DELIV_MAXSHARE` alone and so announced "the CAP is now
     # applied on BOTH sides" on the 2026-08-29 07:45 run, where it was FALSE: three call sites in
     # tab_2_routing_engine still passed no max_share, so `max_share` defaulted to 1.0, the guard below took
     # the raw branch, and the run reproduced 829 exactly. The env var is INTENT; this global is
     # FACT, and the log must only ever report the second. None = the cap was not applied.
     _cap_ms = float(max_share) if max_share else 1.0
-    if os.environ.get("ROUTING_DELIV_MAXSHARE", "1") == "0" or not (0.0 < _cap_ms < 1.0):
+    if (not _SW_DELIV_MAXSHARE) or not (0.0 < _cap_ms < 1.0):
         globals()["_LAST_DELIV_MAXSHARE"] = None
         t0["_vprop"] = t0["prop_raw"]
     else:
@@ -2232,7 +2247,7 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
     _BLK_ARMED, _BLK_MSG = ((False, "[blk-fill] rule unavailable (blocked_fill did not import)")
                             if _BFM is None else
                             _BFM.arming_verdict(
-                                os.environ.get("ROUTING_BLOCK_NOFILL", "0") != "0"))
+                                _SW_BLOCK_NOFILL))
     if _BFM is not None:
         _BFM.saw_mask("_cap_rows", bool(_blk_pairs),
                       f"{len(_blk_pairs):,} (BIN, gateway) pair(s) from the split's _blocked "
@@ -2440,9 +2455,9 @@ def build_split_exports(split, brand, go_live, wallet_incapable=frozenset(), fid
         # the push "systematically moves mass from thin doors to fat incumbents" — which is why
         # `projection_mode` has skipped both since 2026-08-17. The export now takes that same
         # path. `Check` below is still rounded: it is the column that must READ as 100.00.
-        # ROUTING_EXPORT_ROUND=1 restores the pre-19ef sheet exactly.
+        # `_SW_EXPORT_ROUND = True` restores the pre-19ef sheet exactly.
         _do_round = ((_slvl >= 4) and not projection_mode
-                     and os.environ.get("ROUTING_EXPORT_ROUND", "0") == "1")
+                     and _SW_EXPORT_ROUND)
         RND = np.round(R * 100.0, 2) if _do_round else (R * 100.0)
         if _do_round:
             _rsum = np.round(RND.sum(1), 2)
@@ -2512,7 +2527,7 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
     # NOT a mis-attribution: no gatewayFid in the list maps to more than one vampMid (measured,
     # 0 of 539), and every injected row read 0 across VAMP / VI-Txn / both Post columns for
     # M0-M5. So this removes PHANTOM ROWS, not numbers — but it is still a change to what
-    # enforced_prop_items returns. ROUTING_FID2VAMP_BRAND=0 reverts.
+    # enforced_prop_items returns. `_SW_FID2VAMP_BRAND = False` reverts.
     #
     # THE SPELLING TRAP, which has already cost a day on this codebase: the MID list spells the
     # brand "Total AV" and the run's company is "TotalAV" (tab_3_split_outputs_impact:4178). A plain
@@ -2520,7 +2535,7 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
     # 2026-08-28 20:44 run's `build_capability` did — injection reported success while doing
     # nothing. Compare on whitespace-stripped keys, and RAISE rather than return an empty map.
     _bkey = _brand_key(brand)
-    _brand_on = os.environ.get("ROUTING_FID2VAMP_BRAND", "1") != "0" and bool(_bkey)
+    _brand_on = _SW_FID2VAMP_BRAND and bool(_bkey)
     if mid_list_path and os.path.exists(mid_list_path):
         try:
             _mm = load_mid_list(mid_list_path)
@@ -2613,11 +2628,10 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
     # blend_profile_shares filters `> 0`, gets an empty `spec`, and takes the catch-all branch. With
     # no catch-all configured it returns dict(spec) == {} and the profile emits nothing, i.e. exactly
     # today's behaviour; and with no blend at all a prop_raw of 0.0 adds nothing to any per-profile
-    # sum and moves no volume. Kill-switch: ROUTING_CA_ZEROPROFILE=0.
+    # sum and moves no volume. Revert with `_SW_CA_ZEROPROFILE = False` at the
+    # top of this module.
     _ph_n = 0
-    # 19hm: renamed, old name still honoured (app_common.env_switch carries the alias table).
-    from app_common import env_switch as _es
-    if _es("ROUTING_CA_ZEROPROFILE", "1") != "0":
+    if _SW_CA_ZEROPROFILE:
         try:
             _allc = allm[_subk].drop_duplicates()
             _posc = _pos[_subk].drop_duplicates()
@@ -2649,7 +2663,7 @@ def enforced_prop_items(split, brand, go_live, wallet_incapable=frozenset(), fid
             if _ph_n > 2000:
                 _msg += ("   ⚠ FAR more than the ~176 measured on the scoped Aug baseline — this "
                          "looks like UNSCOPED (baseline-frozen) RPGTs leaking into the split. "
-                         "Those must NOT receive catch-all traffic; set ROUTING_CA_ZEROPROFILE=0 and "
+                         "Those must NOT receive catch-all traffic; set `_SW_CA_ZEROPROFILE = False` and "
                          "check the RPGT scope before trusting any delivered number from this run.")
             print("   " + _msg)
         except Exception:  # noqa: BLE001
@@ -2875,8 +2889,8 @@ def pool_targeted_compression(ss, split_ideal, *, target_pools, sig, wallet_ctx,
 
     # Parallel k-ary budget search: probe several profile budgets per round across the cores so
     # the (expensive) config-generation counts overlap. Same result as the serial binary search
-    # (verified budget ≤ target). Bounded to ≤8 workers; ROUTING_COMPRESS_PARALLEL=1 disables it.
-    _par = int(os.environ.get("ROUTING_COMPRESS_PARALLEL", "0") or 0)
+    # (verified budget ≤ target). Bounded to ≤8 workers; `_SW_COMPRESS_PARALLEL = 1` disables it.
+    _par = _SW_COMPRESS_PARALLEL
     if _par <= 0:
         _par = min(max(2, os.cpu_count() or 2), 8)
     _cl, _st = pool_targeted_core(

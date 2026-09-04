@@ -31,7 +31,6 @@ def check(n, ok, d=""):
 
 
 # 1. [viol-forced]: the fact is the LAST call's, so WHERE it prints is the fix
-os.environ["ROUTING_VIOL_FORCED"] = "1"
 _sp = importlib.util.spec_from_file_location("ga_19ip", GA_P)
 ga = importlib.util.module_from_spec(_sp); sys.modules["ga_19ip"] = ga; _sp.loader.exec_module(ga)
 

@@ -36,6 +36,15 @@ import numpy as np
 __build__ = "2026-08-11-band-aware-constrained-projection-seed+riskmin-diverse-seeds+eligibility-in-score+fixed-quadratic-breach+numba-eligibility-kernel+vol-weighted-viol+penalty-shape+repair-input+sigma-controls+fitness-trace+active-priority+viol-breakdown+capprofile-detail+breach-tol+band-workings+no-maxiter-bandgreedy+stable-softmax+bandgreedy-count-aware-priority+bandgreedy-multistart+2026-09-01-19go-delivery-faithful-bandgreedy"
 
 
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_FEAS_PAR_WORKERS = 0   # was ROUTING_FEAS_PAR_WORKERS, default '0'
+
 # [FN-103]
 def _mid_sums(vol, mid_rows, M, S=None):
     """Per-MID column sums of `vol` (P, N) -> (P, M).
@@ -323,7 +332,7 @@ def band_greedy_shares(base_shares, profile_starts, profile_counts, elig, mid_ro
     selects with and delivery ships — so the multipliers correct the DELIVERED breach and the
     kept-split key ranks on it too. The split itself is still the RAW genome (the GA takes raw
     genomes and applies delivery itself); only the MEASUREMENT changes basis. None restores the
-    pre-19go RAW behaviour byte for byte, which is what ROUTING_SEED_DELIV=0 passes."""
+    pre-19go RAW behaviour byte for byte, which is what `_SW_SEED_DELIV = False` passes."""
     from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw
     s = np.asarray(base_shares, float).copy()
     elig = np.asarray(elig, float)
@@ -496,7 +505,7 @@ def band_greedy_shares_multi(base_shares, profile_starts, profile_counts, elig, 
         from concurrent.futures import ThreadPoolExecutor
         # One worker per start, capped: more threads than starts buys nothing, and the greedy holds
         # the GIL through its per-spec Python loop so oversubscribing only adds contention.
-        _nw = max(1, min(_n, int(_os.environ.get("ROUTING_FEAS_PAR_WORKERS", "0") or 0) or _n))
+        _nw = max(1, min(_n, _SW_FEAS_PAR_WORKERS or _n))
         with ThreadPoolExecutor(max_workers=_nw) as _ex:
             _out = list(_ex.map(_greedy, _inputs))
     else:

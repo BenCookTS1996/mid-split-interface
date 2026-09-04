@@ -79,6 +79,18 @@ __build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+globa
 _VPS_EPS = 1e-3
 
 
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_SEED_LP_STALL = 4   # was ROUTING_SEED_LP_STALL, default '4'
+_SW_TMOVE_ALLBANDS = True   # was ROUTING_TMOVE_ALLBANDS, default '1'
+_SW_TMOVE_FASTLS = True   # was ROUTING_TMOVE_FASTLS, default '1'
+_SW_TMOVE_MAXPASS = 5000   # was ROUTING_TMOVE_MAXPASS, default '5000'
+
 @dataclass
 class SpecMap:
     """One `ExactBandPenalty` spec reduced to projector band columns + its ceil/floor."""
@@ -453,8 +465,8 @@ def solve_least_breach(exact_bands, incidence, base_shares, profile_starts, prof
     Local optimum only (fractional-VAMP nonconvexity + fixed active mask) — see module docstring.
 
     `stall` (19ck): stop after this many CONSECUTIVE rejected steps. 0 (the default, and what
-    ROUTING_SEED_LP_STALL=0 means) keeps the pre-19ck behaviour exactly — the only exit from a
-    rejection stays `tr < tr_min`. `None` reads ROUTING_SEED_LP_STALL. A stall stop is
+    `_SW_SEED_LP_STALL = 0` means) keeps the pre-19ck behaviour exactly — the only exit from a
+    rejection stays `tr < tr_min`. `None` reads `_SW_SEED_LP_STALL`. A stall stop is
     ANSWER-AFFECTING: a step rejected at `tr` may be accepted at `tr/2`, which is what the trust
     region is FOR. The step ledger below (`info['steps']`, `info['stall_min_safe']`) is what decides
     whether a given K is safe, and it is recorded whether or not the stop is armed.
@@ -468,7 +480,7 @@ def solve_least_breach(exact_bands, incidence, base_shares, profile_starts, prof
     is the same never-worse contract as before, just measured on the basis that ships. Expect more
     rejected steps than the RAW version: a step that helps the raw split can be undone by
     delivery's renormalisation, and that is precisely the divergence this closes. None restores the
-    pre-19go RAW behaviour byte for byte (ROUTING_SEED_DELIV=0)."""
+    pre-19go RAW behaviour byte for byte (`_SW_SEED_DELIV = False`)."""
     info = {"ok": False, "build": __build__, "reason": "", "n_free": 0, "outer": 0,
             "breach0": float("nan"), "breach": float("nan"), "feasible": False,
             # 19ck step ledger. `outer` is the last ACCEPTED step and always was; `ran` is how many
@@ -545,9 +557,9 @@ def solve_least_breach(exact_bands, incidence, base_shares, profile_starts, prof
             # THIS IS ANSWER-AFFECTING and it is meant to be: a run that WOULD have accepted a
             # 5th-consecutive-rejection step now stops instead. The ledger keeps recording
             # `stall_min_safe` every run, so a future run that needs K>4 says so.
-            # ROUTING_SEED_LP_STALL=0 restores the pre-19ck behaviour exactly.
+            # `_SW_SEED_LP_STALL = 0` restores the pre-19ck behaviour exactly.
             try:
-                stall = int(_os.environ.get("ROUTING_SEED_LP_STALL", "4") or 4)
+                stall = _SW_SEED_LP_STALL
             except Exception:  # noqa: BLE001 — a bad env value must not fail the seed
                 stall = 4
         stall = max(0, int(stall))
@@ -561,7 +573,7 @@ def solve_least_breach(exact_bands, incidence, base_shares, profile_starts, prof
                    f"(base breach {b0:.4g}); successive-LP, up to {int(max_outer)} steps. One-time solve — "
                    "at BIN grain each step is a large sparse LP, so this can take a few minutes."
                    + (f" Stall stop ARMED at {stall} consecutive rejected step(s) "
-                      "(ROUTING_SEED_LP_STALL) — this CAN change the seed."
+                      "(`_SW_SEED_LP_STALL`) — this CAN change the seed."
                       if stall else ""))
         # 19hx: the per-step lines are a TABLE. Thirteen "exact projector: step N/40 (best breach
         # X, tr=Y)..." lines are three columns pretending to be prose, and the whole point of
@@ -740,7 +752,7 @@ def _lp_report(info, log_fn, *, tr_min, max_outer):
                + {"tr-below-min": f"(trust region fell under tr_min={tr_min:g}; it halves on every "
                                   "rejection, so each further rejection is one more large sparse LP)",
                   "tol": "(breach reached the tolerance — the good exit)",
-                  "stall": f"(ROUTING_SEED_LP_STALL={int(info.get('stall_k', 0))} consecutive "
+                  "stall": f"(`_SW_SEED_LP_STALL` = {int(info.get('stall_k', 0))} consecutive "
                            "rejections; THIS TRUNCATED THE SOLVE — see the safety line below)",
                   "max-outer": f"(hit max_outer={max_outer} while still stepping — the solve was "
                                "CUT OFF, not finished)"}.get(str(info.get("stopped")), ""))
@@ -842,20 +854,20 @@ def _lp_report(info, log_fn, *, tr_min, max_outer):
                    f"stops at {_k} consecutive rejections, so any justified run of {_k} or longer "
                    f"could not have been seen (stall_min_safe \u2264 {_k - 1} by construction). "
                    "This run is NOT evidence that K is safe — only an UNARMED run "
-                   "(ROUTING_SEED_LP_STALL=0) can measure that.")
+                   "(`_SW_SEED_LP_STALL = 0`) can measure that.")
             if str(info.get("stopped")) == "stall":
                 log_fn(f"         \u26a0 AND IT BIT: the solve stopped at the stall, not at "
                        f"convergence, so the seed handed to the GA may be worse than an unarmed "
                        f"solve would give. Final breach {float(info.get('breach', float('nan'))):.4g} "
                        f"after {int(info.get('outer', 0))} accepted step(s).")
             if _k <= _ms:
-                log_fn(f"         \u26a0 ROUTING_SEED_LP_STALL={_k} is at or below stall_min_safe="
+                log_fn(f"         \u26a0 `_SW_SEED_LP_STALL` = {_k} is at or below stall_min_safe="
                        f"{_ms}: this setting discarded an improvement the solver went on to find. "
-                       "Raise K or set it to 0.")
+                       "Raise it, or set it to 0, at the top of exact_band_solver.py.")
         elif _tr:
             log_fn(f"         Not armed, so nothing was truncated and this run is bit-identical to "
                    f"pre-19ck. To claim the {float(info.get('trailing_secs', 0.0)):.1f}s, set "
-                   f"ROUTING_SEED_LP_STALL to a K above the stall_min_safe seen across SEVERAL "
+                   f"`_SW_SEED_LP_STALL` to a K above the stall_min_safe seen across SEVERAL "
                    "UNARMED runs — one run is one sample, and the trailing steps are exactly the "
                    "ones with the least evidence behind them.")
     except Exception as _exc:  # noqa: BLE001 — a report must never break a seed
@@ -2051,7 +2063,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
     OVER — the band [seed-basis] flagged as appearing only on the delivered side. Now each ceiling
     keeps its own budget in its own units, a share increment is converted with that metric's own
     density (TXN = profile_vol × movable_frac; VAMP = that × the row's risk), and a recipient must have
-    room under all of them. `ROUTING_TMOVE_ALLBANDS=0` ignores recipients' TXN ceilings — which is
+    room under all of them. ``_SW_TMOVE_ALLBANDS = True` ignores recipients' TXN ceilings — which is
     what the pre-19be DOCSTRING claimed the code did.
 
     STILL CEILINGS ONLY. Floors are not anticipated by the greedy proposal (the line-search's
@@ -2064,7 +2076,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
     f·s2pr(δ)`, and delivery breaks that identity outright (renormalising a profile after zeroing a
     door is not linear in the profile's shares). Four full projections per MID batch instead of one is
     the price of judging the stage on the basis that ships. `deliver_fn=None` restores the pre-19go
-    RAW behaviour, fast line-search included, byte for byte (ROUTING_SEED_DELIV=0).
+    RAW behaviour, fast line-search included, byte for byte (`_SW_SEED_DELIV = False`).
 
     Each MID's batch of moves is then LINE-SEARCHED against the EXACT projector (factors 1→0.2) and
     only KEPT if the exact TOTAL breach strictly drops — so a move that merely relocates VAMP onto
@@ -2156,10 +2168,10 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
         # continue until delivery put it 14 OVER.
         _MET_COL = {"vamp": 0, "txn": 1}
         _MET_NAME = ("vamp", "txn")
-        # ROUTING_TMOVE_ALLBANDS=0 ignores recipients' TXN ceilings — what the OLD DOCSTRING
+        # `_SW_TMOVE_ALLBANDS = False` ignores recipients' TXN ceilings — what the OLD DOCSTRING
         # claimed the code did (ceilings on the shed metric only). It deliberately does NOT
         # restore the old mixed-unit arithmetic; reproducing a unit error as a control is useless.
-        _ALLBANDS = _os.environ.get("ROUTING_TMOVE_ALLBANDS", "1") != "0"
+        _ALLBANDS = _SW_TMOVE_ALLBANDS
         ceil_m = np.full((n_mid, 2), np.inf)
         for sp in exact_bands.specs:
             if sp.ceil is None:
@@ -2191,8 +2203,8 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
 
         # 19go: the fast line-search is a LINEARITY shortcut and delivery is not linear, so on the
         # delivered basis it is not a tuning choice — it is unavailable. Forced, not defaulted, so
-        # ROUTING_TMOVE_FASTLS=1 cannot silently re-enable an identity that does not hold.
-        _FASTLS = (_os.environ.get("ROUTING_TMOVE_FASTLS", "1") != "0") and deliver_fn is None
+        # `_SW_TMOVE_FASTLS = True` cannot silently re-enable an identity that does not hold.
+        _FASTLS = _SW_TMOVE_FASTLS and deliver_fn is None
         # 19kg: ROUTING_TMOVE_FASTLS_VERIFY deleted; already default OFF.
         _FASTLS_VERIFY = False
         _pr_s = None                      # carried s2pr(s) for the linear line search
@@ -2212,7 +2224,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
                    f"{_n_both} MID(s) with both a VAMP and a TXN ceiling; binding-capacity first; "
                    "whack-a-mole guarded by a per-recipient per-metric budget + exact-projector "
                    "line-search; never-worse)."
-                   + ("" if _ALLBANDS else " ⚠ ROUTING_TMOVE_ALLBANDS=0: recipients' TXN ceilings "
+                   + ("" if _ALLBANDS else " ⚠ `_SW_TMOVE_ALLBANDS = False`: recipients' TXN ceilings "
                       "are being IGNORED, so a VAMP shed can overfill a txn-capped MID."))
         # NO PASS CAP (2026-08-19v). It was a hardcoded 4, and the 2026-08-20 22:22 run used
         # 4 of 4 without hitting `if not progress: break` — still improving when the cap stopped
@@ -2225,7 +2237,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
         # RUNAWAY exists only so a pathological case cannot hang a run, and it SHOUTS if hit.
         _REL_FLOOR = 1e-6
         try:
-            _RUNAWAY = max(1, int(_os.environ.get('ROUTING_TMOVE_MAXPASS', '5000') or 5000))
+            _RUNAWAY = max(1, _SW_TMOVE_MAXPASS)
         except Exception:  # noqa: BLE001
             _RUNAWAY = 5000
         total_moves = 0; moved_share = 0.0; passes = 0
@@ -2346,7 +2358,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
                 # s2pr(s) and is updated incrementally when a step is accepted. Exact in real
                 # arithmetic; ~1e-16 relative in floating point, against a 1e-12 accept
                 # threshold. ROUTING_TMOVE_FASTLS_VERIFY=1 recomputes the direct value and logs
-                # any disagreement; ROUTING_TMOVE_FASTLS=0 restores the direct path.
+                # any disagreement; `_SW_TMOVE_FASTLS = False` restores the direct path.
                 best_f, best_b = 0.0, b_cur
                 if _FASTLS:
                     if _pr_s is None:
@@ -2360,7 +2372,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
                                 _vmsg = (f"      targeted-move: ⚠ FAST LINE-SEARCH DISAGREES with "
                                          f"the direct projection (f={f}: {bt:.12g} vs "
                                          f"{_bt_direct:.12g}). The linearity identity does not hold "
-                                         f"here — set ROUTING_TMOVE_FASTLS=0 and re-run.")
+                                         f"here — set `_SW_TMOVE_FASTLS = False` and re-run.")
                                 if log_fn:
                                     log_fn(_vmsg)
                                 info["fastls_mismatch"] = True
@@ -2407,7 +2419,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
                         "itself; not a cap, and not unexplored headroom)"
                         if stop_reason == "converged" else
                         f"still over — ⚠ RUNAWAY BACKSTOP ({_RUNAWAY:,} passes) hit while STILL "
-                        f"improving; cause NOT established, raise ROUTING_TMOVE_MAXPASS")))
+                        f"improving; cause NOT established, raise `_SW_TMOVE_MAXPASS`")))
                 log_fn(f"         • {nm} [{_MET_NAME[j]}]: {n0:,.0f} → {n1:,.0f} "
                        f"(ceil {cl:,.0f}) · {_v}")
         b1 = _breach(s); info["moved"] = moved_share; info["n_moves"] = total_moves
@@ -2429,7 +2441,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
                                  f"⚠ Some ceilings remain and the loop hit its RUNAWAY BACKSTOP at "
                                  f"{_RUNAWAY:,} passes while STILL IMPROVING. This is NOT "
                                  f"convergence and NOT exhausted headroom — it is a pathological "
-                                 f"case. Raise ROUTING_TMOVE_MAXPASS. Kept — strictly better on the RAW basis; the engine selects on DELIVERED."))))
+                                 f"case. Raise `_SW_TMOVE_MAXPASS`. Kept — strictly better on the RAW basis; the engine selects on DELIVERED."))))
             # 19ip: the nine-line RAW-vs-DELIVERED note is gone. It was a standing
             # explanation of a divergence whose CAUSE 19be removed, and the two bases it
             # asked the reader to compare are now printed as two columns of the
@@ -2442,7 +2454,7 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
                     "converged": "the last pass improved the breach by less than one part "
                                  "in a million",
                     "runaway": "hit the pass backstop while still improving "
-                               "(raise ROUTING_TMOVE_MAXPASS)",
+                               "(raise `_SW_TMOVE_MAXPASS`)",
                 }.get(str(stop_reason), str(stop_reason))
                 log_fn(f"      targeted-move seed: stopped after {passes:,} pass(es) "
                        f"\u2014 {_sr_why}")

@@ -61,6 +61,24 @@ import numpy as np
 
 from routing_optimiser.s4_search.rowpar import row_parallel as _rowpar
 
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_CHILD_FUSE = True   # was ROUTING_CHILD_FUSE, default '1'
+_SW_DECODE_OBJ = False   # was ROUTING_DECODE_OBJ, default '0'
+_SW_GA_CENSUS_DECOMP = True   # was ROUTING_GA_CENSUS_DECOMP, default '1'
+_SW_GEN_GAP = True   # was ROUTING_GEN_GAP, default '1'
+_SW_MUT_FAST = True   # was ROUTING_MUT_FAST, default '1'
+_SW_MUT_RATE = 0.01   # was ROUTING_MUT_RATE, default ''
+_SW_PRUNE_INERT = False   # was ROUTING_PRUNE_INERT, default '0'
+_SW_SOFTMAX_FUSE = True   # was ROUTING_SOFTMAX_FUSE, default '1'
+_SW_VIOL_BINCOUNT = True   # was ROUTING_VIOL_BINCOUNT, default '1'
+_SW_VIOL_FORCED = True   # was ROUTING_VIOL_FORCED, default '1'
+
 # Persistent Numba cache (same folder GA-Numba uses) so the one-time kernel compile
 # is NOT repaid every run — reclaimed time goes to search. setdefault => an explicit
 # NUMBA_CACHE_DIR wins. MUST be set before importing numba.
@@ -377,13 +395,13 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
     #    own division (`where=psum > 0`); _fm_deliv is a different function and an unguarded
     #    renormalise there would give NaN. Unverified without a run.
     #
-    # ROUTING_PRUNE_INERT=1 for one run, then compare tab 3 against Validate. Given (1), the
+    # `_SW_PRUNE_INERT = True` for one run, then compare tab 3 against Validate. Given (1), the
     # honest expectation is a ~6% generation saving in exchange for a split that can differ - and
     # on this project that trade has always been refused. The switch exists so the trade can be
     # measured rather than argued about.
     _inert_row = np.zeros(n_row, dtype=bool)
     _prune_note = ""            # this module has no logger; tab_2_routing_engine emits meta['prune_note']
-    if _os_gf.environ.get("ROUTING_PRUNE_INERT", "0") != "0":
+    if _SW_PRUNE_INERT:
         _profile_vol_by_profile = vol_full[starts] if starts.size else np.zeros(0)
         _inert_profile = _profile_vol_by_profile <= 0.0
         if _inert_profile.any():
@@ -505,7 +523,7 @@ def problem_from_ctx(ctx, *, soft_cap=None, soft_cap_mult=None, mid_caps=None,
             f"{keep_idx.size:,} row(s) over {problem.n_profiles:,} profile(s). Expect ~6% off a "
             f"generation, NOT 38%: [frozen-scaffold] measured the generation as 92% band kernel "
             f"over a 1.9M-row scaffold, and the genome is 13% of that traffic. "
-            f"ROUTING_PRUNE_INERT=0 reverts.")
+            f"`_SW_PRUNE_INERT = False` reverts.")
     meta["prune_note"] = _prune_note
     return problem, meta
 
@@ -553,8 +571,8 @@ except Exception:                                   # noqa: BLE001 - numba absen
         return _deco
 
 
-_SM_FUSE = (os.environ.get("ROUTING_SOFTMAX_FUSE", "1") != "0") and _FX_HAVE_NB
-_CH_FUSE = (os.environ.get("ROUTING_CHILD_FUSE", "1") != "0") and _FX_HAVE_NB
+_SM_FUSE = _SW_SOFTMAX_FUSE and _FX_HAVE_NB
+_CH_FUSE = _SW_CHILD_FUSE and _FX_HAVE_NB
 _SM_OK = {"use": _SM_FUSE, "checked": False, "msg": ""}
 _FX_OK = {"use": _CH_FUSE, "checked": False, "msg": ""}
 # Layout arrays (row->profile map, int32 starts/counts) built ONCE per layout. Keyed on the identity
@@ -825,12 +843,12 @@ _DECODE_DELIV = True
 # THIS MOVES THE HEADLINE. 0.615322 has been the same figure for nine runs and it will change.
 # That is the number becoming the one that describes what ships, not a regression - but it means
 # an armed run's success rate IS NOT COMPARABLE with any earlier run, and it must not share a run
-# with ROUTING_PROJ_SFLOOR or neither is measurable.
+# with `_SW_PROJ_SFLOOR` or neither is measurable.
 #
 # `_deliver_kept(sh, _deliver_full(sh))` is the kept-grain delivered array - the same pair of
 # calls the band path already makes, so the delivered array is computed ONCE and both halves read
 # it. The extra cost is one gather per evaluation, against eval_pop's 2.4% of eval.
-_DECODE_OBJ = os.environ.get("ROUTING_DECODE_OBJ", "0") != "0"
+_DECODE_OBJ = _SW_DECODE_OBJ
 _OBJ_FACT = {"armed": bool(_DECODE_OBJ), "applied": False, "said": False}
 _DC_EPS = 1e-12
 # ── 19io: THE ENGINEERING KEY'S UNREACHABLE FLOOR ─────────────────────────────────────────
@@ -855,8 +873,8 @@ _DC_EPS = 1e-12
 # constant subtracted from a lexicographic key changes no ordering - and [viol-forced] prints
 # the decomposition every run so that "should" is checked rather than assumed: if the remaining
 # share_over is non-zero, that is a REAL violation the flat 6.18557 was masking.
-# ROUTING_VIOL_FORCED=0 restores the old key.
-_VIOL_FORCED = os.environ.get("ROUTING_VIOL_FORCED", "1") != "0"
+# `_SW_VIOL_FORCED = False` restores the old key.
+_VIOL_FORCED = _SW_VIOL_FORCED
 _VF_FACT = {"n": 0, "rows": 0, "forced": 0.0, "kept": 0.0, "said": False}
 _DC_BACKOFF = 1.0 - 1e-9        # target back-off: the engineering key needs an exact 0.0
 
@@ -921,11 +939,11 @@ def _segment_softmax(logits, profile_start, profile_len, max_share=None):
     kill switch and the fused-softmax self-check reference both need. [gen-cost] put this at 13.2% of a generation, all of it
     single-threaded numpy. The transform is candidate-independent (see the reference above), so the
     population is split across threads; `rowpar` verifies bit-identity on its second call and
-    reverts to serial on any mismatch. ROUTING_ROW_PARALLEL=0 disables it."""
+    reverts to serial on any mismatch. `_SW_ROW_PARALLEL = False` disables it."""
     _lg = np.atleast_2d(logits)
     # 19bx: the FUSED path, self-checked once against the untouched reference on the live
     # population. `_segment_softmax_serial` is never edited — it stays the thing this is compared
-    # against, and ROUTING_SOFTMAX_FUSE=0 puts it back in the hot path.
+    # against, and `_SW_SOFTMAX_FUSE = False` puts it back in the hot path.
     if _SM_OK["use"] and not _SM_OK["checked"]:
         _SM_OK["checked"] = True
         _r = _segment_softmax_serial(_lg, profile_start, profile_len)
@@ -988,8 +1006,8 @@ def _mid_vamp(shares, vol, risk, mid_id, n_mids):
 # the same float64 additions in the same sequence, and float addition is deterministic given
 # an order. That is an argument, not a measurement, so `_VIOL_FACT` MEASURES it on the first
 # live call as well - int64 bit patterns, not allclose - and run_fullmatrix_ga prints the
-# verdict. ROUTING_VIOL_BINCOUNT=0 restores np.add.at.
-_VIOL_BINCOUNT = _os_gf.environ.get("ROUTING_VIOL_BINCOUNT", "1") != "0"
+# verdict. `_SW_VIOL_BINCOUNT = False` restores np.add.at.
+_VIOL_BINCOUNT = _SW_VIOL_BINCOUNT
 _VIOL_FACT = {"checked": False, "msg": "", "same": None}
 
 
@@ -1023,11 +1041,11 @@ def _mid_accum(w, wr, mid_id, n_mids):
                  f"comparison on 2x{P}x{n_mids}, stricter than allclose) over {mid_id.size:,} "
                  "row(s). Both walk the rows in the same order into the same bins, so every "
                  "output element receives the same additions in the same sequence. Measured "
-                 "127.5 -> 30.2 ms per _violation call at P=35. ROUTING_VIOL_BINCOUNT=0 reverts."
+                 "127.5 -> 30.2 ms per _violation call at P=35. `_SW_VIOL_BINCOUNT = False` reverts."
                  if _same else
                  "[viol-bincount] \u26a0\u26a0 SELF-CHECK FAILED on the live population: "
                  "bincount and np.add.at do NOT agree bit for bit, which they must. The "
-                 "engineering key this run is not trustworthy. Set ROUTING_VIOL_BINCOUNT=0 and "
+                 "engineering key this run is not trustworthy. Set `_SW_VIOL_BINCOUNT = False` and "
                  "re-run."))
         except Exception as _vbe:  # noqa: BLE001 - a self-check must never break a run
             _VIOL_FACT["msg"] = (f"[viol-bincount] self-check SKIPPED ({type(_vbe).__name__}: "
@@ -1657,7 +1675,7 @@ def _mutate(logits, rate, strength, profile_start, profile_len, rng, profile_w=N
     The RNG DRAW COUNT is deliberately unchanged: still exactly one `rng.random(n_profiles)` and one
     `standard_normal(logits.shape)`, in that order. Only the threshold each draw is compared
     against moves. So `profile_w=None` (or all-ones) reproduces the pre-19ab search BIT-IDENTICALLY,
-    random stream included — which is what makes ROUTING_MUT_TARGET=0 a true revert rather than a
+    random stream included — which is what makes `_SW_MUT_TARGET = False` a true revert rather than a
     different-but-similar search. Do not add or reorder draws here.
 
     Probabilities are clipped to 1.0: a boosted rate above 1 would otherwise be a silent no-op
@@ -1684,7 +1702,7 @@ def _mutate(logits, rate, strength, profile_start, profile_len, rng, profile_w=N
 #      child's numbers no longer depend on how many draws its siblings happened to take. That
 #      independence is also what would make the child loop threadable — though after this there is
 #      little left to thread, which is the better outcome.
-#   2. `_mutate` is UNTOUCHED and ROUTING_MUT_FAST=0 runs it on the old shared generator, so the
+#   2. `_mutate` is UNTOUCHED and `_SW_MUT_FAST = False` runs it on the old shared generator, so the
 #      previous answer is one env var away for comparison.
 #
 # The SHAPE of the perturbation is identical: the same per-profile selection at the same probability,
@@ -1748,10 +1766,10 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     (best_shares, info) : best_shares is (R,) in ORIGINAL row order.
     """
     p = problem
-    # 19bp: ROUTING_MUT_FAST=0 restores the pre-19bp search EXACTLY — one shared sequential
+    # 19bp: `_SW_MUT_FAST = False` restores the pre-19bp search EXACTLY — one shared sequential
     # generator and a full-width Gaussian draw per child. On (the default) it draws only the
     # Gaussians it uses, from one independent stream per child. Different answer, same search.
-    _MUT_FAST = os.environ.get("ROUTING_MUT_FAST", "1") != "0"
+    _MUT_FAST = _SW_MUT_FAST
     rng = np.random.default_rng(seed)
     R = p.profile_id.shape[0]
     total_vol = _profile_volume_total(p)
@@ -2133,7 +2151,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             # calls on one basis and half on the other.
             if _DECODE_OBJ and not _OBJ_FACT["said"]:
                 _OBJ_FACT["said"] = True
-                log("[decode-obj] \u26a0 ROUTING_DECODE_OBJ=1 IS NOT IN EFFECT on this call path: "
+                log("[decode-obj] \u26a0 `_SW_DECODE_OBJ = True` IS NOT IN EFFECT on this call path: "
                     "no band penalty and no compression are wired, so no delivered array is built "
                     "and the success rate is the kernel's own - measured on the UNDELIVERED "
                     "split. Nothing here is a measurement of the switch.")
@@ -2322,16 +2340,16 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 _OBJ_FACT["said"] = True
                 _OBJ_FACT["applied"] = True
                 log("[decode-obj] the SUCCESS RATE and the engineering violation are now measured "
-                    "on the DELIVERED split (ROUTING_DECODE_OBJ=1), the same array the bands are "
+                    "on the DELIVERED split (`_SW_DECODE_OBJ = True`), the same array the bands are "
                     "measured on. Before this the objective came from eval_pop's own softmax, "
                     "which applies the max-share cap but NOT blocked-caps and NOT eligibility - so "
                     "the GA maximised the success rate of a split it does not ship. THE SUCCESS "
                     "RATE THIS RUN IS NOT COMPARABLE WITH ANY EARLIER RUN: it is a different "
                     "quantity, and it will read LOWER because eligibility removes exactly the "
-                    "gateways an unconstrained objective loads up. ROUTING_DECODE_OBJ=0 reverts.")
+                    "gateways an unconstrained objective loads up. `_SW_DECODE_OBJ = False` reverts.")
         elif _DECODE_OBJ and not _OBJ_FACT["said"]:
             _OBJ_FACT["said"] = True
-            log("[decode-obj] \u26a0 ROUTING_DECODE_OBJ=1 WAS REQUESTED AND IS NOT IN EFFECT: no "
+            log("[decode-obj] \u26a0 `_SW_DECODE_OBJ = True` WAS REQUESTED AND IS NOT IN EFFECT: no "
                 "deduped delivery hook (deliver_full_fn / gather_fn), so there is no delivered "
                 "array to score on. The objective is still the kernel's, on the undelivered "
                 "split. This run is NOT a measurement of the switch.")
@@ -2392,10 +2410,10 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         seed_shares, hard_zero=_hz_on, profile_start=p.profile_start, profile_len=p.profile_len,
         info=_hz_info)
     if _hz_want and _compress_on:
-        log("[fullmatrix-ga] \u26a0 ROUTING_SEED_ZEROS=1 REFUSED this run: the compressibility "
-            "regulariser is on and it runs k-means over the LOGIT genome, which -inf would turn "
-            "into nan centroids. The seed is encoded the old way; [decode-loss] below still "
-            "prices what that costs. Turn the regulariser off to use it.")
+        log("[fullmatrix-ga] \u26a0 the seed's HARD ZEROS were REFUSED this run: the "
+            "compressibility regulariser is on and it runs k-means over the LOGIT genome, which "
+            "-inf would turn into nan centroids. The seed is encoded the old way; [decode-loss] "
+            "below still prices what that costs. Run with compress_lambda = 0 to get them back.")
 
     # 19gu/19gv: with the cap in the decode the seed needs no special treatment. It is capped
     # when it is decoded, like every other candidate, so it cannot be out-ranked on the
@@ -2672,7 +2690,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     f"itself. The share moved below is the FORMER population's; do not divide it "
                     f"by the latter's count (19im did, and invented a 3.5e-07 defect). The "
                     f"back-off exists so the engineering key can read an exact 0.0 - which "
-                    f"ROUTING_DECODE_OBJ no longer needs, since it measures the key on the "
+                    f"`_SW_DECODE_OBJ` no longer needs, since it measures the key on the "
                     f"DELIVERED split.")
                 log(f"[fullmatrix-ga] [decode-cap] ✓ SELF-CHECK PASSED on the live seed: the "
                     f"uncapped decode held {_dc_over_before:,} row(s) above the cap, the capped "
@@ -2688,8 +2706,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     + ("" if _dc_same else ", and the capped decode is NOT bit-identical to the "
                                            "reference water-fill")
                     + f" (worst profile sum error {_dc_sums:.2e}). The engineering key below is the "
-                      "backstop and will show it, but do NOT trust this run's split. Set "
-                      "ROUTING_DECODE_CAP=0 and re-run.")
+                      "backstop and will show it, but do NOT trust this run's split. The capped "
+                      "decode is unconditional, so there is nothing to turn off - report this.")
         except Exception as _dce:  # noqa: BLE001
             log(f"[fullmatrix-ga] [decode-cap] self-check SKIPPED "
                 f"({type(_dce).__name__}: {_dce}) — MEASUREMENT ONLY, the decode is unaffected, "
@@ -2767,7 +2785,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 if not (_ob_okc and _ob_okv):
                     log("[fullmatrix-ga] [obj-basis] \u26a0\u26a0 the full-grain view does NOT "
                         "line up with the delivered array. Do NOT trust this run's objective. "
-                        "Set ROUTING_DECODE_OBJ=0 and re-run.")
+                        "Set `_SW_DECODE_OBJ = False` and re-run.")
         except Exception as _obe:  # noqa: BLE001 - a self-check must never break a run
             log(f"[fullmatrix-ga] [obj-basis] view check skipped ({type(_obe).__name__}: "
                 f"{_obe}) - the objective is unaffected, only the proof of it.")
@@ -2796,7 +2814,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                " \u2014 \u26a0 THE REMAINDER IS NON-ZERO: that is a REAL max-share violation "
                "the old flat figure was masking, on rows where the cap COULD have been met. "
                "Worth investigating.")
-            + " ROUTING_VIOL_FORCED=0 restores the old key.")
+            + " `_SW_VIOL_FORCED = False` restores the old key.")
     if _compress_on:
         _refresh_codebook(seed_logits)                            # learn the initial codebook from the seed
         _k0 = 0 if _cb["cent"] is None else _cb["cent"].shape[0]
@@ -2901,7 +2919,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     "projector scaffold's vcpos, so it is NOT the same number as the "
                     "VAMP-POSITIVE SIBLING block's and must not be quoted as one.)")
         if _hz_on:
-            log(f"[fullmatrix-ga]    ROUTING_SEED_ZEROS=1 IS ON: "
+            log(f"[fullmatrix-ga]    THE SEED'S HARD ZEROS ARE ON (fixed on since 19cm): "
                 f"{int(_hz_info.get('rows_hard_zeroed', 0)):,} row(s) encoded as -inf logits, "
                 "which the stable softmax turns into exact zeros in BOTH the numpy and numba "
                 "kernels with no code change to either. The figures above are what remains AFTER "
@@ -2914,11 +2932,10 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                     "left un-masked: masking every row of a profile makes the stable softmax nan. A "
                     "profile of a valid seed sums to 1, so this should not happen \u2014 report it.")
         else:
-            log("[fullmatrix-ga]    ROUTING_SEED_ZEROS=0 (default): the seed is encoded the old "
-                "way and the gap above is being PAID this run. Setting it to 1 encodes exact "
-                "zeros as -inf logits. That is a BEHAVIOUR change \u2014 the seed's descendants "
-                "inherit its zeros \u2014 so it is off until this block has priced it on a run "
-                "that matters.")
+            log("[fullmatrix-ga]    THE SEED'S HARD ZEROS ARE OFF this run: the seed is encoded "
+                "the old way and the gap above is being PAID. They are fixed ON in the source "
+                "(19cm), so the only thing that can have refused them is the compressibility "
+                "regulariser \u2014 see its refusal line above.")
     except Exception as _dl_e:                       # noqa: BLE001 — a measurement must not break a search
         log(f"[fullmatrix-ga]    [decode-loss] skipped ({type(_dl_e).__name__}: {_dl_e}). The "
             "search itself is unaffected.")
@@ -2940,7 +2957,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # outranked the incumbent and it did not move ... an UPDATE fault". Both cannot be true; the
     # miscount goes with the block.
     _cen_on = False
-    _cen_dec_on = _cen_on and _os_gf.environ.get("ROUTING_GA_CENSUS_DECOMP", "1") != "0"
+    _cen_dec_on = _cen_on and _SW_GA_CENSUS_DECOMP
     _cen0 = {"kids": 0, "feas": 0, "vbet": 0, "feas_vbet": 0, "blocked_other": 0,
              "won": 0, "won_eng": 0, "minband": float("inf"), "bestfeas": float("-inf")}
     _cen = dict(_cen0)                      # run total
@@ -3092,7 +3109,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
     # Per-profile mutation probability, tunable WITHOUT a build (it never was before — there is no UI
     # input and tab2 does not pass mutation_rate). Default 0.01 = the value the old three-term
     # expression always produced, so the default run is unchanged.
-    _MUT_RATE = float(_os_gf.environ.get("ROUTING_MUT_RATE", "") or 0.01)
+    _MUT_RATE = _SW_MUT_RATE
     _eff_profiles = _MUT_RATE * int(p.n_profiles)
     log(f"[fullmatrix-ga] mutation rate {min(float(mutation_rate), _MUT_RATE):.4f} per profile over "
         f"{int(p.n_profiles):,} profiles ⇒ ~{min(float(mutation_rate), _MUT_RATE) * int(p.n_profiles):,.0f} "
@@ -3100,7 +3117,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         f"{min(float(mutation_rate), _MUT_RATE) * int(p.n_profiles) * 0.25:,.0f} per refine child, "
         f"which uses a quarter rate). Ceiling mutation_rate={float(mutation_rate):g} "
         f"{'BINDS' if float(mutation_rate) < _MUT_RATE else 'does not bind'}. "
-        "ROUTING_MUT_RATE overrides.")
+        "`_SW_MUT_RATE` overrides.")
     # Say it when the 2026-08-19ac removal actually changes this run. The deleted term was
     # max(0.01, 60/n_profiles), which bound only below 6,000 profiles — so at the live grain nothing
     # moved, but at a coarser grain it did, and a silent halving of the mutation is exactly the
@@ -3113,7 +3130,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             f"{min(float(mutation_rate), _MUT_RATE):.5f} "
             f"(~{min(float(mutation_rate), _MUT_RATE) * int(p.n_profiles):,.0f} profiles) now. That term "
             "bound only below 6,000 profiles; the live rpgt×currency×bank grain (23,791) is "
-            "unaffected, but this run is coarser. Set ROUTING_MUT_RATE="
+            "unaffected, but this run is coarser. Set `_SW_MUT_RATE = ''`"
             f"{_old_rate:.5f} to reproduce the pre-19ac search exactly.")
     if mut_weight_fn is not None:
         log("[fullmatrix-ga] mutation is BREACH-TARGETED: profiles feeding a still-breached band get "
@@ -3129,9 +3146,9 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
            "generation), and each child has its own deterministic stream keyed on "
            "(seed, seed-index, restart, generation, child). THIS IS A DIFFERENT RANDOM SAMPLE "
            "than any run before 19bp, so success rate and the breach will differ — that is the change, "
-           "not a fault. ROUTING_MUT_FAST=0 restores the old stream exactly."
+           "not a fault. `_SW_MUT_FAST = False` restores the old stream exactly."
            if _MUT_FAST else
-           "LEGACY (ROUTING_MUT_FAST=0) — one shared generator, one Gaussian per row per child, "
+           "LEGACY (`_SW_MUT_FAST = False`) — one shared generator, one Gaussian per row per child, "
            "~99% of them discarded. This reproduces every run before 19bp bit for bit."))
     # 19hu: the budget line stood here and was deleted - tab_2 states it as a table before the
     # call and now VERIFIES it against this function's own returned n_seeds / restarts /
@@ -3331,13 +3348,13 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                         _cw = None
                 _n_refine = children.shape[0] // 2
                 # 19bp: ONE STREAM PER CHILD when the fast path is on, so a child's numbers do not
-                # depend on how many draws its siblings took. With ROUTING_MUT_FAST=0 every child
+                # depend on how many draws its siblings took. With `_SW_MUT_FAST = False` every child
                 # shares `_rng` exactly as before, so that switch is a true revert.
                 _kid = (_child_streams(seed, _s, _r, gen, children.shape[0])
                         if _MUT_FAST else None)
                 _mut = _mutate_fast if _MUT_FAST else _mutate
                 # 19bx: FUSE crossover and mutate into one pass per child. Only valid against the
-                # 19bp fast mutation — with ROUTING_MUT_FAST=0 the shipped operator is the legacy
+                # 19bp fast mutation — with `_SW_MUT_FAST = False` the shipped operator is the legacy
                 # full-width one and the fused twin is not its equivalent, so the fusion turns
                 # itself off rather than quietly changing what that revert reverts to.
                 _fuse = bool(_FX_OK["use"] and _MUT_FAST)
@@ -3532,7 +3549,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             # 14:19 run read 0.0000 with the split unchanged. So 0 is the expected reading
             # again on the delivered basis too, and a non-zero one is a finding.
             log("[decode-cap] THE ENGINEERING KEY should read 0.0000 even though "
-                "ROUTING_DECODE_OBJ measures it on the DELIVERED split. Delivery does leave "
+                "`_SW_DECODE_OBJ` measures it on the DELIVERED split. Delivery does leave "
                 "rows above the cap - a profile with less room than the excess cannot absorb "
                 "it - but every such row that is STRUCTURALLY forced there is exempted by "
                 "19io (see [viol-forced]), so what remains is only rows the cap COULD have "
@@ -3547,7 +3564,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 "because none can violate. If `viol` above is ever non-zero on the max-share "
                 "term, the water-fill did not hold and that key is what says so. (This holds "
                 "because the key is measured on the DECODED split, which is water-filled by "
-                "construction; ROUTING_DECODE_OBJ moves it onto the delivered one, where a "
+                "construction; `_SW_DECODE_OBJ` moves it onto the delivered one, where a "
                 "non-zero reading is expected instead.)")
 
     # ── [ga-census] RUN VERDICT ──────────────────────────────────────────────────────────
@@ -3650,7 +3667,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 f"{best_success_rate:.6f}. Compliant splits ARE reachable; none converts better. A "
                 "genuine local optimum at this mutation scale.")
         log("[ga-census]    Read-only measurement; nothing above changed what the search did. "
-            "ROUTING_GA_CENSUS=0 removes it, ROUTING_GA_CENSUS_DECOMP=0 just the decomposition.")
+            "`_cen_on = False` removes it, `_SW_GA_CENSUS_DECOMP = False` just the decomposition; "
+            "both live in genetic_fullmatrix.py.")
 
     _bss = _segment_softmax(best_logits[None, :], p.profile_start, p.profile_len, p.max_share)
     # ── 19ia: RETURN WHAT WAS SCORED. `_deliver_kept(sh, _deliver_full(sh))` is the same pair of
@@ -3666,8 +3684,8 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
             _dd_stat = (int(np.count_nonzero(_dif > 1e-12)), float(_dif.max()),
                         float(_dif.sum()))
             _bss = _bkd
-            log(f"[decode-deliv] the returned split IS the delivered split now "
-                f"(ROUTING_DECODE_DELIV=1): {_dd_stat[0]:,} of {_bss.shape[1]:,} row(s) moved, "
+            log(f"[decode-deliv] the returned split IS the delivered split now: "
+                f"{_dd_stat[0]:,} of {_bss.shape[1]:,} row(s) moved, "
                 f"worst |\u0394| {_dd_stat[1]:.4g}, \u03a3|\u0394| {_dd_stat[2]:.4g}. THAT IS THE "
                 "[profiles] PART B DISCREPANCY, removed at source - the GA scored this array and "
                 "now ships it, so scored == shipped by construction rather than by tolerance. "
@@ -3675,14 +3693,14 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
                 "6,428 keys to 20 and \u03a3|\u0394prop| from 24.4448 to 0.0302 while leaving the "
                 "success rate, all 15 delivered band values and the reconciliation error "
                 "UNCHANGED - and the shipped split stopped containing rows above the 0.97 cap."
-                + (" 19if CLOSED THE FOLD: with ROUTING_DECODE_OBJ armed the success rate and "
+                + (" 19if CLOSED THE FOLD: with `_SW_DECODE_OBJ` armed the success rate and "
                    "the engineering violation are measured on this same delivered array, so "
                    "the objective and the constraints now describe one split. Read [obj-basis]."
                    if (_DECODE_OBJ and _have_full) else
                    " NOT the whole fold: eval_pop still scores the SUCCESS RATE on its own "
                    "softmax with no block and no eligibility, so the OBJECTIVE is still "
                    "measured on the undelivered split while the CONSTRAINTS are measured on "
-                   "the delivered one. ROUTING_DECODE_OBJ=1 closes it (19id/19if)."))
+                   "the delivered one. `_SW_DECODE_OBJ = True` closes it (19id/19if)."))
         except Exception as _dde:  # noqa: BLE001
             _dd_stat = None
             log(f"[decode-deliv] \u26a0 FAILED, RAW DECODE RETURNED ({type(_dde).__name__}: "
@@ -3724,7 +3742,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         "note": ("compliance is SOFT/adaptive in-search; apply the caller's "
                  "exact enforcement pass to the returned split before shipping."),
     }
-    if os.environ.get("ROUTING_GEN_GAP", "1") != "0" and _gg["gen"]:
+    if _SW_GEN_GAP and _gg["gen"]:
         _gv = np.sort(np.asarray(_gg["gen"], float)) * 1000.0
         _raw = np.asarray(_gg["gen"], float) * 1000.0
         _tot = float(_raw.sum()) / 1000.0

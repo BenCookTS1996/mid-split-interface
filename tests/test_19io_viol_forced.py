@@ -12,9 +12,11 @@ sys.path.insert(0, str(ROOT / "src"))
 GA = str(ROOT / "src/routing_optimiser/s4_search/genetic_fullmatrix.py")
 
 def load(name, on):
-    os.environ["ROUTING_VIOL_FORCED"] = "1" if on else "0"
+    # 19kg: there is no environment variable to set any more. `_VIOL_FORCED` survives as a
+    # NAME for exactly this reason - a test can still A/B the two keys by rebinding it.
     sp = importlib.util.spec_from_file_location(name, GA)
     m = importlib.util.module_from_spec(sp); sys.modules[name] = m; sp.loader.exec_module(m)
+    m._VIOL_FORCED = bool(on)
     return m
 
 FAIL = []
@@ -90,7 +92,7 @@ check("[cap-source]'s 0 -> 0 case is recognised on its own terms, not fallen thr
 
 EBS = (ROOT / "src/routing_optimiser/s4_search/exact_band_solver.py").read_text(encoding="utf-8")
 check("the LP stall is armed at K=4, above the largest stall_min_safe seen (3)",
-      'ROUTING_SEED_LP_STALL", "4"' in EBS and "stall_min_safe = 3" in EBS)
+      "_SW_SEED_LP_STALL = 4" in EBS and "stall_min_safe = 3" in EBS)
 check("...and it is named as answer-affecting rather than slipped in",
       "THIS IS ANSWER-AFFECTING" in EBS)
 

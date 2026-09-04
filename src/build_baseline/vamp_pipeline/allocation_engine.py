@@ -6,6 +6,19 @@ from typing import Dict, Any, Tuple, List, Optional
 
 from .utils import setup_logger, clean_key_col
 
+# ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
+# No environment variable changes a run any more. Each name below is frozen at the
+# value the shipped run already used - the defaults, because no routing.env exists and
+# run.command exports nothing - so what shipped is what these say. They stay NAMES, not
+# literals inlined at the use site, for two reasons: a test can still A/B a whole search
+# by rebinding one, and a reader can see in one place every decision this module makes.
+# Changing behaviour now means editing this block and saying so in a commit.
+_SW_DEATHSYNC_AUDIT = True   # was ROUTING_DEATHSYNC_AUDIT, default '1'
+_SW_DEATHSYNC_BLOCK = True   # was ROUTING_DEATHSYNC_BLOCK, default '1'
+_SW_DEATHSYNC_CASCADE = True   # was ROUTING_DEATHSYNC_CASCADE, default '1'
+_SW_DEATHSYNC_DOOMED = False   # was ROUTING_DEATHSYNC_DOOMED, default '0'
+_SW_VAMP_ORIGIN_SHARE = True   # was ROUTING_VAMP_ORIGIN_SHARE, default '1'
+
 logger = setup_logger(__name__)
 
 __build__ = "2026-07-21-alloc-trace-rawsplit+profile-samples+vp02-vamp-origin+vp03-deathsync-block+vp04-orphan-cascade+ds05-audit+ds06-doomed-off"
@@ -264,7 +277,7 @@ class AllocationEngine:
         `origin = m - t` is always in [0, m] and so in [0, 5].
         """
         import os as _os_vo
-        if _os_vo.environ.get("ROUTING_VAMP_ORIGIN_SHARE", "1") == "0":
+        if (not _SW_VAMP_ORIGIN_SHARE):
             return None, None
         vok = self._vamp_origin_kill()
         if not vok or dest_gw_col not in chunk_merged_df.columns:
@@ -485,7 +498,7 @@ class AllocationEngine:
                     # rather than falling back onto a gateway that processes nothing.
                     mask_alive = mask_alive & ~blk
                 else:
-                    # ROUTING_DEATHSYNC_CASCADE=0: the vp03 fallback, kept verbatim so the switch
+                    # `_SW_DEATHSYNC_CASCADE = False`: the vp03 fallback, kept verbatim so the switch
                     # reverts exactly one change. Skips the block where it would destroy volume.
                     _sub = df.loc[mask_alive, group_cols].copy()
                     _sub['_elig'] = (~blk.loc[mask_alive]).to_numpy(dtype=np.float64)
@@ -608,7 +621,7 @@ class AllocationEngine:
             for fid, v in sorted(rows, key=lambda r: -sum(r[1])):
                 logger.info(f"        {fid:26s} " + " ".join(f"{x:7.2f}" for x in v)
                             + f"  {sum(v):9.2f}")
-        logger.info("     ROUTING_VAMP_ORIGIN_SHARE=0 reverts this entirely.")
+        logger.info("     `_SW_VAMP_ORIGIN_SHARE = False` reverts this entirely.")
 
     def _apply_death_syncs(self, pre_df: pd.DataFrame, post_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """MANAGER: The ultimate safety net. Perfectly redistributes orphaned volume."""
@@ -626,21 +639,21 @@ class AllocationEngine:
         full_keys = self.join_keys + ['fcpNumber', 'attemptNumber']
 
         import os as _os_ds
-        _ds_block_on = _os_ds.environ.get("ROUTING_DEATHSYNC_BLOCK", "1") != "0"
+        _ds_block_on = _SW_DEATHSYNC_BLOCK
         _ds_blocked_any = sorted(set().union(*[set(dead_trx[m]) - set(dead_vamp[m])
                                                for m in range(6)])) if _ds_block_on else []
 
         # vp04: orphaned VAMP that finds no eligible absorber in its own cohort widens the search
         # instead of falling back onto a gateway that processes nothing. Group ids per rung are
         # built lazily and cached for the whole phase, so an unreached rung costs nothing.
-        _casc_on = _os_ds.environ.get("ROUTING_DEATHSYNC_CASCADE", "1") != "0"
+        _casc_on = _SW_DEATHSYNC_CASCADE
         _ds_ladder = self._ds_ladder(full_keys, post_df) if _casc_on else None
         _gid_post = self._ds_gid_getter(post_df, _ds_ladder) if _casc_on else None
         _gid_pre = self._ds_gid_getter(pre_df, _ds_ladder) if _casc_on else None
 
-        _aud_on = _os_ds.environ.get("ROUTING_DEATHSYNC_AUDIT", "1") != "0"
+        _aud_on = _SW_DEATHSYNC_AUDIT
         # ds06: default OFF. =1 restores the pre-ds06 guard exactly.
-        _dm_on = _os_ds.environ.get("ROUTING_DEATHSYNC_DOOMED", "0") == "1"
+        _dm_on = _SW_DEATHSYNC_DOOMED
         _aud_rows = []
 
         for m in range(6):
@@ -737,7 +750,7 @@ class AllocationEngine:
                         f"{_tot['rungs']:.2f} · lost {_tot['lost']:.2f} · delta "
                         f"{_tot['delta']:.2f} · resid {_tot['resid']:.2f}")
             if _dm_on:
-                logger.info("        doomed guard is ON (ROUTING_DEATHSYNC_DOOMED=1) — it is "
+                logger.info("        doomed guard is ON (`_SW_DEATHSYNC_DOOMED = True`) — it is "
                             "deleting the volume above from POST and not from PRE, so the two "
                             "books will not agree. Unset it to let the redistribution place it.")
             elif _skipped > 0.0:
@@ -749,7 +762,7 @@ class AllocationEngine:
                                "unaccounted for — the book does not balance and the cause is NOT "
                                "the doomed pre-zeroing or an unplaceable orphan. Do not fix "
                                "either of those on the strength of this run.")
-            logger.info("     ROUTING_DEATHSYNC_AUDIT=0 silences this block.")
+            logger.info("     `_SW_DEATHSYNC_AUDIT = False` silences this block.")
 
         _cs = getattr(self, "_ds_casc", None)
         if _cs and _ds_ladder:
@@ -772,8 +785,8 @@ class AllocationEngine:
                 logger.warning(f"   > ORPHAN CASCADE: {_cs['lost']:.2f} unit(s) could not be "
                                "placed at ANY grain and have been dropped from the book - nothing "
                                "eligible exists to hold them. This needs looking at.")
-            logger.info("     ROUTING_DEATHSYNC_CASCADE=0 reverts to the vp03 fallback; "
-                        "ROUTING_DEATHSYNC_BLOCK=0 reverts both.")
+            logger.info("     `_SW_DEATHSYNC_CASCADE = False` reverts to the vp03 fallback; "
+                        "`_SW_DEATHSYNC_BLOCK = False` reverts both.")
 
         # 🟢 UPGRADED TO FLOAT64
         num_post = post_df.select_dtypes(include=['number']).columns

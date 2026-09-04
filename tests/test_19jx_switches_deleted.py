@@ -48,16 +48,21 @@ for _n in NAMES:
              if _n in l and "deleted" not in l and "19jx" not in l]
     check(f"1  no live line still tells anyone to set {_n}", not _hits,
           f"{len(_hits)} hit(s): {_hits[:2]}" if _hits else "")
-check("1  _env_switch is gone with its only caller, and the CELLBLOCK alias with it",
-      "def _env_switch" not in BP
-      and '"ROUTING_PROJ_PROFILEBLOCK": "ROUTING_PROJ_CELLBLOCK"' not in ACC)
-check("1  ...and the other three renamed-switch aliases are untouched",
-      '"ROUTING_DOOR_COVER_PROFILES": "ROUTING_DOOR_COVER_CELLS"' in AC
-      and '"ROUTING_CA_ZEROPROFILE": "ROUTING_CA_ZEROCELL"' in AC
-      and '"ROUTING_ROW_PARALLEL_MIN_PROFILES": "ROUTING_ROW_PARALLEL_MIN_CELLS"' in AC)
-check("1  the requested-vs-in-effect table no longer lists a switch nothing reads",
-      '("ROUTING_PROJ_PROFILEBLOCK", _PROJ_CB_ON)' not in BPC
-      and '("ROUTING_PROJ_CHUNK", _PROJ_CHUNK_ON)' in BPC)
+check("1  _env_switch is gone with its only caller",
+      "def _env_switch" not in BP)
+# 19kg: the WHOLE alias table went, not just the CELLBLOCK entry. `env_switch` existed because
+# a switch name is a user contract - it gets typed at a shell prompt - and the profile rename
+# had to keep the old spellings working. No spelling is read any more, so there is no contract
+# left to honour and a shim would answer a name nothing reads.
+check("1  the alias table and its reader are gone entirely",
+      "def env_switch" not in AC and "_SWITCH_ALIASES = {" not in AC
+      and "_SWITCH_LEGACY_USED" not in ACC and "[deprecated-switch]" not in AC)
+check("1  ...and the deletion says which three aliases it carried",
+      "ROUTING_DOOR_COVER_CELLS" in AC and "ROUTING_CA_ZEROCELL" in AC
+      and "ROUTING_ROW_PARALLEL_MIN_CELLS" in AC)
+check("1  the requested-vs-in-effect table is gone with the environment it compared against",
+      "in this process's environment NOW" not in BP
+      and "os.environ" not in BPC)
 
 # ═══ 2. BOTH REFERENCE PATHS SURVIVE - the point of the whole change ═════════════════════
 check("2  the flat kernel is still built and still called by the self-check",

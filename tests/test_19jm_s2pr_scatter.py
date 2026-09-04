@@ -137,8 +137,8 @@ check("3  the buffer is np.zeros, because the unmapped keys are never written ag
       and "the rest stay the zeros they were" in T2)
 check("3  it declines when a backup catch-all folds the prop vector after it is built",
       "a backup catch-all is configured" in T2)
-check("3  ROUTING_S2PR_SCATTER=0 reverts, and the log says which way it went",
-      'os.environ.get("ROUTING_S2PR_SCATTER", "1") == "0"' in T2
+check("3  `_SW_S2PR_SCATTER = False` reverts, and the log says which way it went",
+      "_SW_S2PR_SCATTER = True" in T2 and "elif (not _SW_S2PR_SCATTER):" in T2
       and "[s2pr-perm] the incidence is a PERMUTATION" in T2
       and "[s2pr-perm] OFF - " in T2)
 check("3  the measured expectation is on record, not implied",
