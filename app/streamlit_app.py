@@ -119,18 +119,16 @@ except Exception:  # noqa: BLE001 - a read-only dir must never stop the app load
 # this orchestrator intentionally pulls in almost nothing from the backend.
 
 # ── Shared brand mark (favicon + red-banner logo) ───────────────────────────────────────
-# 19jz: the official TSC roundel, on Ben's instruction. It is a RED mark on a transparent
-# background (checked by loading it), which is why the white `.tav-badge` square it sits in
-# stays - on the red banner itself a red logo would disappear.
+# 19ka: REVERTED to the embedded roundel, on Ben's instruction. 19jz pointed this at
+# totalsecurity.com/.../TSCLogo/.../logo-alt.svg; that is undone and the URL is not kept
+# anywhere, so nothing here depends on reaching that host.
 #
-# FETCHED BY THE BROWSER, not embedded: neither this machine nor the cloud sandbox can reach
-# totalsecurity.com to inline it as a data URI, so the app serves the URL and the browser
-# loads it. Consequence worth knowing: with no network to that host the mark does not render.
-# `_BRAND_ICON_PNG` below is the previous embedded roundel, kept for exactly that case -
-# swapping the two names back is a one-line revert.
-_BRAND_ICON = ("https://www.totalsecurity.com/_r/c/6/_ptd/Core/Brand/Logos/TSCLogo/TSCLogo/"
-               "5877366561a7/img/logo-alt.svg")
-_BRAND_ICON_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAASFBMVEVHcEzILDfJLDi2JS21JS68KDHfNETmN0jmN0jkNkfmN0isIiqsIirDKjThNUW4Jy3KLDivIyu8KDHEKzTmN0jEKzS0Ji3KLTfpm+j9AAAAGHRSTlMAFTKMsMD7/8y0jtz/9OQGd/I9/2LkIteIBpNuAAABKklEQVR4AWXTWaKDMAgFUDLXhpiBRve/0xcnGl7Pn4JecIAvpY11PryWt1bwS5uImHw4rW8NUi4RuX62FHEXZXGoYbZMHTqedR+EtfH1Zx0p/LOqO99edR+YTCl4Ste5JUwKDzCM49cHhs/rG3Jsa/DU77JsefOE6ObF1WflOTVeNAj67tBPAoKkaL0zHDcIG6WzY4GIFwVCI+r+WAwqXhoIhYj24IPnBgOCo2H13nNEFBm607B7v/KQWGBi6JBWv/CaGLW8wZB2X6Dhw3HI5uiSSPOjHmyGk7J0S7uCbJDZDQbNdUolA7SILDaA0ol1fU6ME9tpUq7Ie9NasSaaPUNttcZYiascwGu1TkwOIBeXrPy1SiehjwWlZqaW3Wj4kVUzbk+pO9MUsD95+yDzjpcQNgAAAABJRU5ErkJggg=="
+# EMBEDDED, not fetched, which is the property worth keeping: the mark renders with no
+# network at all, and the favicon cannot be a broken-image icon on a machine behind a proxy
+# that blocks the brand CDN. (Neither this machine nor the sandbox can reach it, as it
+# happens.) The guarded `set_page_config` below stays regardless - that guard is about not
+# letting the app's FIRST Streamlit call be what kills startup, whatever the icon is.
+_BRAND_ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAASFBMVEVHcEzILDfJLDi2JS21JS68KDHfNETmN0jmN0jkNkfmN0isIiqsIirDKjThNUW4Jy3KLDivIyu8KDHEKzTmN0jEKzS0Ji3KLTfpm+j9AAAAGHRSTlMAFTKMsMD7/8y0jtz/9OQGd/I9/2LkIteIBpNuAAABKklEQVR4AWXTWaKDMAgFUDLXhpiBRve/0xcnGl7Pn4JecIAvpY11PryWt1bwS5uImHw4rW8NUi4RuX62FHEXZXGoYbZMHTqedR+EtfH1Zx0p/LOqO99edR+YTCl4Ste5JUwKDzCM49cHhs/rG3Jsa/DU77JsefOE6ObF1WflOTVeNAj67tBPAoKkaL0zHDcIG6WzY4GIFwVCI+r+WAwqXhoIhYj24IPnBgOCo2H13nNEFBm607B7v/KQWGBi6JBWv/CaGLW8wZB2X6Dhw3HI5uiSSPOjHmyGk7J0S7uCbJDZDQbNdUolA7SILDaA0ol1fU6ME9tpUq7Ie9NasSaaPUNttcZYiascwGu1TkwOIBeXrPy1SiehjwWlZqaW3Wj4kVUzbk+pO9MUsD95+yDzjpcQNgAAAABJRU5ErkJggg=="
 
 # 19jz: guarded. `page_icon` is now a remote SVG URL, and set_page_config is the FIRST
 # Streamlit call in the app - if a Streamlit version rejects that value the whole app dies at
@@ -140,12 +138,11 @@ try:
     st.set_page_config(page_title="Routing Optimiser", layout="wide",
                        initial_sidebar_state="collapsed", page_icon=_BRAND_ICON)
 except Exception:  # noqa: BLE001
-    try:
-        st.set_page_config(page_title="Routing Optimiser", layout="wide",
-                           initial_sidebar_state="collapsed", page_icon=_BRAND_ICON_PNG)
-    except Exception:  # noqa: BLE001
-        st.set_page_config(page_title="Routing Optimiser", layout="wide",
-                           initial_sidebar_state="collapsed")
+    # 19ka: the second attempt used to pass the embedded PNG as a fallback for a remote SVG.
+    # `_BRAND_ICON` IS that PNG again, so retrying with it would just fail the same way -
+    # the only useful retry left is with no icon at all.
+    st.set_page_config(page_title="Routing Optimiser", layout="wide",
+                       initial_sidebar_state="collapsed")
 
 # Theme: green primary, light header with black text, red metric cards.
 st.markdown("""

@@ -190,7 +190,6 @@ def render():
             /* Vertically centre the checkbox against its sibling INPUT box (not the label
                above it) — push it down by roughly one label's height. */
             .st-key-apply_decay_cb { margin-top: 1.8rem !important; }
-            .st-key-vamp_on_cb { margin-top: 1.9rem !important; }
         </style>""", unsafe_allow_html=True)
 
         fs = ss.get("forecast_settings", {}) or {}
@@ -755,8 +754,8 @@ def render():
                 st.markdown("##### 4. Run Log")
                 _run_prog_slot = st.container(key="run_prog_slot")   # % complete + ETA bar (filled during a run)
                 # Lift the status row (spinner + "Running…" label) up so its text lines up with
-                # the "Enforce VAMP cap" checkbox at the top of the Risk Constraints panel beside
-                # it — the st.status box carries a top margin that otherwise sits it lower. Same
+                # the "VAMP cap (%)" input at the top of the Risk Constraints panel beside it —
+                # the st.status box carries a top margin that otherwise sits it lower. Same
                 # .st-key-<key> technique used for the checkbox alignment elsewhere in this app.
                 st.markdown("<style>.st-key-run_prog_slot{margin-top:-0.5rem;}</style>",
                             unsafe_allow_html=True)
@@ -765,18 +764,22 @@ def render():
             with st.container(border=True):
                 st.markdown("##### 3. Risk Constraints")
 
-                # Narrow VAMP-cap % input on the LEFT (≈20% width), the enable checkbox to its right.
-                # number_input can't render a literal '%' in its format string, so the '(%)'
-                # label above the box signals the value is a percentage (6.00 = 6%).
-                _v1, _v2, _v3 = st.columns([2, 4, 4])
-                vamp_on = _v2.checkbox("Enforce VAMP cap", value=True, key="vamp_on_cb")
+                # Narrow VAMP-cap % input on the LEFT (≈20% width). number_input can't render a
+                # literal '%' in its format string, so the '(%)' label above the box signals the
+                # value is a percentage (6.00 = 6%).
+                #
+                # 19ka - 'Enforce VAMP cap' IS DELETED, on Ben's instruction: it is always on.
+                # Its default was already True, so this changes no default and no result. What
+                # goes with it is the OFF path, `vamp_cap = None`, which is read all over this
+                # file and in enforce_mid_vamp_caps as "no ceiling" - a state nobody could reach
+                # any more except by unticking a box that should not have existed. `vamp_cap` is
+                # now always a float, so every `if vamp_cap is not None` downstream is simply
+                # always true rather than wrong.
+                _v1, _v3 = st.columns([2, 8])
                 _moveable_slot = _v3.empty()          # moveable-M5-txn counter (filled after the editor)
-                if vamp_on:
-                    vamp_cap_pct = _v1.number_input("VAMP cap (%)", min_value=0.01, max_value=20.0,
-                                                    value=6.0, step=0.1, format="%.2f", key="vamp_cap_inp")
-                    vamp_cap = vamp_cap_pct / 100.0
-                else:
-                    vamp_cap = None
+                vamp_cap_pct = _v1.number_input("VAMP cap (%)", min_value=0.01, max_value=20.0,
+                                                value=6.0, step=0.1, format="%.2f", key="vamp_cap_inp")
+                vamp_cap = vamp_cap_pct / 100.0
 
                 mid_path = os.path.join(out_dir, "mid_level.csv")
                 fs_cfg = ss.get("forecast_settings", {})

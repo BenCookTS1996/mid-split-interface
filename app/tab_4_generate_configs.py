@@ -193,10 +193,10 @@ def render_generator(ss, PROJECT_ROOT, key_prefix="", show_find=True):
                      "9,900 - the value this input used to take directly.")
             # Derived here, once, so the number that reaches generate_configs is never a
             # percentage by accident.
+            # 19ka: the `selector: bucket.bpid Lt 9,900` echo under the input is DELETED on
+            # Ben's instruction. The mapping it showed is already in the input's own help text,
+            # and a line that only ever restates arithmetic you just typed is noise.
             _ctrl_bpid = 10000 - (int(_ctrl_pct) * 100)
-            _cgv.markdown(f"<div style='font-size:12px; color:var(--tav-muted); margin-top:-6px;'>"
-                          f"selector: <code>bucket.bpid Lt {_ctrl_bpid:,}</code></div>",
-                          unsafe_allow_html=True)
             # Green submit — applies all the settings above (width ≈ 25%).
             _gbc, _gbsp = st.columns([1.5, 4.5])
             _do_generate = _gbc.form_submit_button(

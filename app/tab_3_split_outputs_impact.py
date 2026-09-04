@@ -430,10 +430,21 @@ def render():
         with st.container(border=True):
             # Dial narrowed 40% (1.5→0.9); metric cards narrowed 30% (1→0.7) with a
             # trailing spacer absorbing the freed width so the cards don't stretch.
-            # _con_col (feasibility report) widened so all 9 columns show; the Export
-            # Templates column is narrowed to compensate (its button/label wrap is fine).
-            _sld_col, _m1c, _m2c, _cc_col, _cf_col, _con_col, _exp_col = st.columns(
-                [0.9, 0.7, 0.7, 0.7, 0.7, 2.4, 0.6])
+            # _con_col (feasibility report) widened so all 9 columns show.
+            #
+            # 19ka - THE FOUR RED CARDS ARE FIRST NOW, on Ben's instruction ("moved all the way
+            # to the left"). They were fifth-to-second, behind the dial; the dial follows them.
+            # Only the ORDER of the unpacking changed - every column is used by name below, so
+            # nothing else had to move with them.
+            #
+            # AND THE EXPORT COLUMN GREW, 0.6 → 1.1, so "Export Templates" is one line instead
+            # of two. Width alone is a guess about font metrics, so it is not the whole fix: the
+            # button also carries `white-space:nowrap` below, which makes one line a PROPERTY
+            # rather than something that holds until someone's browser renders 1px wider.
+            # _con_col keeps its 2.4 - the freed width comes out of the total, so the feasibility
+            # table loses ~7% rather than the ~20% that re-narrowing it would have cost.
+            _m1c, _m2c, _cc_col, _cf_col, _sld_col, _con_col, _exp_col = st.columns(
+                [0.7, 0.7, 0.7, 0.7, 0.9, 2.4, 1.1])
             # Per-MID constraint table renders into this slot (between the last card and the
             # Export button); it's filled later from the Risk-Impact projection.
             _con_slot = _con_col.container()
@@ -758,10 +769,19 @@ def render():
             
             # Export split templates — beside the cards (one .xlsx per Brand × RPGT).
             with _exp_col:
-                # Add this CSS block to force primary button text to white
+                # Add this CSS block to force primary button text to white.
+                # 19ka: and to keep "Export Templates" on ONE line. Scoped by .st-key-<key> to
+                # this button only - `white-space:nowrap` applied to every primary button in the
+                # app would stop long labels wrapping where wrapping is the right answer.
                 st.markdown("""<style>
                     div[data-testid="stButton"] button[kind="primary"] * {
                         color: #FFFFFF !important;
+                    }
+                    .st-key-export_splits_btn button[kind="primary"] {
+                        white-space: nowrap !important; min-height: 0 !important;
+                    }
+                    .st-key-export_splits_btn button[kind="primary"] p {
+                        white-space: nowrap !important;
                     }
                 </style>""", unsafe_allow_html=True)
                 

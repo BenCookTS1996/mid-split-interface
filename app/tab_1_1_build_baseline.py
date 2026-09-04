@@ -77,7 +77,8 @@ def render():
         force_actuals_for_rpgts = []
         t0_lookback_months, decay_factor, thermometer_sample_months = 1, 0.5, 1
         shrink = 12.0
-        run_live, use_yaml_asis, reuse_cached_curves = True, False, True
+        # 19ka: `use_yaml_asis` deleted with its checkbox (see the Data Sources row below).
+        run_live, reuse_cached_curves = True, True
         use_cached_inputs, load_baseline, cached_inputs_path = False, False, ""
         test_gateways = _load_default_json("test_gateways.json") or {}
         thermometer_config = _load_default_json("thermometer_config.json")
@@ -359,11 +360,19 @@ def render():
                         st.caption(f"(backup catch-all parse failed: {type(_be).__name__}: {_be})")
 
                     st.markdown("<div style='height:0.4rem;'></div>", unsafe_allow_html=True)
+                    # 19ka - 'Use config/vamp_settings.yaml as-is (repo parity)' IS DELETED, on
+                    # Ben's instruction, and so is the code path behind it. Ticking it made the
+                    # pipeline read config/vamp_settings.yaml (or mastercard_settings.yaml)
+                    # straight off disk and IGNORE every widget in sections 1-4 of this tab - the
+                    # company, the scheme, month 0, the weightings, the lot. The run log said so
+                    # in a NOTE, which is the only reason a run under it was interpretable at all.
+                    # Its default was OFF, so removing it changes nothing about a normal run; what
+                    # goes is the ability to produce a forecast whose inputs are not the ones on
+                    # screen. `build_pipeline_config(forecast_settings)` is now the only way this
+                    # tab assembles a config, which is what the settings.yaml PREVIEW at the
+                    # bottom of the tab has always shown.
                     _ds1, _ds2 = st.columns(2)
-                    use_yaml_asis = _ds1.checkbox(
-                        "Use config/vamp_settings.yaml as-is (repo parity)", value=False,
-                        help="Run the pipeline straight from config/vamp_settings.yaml, like your repo.")
-                    reuse_cached_curves = _ds2.checkbox(
+                    reuse_cached_curves = _ds1.checkbox(
                         "Reuse cached actuarial curves", value=True,
                         help="Reuse cached reference_curves (load_curves_from_cache).")
 
@@ -692,17 +701,13 @@ def render():
                              else "synthesised from attempts (no BigQuery)")
                     log("── Input settings used ──")
                     log(f"   mode: {_mode}")
-                    if run_live and use_yaml_asis:
-                        log("   NOTE: 'Use config/vamp_settings.yaml as-is' is ON — the widget settings below are "
-                            "IGNORED; the pipeline runs straight from config/vamp_settings.yaml.")
                     log(f"   company={_fs['company']} · scheme={_fs['card_scheme']} · month={_fs['month_var']} · "
                         f"month_0={_fs['month_0']}")
                     log(f"   split_go_live={_fs['split_go_live_date']} · future_anchor={_fs['future_anchor_date']}")
                     log(f"   use_live_actuals={_fs['use_live_actuals']} · "
                         f"actuals_window={_fs['start_date']} → {_fs['end_date']}")
                     log(f"   force_actuals_for={_fs['force_actuals_for'] or '(none)'}")
-                    log(f"   use config/vamp_settings.yaml as-is={use_yaml_asis} · "
-                        f"reuse_cached_curves={_fs['reuse_cached_curves']}")
+                    log(f"   reuse_cached_curves={_fs['reuse_cached_curves']}")
                     log(f"   use_cached_inputs={_fs['use_cached_inputs']} · "
                         f"cached_inputs_path={_fs['cached_inputs_path'] or '(none)'}")
                     log(f"   shrink_strength={_fs['shrink_strength']} · t0_lookback_months={_fs['t0_lookback_months']} · "
@@ -721,14 +726,10 @@ def render():
                         _scheme_lbl = "MASTERCARD" if _is_mc else "VAMP"
                         log(f"• Running {_scheme_lbl} pipeline (BigQuery); pipeline logs:")
                         try:
-                            if use_yaml_asis:
-                                _yaml_name = ("mastercard_settings.yaml" if _is_mc
-                                              else "vamp_settings.yaml")
-                                with open(os.path.join(PROJECT_ROOT, "config",
-                                                       _yaml_name)) as _f:
-                                    pipeline_config = yaml.safe_load(_f)
-                                log(f"  using config/{_yaml_name} as-is (repo parity)")
-                            elif _is_mc:
+                            # 19ka: the `use_yaml_asis` arm that read config/<scheme>_settings.yaml
+                            # off disk is gone with its checkbox. The config is BUILT from this
+                            # tab's own settings, always - which is what the preview shows.
+                            if _is_mc:
                                 pipeline_config = build_mc_pipeline_config(forecast_settings)
                             else:
                                 pipeline_config = build_pipeline_config(forecast_settings)

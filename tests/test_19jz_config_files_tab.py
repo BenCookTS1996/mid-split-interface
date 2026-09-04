@@ -261,17 +261,22 @@ check("10  its old slot in the row-2 reserve is gone, not left dangling",
 check("10  the run log keeps the reserve", "_fc_log_slot = _grow_box.container()" in BBC)
 
 
-# === 11. THE BRAND MARK =================================================================
-check("11  the TSC roundel is the brand mark",
-      "totalsecurity.com/_r/c/6/_ptd/Core/Brand/Logos/TSCLogo" in SAC
-      and "logo-alt.svg" in SAC)
-check("11  the old embedded PNG is KEPT as the offline fallback",
-      "_BRAND_ICON_PNG = \"data:image/png;base64," in SAC)
-check("11  set_page_config can never be what kills startup",
-      SAC.count("st.set_page_config(") == 3 and "except Exception:" in
-      SAC[SAC.index("try:\n    st.set_page_config("):
-          SAC.index("try:\n    st.set_page_config(") + 900],
-      "it is the FIRST Streamlit call; a rejected page_icon would have been a stack trace")
+# === 11. THE BRAND MARK - REVERTED IN 19ka ==============================================
+# 19jz pointed the favicon and banner at the TSC roundel SVG on totalsecurity.com. Ben reverted
+# it in 19ka, so the three checks that lived here asserted a change that no longer exists and
+# were failing. They are REPLACED rather than deleted, for two reasons: the record of what was
+# reverted belongs somewhere a reader of this file will see it, and one thing 19jz added DID
+# survive the revert - the guard around set_page_config, which is about not letting the app's
+# first Streamlit call be what kills startup, whatever icon it is handed.
+# test_19ka_ui_removals section 3 owns the brand mark itself now.
+check("11  the brand mark went back to the embedded PNG (19ka reverted the SVG)",
+      "logo-alt.svg" not in SAC and "totalsecurity.com" not in SAC,
+      "19ka owns this; here only so 19jz is not read as evidence for a reverted change")
+check("11  ...and the set_page_config guard 19jz added SURVIVED the revert",
+      "try:\n    st.set_page_config(" in SA
+      and "except Exception:" in SA[SA.index("try:\n    st.set_page_config("):
+                                    SA.index("try:\n    st.set_page_config(") + 900],
+      "it is the FIRST Streamlit call; a value it rejects is a stack trace, not a page")
 
 
 # === 12. IT ACTUALLY RUNS ==============================================================
