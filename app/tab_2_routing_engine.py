@@ -4058,38 +4058,35 @@ def render():
                         # the mask tests, so both belong on the line.
                         _emv = _cap_view(mid_list_path,
                                          input_json_path("routing_restrictions.json"), sr_company)
+                        # 19jt: THE COUNTS ARE GONE FROM HERE, on Ben's instruction - the
+                        # `eligibility:` line below is the one that keeps them. Two lines counting
+                        # "wallet-incapable gatewayFid(s)" and disagreeing (17 vs 18 on the
+                        # 2026-09-04 10:48 run) reads as an error, and it was not one: they apply
+                        # DIFFERENT RULES to the same MID list. This one ORs capability over a
+                        # (vampMid, currency) pair's active fids; the `eligibility:` line takes the
+                        # fids explicitly flagged processWallet=FALSE. One of them had to go, and
+                        # the per-fid read is the one you can trace back to a row in the CSV.
+                        #
+                        # WHAT STAYS IS WHAT ONLY THIS LINE CAN SAY: the GRAIN the mask applies at,
+                        # which is why 19hh added it (it changes the delivered number), and the
+                        # cross-brand warning, which no per-fid count can reach because it is a
+                        # property of the pair.
                         log("   [emask-grain] wallet/USA capability is masked at (vampMid, "
-                            "currency) grain, in the search and in delivery alike:")
-                        if _emv:
-                            log(f"      {len(_emv['wallet_fids']):,} wallet-incapable "
-                                f"gatewayFid(s) for {sr_company}, in "
-                                f"{len(_emv['wallet_pairs']):,} (vampMid, currency) pair(s)")
-                            log(f"      {len(_emv['usa_fids']):,} USA-only gatewayFid(s) for "
-                                f"{sr_company}, in {len(_emv['usa_pairs']):,} pair(s)")
-                            log(f"      scope: {sr_company} only. THE MASK IS UNCHANGED - it is "
-                                f"still built over every brand in the MID list "
-                                f"({_emv['all_wallet_pairs']:,} wallet / "
-                                f"{_emv['all_usa_pairs']:,} USA-only pair(s) in total). A brand "
-                                f"filter on this line is not a filter on the rule.")
-                            if _emv.get("cross_brand_pairs"):
-                                # 19jq: found while scoping the counts. The rule ORs capability
-                                # over every fid of a (vampMid, currency) pair with no regard for
-                                # brand, and these pairs hold fids from more than one - so what
-                                # THIS company's run masks is decided partly by another brand's
-                                # gateways. Read-only: nothing here changes the rule.
-                                log(f"      ⚠ {len(_emv['cross_brand_pairs']):,} of those pair(s) "
-                                    f"carry fids from a brand OTHER than {sr_company}: "
-                                    + ", ".join(f"{_a}/{_b2}" for _a, _b2
-                                                in sorted(_emv["cross_brand_pairs"])[:6])
-                                    + (" …" if len(_emv["cross_brand_pairs"]) > 6 else "")
-                                    + ". The rule ORs capability over ALL of a pair's fids "
-                                      "regardless of brand, so for these the mask this run "
-                                      "applies is decided partly by another brand's gateways.")
-                        else:
-                            log(f"      {len(_wc_pairs):,} wallet-incapable pair(s)")
-                            log(f"      {len(_uo_pairs):,} USA-only pair(s)")
-                            log("      NOT SCOPED TO THIS COMPANY: the MID list has no `brand` "
-                                "column to filter on, so these counts are ALL brands.")
+                            "currency) grain, in the search and in delivery alike. Counts are on "
+                            "the `eligibility:` line below, per gatewayFid.")
+                        if _emv and _emv.get("cross_brand_pairs"):
+                            # 19jq: the rule ORs capability over every fid of a (vampMid, currency)
+                            # pair with no regard for brand, and these pairs hold fids from more
+                            # than one - so what THIS company's run masks is decided partly by
+                            # another brand's gateways. Read-only: nothing here changes the rule.
+                            log(f"      ⚠ {len(_emv['cross_brand_pairs']):,} of the pair(s) "
+                                f"{sr_company} is masked on carry fids from ANOTHER brand: "
+                                + ", ".join(f"{_a}/{_b2}" for _a, _b2
+                                            in sorted(_emv["cross_brand_pairs"])[:6])
+                                + (" …" if len(_emv["cross_brand_pairs"]) > 6 else "")
+                                + ". The rule ORs capability over ALL of a pair's fids regardless "
+                                  "of brand, so for these the mask this run applies is decided "
+                                  "partly by another brand's gateways.")
                         log(f"      source: {_pair_src}")
                         # 19ht: the pair grain is an OR over a pair's ACTIVE fids;
                         # build_split_exports tests each fid. They agree only while a pair's
@@ -15434,7 +15431,17 @@ def render():
                                                 _chain += f" → shipped {float(_shipnow):,.0f}"
                                             _enfnow = _enf_by_midl.get(_midl)
                                             if _enfnow is not None:
-                                                _chain += f" → enforced {float(_enfnow):,.0f}"
+                                                # 19jt: `enforced` RENAMED to `exported`. There
+                                                # is no enforcement PASS any more - dials, tilts
+                                                # and the enforcement pass were all removed - so a
+                                                # stage called "enforced" read as one of them. The
+                                                # step is real and still runs: it is the value
+                                                # after build_split_exports and the backup
+                                                # catch-all blend, which is what [rung] decomposes
+                                                # under the name ENFORCEMENT. Naming it for the
+                                                # function that produces it cannot be mistaken for
+                                                # a pass that no longer exists.
+                                                _chain += f" → exported {float(_enfnow):,.0f}"
                                             _chain += f" → delivered {_dv:,.0f}"
                                             # RECONCILIATION ERROR is tracked for EVERY band, breached or
                                             # not: a band that happens to sit inside its limits while
@@ -15484,7 +15491,7 @@ def render():
                                             log("")
                                             log(f"      {len(_wb_rows):,} band(s) WITHIN their "
                                                 "limits (raw \u2192 GA-fitness \u2192 shipped "
-                                                "\u2192 enforced \u2192 delivered)")
+                                                "\u2192 exported \u2192 delivered)")
                                             log("")
                                             # 19iv: 'ceil 30,000 / floor 20,000' is 26 chars,
                                             # exactly the width the band column had, so a range
@@ -16324,17 +16331,29 @@ def render():
                             _rg = _comp_gran.reset_index(drop=True).copy()
                             summ = portfolio_summary(_rg)
                             _mo = int(_mids_over_granular(_rg))
-                            log(f"   ── GA single variation (dial 0): MIDs over cap={_mo} "
-                                f"(informational — no cap enforced), succ={summ['expected_success_rate']:.4f}, "
-                                f"risk={summ['expected_risk_rate']:.4f}")
+                            # 19jt: one stat per line. Three different quantities separated by
+                            # commas inside a parenthetical read as one sentence, so the two that
+                            # matter - the success and risk rates of the split that ships - were
+                            # the hardest part of the line to find.
+                            log("   ── GA single variation (dial 0)")
+                            log(f"         {'MIDs over cap':<18}{_mo:>10,}"
+                                "   informational only - no cap is enforced on the delivered split")
+                            log(f"         {'success rate':<18}"
+                                f"{summ['expected_success_rate']:>10.4f}")
+                            log(f"         {'risk rate':<18}"
+                                f"{summ['expected_risk_rate']:>10.4f}")
                             variations.append({
                                 "weight": 0.0, "split": _rg, "settings": ref_settings,
                                 "mids_over_cap": _mo,
                                 **{k: v for k, v in summ.items() if k != "volume"},
                                 "volume": summ["volume"],
                             })
-                        log(f"   GA total wall time: {_fmt_secs(_ga_wall_tot)} "
-                            "(one full-matrix GA; no dials, no tilts, no enforcement pass).")
+                        # 19jt: the parenthetical is gone. "one full-matrix GA; no dials, no
+                        # tilts, no enforcement pass" describes machinery that was REMOVED - it
+                        # cannot differ between runs, and its last clause contradicted the
+                        # `enforced` stage the reconciliation chain prints (see 19jt below, which
+                        # renames that stage to what it actually is).
+                        log(f"   GA total wall time: {_fmt_secs(_ga_wall_tot)}")
                     else:
                         # NON-GENETIC engines (softmax / thompson / portfolio): a SINGLE dial-0
                         # variation = the engine reference split with ONLY the eligibility projection

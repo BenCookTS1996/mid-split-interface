@@ -151,13 +151,20 @@ else:
            and len(ac.LAST_CAP_PAIR_SPLITS) == _n_split),
           "before 19jq the second caller got the pairs and an EMPTY disagreement list")
 
-check("5  [emask-grain] reports gatewayFids for this company AND the pair grain it masks at",
-      "wallet-incapable \"\n                                f\"gatewayFid(s) for {sr_company}" in T2
-      or "wallet-incapable " in T2 and "gatewayFid(s) for {sr_company}" in T2)
-check("5  ...and says outright that the MASK is still all-brand",
-      "THE MASK IS UNCHANGED" in T2 and "not a filter on the rule" in T2)
-check("5  ...and falls back to the all-brand counts, SAYING SO, with no brand column",
-      "NOT SCOPED TO THIS COMPANY" in T2)
+# SUPERSEDED BY 19jt, and rewritten rather than deleted so the trail is readable. 19jq put
+# company-scoped COUNTS on [emask-grain]; 19jt took them off again, because the `eligibility:`
+# line was counting the same thing under a different rule (pair-OR vs explicit
+# processWallet=FALSE) and the two disagreed - 17 vs 18 - which reads as an error. The
+# per-fid read won. What 19jq actually built is still in use: `capability_company_view` is
+# what the surviving cross-brand warning is computed from, and section 5 above tests it
+# directly. So the assertions here move to the two things 19jt kept.
+check("5  [emask-grain] still states the GRAIN the mask applies at - 19hh's whole reason",
+      "capability is masked at (vampMid, " in T2 and "in the search and in delivery alike" in T2)
+check("5  ...and the cross-brand warning, which only the PAIR view can see",
+      "cross_brand_pairs" in T2 and "carry fids from ANOTHER brand" in T2)
+check("5  ...and its counts are gone, pointing at the line that kept them (19jt)",
+      "THE MASK IS UNCHANGED" not in T2 and "NOT SCOPED TO THIS COMPANY" not in T2
+      and "`eligibility:` line below, per gatewayFid" in T2)
 
 # ═══ 6. the eligibility line ═════════════════════════════════════════════════════════════
 check("6  it counts gatewayFids, not the mixed fid+vampMid set",

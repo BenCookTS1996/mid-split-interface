@@ -119,10 +119,17 @@ check("4  [keep-gate] explains itself in plain English",
       "row(s) on SWITCHED-OFF " in T2 and "there is nothing to reroute " in T2)
 check("4  ...and still states what it does NOT model",
       "not modelled: delivery also scales the share down " in T2)
-check("5  [emask-grain] is three lines with the source named",
+# 19ip trimmed [emask-grain] to three lines: the grain, the two counts, the source. 19jt then
+# moved the COUNTS to the `eligibility:` line (two lines were counting the same thing under
+# different rules and disagreeing). What 19ip was really asserting - that this block states
+# its grain and names its source rather than sprawling - still holds, so the check is rewritten
+# to that rather than to the count line it no longer has.
+check("5  [emask-grain] states its grain and names its source",
       'log("   [emask-grain] wallet/USA capability is masked at (vampMid, "\n' in T2
-      and 'log(f"      {len(_wc_pairs):,} wallet-incapable pair(s)")' in T2
       and 'log(f"      source: {_pair_src}"' in T2)
+check("5  ...and its counts moved to `eligibility:` rather than being duplicated (19jt)",
+      'log(f"      {len(_wc_pairs):,} wallet-incapable pair(s)")' not in T2
+      and "wallet-incapable gatewayFid(s), " in T2)
 check("6  the cap scaffold table is all CELL counts",
       "'aged cells for capped MIDs'" in T2 and "'profiles covered'" not in T2)
 check("6  and four blank log lines became two",
