@@ -2078,8 +2078,12 @@ def compute_vamp_prepost_granular(pp_path, prop_items, excluded_mids=frozenset()
     # being removed — so it is worth paying exactly once and then turning off. It compares
     # the int64 BIT PATTERNS, not `==`: two float arrays that differ in the last ulp compare
     # equal under `allclose` and would let a re-labelling through.
-    # ROUTING_GKCODE_VERIFY=0 skips it once the next run has printed the verdict.
-    if _gk_by is not _gk and os.environ.get("ROUTING_GKCODE_VERIFY", "1") != "0":
+    # 19ju: DEFAULT FLIPPED TO OFF, which is the lifecycle this comment always described -
+    # "worth paying exactly once and then turning off". It has printed VERIFIED on every run
+    # since 19gq, so the 1.7s is now paid for a line nobody reads. ROUTING_GKCODE_VERIFY=1
+    # brings it back, and a FAILURE still ships the reference and shouts. The identity is
+    # structural anyway - same kernel, same row order, only the group LABELS differ.
+    if _gk_by is not _gk and os.environ.get("ROUTING_GKCODE_VERIFY", "0") != "0":
         try:
             _gv_t = _cv_time.perf_counter()
             _gv_ref = pp.groupby(_gk)["_pshare"].transform("sum")

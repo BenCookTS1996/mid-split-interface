@@ -7241,14 +7241,17 @@ def render():
                                         log(f"   [feas-par] {_fp_n} start(s) ran CONCURRENTLY on "
                                             f"{int(_bg_par.get('workers', 0) or 0)} worker(s) in "
                                             f"{_fp_t:.1f}s wall. Serially this stage was ~"
-                                            f"{_fp_t / max(_fp_n, 1):.1f}s per start; compare against "
-                                            "a ROUTING_FEAS_PAR=0 run for the real serial figure "
-                                            "rather than multiplying that estimate out.")
+                                            f"{_fp_t / max(_fp_n, 1):.1f}s per start; that is an "
+                                            "estimate, not a measurement - do not multiply it out.")
                                     else:
-                                        log(f"   [feas-par] ROUTING_FEAS_PAR=0 \u2014 {_fp_n} start(s) "
-                                            f"ran SERIALLY in {_fp_t:.1f}s wall. This is the control "
-                                            "for the concurrent path, and the result is identical "
-                                            "either way by construction.")
+                                        # 19ju: this said "ROUTING_FEAS_PAR=0", a switch that does
+                                        # not exist. seed_search fixed `_par = False` on 2026-08-31
+                                        # and deleted it, so the line was reporting a setting nobody
+                                        # could have made and implying one they could unset.
+                                        log(f"   [feas-par] {_fp_n} start(s) ran SERIALLY in "
+                                            f"{_fp_t:.1f}s wall - fixed serial since 2026-08-31, "
+                                            "which is the path the concurrent one was proven "
+                                            "bit-identical against.")
                                     # 19cp: A CHECKSUM OF THE WINNING SEED, so run-to-run
                                     # determinism is readable WITHOUT a special control run.
                                     #
@@ -7280,9 +7283,16 @@ def render():
                                             f"{_bg_ck.size:,}. TWO RUNS ON THE SAME INPUTS MUST "
                                             "PRINT THE SAME CHECKSUM. If they do not, this "
                                             "concurrent stage is NOT deterministic and every "
+                                            # 19ju: the tail used to read "re-run with
+                                            # ROUTING_FEAS_PAR=0, which is the serial control" -
+                                            # a switch deleted on 2026-08-31 when `_par` was fixed
+                                            # False. A dead switch name in a log is an instruction
+                                            # that cannot be followed, so it is out of the STRING
+                                            # and recorded here instead.
                                             "downstream seed figure differs for that reason "
-                                            "rather than any change you made \u2014 re-run with "
-                                            "ROUTING_FEAS_PAR=0, which is the serial control.")
+                                            "rather than any change you made. This stage has "
+                                            "been serial since 2026-08-31, so a differing "
+                                            "checksum is NOT concurrency.")
                                     except Exception as _bce:  # noqa: BLE001
                                         log(f"   [feas-par] seed checksum skipped "
                                             f"({type(_bce).__name__}: {_bce}) \u2014 measurement "
@@ -10533,18 +10543,16 @@ def render():
                                                            if _gkc.get("why") else "")
                                                         + ". Correct, just slower.")
                                                 elif _gkc.get("verified") is True:
-                                                    log(f"      [gk-code] ON — "
+                                                    # 19ju: shortened, and it only appears at all
+                                                    # when someone has ASKED for the check
+                                                    # (ROUTING_GKCODE_VERIFY=1) - the default is
+                                                    # now off, so on an ordinary run this branch
+                                                    # is not reached.
+                                                    log(f"      [gk-code] VERIFIED bit-identical to "
+                                                        f"the string key on "
                                                         f"{int(_gkc.get('groups', 0)):,} group(s) "
-                                                        f"over {int(_gkc.get('rows', 0)):,} row(s), "
-                                                        "and VERIFIED bit-identical to the string "
-                                                        "key (int64 bit-pattern comparison on "
-                                                        "Σ_pshare, stricter than array_equal). The "
-                                                        f"check itself cost "
-                                                        f"{float(_gkc.get('verify_secs', 0.0)):.1f}s "
-                                                        "— one string groupby, i.e. the thing being "
-                                                        "removed. ROUTING_GKCODE_VERIFY=0 drops it "
-                                                        "once you have seen this line; "
-                                                        "ROUTING_GKCODE_VERIFY=1 brings it back.")
+                                                        f"({float(_gkc.get('verify_secs', 0.0)):.1f}s"
+                                                        ", int64 bit patterns).")
                                                 elif _gkc.get("verified") is False:
                                                     log("      [gk-code] ⚠⚠ VERIFY FAILED — the "
                                                         "int64 key did NOT reproduce the string "
@@ -10552,20 +10560,26 @@ def render():
                                                         "reverted to the string key for that "
                                                         "groupby, but the FOUR others below it "
                                                         "still used the int key, so this run's "
-                                                        "delivered VAMP is NOT trustworthy. Set "
-                                                        "ROUTING_GKCODE=0-equivalent by fixing the "
-                                                        "key and re-run.")
-                                                else:
-                                                    log(f"      [gk-code] ON — "
-                                                        f"{int(_gkc.get('groups', 0)):,} group(s) "
-                                                        f"over {int(_gkc.get('rows', 0)):,} row(s), "
-                                                        "NOT verified this call"
-                                                        + (f" ({_gkc.get('why')})"
-                                                           if _gkc.get("why") else
-                                                           " (ROUTING_GKCODE_VERIFY=0)")
-                                                        + ". Identity is structural — same kernel, "
-                                                        "same row order, only the labels differ — "
-                                                        "but this run did not measure it.")
+                                                        "delivered VAMP is NOT trustworthy. 19ju: "
+                                                        "this used to say 'set ROUTING_GKCODE=0', "
+                                                        "which is not a switch that exists - fix "
+                                                        "the key in _gk_codes and re-run.")
+                                                elif _gkc.get("why"):
+                                                    # 19ju: SILENT on the ordinary path. The int64
+                                                    # key ran and was not verified, which since
+                                                    # 19ju is simply the default - it printed
+                                                    # VERIFIED on every run from 19gq to 19jt and
+                                                    # the identity is structural (same kernel, same
+                                                    # row order, only the group LABELS differ). A
+                                                    # line that cannot differ between runs is not a
+                                                    # diagnostic. A REASON to have skipped it is
+                                                    # still worth saying, because that is a fact
+                                                    # about THIS run; ROUTING_GKCODE_VERIFY=0 on
+                                                    # its own is not.
+                                                    log(f"      [gk-code] NOT verified this call "
+                                                        f"({_gkc.get('why')}) — the int64 key ran "
+                                                        f"on {int(_gkc.get('groups', 0)):,} "
+                                                        "group(s) unchecked.")
                                         except Exception as _cvE:  # noqa: BLE001
                                             log(f"   [cvp-timing] unavailable "
                                                 f"({type(_cvE).__name__}) — measurement only.")
@@ -10741,19 +10755,16 @@ def render():
                                             _fx_f32 = None
                                         if _fx_f32:
                                             _fx_bar = max(_fx_bar, float(_fx_f32["bound"]))
-                                            log(f"   [f32-floor] float32 is ON, so the reconciliation "
-                                                f"detector is no longer exact. Measured on THIS run's "
-                                                f"scaffold at P={_fx_f32['at_P']}: up to "
-                                                f"{_fx_f32['bound']:,.1f} unit(s) of drift "
-                                                f"({_fx_f32['dv_sum']:,.2f} vamp + {_fx_f32['dt_sum']:,.2f} "
-                                                f"txn) come from float32 alone. The bar for 'this run does "
-                                                f"not reconcile' is raised to that, so rounding does not "
-                                                f"trigger a 159s forensic re-projection — and a REAL "
-                                                f"disagreement smaller than it is now invisible. That is "
-                                                f"the price of the setting, stated as a number. "
-                                                "The float32 projector is unconditional as "
-                                                "of 19iu, so this floor is a property of the "
-                                                "build, not of a setting.")
+                                            # 19ju: was thirteen lines. float32 being unconditional,
+                                            # what the floor costs, and why the bar is raised are all
+                                            # settled and cannot differ between runs; the two things a
+                                            # RUN needs are the number and what it hides.
+                                            log(f"   [f32-floor] float32 drift is "
+                                                f"{_fx_f32['bound']:,.1f} unit(s) on this scaffold at "
+                                                f"P={_fx_f32['at_P']} ({_fx_f32['dv_sum']:,.2f} vamp + "
+                                                f"{_fx_f32['dt_sum']:,.2f} txn), so that is the bar for "
+                                                "'does not reconcile' — a REAL disagreement below it is "
+                                                "invisible.")
                                         # Σ|delivered − scored| over the banded MIDs. `_per_band` values are
                                         # (delivered, projector_now, ceil, floor, metric, over).
                                         _fx_drift = None
@@ -10778,14 +10789,14 @@ def render():
                                                 "[passthru] will be absent below, and the reconciliation "
                                                 "error will have no explanation. Unset it.")
                                         elif _fx_drift is not None and _fx_drift <= _fx_bar:
+                                            # 19ju: the four stashes explain a reconciliation error and
+                                            # there is not one - that is the whole line. Which four they
+                                            # are is on their own not-computed lines below.
                                             log(f"   [forensic] scored and delivered agree to "
                                                 f"{_fx_drift:,.3g} unit(s) across "
                                                 f"{len(_nw_bg or {})} banded MID(s), inside the bar of "
-                                                f"{_fx_bar:,.0f} — so the four attribution stashes were NOT "
-                                                "computed and this projection was ~77s cheaper. They explain "
-                                                "a reconciliation error; there is no reconciliation error. "
-                                                "[vterms], [pshare-why], [move-gate] and [passthru] will "
-                                                "report themselves as not-computed rather than empty.")
+                                                f"{_fx_bar:,.0f} — the four attribution stashes were "
+                                                "skipped (~77s saved).")
                                         else:
                                             log(f"   [forensic] scored and delivered differ by "
                                                 f"{'unreadable' if _fx_drift is None else f'{_fx_drift:,.0f}'}"
@@ -10828,19 +10839,16 @@ def render():
                                                                 and _nw_dg <= 0.0)
                                         _nw_ds = _nw_bs = _nw_sts = None
                                         if _nw_seed_skipped:
-                                            log(f"   [nw-skip] the GA output delivers 0 breach "
-                                                f"unit(s), so the seed '{_fm_sname}' was NOT "
-                                                "projected — it cannot win a comparison against 0 "
-                                                "(the delivered breach is a sum of non-negative "
-                                                "overages, so the seed's is ≥ 0 whatever it is). "
-                                                "That is the ordering of the reals, not a "
-                                                "tolerance. Saved one full delivery projection "
-                                                "(~155s on the 2026-09-01 20:21 run).")
-                                            log("   [nw-skip] COST: the rejected candidate's drift "
-                                                "is not attributed below, because a candidate can "
-                                                "only be measured in the pass that projected it. "
-                                                "Set ROUTING_NW_SKIP_SEED=0 to project both when "
-                                                "the seed's drift is the question.")
+                                            # 19ju: two lines into one. WHY 0 cannot be beaten (the
+                                            # delivered breach is a sum of non-negative overages) is
+                                            # arithmetic, not a run fact, and the COST line was four
+                                            # lines to say the seed's drift is not measured - which the
+                                            # "not proj." cell in the table below already shows.
+                                            log(f"   [nw-skip] GA output delivers 0 breach, so the "
+                                                f"seed '{_fm_sname}' was not projected — it cannot "
+                                                "beat 0. Saved one delivery projection; the seed's "
+                                                "own drift goes unmeasured. ROUTING_NW_SKIP_SEED=0 "
+                                                "projects both.")
                                         else:
                                             _nw_ds, _nw_bs, _nw_sts = _nw_delivered_units(
                                                 _fm_seed, f"seed '{_fm_sname}'")
