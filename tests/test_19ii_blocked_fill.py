@@ -129,8 +129,12 @@ check("with nothing blocked, nothing is ever unavoidable",
 
 # ── the measurement wiring is present in the shipped _fm_cap ────────────────────────────
 T2 = (ROOT / "app/tab_2_routing_engine.py").read_text(encoding="utf-8")
+# 19jw folded the two sampled [blk-fill] lines into one and renamed the reported term from
+# "THE AVOIDABLE PART IS x" to "AVOIDABLE x". What this check is about - that the avoidable
+# share is MEASURED here and REPORTED beside [deliv-cap] - is unchanged.
 check("[blk-fill] measures inside _fm_cap and reports beside [deliv-cap]",
-      "[blk-fill]" in T2 and '_st["bf_need"]' in T2 and "THE AVOIDABLE PART IS" in T2)
+      "[blk-fill]" in T2 and '_st["bf_need"]' in T2
+      and "AVOIDABLE {_bf_av:.6g}" in T2 and "_bf_av = max(0.0, " in T2)
 check("[blk-fill] is read-only — it never assigns to the returned array",
       "_Y = " not in T2.split('19ii [blk-fill]: WHAT THIS WATER-FILL')[1].split('_st["hit"] += 1')[0])
 

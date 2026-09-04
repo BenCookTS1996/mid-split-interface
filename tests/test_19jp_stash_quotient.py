@@ -324,7 +324,8 @@ check("9  tab_2 drains [stash-q], wrapped so a measurement cannot break the run"
       and "[stash-q] unavailable" in T2_SRC)
 check("9  band_projection records 19jp", "19jp-stash-quotient" in BP_SRC)
 check("9  the existing profile-blocked vs flat self-check still guards this",
-      "_CB_OK" in BP_SRC and "self-checked against the flat kernel on this scaffold " in BP_SRC)
+      # 19jw shortened the wording; the self-check itself is unchanged
+      "_CB_OK" in BP_SRC and "self-checked against the flat kernel" in BP_SRC)
 
 # ═══ 9b. 19jr: THE COUNTERS ARE PER RUN, NOT PER PROCESS ═════════════════════════════════
 # Streamlit keeps the process alive between runs, so anything not reset by `proj_new_run` is

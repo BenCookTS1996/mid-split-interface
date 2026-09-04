@@ -132,7 +132,7 @@ except Exception:  # noqa: BLE001 - no rule available is a refusal, never a brok
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-09-04-19jv-stashq-unconditional+2026-09-04-19jr-stashq-per-run+2026-09-03-19jp-stash-quotient+2026-09-03-19jn-gks-zero-by-slot+2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
+__build__ = ("2026-09-04-19jw-bandbuild-log-trim+2026-09-04-19jv-stashq-unconditional+2026-09-04-19jr-stashq-per-run+2026-09-03-19jp-stash-quotient+2026-09-03-19jn-gks-zero-by-slot+2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -1945,31 +1945,28 @@ def lift_ab_report(proj, reps=3):
     # a reading off it is named as a contaminated measurement instead.
     _impossible = _sp < 1.0 - _floor
     _real = (_sp - 1.0) > _floor
-    _pnote(f"[lift-ab] frozen-scaffold LIFT measured on THIS run's scaffold at P={_P}: "
-           f"ON {ms_on:.1f} ms/call vs OFF {ms_off:.1f} ms/call ⇒ {_sp:.3f}x "
-           f"({(ms_off - ms_on):+.1f} ms per call; best of {_rounds} INTERLEAVED round(s), "
-           f"ON/OFF/ON/OFF, so machine drift is shared between the arms instead of landing on "
-           f"one). "
-           + (f"MACHINE NOISE on these same rounds: the within-arm spread is {_noise:.1%} "
-              f"(ON {_spr_on:.1%}, OFF {_spr_off:.1%}) - identical code, so that much movement is "
-              f"noise by construction. The bar is therefore {_floor:.1%}, not a fixed 5%. ")
-           + (f"The +{_sp - 1.0:.1%} difference CLEARS it, so this is real. " if _real else
+    # 19jw: the numbers, the bar, the verdict. Dropped: why interleaving shares the drift
+    # (that is how the measurement is built, not a result), and that the ratio scales with
+    # candidate width (true of every per-candidate figure in this log). The two BAD verdicts
+    # keep every word - an impossible ratio and a bit-identity failure are the only outcomes
+    # here that need someone to do something.
+    _pnote(f"[lift-ab] frozen-scaffold LIFT at P={_P}: ON {ms_on:.1f} ms/call vs OFF "
+           f"{ms_off:.1f} ms/call = {_sp:.3f}x ({(ms_off - ms_on):+.1f} ms), best of {_rounds} "
+           f"interleaved round(s). Noise bar {_floor:.1%} (within-arm spread on identical code). "
+           + (f"The +{_sp - 1.0:.1%} difference CLEARS it - real. " if _real else
               f"\u26a0 THE MEASUREMENT SAYS THE LIFT MADE IT {1.0 - _sp:.1%} SLOWER, WHICH CANNOT "
               "HAPPEN: it only skips passes that are provable no-ops, and the outputs are checked "
               "bit-identical below, so there is no work it could have added. This is the CLOCK, "
               "not the lift - something else on the machine moved across the rounds. Treat this "
               "run's ratio as UNMEASURED and do not quote it in either direction. "
               if _impossible else
-              f"The {abs(_sp - 1.0):.1%} difference does NOT clear it \u2014 this run cannot tell "
-              "the two apart, so treat the ratio as 1.0x and do not quote it. ")
-           + ("Outputs are BIT-IDENTICAL (np.array_equal on vamp AND txn), which is the lift's "
-              "whole claim: the passes it skips are provable no-ops. "
+              f"The {abs(_sp - 1.0):.1%} difference does NOT clear it - this run cannot tell the "
+              "two apart, so treat the ratio as 1.0x and do not quote it. ")
+           + ("Outputs BIT-IDENTICAL. ROUTING_PROJ_LIFT=0 reverts."
               if _same else
               "⚠ OUTPUTS DIFFER between lift ON and lift OFF. The lift is supposed to be "
               "bit-identical, so this is a DEFECT, not a rounding artefact — ROUTING_PROJ_LIFT=0 "
-              "and report it. ")
-           + "It scales with candidate width, because the flat passes it skips are per-candidate, "
-             "so this number is this run's, not a constant. ROUTING_PROJ_LIFT=0 reverts.")
+              "and report it."))
     return {"P": _P, "ms_on": ms_on, "ms_off": ms_off, "speedup": _sp,
             "identical": _same, "above_floor": _real, "impossible": _impossible,
             "noise": _noise, "floor": _floor, "reps": int(_rounds)}
@@ -3029,20 +3026,16 @@ class PopulationBandProjector:
                    + f"{100.0 * _h['live'] / _hb_tot:>7.1f}%"
                    + "\n      " + f"{'total':<16}{_h['total']:>12,}{100.0:>7.1f}%"
                    + "\n")
-            _bnote(f"[vconst-frozen] 19fs added the THIRD class: "
-                  f"{_h['frozen']:,} aged row(s) whose ORIGIN PROFILE IS FROZEN (no GA share "
-                  f"column maps to it, so psum is 0 there for every candidate). "
-                  + (# 19gs: the verification narrative is gone. It was a live question for
-                     # four runs and has been settled since 19gm deleted the kill switch;
-                     # RECONCILIATION ERROR remains the end-to-end check either way, and it is
-                     # printed on its own line at the end of every run.
-                     "Their contribution is the same per-band constant the other two classes "
-                     "have, so it is summed once instead of per candidate."
-                     if _h["frozen_known"] else
-                     "NOT APPLIED: the GA incidence had not reached the projector when these "
-                     "arrays were built, so frozen profiles could not be identified. "
-                     "set_lift_incidence() invalidates this cache, so a later build picks it "
-                     "up - if this line persists, that call is not happening."))
+            # 19jw: SILENT WHEN IT APPLIES. The table directly above already carries the
+            # count on its `frozen-origin` row, and "summed once instead of per candidate" is
+            # what the whole table is about - the line restated a number and a design. What is
+            # left is the case that can go WRONG, and it stays loud.
+            if not _h["frozen_known"]:
+                _bnote(f"[vconst-frozen] NOT APPLIED - {_h['frozen']:,} frozen-origin aged "
+                       "row(s) could not be identified: the GA incidence had not reached the "
+                       "projector when these arrays were built. set_lift_incidence() "
+                       "invalidates this cache, so a later build picks it up - if this line "
+                       "persists, that call is not happening.")
         return self._nbcache
 
     # [FN-022]
@@ -3139,14 +3132,14 @@ class PopulationBandProjector:
                 ~profile_live[np.asarray(self._gcode, np.int64)])[0].astype(np.int64)
             self._lift_frozen_profiles = np.where(~profile_live)[0].astype(np.int64)
             self._lift_primed = None
-            _bnote(f"frozen-scaffold LIFT ON: the flat passes skip "
+            # 19jw: the counts and the switch. Why the skipped passes are no-ops, and why the
+            # win is below the row share, are settled design - and [lift-ab] measures the win
+            # on this run's own scaffold a few lines later.
+            _bnote(f"frozen-scaffold LIFT ON: skips "
                   f"{len(self._lift_frozen_rows):,} of {nR:,} rows "
                   f"({len(self._lift_frozen_rows) / max(nR, 1):.1%}) in "
                   f"{len(self._lift_frozen_profiles):,} of {nprofile:,} frozen profiles "
-                  f"({len(self._lift_frozen_profiles) / max(nprofile, 1):.1%}). Bit-identical: those "
-                  "passes are provable no-ops (psum += 0.0, everything else guarded on psum > 0). "
-                  "The nC/nA accumulation loops are NOT touched — reassociating those sums would "
-                  "not be bit-identical — so the realised speedup is below the row share. "
+                  f"({len(self._lift_frozen_profiles) / max(nprofile, 1):.1%}) - provable no-ops. "
                   "ROUTING_PROJ_LIFT=0 disables.")
         # PRIME (idempotent per buffer identity + lane count).
         if buffers is not None:
@@ -3330,24 +3323,23 @@ class PopulationBandProjector:
             # misstates its own configuration is how a wrong conclusion gets drawn from a right
             # number.
             if chunk:
-                _why = (f"ON, CHUNKED — P={P} exceeds the lane cap "
-                        f"{_PROJ_LANE_CAP}, so the population runs as "
+                # 19jw: was fourteen lines. The counts and the switch are what a run needs; the
+                # scratch arithmetic, the history of the hardcoded 3.196x, and the pointer at
+                # [kernel-ab] row H are all settled and none of them can differ between runs.
+                _why = (f"ON, CHUNKED — P={P} over the lane cap {_PROJ_LANE_CAP}, so "
                         f"{-(-P // _PROJ_LANE_CAP)} parallel call(s) of at most "
-                        f"{_PROJ_LANE_CAP} candidates instead of declining to serial. "
-                        f"Scratch is {len(self._gcode) * 4 * 8 * _PROJ_LANE_CAP / 1e9:.2f} GB "
-                        f"(the cap's), not "
-                        f"{len(self._gcode) * 4 * 8 * P / 1e9:.2f} GB (P's). Its WORTH is "
-                        "re-measured live every run by [kernel-ab] row H (chunking OFF) at this "
-                        "run's own width — a hardcoded 3.196x sat here until 19bf while H read "
-                        "4.5x on the same log, which is one number too many. Bit-identical "
-                        "either way. ROUTING_PROJ_CHUNK=0 reverts")
+                        f"{_PROJ_LANE_CAP}. Scratch is the cap's "
+                        f"({len(self._gcode) * 4 * 8 * _PROJ_LANE_CAP / 1e9:.2f} GB), not P's "
+                        f"({len(self._gcode) * 4 * 8 * P / 1e9:.2f} GB). Bit-identical; "
+                        "ROUTING_PROJ_CHUNK=0 reverts")
             elif par:
                 _why = "ON"
             elif not _PROJ_PAR_ON:
                 _why = "OFF — ROUTING_PROJ_PARALLEL=0"
             elif P <= 1:
-                _why = ("OFF — single candidate, so a 1-iteration prange would be pure "
-                        "thread-pool overhead (measured 187 vs 180 ms)")
+                # 19jw: the 187-vs-180 ms measurement that justified this is settled and lives
+                # in the block comment above the decision, not on a line printed every run.
+                _why = "OFF — single candidate, so a 1-iteration prange is pure pool overhead"
             elif nthr <= 1:
                 _why = ("OFF — numba sees 1 thread. Expected inside a joblib/loky worker, where "
                         "inner_max_num_threads=1 sets NUMBA_NUM_THREADS=1; outside one it means "
@@ -3357,11 +3349,11 @@ class PopulationBandProjector:
             # `nlane` stays 1 on the chunked path (it is set per chunk inside the driver), so
             # printing it here said "lanes=1" for a run using 8 — a log that misstates its own
             # configuration is how a wrong conclusion gets drawn from a right number.
-            _pnote(f"candidate-parallel projection {_why} (P={P}, numba threads={nthr}, "
-                   f"lanes={_lanes}, scaffold nR={len(self._gcode):,}). Bit-identical either "
-                   "way — "
-                   "the parallel kernel is verified against the serial one on the live scaffold "
-                   "on its first call.")
+            # 19jw: shortened. [proj-config] PATHS TAKEN tabulates every dispatch of the run -
+            # kernel, P, mode, lanes, nlane and a call count - so what this line adds that the
+            # table cannot is the REASON, and nothing else. Bit-identity is asserted by the
+            # self-check below, which prints its own verdict.
+            _pnote(f"candidate-parallel {_why} (P={P}, lanes={_lanes}, {nthr} numba thread(s))")
         if (par or chunk) and not _PROJ_PAR_SAID.get("verified"):
             # IN-RUN SELF-CHECK, once per process, on the REAL data. Everything asserting
             # bit-identity so far was measured in a container on synthetic arrays; this proves it
@@ -3398,11 +3390,10 @@ class PopulationBandProjector:
                 _match = np.array_equal(_vv, _pv) and np.array_equal(_vt, _pt)
                 del _vb
                 if _match:
-                    _pnote("candidate-parallel SELF-CHECK PASSED on the live scaffold: serial and "
+                    _pnote("candidate-parallel SELF-CHECK PASSED: serial == "
                            + ("CHUNKED " if chunk else "")
-                           + f"parallel kernels bit-identical at P={P} (np.array_equal on both "
-                             "vamp and txn, not allclose)"
-                           + (f" over {-(-P // _lanes)} chunk(s) of at most {_lanes}." if chunk
+                           + f"parallel at P={P}, bit for bit on vamp and txn"
+                           + (f", over {-(-P // _lanes)} chunk(s) of at most {_lanes}." if chunk
                               else "."))
                     _path_note("flat(self-check)", P, par, chunk, _lanes if chunk else P,
                                nlane, nthr)
@@ -3530,14 +3521,17 @@ class PopulationBandProjector:
                 "primed": None,
             }
             self._cb = cb
-            _bnote(f"profile-blocked layout built: {cb['nLR']:,} live rows in "
-                  f"{profiles.size:,} profiles (~{cb['nLR'] / max(profiles.size, 1):.1f} rows/profile), "
-                  f"{froz.size:,} frozen rows parked in the tail. The multi-pass block now runs "
-                  "one profile at a time (an L1-sized working set) instead of ~15 passes over the "
-                  "whole scaffold, and mvrow / vshare are derived in their only reader instead of "
-                  "being materialised. Bit-identical — stable permutation, so every per-profile sum "
-                  "keeps its order — and self-checked against the flat kernel on this scaffold "
-                  "before any result is used. ROUTING_PROJ_PROFILEBLOCK=0 reverts.")
+            # 19jw: shorter, and it SAYS WHICH LAYOUT IT IS. Two are built per run - the
+            # lifted one the search uses and the unlifted one the self-check needs - and both
+            # printed the same sentence with different numbers, which reads as a bug rather
+            # than as two objects. `froz.size == 0` is the unlifted one by construction.
+            _bnote("profile-blocked layout built"
+                  + (" (LIFTED - this is the one the search runs)" if froz.size else
+                     " (unlifted, the self-check's reference)")
+                  + f": {cb['nLR']:,} live rows in {profiles.size:,} profiles "
+                  f"(~{cb['nLR'] / max(profiles.size, 1):.1f}/profile), {froz.size:,} frozen "
+                  "parked. Bit-identical, self-checked against the flat kernel. "
+                  "ROUTING_PROJ_PROFILEBLOCK=0 reverts.")
             return cb
         except Exception as _cbe:                  # noqa: BLE001
             self._cb = {"key": key, "ok": False}
@@ -4015,16 +4009,15 @@ class PopulationBandProjector:
                 # count changes the order the per-profile sums accumulate in, so a narrow-width
                 # figure is not a claim about the search - so it states exactly that and points at
                 # the line that carries the figures.
-                _pnote("float32 drift RE-MEASURED at the live width P=" + str(int(P))
-                       + ", up from P=" + str(int(_fst.get("at_P", 0))) + " where it was first "
-                       "taken. Lane count changes the order the per-profile sums accumulate in, so "
-                       "a narrow-width figure is not a claim about the search. THE FIGURES ARE ON "
-                       "THE [proj-config] float32 drift LINE - this one does not restate them. The "
-                       "width comparison alone: max drift vamp "
+                # 19jw: the width comparison alone, which is the one thing this line knows
+                # and no other line does. Why lane count moves it, and the pointer at
+                # [proj-config], were four clauses to introduce two numbers.
+                _pnote("float32 drift re-measured at the live width P=" + str(int(P))
+                       + " (first taken at P=" + str(int(_fst.get("at_P", 0))) + "): vamp "
                        + format(float(_fst.get("dv", 0.0)), ".4g") + " -> "
                        + format(_lv["dv"], ".4g") + ", txn "
                        + format(float(_fst.get("dt", 0.0)), ".4g") + " -> "
-                       + format(_lv["dt"], ".4g") + ".")
+                       + format(_lv["dt"], ".4g") + ". Figures on the [proj-config] line.")
             except Exception as _f32e:                 # noqa: BLE001
                 _pnote("float32 drift could not be re-measured at the live width ("
                        + type(_f32e).__name__ + ": " + str(_f32e) + "). NOTHING IS DISABLED by "

@@ -10067,30 +10067,28 @@ def render():
                                                 "instead of first changed NOTHING here. The "
                                                 "divergence 19fg closes is real but latent.")
                                         else:
+                                            # 19jw: the counts. What the pre-19fg search would
+                                            # have got wrong is why the block exists, not a
+                                            # result of this run.
                                             log(f"   [deliv-cap] the cap fired on "
                                                 f"{_DCAP['hit']:,} of {_DCAP['calls']:,} delivery "
                                                 f"call(s), repairing {_DCAP['profiles']:,} "
-                                                f"(candidate, profile) pair(s) that eligibility "
-                                                f"zeroing had lifted past {_DCAP['cap']:.4g}. "
-                                                f"Total share moved {_DCAP['moved']:.4g}; largest "
-                                                f"single-row move {_DCAP['worst']:.4g}. EVERY one "
-                                                "of those is a split the pre-19fg search scored as "
-                                                "compliant and delivery then had to correct — that "
-                                                "gap is what this closes.")
+                                                f"(candidate, profile) pair(s) lifted past "
+                                                f"{_DCAP['cap']:.4g}. Share moved "
+                                                f"{_DCAP['moved']:.4g}; largest single row "
+                                                f"{_DCAP['worst']:.4g}.")
                                         # 19hw: (candidate, profile) PAIRS, not profiles. There are
                                         # 14,852 profiles and this read 2,260,720 on the 17:08 run -
                                         # the counter is incremented per candidate per profile, like
                                         # `repairing N (candidate, profile) pair(s)` two lines above,
                                         # which was already labelled correctly. Same counter, two
                                         # labels, and only one of them was true.
-                                        log(f"   [deliv-cap] (candidate, profile) pair(s) where the "
-                                            f"cap is unsatisfiable "
-                                            f"(live rows hold less room than the excess): "
-                                            f"{_DCAP['infeas']:,} — left at baseline, exactly as "
-                                            "_cap_rows leaves a row with fewer than 2 present "
-                                            "gateways. Entries still over the cap after the single "
-                                            f"pass, where one pass should have sufficed: "
-                                            f"{_DCAP['reover']:,}"
+                                        # 19jw: two numbers and the warning that hangs off the
+                                        # second. Why an unsatisfiable pair is left at baseline
+                                        # (it is what _cap_rows does) is settled.
+                                        log(f"   [deliv-cap] unsatisfiable pair(s), left at "
+                                            f"baseline: {_DCAP['infeas']:,}. Still over the cap "
+                                            f"after the single pass: {_DCAP['reover']:,}"
                                             + ("." if not _DCAP["reover"] else
                                                " ⚠ NON-ZERO — the single-pass closed form does not "
                                                "hold on this data; investigate before trusting "
@@ -10103,15 +10101,14 @@ def render():
                                         # are unaffected, because each of those is a property of one
                                         # pair and every distinct pair is still computed once.
                                         if _DCAP.get("sub"):
+                                            # 19jw: the count and the ONE thing a reader could
+                                            # get wrong from it - that the totals above are
+                                            # distinct work, not per-candidate-per-profile.
                                             log(f"   [deliv-cap] {_DCAP['sub']:,} of those "
-                                                f"{_DCAP['calls']:,} call(s) were SUBSET deliveries "
-                                                "(19iz): the search re-delivered only the profiles "
-                                                "a child actually mutated. So the totals above "
-                                                "count distinct (candidate, profile) work, not one "
-                                                "entry per candidate per profile - lower than a "
-                                                "pre-19iz run's for the same data, and not a change "
-                                                "in what was delivered. Read [deliv-delta] for how "
-                                                "much was gathered.")
+                                                f"{_DCAP['calls']:,} call(s) were SUBSET "
+                                                "deliveries (19iz), so the totals above count "
+                                                "DISTINCT (candidate, profile) work. See "
+                                                "[deliv-delta].")
                                         # ── 19ii [blk-fill] ──────────────────────────────
                                         if _fm_blk_row is None:
                                             log("   [blk-fill] no row is bank-blocked this run, "
@@ -10127,32 +10124,34 @@ def render():
                                                 "rows.")
                                         else:
                                             _bf_av = max(0.0, _DCAP["bf_share"] - _DCAP["bf_need"])
-                                            log(f"   [blk-fill] WHAT THE 0.97 WATER-FILL PUTS BACK "
-                                                f"ON BANK-BLOCKED ROWS, measured on "
-                                                f"{_DCAP['bf_n']:,} sampled delivery call(s) "
-                                                f"covering {_DCAP['bf_seen']:,} (candidate, "
-                                                f"profile) pair(s): {_DCAP['bf_pairs']:,} pair(s) "
-                                                f"lifted a blocked row, "
-                                                f"{_DCAP['bf_rows']:,} blocked (candidate, row) "
-                                                f"entr(ies) received share, \u03a3 "
-                                                f"{_DCAP['bf_share']:.6g}, largest single lift "
-                                                f"{_DCAP['bf_worst']:.4g}.")
-                                            log(f"   [blk-fill] OF THAT, {_DCAP['bf_need']:.6g} was "
-                                                f"UNAVOIDABLE — the profile's NON-blocked "
-                                                f"recipients held less room than the excess, so "
-                                                f"the cap could not have held without a blocked "
-                                                f"row, which is exactly the exception the rule "
-                                                f"allows. THE AVOIDABLE PART IS {_bf_av:.6g}"
-                                                + (" \u2014 a non-blocked sibling had room and "
-                                                   "the blocked row took the share anyway. That "
-                                                   "is what the rule removes, and it is the "
-                                                   "number to weigh the change against."
-                                                   if _bf_av > 1e-9 else
-                                                   " \u2014 i.e. NOTHING. On this run every lift "
-                                                   "onto a blocked row was already required to "
-                                                   "hold the cap, so the rule would change no "
-                                                   "share here. Confirm across a run with more "
-                                                   "blocked pairs before concluding it is free."))
+                                            # 19jw: TWO LINES INTO ONE, and NOTHING AT ALL when
+                                            # the water-fill put nothing back. The AVOIDABLE
+                                            # part is the number the rule would move, so that
+                                            # is what leads; when the whole measurement is zero
+                                            # there is no lift to apportion and the sample size
+                                            # is the only fact left, which is not worth a line.
+                                            if _DCAP["bf_pairs"] or _DCAP["bf_share"] > 1e-12:
+                                                log(f"   [blk-fill] the 0.97 water-fill put "
+                                                    f"\u03a3 {_DCAP['bf_share']:.6g} back onto "
+                                                    f"blocked rows over {_DCAP['bf_pairs']:,} "
+                                                    f"pair(s) / {_DCAP['bf_rows']:,} entr(ies) "
+                                                    f"(largest {_DCAP['bf_worst']:.4g}), sampled "
+                                                    f"on {_DCAP['bf_n']:,} call(s). "
+                                                    f"{_DCAP['bf_need']:.6g} was UNAVOIDABLE; "
+                                                    f"AVOIDABLE {_bf_av:.6g}"
+                                                    + (" - a non-blocked sibling had room and "
+                                                       "the blocked row took it anyway. That is "
+                                                       "what the rule would move."
+                                                       if _bf_av > 1e-9 else
+                                                       " - i.e. nothing."))
+                                            else:
+                                                log(f"   [blk-fill] the 0.97 water-fill put "
+                                                    f"NOTHING back onto a blocked row "
+                                                    f"({_DCAP['bf_n']:,} call(s) sampled, "
+                                                    f"{_DCAP['bf_seen']:,} pair(s)), so the rule "
+                                                    "would move no share here. Confirm on a run "
+                                                    "with more blocked pairs before calling it "
+                                                    "free.")
                                             # 19is: the SCOPE note is out of date - every
                                             # water-fill it named as unmeasured now has the
                                             # mask (19iq _cap_rows, 19ir _max_share_waterfill,

@@ -130,7 +130,8 @@ check("2  ...and the note cannot break a build",
       "except Exception:  # noqa: BLE001 - a note must never break a build" in BP_SRC)
 check("2  band_projection records 19jn", "19jn-gks-zero-by-slot" in BP_SRC)
 check("2  the existing profile-blocked vs flat self-check still guards this",
-      "self-checked against the flat kernel on this scaffold " in BP_SRC
+      # 19jw shortened this to "...against the flat kernel" - the CLAIM is what matters
+      "self-checked against the flat kernel" in BP_SRC
       and "_CB_OK" in BP_SRC)
 
 print()
