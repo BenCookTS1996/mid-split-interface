@@ -434,8 +434,13 @@ def band_greedy_shares_multi(base_shares, profile_starts, profile_counts, elig, 
     the RNG DRAWS are taken first, sequentially, in the old order and handed to the workers as data
     (they were drawn inside the loop, so execution order WAS draw order); and the REDUCE is still
     serial in index order with the same strict `<`, so a tie still goes to the earlier start.
-    `ROUTING_FEAS_PAR=0` restores the serial loop; `par_info` (a dict, optional) receives the timing
-    so a caller can log what the concurrency actually bought instead of assuming."""
+    FIXED SERIAL since 2026-08-31: `_par = False` below, and the switch that used to set it
+    (`ROUTING_FEAS_PAR`) was deleted with it - 19jy: this docstring still named it, which is the
+    same defect 19ju fixed in three log lines. `par_info` (a dict, optional) receives the wall
+    time, and since 19jy it is filled on the `n_starts <= 1` path too - that path returns before
+    the timing at the bottom of the function, so at the shipped `n_starts=1` the caller got an
+    EMPTY dict and both of tab_2's reports on this stage (`[feas-par]` and the WINNING SEED
+    CHECKSUM) silently never printed."""
     _kw = dict(max_share=max_share, damping=damping, tol=tol, patience=patience,
                deliver_fn=deliver_fn)
     base = np.asarray(base_shares, float)
@@ -447,9 +452,25 @@ def band_greedy_shares_multi(base_shares, profile_starts, profile_counts, elig, 
             return_key=True, **_kw)
 
     if _n <= 1:
+        # 19jy: TIME THIS PATH AND FILL `par_info`. It returns before the `_dt`
+        # measurement below, so at the shipped `n_starts=1` the caller's
+        # `par_info` dict stayed EMPTY - which made both of tab_2's reports on
+        # this stage unreachable: `[feas-par]` (its wall time) and the WINNING
+        # SEED CHECKSUM, the diagnostic written specifically to settle whether
+        # this stage is deterministic after three same-input runs produced band
+        # breach 0.7159 / 0.7157 / 0.7159. Neither has printed since n_starts
+        # was fixed at 1, and the stage is the LARGEST unmeasured block in the
+        # run: 47.0s of stage 4.1's 194.7s on 2026-09-04 11:47, sitting in a gap
+        # between two log lines. Measurement only - `best_s`/`best_key` are the
+        # same objects returned by the same call in the same order.
+        _t1 = _time.perf_counter()
         best_s, best_key = _greedy(base)
+        _dt1 = _time.perf_counter() - _t1
         if keys_out is not None:
             keys_out.append((0, float(best_key[0]), float(best_key[1])))
+        if isinstance(par_info, dict):
+            par_info.update(parallel=False, workers=1, starts=int(_n),
+                            secs=float(_dt1))
         return best_s, best_key
 
     _pstarts = np.asarray(profile_starts, np.intp)

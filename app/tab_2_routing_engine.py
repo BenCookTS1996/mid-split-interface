@@ -3410,6 +3410,61 @@ def render():
                         if _cc.get("gatewayfid") and _cc.get("vampmid"):
                             fid2vamp = dict(zip(_mmd[_cc["gatewayfid"]].astype(str).str.strip().str.lower(),
                                                 _mmd[_cc["vampmid"]].astype(str).str.strip()))
+                    # -- 19jy [scaffold-timing] --------------------------------
+                    # WHY THIS EXISTS. ④·1 was 194.7s on the 2026-09-04 11:47 run and only
+                    # 48s of it had any breakdown ([cap-timing] and [band-setup], which split
+                    # themselves). The five biggest blocks were each a GAP BETWEEN two log
+                    # lines with nothing measured inside: 47.0s, 30.9s, 22.1s, 18.6s, 16.2s.
+                    # Twice this session I priced a step by READING the code and shipped a
+                    # prototype that measured 4.1x SLOWER and 1.034x. This harness is so the
+                    # next attempt starts from a number instead of a reading.
+                    #
+                    # BOUND UNCONDITIONALLY, on purpose (19jf): every name here is defined on
+                    # every path, so no `_sc_mark(...)` below can hit a NameError because the
+                    # branch that would have bound it did not run. Marks are
+                    # cumulative-exclusive - each row is the time since the previous mark - so
+                    # a mark inside a branch that does NOT run folds its interval into the next
+                    # row, and the rows still SUM to the total. `_sc_mark` swallows, so a
+                    # measurement fault can never reach the run.
+                    import time as _sc_time
+                    _sctm = {"t0": _sc_time.perf_counter(), "t": _sc_time.perf_counter(),
+                             "rows": []}
+
+                    # [FN-330]
+                    def _sc_mark(_lbl, _st=_sctm, _tm=_sc_time):
+                        try:
+                            _n = _tm.perf_counter()
+                            _st["rows"].append((str(_lbl), _n - _st["t"]))
+                            _st["t"] = _n
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                    # [FN-331]
+                    def _sc_report(_st=_sctm, _tm=_sc_time):
+                        try:
+                            _tot = _tm.perf_counter() - _st["t0"]
+                            _rows = [(_l, _d) for _l, _d in _st["rows"]]
+                            _resid = _tot - sum(_d for _, _d in _rows)
+                            if _resid > 0.05:
+                                _rows.append(("(after the last mark)", _resid))
+                            _rows.sort(key=lambda _r: -_r[1])
+                            log("")
+                            log("")
+                            log(f"   [scaffold-timing] ④·1 = {_tot:.1f}s, largest first. Timed "
+                                "from the pro-rata rate load, so it starts a few seconds before "
+                                "the ④·1 header prints. Rows SUM to the total.")
+                            log(f"      {'step':<62}{'seconds':>10}{'share':>8}")
+                            log(f"      {'-' * 62}{'-' * 10}{'-' * 8}")
+                            for _l, _d in _rows:
+                                log(f"      {str(_l)[:62]:<62}{_d:>9.1f}s"
+                                    f"{100.0 * _d / max(_tot, 1e-9):>7.1f}%")
+                            log(f"      {'-' * 62}{'-' * 10}{'-' * 8}")
+                            log(f"      {'TOTAL':<62}{_tot:>9.1f}s{100.0:>7.1f}%")
+                            log("")
+                            log("")
+                        except Exception as _sce:  # noqa: BLE001
+                            log(f"   [scaffold-timing] unavailable ({type(_sce).__name__}) - "
+                                "measurement only.")
                     mid_rate = {}
                     _ppf = os.path.join(out_dir, "vamp_t_period_prorata_export.csv")
                     if os.path.exists(_ppf):
@@ -3424,6 +3479,7 @@ def render():
                             mid_rate = _g["rate"].dropna().to_dict()
                             _substep("④·1  BUILD THE PROJECTION SCAFFOLD")
                             log(f"   MID VAMP rates from pro-rata export ({len(mid_rate):,} MID×profile rates).")
+                            _sc_mark("pro-rata export -> MID VAMP rates (5 cols + 3-key groupby)")
                         except Exception as e:
                             log(f"   [Warning] pro-rata rate load failed ({e}); using period-0 rates.")
                     else:
@@ -3459,6 +3515,7 @@ def render():
                     else:
                         comp_share = ref_agg["share"].to_numpy()
                         retired, still_over = set(), set()
+                    _sc_mark("ref_agg cap enforcement (profile key, rate map, VAMP caps)")
 
                     # ---- Per-MID target ± tolerance caps (hard) --------------------
                     # Rules are (vampMid, RPGT, month, metric, target, tol):
@@ -3539,6 +3596,7 @@ def render():
                         if _a < np.inf:
                             a_max_by_mid[_mk] = max(_a, 0.0)
                     a_max_by_key = {k: max(v, 0.0) for k, v in a_max_by_key.items() if v < np.inf}
+                    _sc_mark("per-MID rule parse (+ scoped-rule pro-rata tidy)")
 
                     # ---- Projection-feedback inputs for per-MID month/aggregate caps ----
                     # These caps are on the PROJECTED VAMP/Txn (what tab 4 shows), whose
@@ -3582,6 +3640,7 @@ def render():
                                 float(_rec.get("target") or 0.0), _rec.get("tol"),
                                 str(_rec.get("direction", "range"))))
                     _pp_full = pd.read_csv(_ppf) if (_mid_month_rules and os.path.exists(_ppf)) else None
+                    _sc_mark("_pp_full: FULL pro-rata re-read (every column)")
                     # 19da — COMPLETE THE MOVABLE LAYERS, with the SAME capability the delivered
                     # projection is given. This is the whole point of doing it here rather than in
                     # each projector: both sides then read one identical frame, the aged shares sum
@@ -3603,12 +3662,14 @@ def render():
                                 with _io.open(_rjp, encoding="utf-8") as _rfh:
                                     _rj = _json.load(_rfh)
                             _capability = _ic.build_capability(restrictions=_rj, brand=sr_company)
+                            _sc_mark("build_capability")
                             _n0 = len(_pp_full)
                             _pp_full, _ninj = _ic.inject_capable_rows(
                                 _pp_full, _capability,
                                 [_c for _c in ("Currency", "BIN", "RPGT",
                                                "paymentMethodProvider", "Country")
                                  if _c in _pp_full.columns])
+                            _sc_mark("inject_capable_rows")
                             # 19hx: cut from eight lines to two, and the switch is gone. What the
                             # rest of it said — that without the injection the movable pool
                             # circulates back to the incumbents — described the behaviour of a
@@ -3693,6 +3754,7 @@ def render():
                     # its own profiles, so this is EXACT). Each feedback iteration then only
                     # recomputes the prop-dependent parts on this small frame, instead of
                     # re-projecting millions of pro-rata rows.
+                    _sc_mark("volume-override / vamp-off sets")
                     _capped_l = {_row[0] for _row in _mid_month_rules}
                     # ── CANDIDATE-DOOR COVERAGE SET (replaces the old ROUTING_TXN_FULLCOVER) ──
                     # WHY: the band scaffold was BASELINE-anchored — a (profile, MID) pair with no
@@ -3754,6 +3816,7 @@ def render():
                             log(f"   [door-cover] candidate-door set FAILED ({type(_dce).__name__}: "
                                 f"{_dce}) — scaffold stays baseline-anchored; expect the incidence "
                                 "self-check to show dropped share mass (scored != delivered).")
+                    _sc_mark("candidate-door coverage set (agg_sr x orig_forecast merge)")
                     _T0 = _Pc = None
                     # [scaffold-recon] row counts at every step between the pro-rata export on
                     # disk and the scaffold the band projector actually walks. Collected as the
@@ -3773,6 +3836,7 @@ def render():
                     if _pp_full is not None and _capped_l:
                         _P = _pp_full.copy()
                         _rc["disk"] = int(len(_P))          # [scaffold-recon] step 1
+                        _sc_mark("_pp_full.copy()")
                         _rpc = "RPGT" if "RPGT" in _P.columns else "rpgt"
                         _P["_cur"] = _P["Currency"].astype(str).str.strip().str.lower()
                         _P["_bin"] = _P["BIN"].astype(str).str.strip()
@@ -3792,10 +3856,12 @@ def render():
                                       if "paymentMethodProvider" in _P.columns else "_all_")
                         _P["_ctry"] = (_P["Country"].astype(str).str.strip().str.lower()
                                        if "Country" in _P.columns else "_all_")
+                        _sc_mark("12 derived key columns on _P")
                         _P = _P.groupby(["_cur", "_bin", "_rpgt", "_pmp", "_ctry", "_mid", "_midl",
                                          "_per", "_t"], as_index=False).agg(
                             _vi=("_vi", "sum"), _vc=("_vc", "sum"), _pr=("_pr", "first"), _fcp=("_fcp", "first"))
                         _rc["agg"] = int(len(_P))           # [scaffold-recon] step 2
+                        _sc_mark("9-key groupby collapse (cur,bin,rpgt,pmp,ctry,mid,midl,per,t)")
                         # Profile key on the LOWER-CASED rpgt so it matches the prop-key grain
                         # (band_projection._prop_key lower-cases rpgt) and the candidate-door set.
                         # 19dq — RPGT SCOPE, EXPLICITLY, IN THE SEARCH. Delivery holds unscoped RPGTs at
@@ -3820,6 +3886,7 @@ def render():
                                 _fcp0P = _P["_fcp"].to_numpy(float)
                                 _hitP = _oosP & (_fcp0P > 0.0)
                                 _P["_fcp"] = np.where(_oosP, 0.0, _fcp0P)
+                                _sc_mark("rpgt scope mask")
                                 # 19ip: counted at PROFILE level. "2,915,566 of 6,477,850 rows"
                                 # is a number nobody can act on - the decision grain is the
                                 # profile, and a profile is either held or it is not.
@@ -3832,6 +3899,7 @@ def render():
                                     _rsH = int(_rsK[_hitP].nunique())
                                 except Exception:  # noqa: BLE001
                                     _rsN, _rsH = len(_P), int(_hitP.sum())
+                                _sc_mark("[rpgt-scope] diagnostic: 5-part string key + 2 x nunique")
                                 log(f"   [rpgt-scope] {_rsH:,} of {_rsN:,} profile(s) held at baseline"
                                     + ("" if _hitP.any() else
                                        " - INERT this run: psum == 0 was already reaching the same "
@@ -3914,6 +3982,7 @@ def render():
                                     "running WITHOUT the switched-off-gateway gate and will reroute fraud from "
                                     "gateways that receive no transactions \u2014 this is not a silent skip, and the "
                                     "run's numbers are the pre-19dr ones.")
+                        _sc_mark("[keep-gate]")
                         _P["_rkl"] = _P["_rpgt"].astype(str).str.strip().str.lower()
                         _profilek = _P["_cur"] + "|" + _P["_bin"] + "|" + _P["_rkl"]
                         _keep = set(_profilek[_P["_midl"].isin(_capped_l)].unique())
@@ -3941,6 +4010,7 @@ def render():
                         _T0 = _P[_P["_t"] == 0].copy()
                         _rc["t0"] = int(len(_T0))           # [scaffold-recon] step 4
                         _T0["_bf"] = 0   # 0 = real baseline row, 1 = injected back-fill row
+                        _sc_mark("profile scope filter + _T0 slice")
                         # ---- BACK-FILL profile rows (mirror the tab-3 projection fix) --------
                         # A MID present in a profile but absent from one of its pmp/Country profiles
                         # gets no routed volume there, so that profile's proposed shares
@@ -4001,6 +4071,7 @@ def render():
                                 log(f"   candidate-door zero rows injected into cap scaffold: "
                                     f"{len(_newbf):,}")
                         _T0 = _T0.drop(columns=["_rkl"], errors="ignore")
+                        _sc_mark("back-fill grid: profile x MID merge + anti-join + concat")
                         # 19dt - back-fill rows are concatenated above and carry no `_keepf`; a NaN there
                         # would silently zero a live gateway's proposal, the opposite of the bug being
                         # fixed. They are zero-baseline recipients in profiles that ARE routed, so 1.0 (fully
@@ -4014,6 +4085,7 @@ def render():
                         _T0["_av"] = np.where(_T0["_excl"], 0.0, _T0["_vi"])
                         _T0["_at"] = _T0.groupby(_grpk)["_av"].transform("sum")
                         _T0["_base"] = np.where(_T0["_at"] > 0, _T0["_av"] / _T0["_at"], 0.0)
+                        _sc_mark("_T0 statics (_ctot / _base groupby transforms)")
                         # Static pipeline-enforcement mask per t0 row: wallet-incapable MID in a
                         # wallet-pmp profile, or USA-only MID in a Non-USA profile. Zeroes that
                         # MID's proposed share there (matches build_split_exports).
@@ -4129,8 +4201,10 @@ def render():
                                 log(f"   [emask] ⚠ FELL BACK to the vampMid-only capability mask "
                                     f"({_pair_src}) — it OVER-BLOCKS any vampMid whose fids differ "
                                     "in capability by currency. Check Master_MID_List.csv is readable.")
+                        _sc_mark("[emask] pair mask (python membership loop over _T0)")
                         _Pc = _P[_P["_midl"].isin(_capped_l)].copy()
                         _Pc["_om"] = _Pc["_per"] - _Pc["_t"]
+                        _sc_mark("_Pc slice for capped MIDs")
                         # 19hx: as a table, and named properly. Both counts were called "rows"
                         # and they are not the same thing: _T0 is the origin-month scaffold at
                         # CELL grain (one row per gateway within a profile), and _Pc is the AGED
@@ -4704,6 +4778,7 @@ def render():
                         except Exception as _cte:  # noqa: BLE001
                             log(f"   [cap-timing] unavailable ({type(_cte).__name__}) — "
                                 "measurement only.")
+                    _sc_mark("cap scaffold + [scaffold-recon] (split by [cap-timing])")
                     ss["mid_vol_constrained"] = sorted(str(m) for m in mid_vol_constrained)
 
                     ref_share = ref_agg["share"].to_numpy()
@@ -4827,6 +4902,7 @@ def render():
                                "so these counts include every brand in the MID list."))
                     # Country presence per (currency, BIN) from the attempts data — drives the
                     # export's USA / Non-USA row split. USA-only gateways appear in USA rows only.
+                    _sc_mark("eligibility rules + wallet / USA fid sets")
                     _country_pres = {}
                     if "country" in orig_adf.columns and "attempts" in orig_adf.columns:
                         _cp = orig_adf.copy()
@@ -5494,6 +5570,7 @@ def render():
 
                     # 19gf: was `in ("genetic", "genetic_numba", "genetic_fullmatrix")`; the first
                     # two cannot be selected, so this block IS the live engine path.
+                    _sc_mark("country presence + backup GA blend + pre-search masks")
                     if engine_key == "genetic_fullmatrix":
                         # genetic_fullmatrix enters this SAME branch so it reuses the ctx build,
                         # greedy+LP compliant split and endpoints; its distinct full-matrix split
@@ -5763,6 +5840,7 @@ def render():
                                     "ctry": (G["ctry"].astype(str).to_numpy() if "ctry" in G.columns
                                              else np.array(["_all_"] * len(G))),
                                 })
+                                _sc_mark("_profiles_layout build (G columns -> numpy)")
                                 _elig_op = _build_elig_op(
                                     _profiles_layout, _elig_rules, _fid2vamp_l,
                                     wallet_incapable=frozenset(_wallet_incapable), wallet_frac=_wallet_frac,
@@ -5775,6 +5853,7 @@ def render():
                                     f"row(s), wallet={'on' if _elig_op['has_w'] else 'off'}, "
                                     f"USA-only={'on' if _elig_op['has_u'] else 'off'} (returned split is RAW; "
                                     "enforcement blends once). Set ROUTING_GA_ELIG=0 to disable.")
+                                _sc_mark("_build_elig_op")
                                 # 19bl: this counter is the CANARY for the 19bk clobber. It read
                                 # 147,944/245,409 (60%) on every run up to 16:01 and 0/1 (0%) at
                                 # 17:21, because the file had lost `+exact-profile-capability`. At
@@ -6068,6 +6147,7 @@ def render():
                                         f"{100.0 * _bv / max(_bs_tot, 1e-9):>8.1f}%")
                                 log(f"      {'-' * 58}{'-' * 10}{'-' * 9}")
                                 log(f"      {'TOTAL':<58}{_bs_tot:>9.1f}s{100.0:>8.1f}%")
+                                _sc_mark("[band-setup] (split by its own table)")
                                 log("")
                                 log("")
                                 # specs from the rules (weight = pmul; wm≡1 since viol_vol_weight is off)
@@ -7198,6 +7278,7 @@ def render():
                         #   exact-proj    0.0093637   (−0.023219 — the largest single step)
                         #   targeted-move 0.0036919   (−0.005672, and the one USED)
                         try:
+                            _sc_mark("[breach-scale] .. [block-restrict] .. [deliv-cap] .. [seed-deliv]")
                             _band_greedy_G = np.asarray(_comp_share_G, float)
                             if (_ga_bands and ctx.get("exact_bands") is not None
                                     and isinstance(ctx.get("_exact_bands_selfcheck"), dict)
@@ -7227,6 +7308,7 @@ def render():
                                     max_share=float(ctx.get("max_share", 1.0) or 1.0),
                                     n_starts=_feas_starts, rng_seed=0, keys_out=_bg_keys,
                                     par_info=_bg_par, deliver_fn=_seed_dlv)
+                                _sc_mark("seed stage 1: band_greedy_shares_multi (band-aware greedy)")
                                 # [feas-par] 19ck: the starts run CONCURRENTLY now. State the wall
                                 # time rather than assert a speed-up: `band_greedy_shares` alternates
                                 # a numpy pass that releases the GIL with a per-spec Python loop that
@@ -7351,6 +7433,7 @@ def render():
                                 # to be opened AFTER stage 1's summary had already printed, so
                                 # stage 1 — the first thing the seed chain does — appeared outside
                                 # the section titled "BUILD THE WARM-START SEED".
+                                _sc_report()
                                 _substep("④·2  BUILD THE WARM-START SEED")
                                 try:
                                     from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr_seed

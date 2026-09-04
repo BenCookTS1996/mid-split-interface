@@ -90,8 +90,15 @@ check("2: speedup is min/min, not mean/mean",
       "" if res is None else f"{res['speedup']:.4f}x (mean/mean would be 2.35x)")
 check("2: a 100% difference clears a 50% measured noise bar",
       res is not None and res["above_floor"] is True)
-check("2: the note reports the measured noise, not '5%'",
-      "MACHINE NOISE" in note and "50.0%" in note and "not a fixed 5%" in note)
+# 19jy: RE-POINTED, not deleted. 19jw trimmed this note and dropped the words
+# "MACHINE NOISE ... not a fixed 5%" - so this assertion had been failing silently since
+# that build, because 19jw only re-ran the tests it knew it had broken. The PROPERTY being
+# checked is unchanged and still worth checking: the bar printed is the one MEASURED on this
+# run's own identical-code spread, not a constant. The source-level guard on
+# `_floor = max(0.02, _noise)` above is the other half of it.
+check("2: the note reports the MEASURED noise bar, not a constant",
+      "Noise bar 50.0%" in note and "within-arm spread on identical code" in note,
+      "" if "Noise bar" in note else "note: " + note[:120])
 
 # a REAL-looking lift that is inside the machine's own noise must NOT be called real
 seq = []
