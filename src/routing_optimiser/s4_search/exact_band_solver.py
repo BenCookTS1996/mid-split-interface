@@ -71,7 +71,7 @@ import numpy as np
 from scipy.optimize import linprog as _linprog
 import scipy.sparse as _sparse
 
-__build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+global-linear-lp-seed+minimal-move-projection+colocation-report+held-movable-report+movable-provenance+reachable-minimum-no-floor+vamp-positive-sibling+selfcheck+seedgrad+vpsum+usable-recipient+degenerate-gradient-flag+breach-concentration+scoped-frozen-split+gradient-vpsum-regularisation+insearch-rpgt-breakdown+catchall-eps-floor+targeted-move-headroom+2026-08-19bd-raw-basis-claim-labelled+2026-08-19be-recipient-headroom-per-metric+2026-09-01-19go-delivery-faithful-seed-accept-tests+2026-09-03-19ik-log-trim+2026-09-03-19io-lp-stall-armed+2026-09-03-19ip-log-trim"
+__build__ = "2026-08-15-exact-projector-band-solver-slp+sparse-lp+progress+global-linear-lp-seed+minimal-move-projection+colocation-report+held-movable-report+movable-provenance+reachable-minimum-no-floor+vamp-positive-sibling+selfcheck+seedgrad+vpsum+usable-recipient+degenerate-gradient-flag+breach-concentration+scoped-frozen-split+gradient-vpsum-regularisation+insearch-rpgt-breakdown+catchall-eps-floor+targeted-move-headroom+2026-08-19bd-raw-basis-claim-labelled+2026-08-19be-recipient-headroom-per-metric+2026-09-01-19go-delivery-faithful-seed-accept-tests+2026-09-03-19ik-log-trim+2026-09-03-19io-lp-stall-armed+2026-09-03-19ip-log-trim+2026-09-04-19kg-no-runtime-switches"
 
 # Gradient-only vpsum/psum floor used by the SEED SOLVERS (not the diagnostics, not the forward
 # values). Share-scale denominators: real high-VAMP profiles sit well above this, near-empty profiles

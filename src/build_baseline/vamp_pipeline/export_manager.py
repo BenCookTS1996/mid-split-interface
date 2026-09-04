@@ -19,7 +19,7 @@ _SW_FCP1_FROM_FORECAST = True   # was ROUTING_FCP1_FROM_FORECAST, default '1'
 
 logger = setup_logger(__name__)
 
-__build__ = "2026-07-19-prorata-export-fcp1-per-profile+reconcile-guard"
+__build__ = "2026-07-19-prorata-export-fcp1-per-profile+reconcile-guard+2026-09-04-19kg-no-runtime-switches"
 
 
 def reconcile_granular_to_mid_level(output_dir, *, id_col, vamp_metric, txn_metric,

@@ -25,7 +25,7 @@ from __future__ import annotations
 # module had NONE — so it printed "(no __build__)" on every run and a stale in-memory copy of it was
 # undetectable. That is the failure mode that wasted the 2026-08-22 16:13 run on band_projection.
 __build__ = ("2026-08-19bn-baseline-recon-wrong-frame"
-             "+2026-08-19au-baseline-recon-missing-column+2026-09-02-19gz-baseline-row-counts-and-excel-note+2026-09-02-19ha-baseline-reconciliation-table")
+             "+2026-08-19au-baseline-recon-missing-column+2026-09-02-19gz-baseline-row-counts-and-excel-note+2026-09-02-19ha-baseline-reconciliation-table+2026-09-04-19kg-no-runtime-switches")
 
 
 import logging

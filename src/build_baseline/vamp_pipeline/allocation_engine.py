@@ -21,7 +21,7 @@ _SW_VAMP_ORIGIN_SHARE = True   # was ROUTING_VAMP_ORIGIN_SHARE, default '1'
 
 logger = setup_logger(__name__)
 
-__build__ = "2026-07-21-alloc-trace-rawsplit+profile-samples+vp02-vamp-origin+vp03-deathsync-block+vp04-orphan-cascade+ds05-audit+ds06-doomed-off"
+__build__ = "2026-07-21-alloc-trace-rawsplit+profile-samples+vp02-vamp-origin+vp03-deathsync-block+vp04-orphan-cascade+ds05-audit+ds06-doomed-off+2026-09-04-19kg-no-runtime-switches"
 
 
 def _doomed_keys(pre_totals: pd.Series, pre_deads: pd.Series) -> pd.Index:

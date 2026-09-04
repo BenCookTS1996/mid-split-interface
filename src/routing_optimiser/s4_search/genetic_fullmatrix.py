@@ -118,7 +118,7 @@ except Exception:                                   # noqa: BLE001
 _EVAL_DELTA_ON = True      # 19ix/19iy: gather each child's DECODE from its parents'
 _DELIV_DELTA_ON = True     # 19iz: gather each child's DELIVERY from its parents'
 
-__build__ = "2026-09-04-19kd-deltas-unconditional+2026-09-04-19js-decodecap-headline-trim+2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim+2026-09-03-19iu-log-batch+2026-09-03-19ix-eval-delta+2026-09-03-19iy-delta-default-on+2026-09-03-19iz-deliv-delta"
+__build__ = "2026-09-04-19kd-deltas-unconditional+2026-09-04-19js-decodecap-headline-trim+2026-08-19bx-fused-softmax-and-child+2026-08-12-fullmatrix-ga-dualceiling-adaptivetol+numbafuse+prange+elitecache+persistcache+midbands+exactbandhook+localrefine+globalvampcap+seeds+restarts+live-progress+progress-tuple-format-fix+progress-plain-decimals+progress-unmet-names+compress-learned-codebook-delivered-numbadistortion+exact-tab3-codebook-callback+delivery-dedupe+refresh-skip-band+lexico-m5-primary-ranking+19eb-ga-census+19ed-viol-decomp+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair+2026-09-02-19ia-decode-deliv+2026-09-02-19ic-deliv-default+2026-09-02-19id-decode-obj+2026-09-02-19ie-obj-check+2026-09-02-19if-obj-basis-fullgrain+2026-09-02-19ig-viol-bincount-evalcost-nwconv+2026-09-03-19im-cap-source+2026-09-03-19in-cap-counterfactual+2026-09-03-19io-viol-forced+2026-09-03-19ip-log-trim+2026-09-03-19iu-log-batch+2026-09-03-19ix-eval-delta+2026-09-03-19iy-delta-default-on+2026-09-03-19iz-deliv-delta+2026-09-04-19kg-no-runtime-switches"
 
 # Feasibility tolerance: violations at or below this count as compliant in-search.
 _FEAS_EPS = 1e-9
@@ -3117,7 +3117,7 @@ def run_fullmatrix_ga(problem: "FullMatrixProblem", reference_shares=None, *,
         f"{min(float(mutation_rate), _MUT_RATE) * int(p.n_profiles) * 0.25:,.0f} per refine child, "
         f"which uses a quarter rate). Ceiling mutation_rate={float(mutation_rate):g} "
         f"{'BINDS' if float(mutation_rate) < _MUT_RATE else 'does not bind'}. "
-        "`_SW_MUT_RATE` overrides.")
+        "`_SW_MUT_RATE` at the top of this module sets the per-profile rate.")
     # Say it when the 2026-08-19ac removal actually changes this run. The deleted term was
     # max(0.01, 60/n_profiles), which bound only below 6,000 profiles — so at the live grain nothing
     # moved, but at a coarser grain it did, and a silent halving of the mutation is exactly the

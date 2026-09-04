@@ -95,7 +95,7 @@ class _Skip(Exception):
     must not be recorded as a failure. Each handler re-checks the flag."""
 
 __build__ = ("2026-08-17b-count-only-pool-search+profile-exporter+staged-enforcement"
-             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zeroprofile+vamp-term-stash+2026-09-01-19gq-gk-int-key+cvp-submarks+19gt-forensic-on-demand+2026-09-03-19ih-sentinel-unclobbered+2026-09-03-19je-cvp-submarks+2026-09-03-19jh-txnterms-on-demand+2026-09-03-19ji-backfill-cleancol")
+             "+projection-mode-no-round+lt2-backfill-DELETED+no-coarse-prop-fallback+fid-grain-capability+txn-term-stash+denom-stash+t0-presence-backfill+ca-zeroprofile+vamp-term-stash+2026-09-01-19gq-gk-int-key+cvp-submarks+19gt-forensic-on-demand+2026-09-03-19ih-sentinel-unclobbered+2026-09-03-19je-cvp-submarks+2026-09-03-19jh-txnterms-on-demand+2026-09-03-19ji-backfill-cleancol+2026-09-04-19kg-no-runtime-switches")
 
 
 # [FN-246b]

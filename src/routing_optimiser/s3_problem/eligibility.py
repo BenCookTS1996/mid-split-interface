@@ -37,7 +37,7 @@ __build__ = ("2026-08-19bs-fused-elementwise-blends"
              "+2026-08-19bl-exact-profile-capability-RESTORED-after-19bk-clobber"
              "+2026-08-19bk-elig-inplace"
              "+2026-08-18-eligibility-ban-mask-cache+population-operator+fid-grain-capability"
-             "+exact-profile-capability")
+             "+exact-profile-capability+2026-09-04-19kg-no-runtime-switches")
 
 WALLET_VALUES = {"googlepay", "applepay"}
 

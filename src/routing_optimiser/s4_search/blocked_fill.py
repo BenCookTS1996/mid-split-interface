@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__build__ = "2026-09-03-19ii-blocked-fill-rule+19iq-two-stage-add"
+__build__ = "2026-09-03-19ii-blocked-fill-rule+19iq-two-stage-add+2026-09-04-19kg-no-runtime-switches"
 
 
 def _seg(x, starts, axis=1):
@@ -460,7 +460,7 @@ def arming_verdict(requested):
     refusal and runs the old behaviour - never half of the new one.
     """
     if not requested:
-        return False, ("[blk-fill] rule OFF (`_SW_BLOCK_NOFILL` unset). Blocked rows are "
+        return False, ("[blk-fill] rule OFF (`_SW_BLOCK_NOFILL = False`). Blocked rows are "
                        "water-fill recipients like any other, which is what every build before "
                        "19ij did; [blk-fill] prices what that costs.")
     _miss = missing()

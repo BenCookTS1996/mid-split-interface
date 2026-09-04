@@ -138,7 +138,7 @@ __build__ = ("2026-09-04-19kf-autoblock-diag+2026-09-04-19ke-section-spacing+202
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
              "+2026-08-19bn-lane-cap-16"
              "+2026-08-19bi-int32-indices-adopted+2026-08-19bf-chunk-speedup-claim-delegated-to-kernel-ab+2026-08-19bb-docstring-proxy-claim-deleted+2026-08-19az-chunked-parallel-adopted+2026-08-19aw-serial-fastmath+2026-08-19av-lazy-fastmath+staleness-sentinel+2026-08-19aq-vamp-conservation-gate+2026-08-16-appearance-month-timing"
-              "+candidate-parallel-kernel")
+              "+candidate-parallel-kernel+2026-09-04-19kg-no-runtime-switches")
 
 try:                                   # numba is optional — pure-NumPy path used if absent
     from numba import njit as _njit, prange as _prange, get_num_threads as _nthreads

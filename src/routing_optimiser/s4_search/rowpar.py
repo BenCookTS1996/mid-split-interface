@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor as _TPE
 
 import numpy as _np
 
-__build__ = "2026-08-19bo-half-cores+2026-08-19bn-row-parallel"
+__build__ = "2026-08-19bo-half-cores+2026-08-19bn-row-parallel+2026-09-04-19kg-no-runtime-switches"
 
 # ── 19kg: SETTINGS THAT USED TO BE ENVIRONMENT SWITCHES ──────────────────
 # No environment variable changes a run any more. Each name below is frozen at the
