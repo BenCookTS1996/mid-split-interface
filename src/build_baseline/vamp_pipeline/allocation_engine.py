@@ -794,47 +794,6 @@ class AllocationEngine:
         """
         logger.info("Initializing Allocation Matrix (Data Cleaning & Setup)...")
 
-        # DIAGNOSTIC (log-only): dump the RAW parsed routing rules (self.split_df) for the
-        # focus profile, straight from data_extractor and BEFORE any engine processing — each
-        # gateway's parsed Share + Rule_Source. This pinpoints where a gateway the exported
-        # rule scored 0% / omitted (e.g. braintree, bancard) actually enters the split.
-        try:
-            import os as _os6
-            _tr6 = _os6.environ.get("ROUTING_ALLOC_TRACE", "").strip()
-            if _tr6 and isinstance(self.split_df, pd.DataFrame) and not self.split_df.empty:
-                _p6 = [x.strip().lower() for x in _tr6.split("|")] + ["", "", ""]
-                _c6, _b6, _r6 = _p6[0], _p6[1], _p6[2]
-                _sd6 = self.split_df.copy()
-                def _col6(*names):
-                    for _n in names:
-                        if _n in _sd6.columns:
-                            return _n
-                    return None
-                _cc, _bc, _rc = _col6("Currency", "currency"), _col6("BIN", "bin"), _col6("RPGT", "rpgt")
-                if _cc and _bc and _rc:
-                    _sel6 = _sd6[(_sd6[_cc].astype(str).str.strip().str.lower() == _c6) &
-                                 (_sd6[_bc].astype(str).str.strip().str.replace(r"\.0$", "", regex=True) == _b6) &
-                                 (_sd6[_rc].astype(str).str.strip().str.lower() == _r6)]
-                    if _sel6.empty:
-                        logger.info(f"ALLOC_TRACE RAW split_df: no parsed-rule rows for {_tr6} "
-                                    f"(⇒ these gateways are NOT in the parsed rules — injected later)")
-                    else:
-                        _sc = _col6("Share")
-                        _showcols = [c for c in ("paymentMethodProvider", "Country", "STICKY",
-                                                 "GO LIVE", "Rule_Source", "gatewayFid", _sc) if c and c in _sel6.columns]
-                        logger.info(f"ALLOC_TRACE RAW split_df (parsed rules, pre-engine) {_tr6}  rows={len(_sel6)}")
-                        for _rec in _sel6.sort_values(_sc, ascending=False)[_showcols].head(60).itertuples(index=False) \
-                                if _sc else _sel6[_showcols].head(60).itertuples(index=False):
-                            logger.info("   " + " | ".join(str(x) for x in _rec))
-                        # explicit braintree / bancard presence check
-                        _gc = _col6("gatewayFid")
-                        if _gc:
-                            _gl = _sel6[_gc].astype(str).str.lower()
-                            logger.info(f"   → braintree-usd-tav in parsed rules? "
-                                        f"{bool(_gl.str.contains('braintree-usd-tav').any())} · "
-                                        f"bancard-usd-tav? {bool(_gl.str.contains('bancard-usd-tav').any())}")
-        except Exception as _e6:  # noqa: BLE001
-            logger.info(f"ALLOC_TRACE RAW split_df failed: {_e6}")
 
         df_in, split_work = self._prepare_allocation_matrices()
         split_work = self._inject_dynamic_snapshots(split_work)
@@ -842,66 +801,7 @@ class AllocationEngine:
         
         mapped_agg, unmapped_agg = self._map_and_filter_cohorts(df_in, split_work)
 
-        # DIAGNOSTIC (log-only): dump the engine's OWN normalised routing shares (Share_Norm)
-        # per gateway for the focus profile, BEFORE any allocation. This is the decisive test:
-        # if a gateway the exported rule scores at 0% (e.g. braintree) shows Share_Norm>0 here,
-        # the divergence is in rule parsing / normalisation (data_extractor / snapshots); if it
-        # is 0 here yet still receives volume in POST, the divergence is a later redistribution.
-        try:
-            import os as _os3
-            _tr3 = _os3.environ.get("ROUTING_ALLOC_TRACE", "").strip()
-            if _tr3:
-                _p3 = [x.strip().lower() for x in _tr3.split("|")] + ["", "", ""]
-                _c3, _b3, _r3 = _p3[0], _p3[1], _p3[2]
-                _sw = split_work
-                _selm = ((_sw["Currency"].astype(str).str.strip().str.lower() == _c3) &
-                         (_sw["BIN"].astype(str).str.strip() == _b3) &
-                         (_sw["RPGT"].astype(str).str.strip().str.lower() == _r3))
-                _s = _sw[_selm]
-                if _s.empty:
-                    logger.info(f"ALLOC_TRACE SPLIT_WORK: no rule rows for {_tr3}")
-                else:
-                    _ex = [c for c in ("paymentMethodProvider", "Country", "STICKY", "GO LIVE") if c in _s.columns]
-                    _cols = _ex + ["gatewayFid", "Share_Norm"] + (["Share_Norm_Vamp"] if "Share_Norm_Vamp" in _s.columns else [])
-                    logger.info(f"ALLOC_TRACE SPLIT_WORK (normalised routing shares) {_tr3}  rows={len(_s)}")
-                    for _rec in (_s.sort_values(_ex + ["Share_Norm"], ascending=False)[_cols]
-                                 .head(60).itertuples(index=False)):
-                        logger.info("   " + " | ".join(str(x) for x in _rec))
-        except Exception as _e3:  # noqa: BLE001
-            logger.info(f"ALLOC_TRACE SPLIT_WORK failed: {_e3}")
 
-        # DIAGNOSTIC (log-only, never changes results): env ROUTING_ALLOC_TRACE="cur|bin|rpgt"
-        # dumps each gateway's MAPPED (rerouted) vs UNMAPPED (held with incumbent) VI for that
-        # profile, so the tab-3-vs-tab-5 held-cohort gap (e.g. Braintree) can be localised exactly —
-        # is the incumbent's retained volume the unmapped cohort, or something the projection can't
-        # see? Gated so it costs nothing unless enabled.
-        import os as _os
-        _tr = _os.environ.get("ROUTING_ALLOC_TRACE", "").strip()
-        if _tr:
-            try:
-                _p = [x.strip().lower() for x in _tr.split("|")] + ["", "", ""]
-                _tcur, _tbin, _trp = _p[0], _p[1], _p[2]
-
-                def _alloc_trace(_df, _lbl):
-                    if _df is None or _df.empty:
-                        logger.info(f"ALLOC_TRACE {_lbl}: empty"); return
-                    _c = _df
-                    _cur = _c["Currency"].astype(str).str.strip().str.lower()
-                    _bn = _c["BIN"].astype(str).str.strip()
-                    _rp = _c["RPGT"].astype(str).str.strip().str.lower()
-                    _sel = _c[(_cur == _tcur) & (_bn == _tbin) & (_rp == _trp)]
-                    _col = next((x for x in _sel.columns if str(x).startswith("fc_vi_trx_m1")), None) \
-                        or next((x for x in _sel.columns if str(x).startswith("fc_vi_trx")), None)
-                    if _col is None or _sel.empty:
-                        logger.info(f"ALLOC_TRACE {_lbl}: no rows/VI col for {_tr}"); return
-                    _g = _sel.groupby("gatewayFid", observed=True)[_col].sum().sort_values(ascending=False)
-                    logger.info(f"ALLOC_TRACE {_lbl} [{_col}] {_tcur}/{_tbin}/{_trp}  Σ={_g.sum():,.1f}")
-                    for _fid, _v in _g.head(20).items():
-                        logger.info(f"   {_fid}: {_v:,.1f}")
-                _alloc_trace(mapped_agg, "MAPPED (rerouted per rule)")
-                _alloc_trace(unmapped_agg, "UNMAPPED (held with incumbent)")
-            except Exception as _e:  # noqa: BLE001
-                logger.info(f"ALLOC_TRACE failed: {_e}")
 
         logger.info("Executing Micro-Chunked Vector Math...")
         post_chunks, pre_chunks = [], []
@@ -949,88 +849,10 @@ class AllocationEngine:
         logger.info("Applying Death Syncs & Lossless Redistribution...")
         pre_df, post_df = self._apply_death_syncs(pre_df, post_df)
 
-        # DIAGNOSTIC (log-only): if ROUTING_ALLOC_TRACE="cur|bin|rpgt" is set, dump the FINAL
-        # pre→post VI per finalGateway for that profile (after death-syncs), broken down by
-        # paymentMethodProvider × Country when present. Paired with the MAPPED/UNMAPPED dump
-        # above, this shows EXACTLY where an incumbent's post volume comes from — held (unmapped)
-        # vs received-as-destination vs death-sync — i.e. the source of the tab3-vs-tab5 gap
-        # (e.g. Braintree post 440 vs a held-only 95). Never changes results.
-        try:
-            import os as _os2
-            _tr2 = _os2.environ.get("ROUTING_ALLOC_TRACE", "").strip()
-            if _tr2:
-                _p2 = [x.strip().lower() for x in _tr2.split("|")] + ["", "", ""]
-                _tc2, _tb2, _tr2r = _p2[0], _p2[1], _p2[2]
-                def _post_trace(_df, _lbl, _pre):
-                    if _df is None or _df.empty:
-                        logger.info(f"ALLOC_TRACE POST {_lbl}: empty"); return
-                    _cur = _df["Currency"].astype(str).str.strip().str.lower()
-                    _bn = _df["BIN"].astype(str).str.strip()
-                    _rp = _df["RPGT"].astype(str).str.strip().str.lower()
-                    _sel = _df[(_cur == _tc2) & (_bn == _tb2) & (_rp == _tr2r)]
-                    if _sel.empty:
-                        logger.info(f"ALLOC_TRACE POST {_lbl}: no rows for {_tr2}"); return
-                    _pfx = "PreSim_" if _pre else "Reallocated_"
-                    _col = next((c for c in _sel.columns if str(c).startswith(f"{_pfx}fc_vi_trx_m1")), None) \
-                        or next((c for c in _sel.columns if str(c).startswith(f"{_pfx}fc_vi_trx")), None)
-                    if _col is None:
-                        logger.info(f"ALLOC_TRACE POST {_lbl}: no {_pfx}VI col"); return
-                    _extra = [c for c in ("paymentMethodProvider", "Country") if c in _sel.columns]
-                    _keys = _extra + ["finalGateway"]
-                    _g = _sel.groupby(_keys, observed=True)[_col].sum()
-                    _g = _g[_g != 0].sort_values(ascending=False)
-                    logger.info(f"ALLOC_TRACE POST {_lbl} [{_col}] {_tc2}/{_tb2}/{_tr2r}  Σ={_g.sum():,.1f}")
-                    for _k, _v in _g.head(40).items():
-                        logger.info(f"   {_k}: {_v:,.1f}")
-                _post_trace(pre_df, "PRE  (final per gateway)", True)
-                _post_trace(post_df, "POST (final per gateway)", False)
-        except Exception as _e2:  # noqa: BLE001
-            logger.info(f"ALLOC_TRACE POST failed: {_e2}")
 
-        # --- GRANULAR PROFILE SAMPLES (tab-5 run log): dump a handful of representative
-        #     routed profiles (Currency × BIN × RPGT × pmp × Country) end-to-end — each
-        #     gateway's PRE → POST VI (M1) — so the pipeline's ACTUAL per-profile routing is
-        #     visible at the same grain as the tab-2/tab-3 samples, for thorough tab3-vs-tab5
-        #     debugging. Samples the biggest profiles + the biggest reallocations. Reads the
-        #     in-memory frames (no re-read of the export). Set ROUTING_PROFILE_SAMPLES=0 to
-        #     disable. Best-effort — never affects results. ---
-        try:
-            import os as _os5
-            if _os5.environ.get("ROUTING_PROFILE_SAMPLES", "1") != "0":
-                _pcols = [c for c in ("Currency", "BIN", "RPGT",
-                                      "paymentMethodProvider", "Country") if c in post_df.columns]
-                _vp = next((c for c in pre_df.columns if str(c).startswith("PreSim_fc_vi_trx_m1")), None)
-                _vq = next((c for c in post_df.columns if str(c).startswith("Reallocated_fc_vi_trx_m1")), None)
-                if _pcols and _vp and _vq and not post_df.empty:
-                    _pg = pre_df.groupby(_pcols + ["finalGateway"], observed=True)[_vp].sum().rename("pre")
-                    _qg = post_df.groupby(_pcols + ["finalGateway"], observed=True)[_vq].sum().rename("post")
-                    _m = pd.concat([_pg, _qg], axis=1).fillna(0.0).reset_index()
-                    _m["absd"] = (_m["post"] - _m["pre"]).abs()
-                    _profilest = _m.groupby(_pcols).agg(vol=("post", "sum"), move=("absd", "sum"))
-                    _pick, _seen = [], set()
-                    for _k in list(_profilest.sort_values("vol", ascending=False).head(3).index) + \
-                              list(_profilest.sort_values("move", ascending=False).head(4).index):
-                        _kk = _k if isinstance(_k, tuple) else (_k,)
-                        if _kk not in _seen:
-                            _seen.add(_kk); _pick.append(_kk)
-                        if len(_pick) >= 6:
-                            break
-                    _mg = _m.groupby(_pcols)
-                    logger.info(f"── GRANULAR PROFILE SAMPLES (tab-5 actual) · {len(_pick)} of "
-                                f"{len(_profilest):,} profiles ({' × '.join(_pcols)}) · M1 VI ──")
-                    logger.info("   each row: gateway · PRE → POST · Δ")
-                    for _kk in _pick:
-                        _rows = _mg.get_group(_kk if len(_kk) > 1 else _kk[0]).copy()
-                        _rows = _rows[(_rows["pre"] > 1e-6) | (_rows["post"] > 1e-6)]
-                        _rows = _rows.sort_values("post", ascending=False).head(14)
-                        _lbl = " / ".join(str(x) for x in _kk)
-                        logger.info(f"   • {_lbl}  ·  vol={float(_rows['post'].sum()):,.0f}  ·  "
-                                    f"{len(_rows)} active gateway(s)")
-                        for _, _r in _rows.iterrows():
-                            _pre, _post = float(_r["pre"]), float(_r["post"])
-                            logger.info(f"       {str(_r['finalGateway']):<30s} {_pre:>9,.1f} → {_post:>9,.1f}  "
-                                        f"({_post - _pre:+9,.1f})")
-        except Exception as _e5:  # noqa: BLE001
-            logger.info(f"GRANULAR PROFILE SAMPLES failed: {_e5}")
-
+        # 19kg: the ROUTING_ALLOC_TRACE / ROUTING_PROFILE_SAMPLES diagnostic dumps are DELETED
+        # with their switches (171 lines over five blocks). Every one was armed by an env
+        # string - "currency|bin|rpgt" - so none of them ever ran in a real pipeline; what they
+        # were built to localise, the tab-3 vs tab-5 held-cohort gap, is reported every run by
+        # the baseline reconciliation table and [rung] on the split that actually ships.
         return pre_df, post_df

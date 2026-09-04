@@ -2193,7 +2193,8 @@ def solve_targeted_moves(exact_bands, incidence, base_shares, profile_starts, pr
         # delivered basis it is not a tuning choice — it is unavailable. Forced, not defaulted, so
         # ROUTING_TMOVE_FASTLS=1 cannot silently re-enable an identity that does not hold.
         _FASTLS = (_os.environ.get("ROUTING_TMOVE_FASTLS", "1") != "0") and deliver_fn is None
-        _FASTLS_VERIFY = _os.environ.get("ROUTING_TMOVE_FASTLS_VERIFY", "0") == "1"
+        # 19kg: ROUTING_TMOVE_FASTLS_VERIFY deleted; already default OFF.
+        _FASTLS_VERIFY = False
         _pr_s = None                      # carried s2pr(s) for the linear line search
         b0 = _breach(s); info["breach0"] = b0; b_cur = b0
         rep0 = _rep(s)

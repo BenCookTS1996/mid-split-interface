@@ -164,8 +164,12 @@ check("the GRANULAR PROFILE SAMPLES block is deleted",
 check("the two post-engine auto-block lines are gone",
       "NOTHING TO CAP, and that is CORRECT" not in T2
       and "if _tot_cap:" in T2)
+# 19kg: a FLOOR, not an equality - this is audit finding T1. 19kf legitimately added two
+# branches (a no-measurement guard and an unreachable-case guard) and `== 5` failed on a
+# CORRECT change, which is the opposite of what a test is for. What must never happen is a
+# branch disappearing; adding one is fine and needs no test edit.
 check("...and every auto-block WARNING branch survives",
-      T2.count("[Warning] auto-block") == 5,
+      T2.count("[Warning] auto-block") >= 5,
       f"{T2.count('[Warning] auto-block')} warning branch(es)")
 check("[muted] is one line",
       "settled line(s) held back across" in T2

@@ -236,10 +236,16 @@ check("4  an empty frame is handled, not crashed on",
       joint_col_codes([pd.DataFrame({"a": []})], ["a"]) is not None)
 
 # ═══ 5. the wiring ═══════════════════════════════════════════════════════════════════════
-check("5  the int key is ON by default and revertible",
-      'os.environ.get("ROUTING_CAP_INTKEY", "1") != "0"' in T2)
-check("5  it VERIFIES itself against the code it replaces, and that is on by default",
-      'os.environ.get("ROUTING_CAPKEY_VERIFY", "1") != "0"' in T2
+# 19kg: RE-POINTED, not deleted. Both switches are gone - Ben's rule is that no
+# environment variable changes a run - and ROUTING_CAPKEY_VERIFY is frozen OFF because the
+# reference it rebuilds to compare against cost ~45s of a 71.1s cap scaffold while the log
+# advertised it as 0.1s. What these checks are FOR is unchanged and still worth pinning: the
+# int key is what ships, and the code it replaced is still present to be compared against.
+check("5  the int key is ON, with no env var left to turn it off",
+      "_CK_INTKEY = True" in T2 and 'environ.get("ROUTING_CAP_INTKEY"' not in T2)
+check("5  the verify is frozen OFF, and its failure path still exists",
+      "_CK_VERIFY = False" in T2
+      and 'environ.get("ROUTING_CAPKEY_VERIFY"' not in T2
       and "VERIFY FAILED on " in T2)
 check("5  a verify failure ships the STRING/TUPLE keys, not the int key",
       "_CK_NEW = None\n                                    _CKEY[\"why\"] = (\"VERIFY FAILED on \"" in T2)

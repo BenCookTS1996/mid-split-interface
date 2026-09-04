@@ -86,11 +86,18 @@ check("3  the layout and lift lines say unconditional instead of naming a switch
       "(19jx: unconditional, no switch)" in BP and BP.count("(19jx: unconditional, no switch)") == 2)
 check("3  [lift-ab]'s DEFECT branch names the source-level revert",
       "`_PROJ_LIFT_ON = False` in the source" in BP)
-check("3  tab_2's three [kernel-ab] instructions are corrected too",
-      "`_PROJ_CB_ON = False` in band_projection." in T2
-      and T2.count("`_PROJ_LIFT_ON = ") >= 2)
-check("3  ...and ROUTING_PROJ_CHUNK, which IS still read, is still named",
-      "ROUTING_PROJ_CHUNK=0 " in T2 and 'environ.get("ROUTING_PROJ_CHUNK"' in BP)
+# 19kg: the [kernel-ab] harness that carried those three instructions is DELETED (784 lines,
+# armed only by ROUTING_KERNEL_AB), so there are no instructions left in tab_2 to correct.
+# The checks below are over T2C - the file with comment-only lines stripped - deliberately.
+# The property being protected is that nothing the RUN PRINTS points a reader at a harness or
+# a switch that no longer exists; a comment recording WHAT WAS DELETED AND WHY is the opposite
+# of that defect, and the tombstone left at the deletion site is checked for explicitly.
+check("3  band_projection still documents its source-level revert",
+      "`_PROJ_CB_ON = False`" in BP and "`_PROJ_LIFT_ON = False`" in BP)
+check("3  ...and no live line in tab_2 names the deleted harness or its switch",
+      "ROUTING_KERNEL_AB" not in T2C and "[kernel-ab]" not in T2C)
+check("3  ...and the deletion left a tombstone saying what went and why",
+      "[kernel-ab] A/B harness DELETED with ROUTING_KERNEL_AB" in T2)
 
 # ═══ 4. the module still imports and behaves ═════════════════════════════════════════════
 import routing_optimiser.s4_search.band_projection as bp

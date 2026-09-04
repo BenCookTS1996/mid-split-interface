@@ -54,11 +54,11 @@ check("1  the VERIFY-FAILED branch still shouts and now names a real action",
       "delivered VAMP is NOT trustworthy" in T2 and "fix \"\n" in T2 or "_gk_codes and re-run" in T2)
 
 # ═══ 2. [gk-code]: a one-shot proof, retired on schedule ═════════════════════════════════
-check("2  the verify defaults OFF now",
-      'os.environ.get("ROUTING_GKCODE_VERIFY", "0") != "0"' in IC
-      and 'os.environ.get("ROUTING_GKCODE_VERIFY", "1")' not in IC)
-check("2  ...and the switch survives, so the proof can be re-run on demand",
-      "ROUTING_GKCODE_VERIFY" in IC)
+# 19kg: the switch is gone entirely (it was already default OFF, so no run changes). The
+# property that mattered - the proof is not re-run on every projection - is now structural
+# rather than a default, and the reference code it would compare against is still there.
+check("2  the verify is off, with no env var left to arm it",
+      "if False:" in IC and 'environ.get("ROUTING_GKCODE_VERIFY"' not in IC)
 check("2  the reason is recorded where the default is",
       "DEFAULT FLIPPED TO OFF" in IC and "worth paying exactly once" in IC)
 check("2  a FAILURE still ships the reference rather than the int key",
