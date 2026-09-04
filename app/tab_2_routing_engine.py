@@ -10781,7 +10781,7 @@ def render():
                                                 _gk = tuple(_c for _c in ("rpgt", "currency",
                                                                           "bin", "pmp", "ctry")
                                                             if _c in _gr.columns)
-                                            _gr, _ = _apply_blocked_caps(
+                                            _gr, _ = _apply_blocked_caps(   # site: see 19kf
                                                 _gr, _blk_pairs_pre, float(floor),
                                                 bin_to_bank=bin_to_bank, group_keys=_gk)
                                         _gr = _restrict(_gr)
@@ -12825,6 +12825,7 @@ def render():
                                     "deployed-split change vs pre-19o runs, and it is the last unit "
                                     "of reconciliation error. ROUTING_BLOCK_CTRY=0 reverts.")
                             _ga_gran, _ = _apply_blocked_caps(_ga_gran, _blk_pairs_pre, float(floor),
+                                                              site="reconcile (_ga_gran)",
                                                               bin_to_bank=bin_to_bank,
                                                               group_keys=_bwGK)
                         _comp_gran = _restrict(_ga_gran)         # eligibility only (bans / wallet / USA)
@@ -16614,10 +16615,18 @@ def render():
                                     _vcols = set(_vc0) if _vc0 is not None else set()
                                     _vgk = tuple(c for c in ("rpgt", "currency", "bin", "pmp",
                                                              "ctry") if c in _vcols) or None
+                                # 19kf: remember where the shared counter stood BEFORE this loop.
+                                # `LAST_BLOCKED_CAP_STATS` is one global with three writers, so
+                                # "the stats" below are only ours if the seq advanced past this.
+                                import app_common as _acbs0
+                                _bs_seq0 = int(getattr(_acbs0, "_BLOCKED_CAP_SEQ", [0])[0])
+                                _bs_calls = 0
                                 for v in variations:
+                                    _bs_calls += 1
                                     v["split"], _nc = _apply_blocked_caps(v["split"], _bpairs, float(floor),
                                                                           bin_to_bank=bin_to_bank,
-                                                                          group_keys=_vgk)
+                                                                          group_keys=_vgk,
+                                                                          site="post-engine dials")
                                     _tot_cap += _nc
                                 ss["blocked_capped"] = int(_tot_cap)
                                 # 19iu: this line reported "N flagged -> 0 capped" every run,
@@ -16639,7 +16648,39 @@ def render():
                                     _bs_m = int(_bs.get("matched", 0) or 0)
                                     _bs_a = int(_bs.get("above_floor", 0) or 0)
                                     _bs_nr = int(_bs.get("no_recip", 0) or 0)
-                                    if _bs.get("precondition_failed"):
+                                    _bs_case = str(_bs.get("case", "") or "")
+                                    _bs_seq = int(_bs.get("seq", 0) or 0)
+                                    # ── 19kf: IS THIS EVEN OUR MEASUREMENT? ──────────────
+                                    # THE DEFECT THIS FIXES. The chain below used to start at
+                                    # `elif _bs_m == 0:` and call that a key mismatch. `_bs_m` is
+                                    # `_bs.get("matched", 0)`, so an EMPTY dict reads as 0 exactly
+                                    # like a measured zero - and on the 2026-09-04 16:08 run the
+                                    # dict WAS empty: the log said "17 flagged pair(s) vs 0 split
+                                    # row(s)" and then "(unavailable)" for both of the lists it
+                                    # had just told the reader to compare. A diagnosis with no
+                                    # evidence, of a comparison that never ran.
+                                    #
+                                    # Two things make that unsayable now. `case` is a POSITIVE
+                                    # marker written only by the branch that actually compared
+                                    # keys, and `seq` says which call wrote these stats - the
+                                    # global has three writers, so "the last call" and "our call"
+                                    # are not the same thing.
+                                    if not _bs or _bs_seq <= _bs_seq0 or _bs_calls == 0:
+                                        log("   [Warning] auto-block: 0 row(s) capped and THERE IS "
+                                            "NO MEASUREMENT TO EXPLAIN IT. "
+                                            + (f"{_bs_calls} cap call(s) were made over "
+                                               f"{len(variations)} variation(s)"
+                                               if _bs_calls else
+                                               f"the cap pass was NEVER CALLED - `variations` held "
+                                               f"{len(variations)} entr(ies)")
+                                            + f", and the stats this run holds are from call "
+                                              f"#{_bs_seq or 0} ("
+                                            + (str(_bs.get("site")) or "unlabelled")
+                                            + f"), not from ours (> #{_bs_seq0}). "
+                                            "THIS IS NOT A KEY MISMATCH - no keys of ours were "
+                                            "compared. Whatever is wrong is upstream of the cap "
+                                            "pass, in whether it ran at all.")
+                                    elif _bs.get("precondition_failed"):
                                         # 19hq: a PRECONDITION failed, so nothing was even compared.
                                         # This used to fall into the branch below and announce a key
                                         # mismatch it had not measured, with "(unavailable)" for both
@@ -16656,20 +16697,35 @@ def render():
                                                 f"{', '.join(_bs['missing_cols'])}")
                                             log(f"      columns present   : "
                                                 f"{', '.join(_bs.get('split_cols', []))}")
-                                    elif _bs_m == 0:
+                                    elif _bs_case == "no-match":
+                                        # 19kf: keyed on `case`, not on `matched == 0`. This is the
+                                        # ONE branch where a real comparison happened and found
+                                        # nothing, so it is the only one entitled to the words "key
+                                        # mismatch" - and the only one that can show the evidence,
+                                        # because this is the branch that records it.
                                         log("   [Warning] auto-block: NO SPLIT ROW matched a flagged "
                                             f"(bank, gateway) pair — this IS a key mismatch. "
                                             f"{len(_bpairs)} flagged pair(s) vs "
                                             f"{_bs.get('split_rows', 0):,} split row(s).")
                                         log(f"      flagged pairs (first 5): "
-                                            f"{_bs.get('sample_pairs', '(unavailable)')}")
+                                            f"{_bs.get('sample_pairs') or '(none recorded)'}")
                                         log(f"      split (bin, gateway) (first 5): "
-                                            f"{_bs.get('sample_split', '(unavailable)')}")
+                                            f"{_bs.get('sample_split') or '(none recorded)'}")
                                         log("      COMPARE THE TWO LISTS. Same gateway spelling but a "
                                             "different bin/bank form ⇒ the BIN→bank rename; a "
                                             "different gateway spelling ⇒ the Master-MID canonical "
                                             "form. The pre-GA pass matched rows, so the pairs "
                                             "themselves are sound — only this grain is not.")
+                                    elif _bs_m == 0:
+                                        # 19kf: matched == 0 with no `case="no-match"` marker. That
+                                        # combination should be unreachable - every branch stamps a
+                                        # case - so if it prints, the stats shape has changed and
+                                        # THAT is the finding, not anything about the split.
+                                        log("   [Warning] auto-block: 0 matched row(s), but the cap "
+                                            f"pass recorded case={_bs_case!r} rather than "
+                                            "'no-match'. That combination should not be reachable; "
+                                            "the stats shape has changed. Nothing about the split "
+                                            "is being claimed here.")
                                     elif _bs_a == 0:
                                         # 19iu: the EXPECTED case, and therefore silent. Rows
                                         # matched, every one already at or below the floor,

@@ -76,6 +76,18 @@ LAST_MID_LIST_NOTE: str = ""
 # BIN->bank rename of a crime that had not happened. These counters separate the three cases.
 # Written on every call; read by the caller immediately after.
 LAST_BLOCKED_CAP_STATS: dict = {}
+# 19kf: ONE GLOBAL, THREE WRITERS. `_apply_blocked_caps` is called from three places in tab_2
+# (the never-worse chain, the reconcile, and the post-engine pass over every dial), and each call
+# CLEARS this dict and rewrites it. So a reader gets whichever call ran last, with no way to tell
+# whose stats it is holding - and on the 2026-09-04 16:08 run the post-engine reader printed a
+# confident "this IS a key mismatch" over a dict that was EMPTY, with "(unavailable)" for the two
+# sample lists it then told the reader to compare.
+#
+# `_BLOCKED_CAP_SEQ` is bumped on every call and stamped into the stats as `seq`. A caller that
+# records the sequence before its own call can now prove the stats it reads are ITS OWN, and say
+# so plainly when they are not, instead of describing someone else's frame as if it were the one
+# it just passed in.
+_BLOCKED_CAP_SEQ = [0]
 
 # Excel on macOS saves "CSV" as Mac Roman, not UTF-8 — a single curly quote, en-dash or
 # non-breaking space in a URL/description column is enough to make pd.read_csv raise
@@ -864,15 +876,23 @@ def _physical_cpu_count(default=4):
 
 
 # [FN-242]
-def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_keys=None):
+def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_keys=None,
+                        site=""):
     """Cap the share of any BANK-BLOCKED (bank, gateway) to the exploration floor and redistribute
     the freed share to the OTHER (non-blocked) gateways in the same profile, proportionally. Profiles with
     no non-blocked recipient are left unchanged (nowhere to move the volume). Matches on
     lower/stripped (bank, gateway) — and, when `bin_to_bank` is given, ALSO on the parent-bank grain,
     so a BIN-vs-parent grain mismatch can't silently cap nothing here while the pre-GA auto-block
     excludes the same rows. Returns (new_split, n_rows_capped). Deterministic; no-op when
-    `blocked_pairs` is empty or nothing matches."""
+    `blocked_pairs` is empty or nothing matches.
+
+    19kf: `site` is a free-text label for the CALL SITE, stamped into LAST_BLOCKED_CAP_STATS
+    alongside a per-call `seq`. It changes nothing about the arithmetic. It exists because that
+    dict is one global with three writers, and a reader had no way to tell whose stats it held -
+    which is how the post-engine pass came to announce a key mismatch it had never measured."""
     LAST_BLOCKED_CAP_STATS.clear()
+    _BLOCKED_CAP_SEQ[0] += 1
+    _seq = _BLOCKED_CAP_SEQ[0]
     _need = {"bin", "gateway", "share"}
     # NOT `getattr(split, "columns", ()) or ()` — a pandas Index has no truth value and `Index or
     # ()` raises "The truth value of a Index is ambiguous". tab_2's own [block-ctry] site carries a
@@ -895,11 +915,23 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
                     else "split is MISSING column(s): "
                          + ", ".join(sorted(_need - _cols))),
             matched=0, above_floor=0, no_recip=0, capped=0,
-            precondition_failed=True,
+            precondition_failed=True, case="precondition", seq=_seq, site=str(site),
             split_rows=int(len(split)) if split is not None else 0,
             split_cols=sorted(_cols)[:24],
             missing_cols=sorted(_need - _cols),
-            pairs=len(blocked_pairs or ()))
+            pairs=len(blocked_pairs or ()),
+            # 19kf: the flagged pairs ARE available here even when the split is not, and half an
+            # evidence list beats "(unavailable)" twice. The split side is sampled whenever the
+            # two key columns exist - a split missing only `share` still has keys worth showing,
+            # and THAT is the comparison a reader came for. Where it genuinely cannot be sampled
+            # the value SAYS SO, so nobody reads an absence as a mismatch.
+            sample_pairs=sorted(blocked_pairs)[:5] if blocked_pairs else [],
+            sample_split=(
+                sorted({(str(_b).strip().lower(), str(_g).strip().lower())
+                        for _b, _g in zip(split["bin"], split["gateway"])})[:5]
+                if (split is not None and not getattr(split, "empty", True)
+                    and {"bin", "gateway"}.issubset(_cols))
+                else "(no split keys to sample - the precondition above is what stopped it)"))
         return split, 0
     blocked_pairs = set(blocked_pairs)   # O(1) membership in the per-row checks below
     d = split.copy()
@@ -923,8 +955,14 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
         LAST_BLOCKED_CAP_STATS.update(
             reason="NO ROW MATCHED a blocked (bank, gateway) pair", matched=0,
             above_floor=0, no_recip=0, capped=0,
+            # 19kf: `case="no-match"` is the POSITIVE marker that a comparison actually happened.
+            # The caller used to infer a key mismatch from `matched == 0`, which is also what an
+            # absent dict reads as - so an unmeasured state and a measured mismatch were the same
+            # sentence. Only this branch can claim one.
+            case="no-match", seq=_seq, site=str(site),
             sample_pairs=sorted(blocked_pairs)[:5],
             sample_split=sorted({(b, g) for b, g in zip(_bk, _gw)})[:5],
+            pairs=len(blocked_pairs),
             split_rows=int(len(d)))
         d["_blocked"] = False   # 19iq: pairs WERE supplied and matched nothing - that is a fact
         return d, 0
@@ -968,6 +1006,7 @@ def _apply_blocked_caps(split, blocked_pairs, floor, bin_to_bank=None, group_key
         reason="", matched=int(_isb.sum()), above_floor=_above,
         no_recip=int((_isb & (_sh > float(floor) + 1e-12) & ~_has_recip).sum()),
         capped=_capped, floor=float(floor), split_rows=int(len(d)),
+        case="applied", seq=_seq, site=str(site), pairs=len(blocked_pairs),
         max_matched_share=float(_sh[_isb].max()) if _isb.any() else 0.0)
     return d, _capped
 
