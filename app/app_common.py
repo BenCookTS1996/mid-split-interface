@@ -321,6 +321,14 @@ _CAP_PAIRS_MEMO: dict = {}
 # because it is a MID-LIST edit that would cause it, not a code change, and nothing else would
 # notice. Empty is the healthy state.
 LAST_CAP_PAIR_SPLITS: list = []
+# 19jq: PER-PAIR PROVENANCE, for the RUN LOG only - {(vampmid, currency): {"brands": set(),
+# "fids": [gatewayFid, ...]}} - plus a flat gatewayFid -> brand map. `capability_pairs` answers
+# "is this pair capable?"; a run log also needs "whose is it, and how many fids is that?", so it
+# can report the counts for THIS RUN'S COMPANY instead of every brand in the MID list. Kept OFF
+# the return value deliberately: the delivery path reads that tuple and must not acquire a
+# fourth element it has no use for.
+LAST_CAP_PAIR_META: dict = {}
+LAST_CAP_FID_BRAND: dict = {}
 
 
 def capability_pairs(mid_list_path, restrictions_path=None):
@@ -369,9 +377,19 @@ def capability_pairs(mid_list_path, restrictions_path=None):
     except Exception:  # noqa: BLE001
         _key = None
     if _key is not None and _key in _CAP_PAIRS_MEMO:
-        return _CAP_PAIRS_MEMO[_key]
+        _out, _splits, _meta, _fidb = _CAP_PAIRS_MEMO[_key]
+        # 19jq: RESTORE THE MODULE-LEVEL RECORDS TOO. They are only rebuilt on a memo MISS, so
+        # before this a second caller got the pairs back but an EMPTY disagreement list and no
+        # company view - a memo that silently dropped half of its own output, and the [emask-grain]
+        # warning would have gone quiet on exactly the runs with more than one caller.
+        del LAST_CAP_PAIR_SPLITS[:]
+        LAST_CAP_PAIR_SPLITS.extend(_splits)
+        LAST_CAP_PAIR_META.clear(); LAST_CAP_PAIR_META.update(_meta)
+        LAST_CAP_FID_BRAND.clear(); LAST_CAP_FID_BRAND.update(_fidb)
+        return _out
 
     del LAST_CAP_PAIR_SPLITS[:]        # 19ht: recomputing, so the old record is void
+    LAST_CAP_PAIR_META.clear(); LAST_CAP_FID_BRAND.clear()
     wc_pairs, uo_pairs, source = set(), set(), "none"
     try:
         from routing_optimiser.s2_forecast.vamp_forecast_pipeline import _canonical_gateway as _cg
@@ -382,6 +400,7 @@ def capability_pairs(mid_list_path, restrictions_path=None):
             _cc = _norm_cols(_mm)
             _gp, _vp = _cc.get("gatewayfid"), _cc.get("vampmid")
             _cp, _ap, _wp = _cc.get("currency"), _cc.get("isactive"), _cc.get("processwallet")
+            _bp = _cc.get("brand")                        # 19jq: for the company-scoped log view
             if _gp and _vp and _cp:
                 def _tp(_x):
                     return str(_x).strip().lower() in ("true", "1", "yes", "t", "y")
@@ -390,6 +409,7 @@ def capability_pairs(mid_list_path, restrictions_path=None):
                 _cs = _mm[_cp].astype(str).str.strip().str.lower().tolist()
                 _as = _mm[_ap].tolist() if _ap else [True] * len(_mm)
                 _ws = _mm[_wp].tolist() if _wp else [True] * len(_mm)
+                _bs = _mm[_bp].tolist() if _bp else None
                 for _i in range(len(_gs)):
                     _cu = _cs[_i]
                     if _cu in ("", "excluded", "nan", "none"):
@@ -400,6 +420,17 @@ def capability_pairs(mid_list_path, restrictions_path=None):
                     _cap_a.setdefault(_key2, []).append(_wal if _act else None)
                     _cap_w.setdefault(_key2, []).append(_wal)
                     _vc_of.setdefault(_gs[_i], _key2)
+                    # 19jq: record WHOSE pair this is and which fids sit under it. A pair is
+                    # brand-specific in practice, but a SET of brands is recorded rather than the
+                    # first one seen, so a MID list that ever puts two brands on one vampMid
+                    # reports both instead of silently picking one.
+                    _mt2 = LAST_CAP_PAIR_META.setdefault(_key2, {"brands": set(), "fids": []})
+                    _mt2["fids"].append(_gs[_i])
+                    if _bs is not None:
+                        _bnm = _norm_brand(_bs[_i])
+                        if _bnm:
+                            _mt2["brands"].add(_bnm)
+                            LAST_CAP_FID_BRAND.setdefault(_gs[_i], _bnm)
                 for _key2 in _cap_w:
                     _actv = [_b for _b in _cap_a.get(_key2, []) if _b is not None]
                     _use = _actv if _actv else _cap_w[_key2]
@@ -423,8 +454,122 @@ def capability_pairs(mid_list_path, restrictions_path=None):
 
     out = (wc_pairs, uo_pairs, source)
     if _key is not None:
-        _CAP_PAIRS_MEMO[_key] = out
+        _CAP_PAIRS_MEMO[_key] = (out, list(LAST_CAP_PAIR_SPLITS),
+                                 {_k: {"brands": set(_v["brands"]), "fids": list(_v["fids"])}
+                                  for _k, _v in LAST_CAP_PAIR_META.items()},
+                                 dict(LAST_CAP_FID_BRAND))
     return out
+
+
+# [FN-234a] 19jq
+def _norm_brand(s):
+    """The ONE brand normaliser. `run_company` returns "TotalAV" and the MID list spells it
+    "Total AV" in places, so every brand comparison in this app has to fold case and spaces -
+    and three separate lambdas were already doing it."""
+    return str(s or "").strip().lower().replace(" ", "")
+
+
+# [FN-234b] 19jq
+def capability_company_view(mid_list_path, restrictions_path, company):
+    """Capability counts for ONE company - FOR THE RUN LOG, not for any mask.
+
+    `capability_pairs` is built over the WHOLE Master MID list, deliberately: the mask has to
+    know about every vampMid it might meet. But a run log that reports those totals is
+    answering a question nobody asked - a TotalAV run does not care how many Total Adblock
+    gateways cannot do wallets. This narrows the COUNTS to this run's brand and says so.
+
+    IT CHANGES NO MASK. The sets returned by `capability_pairs` are untouched and are what the
+    search and delivery keep using; this only decides what a log line prints.
+
+    Returns None when the MID list carries no brand column to scope by, so the caller can say
+    'not scoped' rather than print a filtered number it cannot stand behind.
+    """
+    try:
+        _wc, _uo, _src = capability_pairs(mid_list_path, restrictions_path)
+        _meta = LAST_CAP_PAIR_META
+        _b = _norm_brand(company)
+        if not _b or not _meta or not any(_m.get("brands") for _m in _meta.values()):
+            return None
+
+        def _mine(_p):
+            return _b in (_meta.get(_p, {}).get("brands") or ())
+
+        def _fids(_ps):
+            # FILTERED BY THE FID'S OWN BRAND, not just by the pair's. A (vampMid, currency)
+            # pair is NOT always single-brand: ('paypal', 'gbp') carries fids from nine brands
+            # on this MID list, and ('adyen_totalsecurity', 'usd') from two. Returning every fid
+            # under a pair the company appears in would have reported paypal-gbp-tab and
+            # paysafe-eur-tvn as TotalAV's - which is the same all-brand over-count this view
+            # exists to remove, one level down.
+            _o = set()
+            for _p in _ps:
+                for _f in _meta.get(_p, {}).get("fids", ()):
+                    if LAST_CAP_FID_BRAND.get(_f, "") == _b:
+                        _o.add(_f)
+            return _o
+
+        _wcm = {_p for _p in _wc if _mine(_p)}
+        _uom = {_p for _p in _uo if _mine(_p)}
+        # PAIRS THIS COMPANY SHARES WITH ANOTHER BRAND. The capability rule ORs over every fid
+        # of a pair with no regard for brand, so for these the answer a company's run gets is
+        # decided partly by ANOTHER brand's fids. That is a property of the rule, not of this
+        # view, and it is surfaced rather than quietly filtered away.
+        _xb = {_p for _p in (_wcm | _uom) if len(_meta.get(_p, {}).get("brands") or ()) > 1}
+        return {"brand": _b, "company": str(company),
+                "wallet_pairs": _wcm, "usa_pairs": _uom,
+                "wallet_fids": _fids(_wcm), "usa_fids": _fids(_uom),
+                "cross_brand_pairs": _xb,
+                "all_wallet_pairs": len(_wc), "all_usa_pairs": len(_uo),
+                "source": _src}
+    except Exception:      # noqa: BLE001 - a log view must never break a run
+        return None
+
+
+# [FN-234b2] 19jq
+def capability_fid_brand():
+    """A COPY of the gatewayFid -> brand map `capability_pairs` recorded on its last build.
+
+    A function, not the dict itself: an importing module that binds the object by name would
+    keep working only while nothing ever rebinds it, and that is an invisible contract. Empty
+    until `capability_pairs` has run, or when the MID list carries no brand column - either way
+    the caller should say 'not scoped' rather than filter on nothing.
+    """
+    return dict(LAST_CAP_FID_BRAND)
+
+
+# [FN-234c] 19jq
+def newest_build_tag(build):
+    """The NEWEST tag in a "+"-joined ``__build__`` history, plus how many sit behind it.
+
+    Returns ``(tag, n_earlier, out_of_order)``. ``out_of_order`` is True when a CODED tag sits
+    after the chosen one, which means the history in the file is genuinely not in order.
+
+    ORDERED BY THE PROJECT'S OWN GENERATION CODE - `19` + two lower-case letters, which
+    increments alphabetically (ee < gu < gw < ht) - then by a leading ISO date, then by
+    position. NOT by position alone: genetic_fullmatrix's history ends
+    `...+19gw-eval-cost+19gu-decode-cap+19ee-maxshare-repair`, so `parts[-1]` reported 19ee as
+    newest on the 2026-09-02 17:08 run while the file plainly contained 19gu/19gv/19gw.
+
+    19jq hoisted this out of tab_2's `_bmark`, which was the only implementation, because a
+    second caller now needs the same answer - and two independent copies of one ordering rule
+    is the failure this codebase has already had (19cu).
+    """
+    import re as _re_nb
+    _parts = [x for x in str(build or "").split("+") if x]
+    if not _parts:
+        return ("", 0, False)
+    if len(_parts) == 1:
+        return (_parts[0], 0, False)
+
+    def _key(_ix_tag):
+        _ix, _tg = _ix_tag
+        _codes = _re_nb.findall(r"19([a-z]{2})(?![a-z0-9])", _tg)
+        _dm = _re_nb.match(r"20\d\d-\d\d-\d\d", _tg)
+        return (max(_codes) if _codes else "", _dm.group(0) if _dm else "", _ix)
+
+    _best_ix, _best = max(enumerate(_parts), key=_key)
+    _later = any(_key((_i, _p))[0] for _i, _p in enumerate(_parts) if _i > _best_ix)
+    return (_best, len(_parts) - 1, bool(_later))
 
 
 # [FN-235]

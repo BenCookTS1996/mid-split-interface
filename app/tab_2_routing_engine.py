@@ -41,6 +41,9 @@ from app_common import load_mid_list, _norm_cols  # memoised MID reader + column
 # 19hh: ONE source for (vampMid, currency) wallet/USA capability — see §14 of
 # docs/scope_exploration_floor_in_search.md. The delivery path reads the same helper.
 from app_common import capability_pairs as _cap_pairs
+from app_common import capability_company_view as _cap_view      # 19jq
+from app_common import capability_fid_brand as _cap_fid_brand    # 19jq
+from app_common import newest_build_tag as _newest_tag           # 19jq
 # 19ho: ONE reader for the four renamed kill switches, so the deprecation warning for an old
 # spelling fires from a single place rather than four inline fallbacks.
 from app_common import env_switch as _env_switch
@@ -1485,27 +1488,15 @@ def render():
                             # back to a leading ISO date, then to position, which is what the old
                             # behaviour was. A ⚠ marks a module whose newest tag is NOT last, since
                             # that means the history is genuinely out of order in the file.
-                            _parts = [x for x in str(_b).split("+") if x]
-                            if len(_parts) <= 1:
-                                return (str(_b), 0)
-                            import re as _re_bm
-
-                            def _key(_ix_tag):
-                                _ix, _tg = _ix_tag
-                                _codes = _re_bm.findall(r"19([a-z]{2})(?![a-z0-9])", _tg)
-                                _dm = _re_bm.match(r"20\d\d-\d\d-\d\d", _tg)
-                                return (max(_codes) if _codes else "",
-                                        _dm.group(0) if _dm else "", _ix)
-                            _best_ix, _best = max(enumerate(_parts), key=_key)
                             # 19hx: ⚠ only when a CODED tag sits AFTER the chosen one - that is
                             # the coded history genuinely being out of order, which is the thing
                             # worth acting on. Ending on an uncoded tag is normal and flagged six
                             # of thirteen modules on the 2026-09-02 17:39 run for no reason.
-                            _later_coded = any(
-                                _key((_i2, _p2))[0] for _i2, _p2 in enumerate(_parts)
-                                if _i2 > _best_ix)
-                            return (("⚠ " + _best if _later_coded else _best),
-                                    len(_parts) - 1)
+                            # 19jq: the ordering rule itself moved to app_common.newest_build_tag,
+                            # because the maximum-revenue-reference line now needs the same answer
+                            # and two copies of one rule is the failure this codebase has had.
+                            _best, _nearlier, _later_coded = _newest_tag(_b)
+                            return (("⚠ " + _best if _later_coded else _best), _nearlier)
                         # [FN-310]
                         def _finfo(p):
                             try:
@@ -1916,9 +1907,24 @@ def render():
                             # buried the number that matters behind three clauses of caveat.
                             log(f"   [bin-key] {_bk_pct:.1f}% of {len(_fc_bins):,} BIN(s) in "
                                 f"forecast data found in the attempts data")
-                            log("             Unmatched BINs have no attempt history of their own.")
-                            log("             gateways are scored on a POOLED AVERAGE instead of "
-                                "a measured success rate")
+                            log(f"             {len(_fc_bins) - _bk_hit:,} unmatched BIN(s) have "
+                                "no attempt history of their own")
+                            # 19jq: NAME THE FALLBACK, and stop asserting a consequence this run
+                            # can measure for itself. The old line said "gateways are scored on a
+                            # POOLED AVERAGE", which is two things wrong at once. There is no
+                            # grain: `build_profile_problems` falls back to ONE number for the
+                            # whole run - `sr["success"].sum() / sr["attempts"].sum()` over every
+                            # rate in the frame - so "pooled at some grain" was never what it did.
+                            # And how many rows actually land on it is COUNTED further down, on the
+                            # "gateway-rows on POOLED prior" row of the ④ table; on this book that
+                            # reads 0, because exploration seeding covers those rows first. A line
+                            # that claims an effect the log later contradicts is worse than none.
+                            log("             fallback = ONE global attempts-weighted average "
+                                "over every (rpgt × currency × BIN × gateway) rate in the run - "
+                                "not a pooled average at any grain of its own")
+                            log("             how many gateway-rows actually took it: the "
+                                "'gateway-rows on POOLED prior' row of the ④ ROUTING PROFILES "
+                                "table below")
 
                     mid_list_path = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
                     if os.path.exists(mid_list_path) and "gateway" in forecast_temp.columns:
@@ -2105,17 +2111,35 @@ def render():
                             _rt_a = locals().get("_adf_pre")
                             _fc_pre = locals().get("_fc_pre")
                             _rows_rt = {}
+                            _rt_prof = {}
                             def _rt_put(_k, _i, _v):
                                 _k = str(_k).strip()
                                 _rows_rt.setdefault(_k, [0.0, 0, 0.0, 0])
                                 _rows_rt[_k][_i] += _v
                             if _rt_a is not None and "rpgt" in _rt_a.columns:
-                                _ac = ("initialattempt" if "initialattempt" in _rt_a.columns
-                                       else None)
+                                # 19jq: LOOK FOR `attempts` FIRST. This asked for `initialattempt`,
+                                # which is the name in attempts_success.sql - but s1_extract's
+                                # rename_map turns it into `attempts` long before the frame reaches
+                                # this tab, so the lookup MISSED on every run and the column fell
+                                # through to `len(_g)`. The header said "Σ attempts" and the number
+                                # underneath it was a row count, which is why it matched the
+                                # "attempt rows" column beside it exactly, for every RPGT, forever.
+                                _ac = next((_c for _c in ("attempts", "initialattempt")
+                                            if _c in _rt_a.columns), None)
                                 for _k, _g in _rt_a.groupby(_rt_a["rpgt"].astype(str).str.strip()):
                                     _rt_put(_k, 0, float(pd.to_numeric(_g[_ac], errors="coerce")
                                                           .fillna(0).sum()) if _ac else float(len(_g)))
                                     _rt_put(_k, 1, len(_g))
+                            else:
+                                _ac = None
+                            # 19jq: "fc rows" was ROWS, and a forecast row is ONE GATEWAY WITHIN A
+                            # PROFILE, not a profile - so the column never answered "how many
+                            # profiles is this RPGT?". Both are now shown, named for what they are.
+                            _pk_cols = ([_c for _c in ("currency", "bin", "rpgt", "pmp", "ctry")
+                                         if _fc_pre is not None and _c in _fc_pre.columns]
+                                        if _fc_pre is not None else [])
+                            if len(_pk_cols) < 2:
+                                _pk_cols = []
                             if _fc_pre is not None and "rpgt" in _fc_pre.columns:
                                 _vc = next((_c for _c in ("volume", "Volume", "VI_Txn_Count")
                                             if _c in _fc_pre.columns), None)
@@ -2123,29 +2147,48 @@ def render():
                                     _rt_put(_k, 2, float(pd.to_numeric(_g[_vc], errors="coerce")
                                                           .fillna(0).sum()) if _vc else 0.0)
                                     _rt_put(_k, 3, len(_g))
+                                    if _pk_cols:
+                                        _rt_prof.setdefault(str(_k).strip(), set()).update(
+                                            map(tuple, _g[_pk_cols].astype(str)
+                                                .to_numpy().tolist()))
                             if _rows_rt:
                                 # 19hp: two blank lines above — the RPGT table sat flush against
                                 # the line before it, so it read as a continuation rather than a
                                 # section of its own.
                                 log("")
                                 log("")
-                                log(f"      {'RPGT':<22}{'in scope':<10}{'Σ attempts':>13}"
-                                    f"{'attempt rows':>14}{'forecast txn':>14}{'fc rows':>10}")
-                                log(f"      {'-' * 22}{'-' * 10}{'-' * 13}{'-' * 14}"
-                                    f"{'-' * 14}{'-' * 10}")
+                                _rule = (f"      {'-' * 22}{'-' * 10}{'-' * 15}{'-' * 14}"
+                                         f"{'-' * 14}{'-' * 15}{'-' * 19}")
+                                log(f"      {'RPGT':<22}{'in scope':<10}{'attempt count':>15}"
+                                    f"{'attempt rows':>14}{'forecast txn':>14}"
+                                    f"{'forecast rows':>15}{'forecast profiles':>19}")
+                                log(_rule)
                                 _tot = [0.0, 0, 0.0, 0]
+                                _tot_p = set()
                                 for _k in sorted(_rows_rt, key=lambda _x: -_rows_rt[_x][2]):
                                     _v = _rows_rt[_k]
                                     for _i in range(4):
                                         _tot[_i] += _v[_i]
+                                    _pn = _rt_prof.get(_k)
+                                    _tot_p |= (_pn or set())
                                     log(f"      {_k[:21]:<22}"
                                         f"{('YES' if _k.strip().lower() in _sel_rpgts else '-'):<10}"
-                                        f"{_v[0]:>13,.0f}{_v[1]:>14,}{_v[2]:>14,.0f}{_v[3]:>10,}")
-                                log(f"      {'-' * 22}{'-' * 10}{'-' * 13}{'-' * 14}"
-                                    f"{'-' * 14}{'-' * 10}")
+                                        f"{_v[0]:>15,.0f}{_v[1]:>14,}{_v[2]:>14,.0f}{_v[3]:>15,}"
+                                        + (f"{len(_pn):>19,}" if _pn is not None else f"{'-':>19}"))
+                                log(_rule)
                                 log(f"      {'TOTAL (all RPGTs)':<22}{'':<10}"
-                                    f"{_tot[0]:>13,.0f}{_tot[1]:>14,}{_tot[2]:>14,.0f}"
-                                    f"{_tot[3]:>10,}")
+                                    f"{_tot[0]:>15,.0f}{_tot[1]:>14,}{_tot[2]:>14,.0f}"
+                                    f"{_tot[3]:>15,}"
+                                    + (f"{len(_tot_p):>19,}" if _rt_prof else f"{'-':>19}"))
+                                if _pk_cols:
+                                    log(f"      a forecast ROW is one gateway within a profile; a "
+                                        f"PROFILE is a distinct "
+                                        f"({' × '.join(_pk_cols)}).")
+                                if _ac is None:
+                                    log("      ⚠ attempt count is a ROW COUNT this run: the "
+                                        "attempts frame carries neither an `attempts` nor an "
+                                        "`initialattempt` column, so there is nothing to sum. "
+                                        "The two attempt columns will read identically.")
                         except Exception as _rte:  # noqa: BLE001
                             log(f"      (per-RPGT breakdown unavailable: "
                                 f"{type(_rte).__name__}: {_rte})")
@@ -2332,8 +2375,11 @@ def render():
                         # switch back) is settled and lives in the block comment above, which is
                         # where a reader who needs it will be. What a RUN needs to show is how much
                         # of the book was dropped and what happens to it.
+                        # 19jq: say WHICH SIDE they came from. "not present in forecast" left the
+                        # reader to work out that these are attempt-data profiles being measured
+                        # against the forecast, and not the other way round.
                         log(f"   [require-forecast] {_rf_profiles:,} profile(s) / {_rf_rows:,} "
-                            f"gateway-row(s) dropped - not present in forecast")
+                            f"gateway-row(s) dropped - in attempt data, not in the forecast")
                     att["volume"] = att["fc_volume"] * att["baseline_share"]
 
                     agg_forecast = att[_gk + ["gateway", "volume", "baseline_share"]].copy()
@@ -3315,9 +3361,17 @@ def render():
                     # split, ignoring risk — which the GA then tilts AWAY from to satisfy the bands.
                     # It is the starting point, not the search.
                     _ob = getattr(_optmod, "__build__", None)
-                    log(f"   maximum revenue split reference (build {_ob or 'UNKNOWN'})"
+                    # 19jq: the NEWEST tag and a count, not the whole 24-tag history. This printed
+                    # a 700-character line whose first tag was from July - the same unreadability
+                    # 19gl fixed in the build-markers table, on the one line that had been missed.
+                    # Same ordering rule as that table, because it is now literally the same call.
+                    _obt, _obn, _obw = _newest_tag(_ob)
+                    _obs = ((_obt + (f", +{_obn} earlier tag(s)" if _obn else "")
+                             + (" ⚠ history out of order" if _obw else ""))
+                            if _ob else "UNKNOWN")
+                    log(f"   maximum revenue split reference (build {_obs})"
                         + ("" if _ob else "  ⚠ no __build__ marker — this IS the stale-bytecode "
-                                         "signature; clear __pycache__ and re-run."))
+                                          "signature; clear __pycache__ and re-run."))
                     # Softmax and Thompson are per-profile engines: the reference IS their
                     # slider=100 split, and the shared risk layer below (reference→compliant
                     # blend + hard-enforce) does the rest. For the genetic engine the
@@ -3559,12 +3613,15 @@ def render():
                             # rest of it said — that without the injection the movable pool
                             # circulates back to the incumbents — described the behaviour of a
                             # switch nobody can set any more.
-                            log(f"   [inject] aged frame {_n0:,} → {len(_pp_full):,} row(s) "
+                            # 19jq: shorter, and in the profile/cell vocabulary the rest of the
+                            # log uses - a row of the aged frame IS one cell (one gateway within
+                            # one profile) at one age.
+                            log(f"   [inject] aged cells {_n0:,} → {len(_pp_full):,} "
                                 f"(+{_ninj:,}, {len(_pp_full) / max(_n0, 1):.2f}x): every movable "
-                                f"(t ≤ period) layer now carries a zero-VAMP row for each of the "
+                                f"(t ≤ period) layer now holds a zero-VAMP cell for each of its "
                                 f"{_capability.n_mids} capable MID(s) / {_capability.n_gateways} "
-                                "gateway(s) that had none, so volume routed to a new MID can pick "
-                                "up the VAMP it causes.")
+                                "gateway(s), so volume routed to a new MID picks up the VAMP it "
+                                "causes.")
                             _ = ("            Frozen layers (t > period) are untouched — their pool "
                                 "is 0. Σ vampCount is asserted unchanged.")
                         except Exception as _ije:  # noqa: BLE001
@@ -3992,10 +4049,47 @@ def render():
                         # longer has an armed/unarmed case to report - it states the one grain
                         # both sides use, and the exports are finer still.
                         from app_common import LAST_CAP_PAIR_SPLITS as _cap_splits
+                        # 19jq: COUNTS FOR THIS RUN'S COMPANY. The mask is built over every brand
+                        # in the MID list and still is - it has to be, since it must recognise any
+                        # vampMid it meets - but a TotalAV run does not care how many Total Adblock
+                        # gateways cannot do wallets, and 89 pairs was mostly other people's. The
+                        # gatewayFid counts are shown beside the pair counts because a fid is what
+                        # the MID list and build_split_exports actually name; the PAIR is the grain
+                        # the mask tests, so both belong on the line.
+                        _emv = _cap_view(mid_list_path,
+                                         input_json_path("routing_restrictions.json"), sr_company)
                         log("   [emask-grain] wallet/USA capability is masked at (vampMid, "
                             "currency) grain, in the search and in delivery alike:")
-                        log(f"      {len(_wc_pairs):,} wallet-incapable pair(s)")
-                        log(f"      {len(_uo_pairs):,} USA-only pair(s)")
+                        if _emv:
+                            log(f"      {len(_emv['wallet_fids']):,} wallet-incapable "
+                                f"gatewayFid(s) for {sr_company}, in "
+                                f"{len(_emv['wallet_pairs']):,} (vampMid, currency) pair(s)")
+                            log(f"      {len(_emv['usa_fids']):,} USA-only gatewayFid(s) for "
+                                f"{sr_company}, in {len(_emv['usa_pairs']):,} pair(s)")
+                            log(f"      scope: {sr_company} only. THE MASK IS UNCHANGED - it is "
+                                f"still built over every brand in the MID list "
+                                f"({_emv['all_wallet_pairs']:,} wallet / "
+                                f"{_emv['all_usa_pairs']:,} USA-only pair(s) in total). A brand "
+                                f"filter on this line is not a filter on the rule.")
+                            if _emv.get("cross_brand_pairs"):
+                                # 19jq: found while scoping the counts. The rule ORs capability
+                                # over every fid of a (vampMid, currency) pair with no regard for
+                                # brand, and these pairs hold fids from more than one - so what
+                                # THIS company's run masks is decided partly by another brand's
+                                # gateways. Read-only: nothing here changes the rule.
+                                log(f"      ⚠ {len(_emv['cross_brand_pairs']):,} of those pair(s) "
+                                    f"carry fids from a brand OTHER than {sr_company}: "
+                                    + ", ".join(f"{_a}/{_b2}" for _a, _b2
+                                                in sorted(_emv["cross_brand_pairs"])[:6])
+                                    + (" …" if len(_emv["cross_brand_pairs"]) > 6 else "")
+                                    + ". The rule ORs capability over ALL of a pair's fids "
+                                      "regardless of brand, so for these the mask this run "
+                                      "applies is decided partly by another brand's gateways.")
+                        else:
+                            log(f"      {len(_wc_pairs):,} wallet-incapable pair(s)")
+                            log(f"      {len(_uo_pairs):,} USA-only pair(s)")
+                            log("      NOT SCOPED TO THIS COMPANY: the MID list has no `brand` "
+                                "column to filter on, so these counts are ALL brands.")
                         log(f"      source: {_pair_src}")
                         # 19ht: the pair grain is an OR over a pair's ACTIVE fids;
                         # build_split_exports tests each fid. They agree only while a pair's
@@ -4654,8 +4748,15 @@ def render():
                             f"(ignored — need finer routing): {', '.join(sorted(_unenf))}.")
                     _fid2vamp_l = {k: str(v).strip().lower() for k, v in fid2vamp.items()}
                     _wallet_incapable, _wallet_frac, _wallet_default = set(), {}, 0.0
+                    # 19jq: keep the gatewayFidS on their own. `_wallet_incapable` holds each
+                    # incapable fid AND its vampMid name, so its length counts two different kinds
+                    # of thing and is not a count of anything nameable. ENFORCEMENT still uses the
+                    # mixed set - both spellings are looked up downstream - this is only so the log
+                    # can report fids.
+                    _wal_fids = set()
                     for _f in process_wallet_incapable(_mmp):   # explicit processWallet=FALSE fids
                         _wallet_incapable.add(_f)
+                        _wal_fids.add(_f)
                         if _f in _fid2vamp_l:
                             _wallet_incapable.add(_fid2vamp_l[_f])
                     if _wallet_incapable and "paymentMethodProvider" in orig_adf.columns and "attempts" in orig_adf.columns:
@@ -4679,8 +4780,10 @@ def render():
                     # of each profile, redistribute the Non-USA portion. Needs a per-(currency,
                     # bank) Non-USA fraction from the attempts data.
                     _usa_only, _nonusa_frac, _nonusa_default = set(), {}, 0.0
+                    _uo_fids = set()                             # 19jq: fids only, for the log
                     for _f in load_usa_only(_rr_path):
                         _usa_only.add(_f)
+                        _uo_fids.add(_f)
                         if _f in _fid2vamp_l:
                             _usa_only.add(_fid2vamp_l[_f])
                     if _usa_only:
@@ -4701,10 +4804,30 @@ def render():
                             log("   [Warning] USA-only gateways configured but no 'country' column "
                                 "in the attempts data — country restriction NOT enforced this run.")
                             _usa_only = set()
+                            _uo_fids = set()     # 19jq: not enforced, so do not report a count
                     if _elig_rules or _wallet_incapable or _usa_only:
-                        log(f"   eligibility: {len(_elig_rules)} ban rule(s), {len(_wallet_incapable)} wallet-incapable id(s), "
-                            f"global wallet share {_wallet_default:.1%}; {len(_usa_only)} USA-only id(s), "
-                            f"global Non-USA share {_nonusa_default:.1%}.")
+                        # 19jq: gatewayFid COUNTS, scoped to this run's company, no percentages.
+                        # The old line reported `len(_wallet_incapable)` as "id(s)", which was fids
+                        # PLUS their vampMid names across every brand in the MID list - 215 on the
+                        # 2026-09-03 run, of which almost none were TotalAV's. The two "global
+                        # share" percentages were the wallet / Non-USA mix of the whole attempts
+                        # frame, which is a property of the book and not of eligibility at all.
+                        # NOTHING ENFORCED CHANGES HERE: `_wallet_incapable` / `_usa_only` are
+                        # untouched and still hold both spellings, which is what the rule needs.
+                        _fidb = _cap_fid_brand()
+                        _bnorm = str(sr_company or "").strip().lower().replace(" ", "")
+                        _scoped = bool(_bnorm and _fidb)
+                        _wf = ({_f for _f in _wal_fids if _fidb.get(_f, "") == _bnorm}
+                               if _scoped else _wal_fids)
+                        _uf = ({_f for _f in _uo_fids if _fidb.get(_f, "") == _bnorm}
+                               if _scoped else _uo_fids)
+                        log(f"   eligibility: {len(_elig_rules)} ban rule(s), "
+                            f"{len(_wf):,} wallet-incapable gatewayFid(s), "
+                            f"{len(_uf):,} USA-only gatewayFid(s)"
+                            + (f" — {sr_company} only."
+                               if _scoped else
+                               " — ALL BRANDS: no gatewayFid→brand map was available to scope by, "
+                               "so these counts include every brand in the MID list."))
                     # Country presence per (currency, BIN) from the attempts data — drives the
                     # export's USA / Non-USA row split. USA-only gateways appear in USA rows only.
                     _country_pres = {}
