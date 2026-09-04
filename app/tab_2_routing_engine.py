@@ -6995,8 +6995,8 @@ def render():
                                 log("   [row-par] delivery NOT threaded: the in-place "
                                     "eligibility twin (`_SW_ELIG_INPLACE = True`) shares "
                                     "scratch across calls, so it cannot be run "
-                                    "concurrently. Unset it to thread `deliver`, which is "
-                                    "worth far more than the twin's 1.05x.")
+                                    "concurrently. Set it False in eligibility.py to thread "
+                                    "`deliver`, which is worth far more than the twin's 1.05x.")
 
                             # ── [deliv-cap] 19fg: CAP LAST, THE WAY DELIVERY DOES ─────
                             # THE ORDER WAS WRONG, and 19fe fixing the RULE made that the
@@ -7954,8 +7954,8 @@ def render():
                                         "usable-recipient, co-location and seed unmet-band blocks "
                                         "did not run. They are READ-ONLY, so the seed and the "
                                         "search are unaffected \u2014 but nothing below answers "
-                                        "'is this band reachable?'. Unset it to get them back "
-                                        "(~16s).")
+                                        "'is this band reachable?'. Set it True at the top of "
+                                        "tab_2_routing_engine.py to get them back (~16s).")
                                 if _sd_on:
                                     # 19ip: the HELD-vs-MOVABLE block is gone. It quoted HELD as
                                     # the floor a breached band could reach; the REACHABLE MINIMUM
@@ -14795,11 +14795,11 @@ def render():
                                                         f"is worth Σ|Δ| {_s_nr:,.1f} "
                                                         f"({100.0 * _s_nr / _s_post:.2f}% of Σpost)"
                                                         + ("  ⇐ the SEARCH RUNS THIS PASS TOO (19cy, "
-                                                           "_AGE_RENORM=1), so this is what a SHARED "
-                                                           "pass is worth — it is NOT drift"
+                                                           "`_AGE_RENORM = True`), so this is what a "
+                                                           "SHARED pass is worth — it is NOT drift"
                                                            if _ar_on else
-                                                           "  ⇐ _AGE_RENORM=0, so the search SKIPS "
-                                                           "this pass and every unit here IS "
+                                                           "  ⇐ `_AGE_RENORM = False`, so the search "
+                                                           "SKIPS this pass and every unit here IS "
                                                            "scored-vs-delivered drift"))
                                                     log(f"      [vterms] no-recipient PASSTHROUGH "
                                                         f"override is worth Σ|Δ| {_s_np:,.1f}"

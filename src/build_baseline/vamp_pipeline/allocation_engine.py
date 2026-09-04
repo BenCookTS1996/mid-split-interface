@@ -752,7 +752,8 @@ class AllocationEngine:
             if _dm_on:
                 logger.info("        doomed guard is ON (`_SW_DEATHSYNC_DOOMED = True`) — it is "
                             "deleting the volume above from POST and not from PRE, so the two "
-                            "books will not agree. Unset it to let the redistribution place it.")
+                            "books will not agree. Set it False at the top of allocation_engine.py "
+                            "to let the redistribution place it.")
             elif _skipped > 0.0:
                 logger.info(f"        doomed guard OFF (ds06): {_skipped:.2f} unit(s) that the old "
                             "guard would have deleted from POST are now redistributed exactly as "
