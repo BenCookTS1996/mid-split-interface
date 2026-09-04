@@ -53,15 +53,26 @@ def _scaffold(seed=7):
     return T0, Pc
 
 
-def _fresh(env):
-    """Re-import band_projection under `env`. Its switches are read at IMPORT so numba can fold
-    them, so a path can only be selected by re-importing - which is also why the module carries a
-    staleness sentinel."""
+def _fresh(env, **flags):
+    """Re-import band_projection under `env`, then set any module FLAGS given by keyword.
+
+    Its env switches are read at IMPORT so numba can fold them, so an env-selected path can only
+    be chosen by re-importing.
+
+    19jx: ROUTING_PROJ_PROFILEBLOCK was DELETED - the profile-blocked kernel is unconditional -
+    so this test selects the flat path the way `lift_ab_report` selects the unlifted one: by
+    setting the module global. The flat kernel itself is untouched and is still the reference
+    the profile-blocked self-check diffs against, which is the whole reason the switch could go.
+    """
     for _m in [k for k in list(sys.modules) if k.startswith("routing_optimiser")]:
         del sys.modules[_m]
     os.environ.update(env)
     from routing_optimiser.s4_search import band_projection as bp
     from routing_optimiser.s4_search import blocked_fill as bf
+    for _k, _v in flags.items():
+        setattr(bp, _k, _v)
+    if "_PROJ_CB_ON" in flags:                # _CB_OK["use"] is seeded from it at import
+        bp._CB_OK["use"] = bool(flags["_PROJ_CB_ON"])
     for _s in bf.SITES:          # this test owns two of the five; the rule needs all of them
         bf.register(_s)
     return bp, bf
@@ -100,7 +111,7 @@ except Exception:  # noqa: BLE001
 print(f"  ..    kernels under test: {_MODE}")
 
 # ── 1. the profile-blocked path (the default) ───────────────────────────────────────────
-bp1, bf1 = _fresh({"ROUTING_PROJ_PROFILEBLOCK": "1"})
+bp1, bf1 = _fresh({}, _PROJ_CB_ON=True)
 check("both kernels register, so the rule can reach 5 of 5",
       not bf1.missing(), f"missing: {bf1.missing()}")
 cb_un = _run(bp1, KEYS, armed=False)
@@ -118,7 +129,7 @@ check("ARMED: and it CHANGED the projection, so the kernel really applied the ru
       f"max|dtxn| {float(np.abs(cb_un['numba'][1] - cb_ar['numba'][1]).max()):.6g}")
 
 # ── 2. the flat path ────────────────────────────────────────────────────────────────────
-bp2, bf2 = _fresh({"ROUTING_PROJ_PROFILEBLOCK": "0"})
+bp2, bf2 = _fresh({}, _PROJ_CB_ON=False)
 check("profile-blocking is off for this half of the test", not bp2._PROJ_CB_ON)
 fl_un = _run(bp2, KEYS, armed=False)
 fl_ar = _run(bp2, KEYS, armed=True)
@@ -136,7 +147,7 @@ check("...and ARMED, which is the self-check 19hv's exploration floor had to ski
       f"max|dtxn| {float(np.abs(fl_ar['numba'][1] - cb_ar['numba'][1]).max()):.3e}")
 
 # ── 4. the parallel compile takes the new arguments ─────────────────────────────────────
-bp3, bf3 = _fresh({"ROUTING_PROJ_PROFILEBLOCK": "0", "ROUTING_PROJ_PARALLEL": "1"})
+bp3, bf3 = _fresh({"ROUTING_PROJ_PARALLEL": "1"}, _PROJ_CB_ON=False)
 pa = _run(bp3, KEYS, armed=True, P=24)
 check("the PARALLEL compile takes the two new arguments and agrees with numpy",
       _ident(pa["numpy"], pa["numba"]),
@@ -162,7 +173,7 @@ except Exception as _e:  # noqa: BLE001
           f"{type(_e).__name__}: {_e}")
 
 # ── 5. no blocked row anywhere => armed is indistinguishable from refused ───────────────
-bp4, bf4 = _fresh({"ROUTING_PROJ_PROFILEBLOCK": "1"})
+bp4, bf4 = _fresh({}, _PROJ_CB_ON=True)
 z_un = _run(bp4, frozenset(), armed=False)
 z_ar = _run(bp4, frozenset(), armed=True)
 check("with NO blocked row, arming changes nothing at all",

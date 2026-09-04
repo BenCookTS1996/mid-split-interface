@@ -270,7 +270,9 @@ class StreamlitLogHandler(logging.Handler):
 
 # [FN-235c] 19hm — RENAMED KILL SWITCHES, WITH THEIR OLD NAMES STILL ACCEPTED.
 _SWITCH_ALIASES = {
-    "ROUTING_PROJ_PROFILEBLOCK": "ROUTING_PROJ_CELLBLOCK",
+    # 19jx: ROUTING_PROJ_PROFILEBLOCK -> ROUTING_PROJ_CELLBLOCK removed. The NEW name was
+    # deleted with the switch, so the alias pointed a legacy spelling at nothing - and it
+    # would have printed a "was honoured" line for a setting that changed nothing.
     "ROUTING_DOOR_COVER_PROFILES": "ROUTING_DOOR_COVER_CELLS",
     "ROUTING_ROW_PARALLEL_MIN_PROFILES": "ROUTING_ROW_PARALLEL_MIN_CELLS",
     "ROUTING_CA_ZEROPROFILE": "ROUTING_CA_ZEROCELL",

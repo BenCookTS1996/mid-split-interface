@@ -132,7 +132,7 @@ except Exception:  # noqa: BLE001 - no rule available is a refusal, never a brok
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-09-04-19jw-bandbuild-log-trim+2026-09-04-19jv-stashq-unconditional+2026-09-04-19jr-stashq-per-run+2026-09-03-19jp-stash-quotient+2026-09-03-19jn-gks-zero-by-slot+2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
+__build__ = ("2026-09-04-19jx-lift-and-profileblock-unconditional+2026-09-04-19jw-bandbuild-log-trim+2026-09-04-19jv-stashq-unconditional+2026-09-04-19jr-stashq-per-run+2026-09-03-19jp-stash-quotient+2026-09-03-19jn-gks-zero-by-slot+2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -856,28 +856,28 @@ _cb_kernel_par = _njit(cache=False, parallel=True)(_cb_kernel_impl)
 if _BFM is not None:
     _BFM.register("band_kernel_flat")
     _BFM.register("band_kernel_profile")
-# 19hm: renamed with the OLD NAME STILL HONOURED. A switch name is a user contract — it is
-# typed at a prompt and written into notes — so renaming it outright would silently stop
-# obeying an instruction someone had already recorded. New name wins; old name still works.
-def _env_switch(_new, _old, _default):
-    """Read a renamed kill switch, honouring the old spelling and SAYING SO.
-
-    src/ must not import app/, so this is a local twin of app_common.env_switch rather than a
-    shared call. It prints for the same reason: deleting the alias is the one change in the
-    cell->profile rename that could SILENTLY ignore an instruction already written down.
-    """
-    v = os.environ.get(_new)
-    if v is not None:
-        return v
-    lv = os.environ.get(_old)
-    if lv is not None:
-        print(f"[band_projection] [deprecated-switch] {_old}={lv} was honoured. Rename it to "
-              f"{_new} — the old spelling is a compatibility shim and will be removed.")
-        return lv
-    return _default
-
-
-_PROJ_CB_ON = _env_switch("ROUTING_PROJ_PROFILEBLOCK", "ROUTING_PROJ_CELLBLOCK", "1") != "0"
+# ── 19jx: ROUTING_PROJ_PROFILEBLOCK IS GONE. The profile-blocked kernel is unconditional. ──
+#
+# It has been default ON since 19bt and self-checked against the flat kernel on the live
+# scaffold on its first call of every run since. The switch was the revert path for a change
+# that stopped needing one.
+#
+# `_env_switch` went with it: this was its only caller, so the ROUTING_PROJ_CELLBLOCK
+# compatibility alias (19hm) goes too. That alias existed to keep honouring an instruction
+# someone might already have written down; there is no longer an instruction to honour.
+#
+# WHAT DID NOT GO — and this is the whole reason a switch could be deleted here at all: the
+# FLAT KERNEL. It is the reference `_CB_OK`'s self-check diffs the profile-blocked output
+# against, before any result is used, on every run. Deleting the slow path would delete the
+# proof. `_pop_band_kernel` is still called directly by that check, `_CB_OK["use"]` still
+# disables the fast path for the process on a failure or an exception, and `[proj-config]`
+# still reports requested-vs-in-effect. Nothing about the verification changed; only the env
+# var is gone.
+#
+# `_PROJ_CB_ON` stays a module-level NAME rather than becoming a literal, because the
+# requested-vs-in-effect line reads it and tests flip it in-process the way `lift_ab_report`
+# flips `_PROJ_LIFT_ON`.
+_PROJ_CB_ON = True
 # 19bz: FLOAT32, OPT-IN. See the module patch note. This is the ONE setting in the projector that
 # changes the answer, so it defaults OFF, it announces itself in the run log, and it measures its
 # own drift on the live scaffold every run instead of quoting a remembered figure.
@@ -1041,10 +1041,19 @@ _BUILD_NOTES = []
 # switch because half of it is not a smaller step, it is a wrong one.
 _SFLOOR_ON = os.environ.get("ROUTING_PROJ_SFLOOR", "0") != "0"
 _SFLOOR_FACT = {"armed": bool(_SFLOOR_ON), "applied": False, "floor": 0.0, "rows": 0}
-# FROZEN-SCAFFOLD LIFT switch. ON by default as of 2026-08-19ae; ROUTING_PROJ_LIFT=0 restores the
-# full-range kernel, which is the same body with arange() index arrays — a true revert, not a
-# similar path.
-_PROJ_LIFT_ON = os.environ.get("ROUTING_PROJ_LIFT", "1") != "0"
+# FROZEN-SCAFFOLD LIFT. ON by default since 2026-08-19ae. The unlifted path is the SAME BODY
+# with arange() index arrays - a true revert, not a similar path - which is why `lift_ab_report`
+# can still measure against it.
+# 19jx: ROUTING_PROJ_LIFT IS GONE. The frozen-scaffold lift is unconditional.
+#
+# Default ON since 19ae, and the passes it skips are provable no-ops - `psum += 0.0` is exact,
+# and everything downstream of it is guarded on `psum > 0`. `[lift-ab]` re-proves the outputs
+# bit-identical on the live scaffold every run and shouts if they ever differ.
+#
+# STILL A MUTABLE MODULE GLOBAL, deliberately: `lift_ab_report` toggles it around its OFF arm
+# and restores it, which is how the unlifted index arrays are still reachable. Making it a
+# literal True would delete the measurement that justifies it.
+_PROJ_LIFT_ON = True
 
 # CHUNKED-PARALLEL PROJECTION (2026-08-19az). ON by default. When P exceeds the lane cap, split the
 # candidate range into cap-sized parallel calls instead of declining to the serial kernel — the
@@ -1126,8 +1135,10 @@ def proj_config():
     # THE ENVIRONMENT NOW vs WHAT THE MODULE READ AT IMPORT. These switches are read once, at
     # import. Setting one after the app has started does nothing at all, and there was no way to
     # see that from the log.
-    for _nm, _im in (("ROUTING_PROJ_PROFILEBLOCK", _PROJ_CB_ON),
-                     ("ROUTING_PROJ_CHUNK", _PROJ_CHUNK_ON),
+    # 19jx: ROUTING_PROJ_PROFILEBLOCK dropped from this list because the switch no longer
+    # exists. A line telling someone their env var was read at import, for a var nothing reads,
+    # is the same fault 19ju removed three of.
+    for _nm, _im in (("ROUTING_PROJ_CHUNK", _PROJ_CHUNK_ON),
                      ("ROUTING_PROJ_PARALLEL", _PROJ_PAR_ON)):
         _raw = os.environ.get(_nm)
         _dflt = True                                   # 19gt: every projector switch defaults ON
@@ -1962,11 +1973,11 @@ def lift_ab_report(proj, reps=3):
               if _impossible else
               f"The {abs(_sp - 1.0):.1%} difference does NOT clear it - this run cannot tell the "
               "two apart, so treat the ratio as 1.0x and do not quote it. ")
-           + ("Outputs BIT-IDENTICAL. ROUTING_PROJ_LIFT=0 reverts."
+           + ("Outputs BIT-IDENTICAL."
               if _same else
               "⚠ OUTPUTS DIFFER between lift ON and lift OFF. The lift is supposed to be "
-              "bit-identical, so this is a DEFECT, not a rounding artefact — ROUTING_PROJ_LIFT=0 "
-              "and report it."))
+              "bit-identical, so this is a DEFECT, not a rounding artefact — report it. 19jx "
+              "deleted the switch, so the revert is `_PROJ_LIFT_ON = False` in the source."))
     return {"P": _P, "ms_on": ms_on, "ms_off": ms_off, "speedup": _sp,
             "identical": _same, "above_floor": _real, "impossible": _impossible,
             "noise": _noise, "floor": _floor, "reps": int(_rounds)}
@@ -1997,8 +2008,11 @@ def stashq_report():
             elif f.get("ok") is False:
                 _why = "the self-check failed earlier in this process and disarmed it"
             else:
-                _why = ("the profile-blocked kernel never ran (ROUTING_PROJ_PROFILEBLOCK=0, or "
-                        "it declined), or this scaffold has no aged rows")
+                # 19jx: the switch is gone, so the only way the profile-blocked kernel does
+                # not run is that it DECLINED or its self-check disabled it - both of which say
+                # so on their own lines.
+                _why = ("the profile-blocked kernel never ran (it declined, or its self-check "
+                        "disabled it), or this scaffold has no aged rows")
             return [f"[stash-q] NOT RUNNING: {_why}. The nA pass re-derived the quotient the "
                     "age-renormalise pass had already computed, which is correct and slower."]
         _ok = f.get("ok")
@@ -3110,7 +3124,8 @@ class PopulationBandProjector:
 
         Needs the incidence to know which prop-keys are reachable. `set_lift_incidence()` supplies
         it; without it the lift is OFF and the full ranges are returned, which is exactly the
-        pre-19ae kernel. ROUTING_PROJ_LIFT=0 also forces it off.
+        pre-19ae kernel. 19jx deleted ROUTING_PROJ_LIFT, so the only other way off is setting
+        the module global `_PROJ_LIFT_ON` - which is what `lift_ab_report` does for its OFF arm.
         """
         nR = len(self._gcode)
         nprofile = int(self._ngc)
@@ -3139,8 +3154,8 @@ class PopulationBandProjector:
                   f"{len(self._lift_frozen_rows):,} of {nR:,} rows "
                   f"({len(self._lift_frozen_rows) / max(nR, 1):.1%}) in "
                   f"{len(self._lift_frozen_profiles):,} of {nprofile:,} frozen profiles "
-                  f"({len(self._lift_frozen_profiles) / max(nprofile, 1):.1%}) - provable no-ops. "
-                  "ROUTING_PROJ_LIFT=0 disables.")
+                  f"({len(self._lift_frozen_profiles) / max(nprofile, 1):.1%}) - provable no-ops "
+                  "(19jx: unconditional, no switch).")
         # PRIME (idempotent per buffer identity + lane count).
         if buffers is not None:
             key = (id(buffers[2]), int(lanes))
@@ -3530,8 +3545,8 @@ class PopulationBandProjector:
                      " (unlifted, the self-check's reference)")
                   + f": {cb['nLR']:,} live rows in {profiles.size:,} profiles "
                   f"(~{cb['nLR'] / max(profiles.size, 1):.1f}/profile), {froz.size:,} frozen "
-                  "parked. Bit-identical, self-checked against the flat kernel. "
-                  "ROUTING_PROJ_PROFILEBLOCK=0 reverts.")
+                  "parked. Bit-identical, self-checked against the flat kernel every run "
+                  "(19jx: unconditional, no switch).")
             return cb
         except Exception as _cbe:                  # noqa: BLE001
             self._cb = {"key": key, "ok": False}
@@ -4026,10 +4041,14 @@ class PopulationBandProjector:
                        "measurement's, at its own width.")
         if int(sw.max()) >= 50 and not _CB_OK.get("shouted"):
             _CB_OK["shouted"] = True
+            # 19jx: this told the reader to set a switch that no longer exists, on the ONE
+            # path where the profile-blocked kernel is not provably identical - the worst place
+            # to give an instruction that cannot be followed. The flat kernel is still there;
+            # reaching it now means `_PROJ_CB_ON = False` in the source.
             _pnote("*** profile-blocked water-fill hit the 50-sweep cap. That is the one case where "
                    "per-profile convergence is NOT provably identical to the flat kernel's global "
-                   "loop. Re-run with ROUTING_PROJ_PROFILEBLOCK=0 and compare before trusting these "
-                   "numbers.")
+                   "loop. Compare against the flat kernel before trusting these numbers - set "
+                   "`_PROJ_CB_ON = False` in band_projection (19jx deleted the env var).")
         _CB_OK["sweeps"] = max(int(_CB_OK.get("sweeps", 0)), int(sw.max()))
         return _v, _t
 

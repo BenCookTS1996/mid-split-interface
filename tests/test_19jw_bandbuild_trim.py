@@ -63,9 +63,11 @@ check("2  ...decided by the frozen count, which is 0 on the unlifted one by cons
       'if froz.size else' in BP)
 check("2  the settled design prose is gone",
       "an L1-sized working set" not in BP and "~15 passes over the" not in BP)
-check("2  ...but the bit-identity claim and the switch survive",
+# 19jx then deleted the switch this once named. The bit-identity CLAIM is the part that had
+# to survive the trim, and it did.
+check("2  ...but the bit-identity claim survives",
       "Bit-identical, self-checked against the flat kernel" in BP
-      and "ROUTING_PROJ_PROFILEBLOCK=0 reverts" in BP)
+      and "ROUTING_PROJ_PROFILEBLOCK=0 reverts" not in BP)
 
 # ═══ 3. dispatch notes: the REASON only ═════════════════════════════════════════════════
 check("3  the ON/OFF note is one clause plus the reason",

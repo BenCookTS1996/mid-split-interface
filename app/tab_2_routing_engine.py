@@ -9742,7 +9742,7 @@ def render():
                                         # set - a profile whose rows are reachable but happen to be
                                         # 0 in the current split is NOT counted, because it could
                                         # become non-zero and freezing it would be wrong.
-                                        # ROUTING_PROJ_LIFT=0 reverts.
+                                        # 19jx: the lift is unconditional now, no switch.
 
                                         # ── [zero-profiles] DOES THE GENOME CONTAIN PROFILES THAT CANNOT MATTER? ──
                                         # (read-only) Distinct from [frozen-scaffold] above, which counts
@@ -11589,8 +11589,9 @@ def render():
                                                     "and every ratio below it as a comparison "
                                                     "BETWEEN IDEAS on a common baseline, NOT as "
                                                     "this run's projector cost. "
-                                                    "ROUTING_PROJ_PROFILEBLOCK=0 makes A the shipped "
-                                                    "path again.")
+                                                    "19jx deleted the switch that made A the "
+                                                    "shipped path; reaching it now means "
+                                                    "`_PROJ_CB_ON = False` in band_projection.")
                                         except Exception as _kbe:  # noqa: BLE001
                                             log(f"      NOTE: could not tell whether the shipped "
                                                 f"projector is profile-blocked "
@@ -12018,8 +12019,10 @@ def render():
                                                 "row it dropped was not actually zero; for G, that an index WIDTH "
                                                 "changed a value; for H, that chunking is not the no-op the projector's "
                                                 "own self-check says it is. The reasoning is wrong, not just the timing "
-                                                "— do not act on any row here, and set ROUTING_PROJ_LIFT=0 / "
-                                                "ROUTING_PROJ_CHUNK=0 until it is resolved.")
+                                                "— do not act on any row here. ROUTING_PROJ_CHUNK=0 "
+                                                "still reverts chunking; 19jx deleted the lift's "
+                                                "switch, so reverting THAT means `_PROJ_LIFT_ON = "
+                                                "False` in band_projection.")
                                         else:
                                             log(f"      ✓ every variant claiming bit-identity delivered it "
                                                 f"({['B'] + [r[0] for r in _ab_rows if r[4]]}), and the ones that do not "
@@ -12390,7 +12393,9 @@ def render():
                                                     "WIDTH). That contradicts [kernel-ab]'s Δ=0 "
                                                     "rows, so one of the two measurements is "
                                                     "wrong. Do not act on either until it is "
-                                                    "resolved; set ROUTING_PROJ_LIFT=0 meanwhile.")
+                                                    "resolved. 19jx deleted the lift's switch; "
+                                                    "the revert is `_PROJ_LIFT_ON = False` in "
+                                                    "band_projection.")
                                             else:
                                                 log("      ✓ every bit-identical variant "
                                                     "returned a split IDENTICAL to A, which is "
