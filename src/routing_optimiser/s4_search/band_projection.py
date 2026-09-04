@@ -132,7 +132,7 @@ except Exception:  # noqa: BLE001 - no rule available is a refusal, never a brok
 # bands, which was the whole test. Delivery is an untouched code path, so a 0 there is the
 # end-to-end proof that nothing which matters moved.
 
-__build__ = ("2026-09-04-19jr-stashq-per-run+2026-09-03-19jp-stash-quotient+2026-09-03-19jn-gks-zero-by-slot+2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
+__build__ = ("2026-09-04-19jv-stashq-unconditional+2026-09-04-19jr-stashq-per-run+2026-09-03-19jp-stash-quotient+2026-09-03-19jn-gks-zero-by-slot+2026-09-03-19jg-bpf-inside+2026-09-03-19jd-proj-inside+2026-09-03-19jb-joint-key-codes+2026-09-03-19iw-efmask-one-line+2026-09-03-19iv-projconfig-nameerror-fix+2026-09-03-19iu-log-batch-float32-unconditional+2026-09-03-19it-blocked-fill-in-both-kernels+2026-08-19bz-float32-optin+2026-09-01-19gt-float32-default-on+2026-09-03-19ih-liftab-interleaved"
              "+2026-08-19by-lane-cap-16-measured-on-the-profile-blocked-kernel"
              "+2026-08-19bt-profile-blocked-kernel"
              "+2026-08-19bo-lane-cap-back-to-8-measured-flat"
@@ -206,17 +206,30 @@ _AGE_RENORM = os.environ.get("ROUTING_AGE_RENORM", "1") != "0"
 #
 # COST: one float array of (lanes x nA) in `pshare`'s dtype. `[stash-q]` prints the actual bytes.
 #
-# ROUTING_STASH_Q=0   (default) OFF - the original nA pass, untouched, is what ships.
-# ROUTING_STASH_Q=1   ON.
-# ROUTING_STASH_Q=ab  INTERLEAVED A/B - the arm alternates call by call and both are timed, so
-#                     the ratio is measured on this run's real data on one machine rather than
-#                     quoted from a mock. Safe to ship an alternating answer ONLY because the
-#                     self-check proves the two arms bit-identical before either is used.
-_STASH_Q_RAW = (os.environ.get("ROUTING_STASH_Q", "0") or "0").strip().lower()
-_STASH_Q_ON = _STASH_Q_RAW in ("1", "on", "true", "yes")
-_STASH_Q_AB = _STASH_Q_RAW in ("ab", "a/b", "2")
-_STASH_FACT = {"armed": False, "checked": False, "ok": None, "bad": 0, "calls": 0,
-               "on_ms": 0.0, "on_n": 0, "off_ms": 0.0, "off_n": 0,
+# 19jv: ROUTING_STASH_Q IS GONE AND THE STASH IS UNCONDITIONAL, on Ben's instruction. It was a
+# switch because it was unproven; it is proven, so the switch was only a way to forget to set it.
+#
+# WHAT PROVED IT. Two interleaved A/B runs on the live scaffold, arms alternating call by call so
+# machine drift is shared between them rather than landing on one:
+#     2026-09-04 09:51   ON  61.8 ms/call   OFF  94.0 ms/call   1.521x
+#     2026-09-04 11:47   ON 107.2 ms/call   OFF 167.3 ms/call   1.561x
+# The second is the one to trust: the first run's counters were still per-PROCESS, so its sample
+# spanned two runs (fixed in 19jr). The 11:47 run's 177 ON / 177 OFF calls against 374 dispatched
+# projections is a count that can be checked, and it is the run that took the search to 158.5s
+# and 75 splits/s from 221.0s and 54/s before any of this.
+#
+# THE A/B WENT WITH THE SWITCH. It existed to answer one question, it answered it twice, and an
+# alternating arm costs half the win on every run it measures.
+#
+# WHAT DID NOT GO: the kernel's OFF path, and the first-call self-check that runs both arms on
+# the live scaffold and diffs them. Deleting the slow path would have deleted the proof - the
+# same trap that stops PROJ_PARALLEL and PROJ_PROFILEBLOCK from being collapsed - so the OFF arm
+# stays reachable from `_stashq_selfcheck` and nowhere else. A failed check still disarms the
+# stash for the process and ships the untouched answer, loudly.
+#
+# Precedent for a proven change losing its switch entirely: 19gv (ROUTING_DECODE_CAP) and
+# 19iu (ROUTING_PROJ_FLOAT32).
+_STASH_FACT = {"armed": False, "checked": False, "ok": None, "bad": 0,
                "nA": 0, "bytes": 0, "dtype": "", "lanes": 0, "why": ""}
 _BP_COLLAPSE_SAID = {}
 
@@ -1283,22 +1296,22 @@ def proj_new_run():
     _F32_OK["dt"] = None
     _F32_OK["said"] = False
     _CB_OK["checked"] = False
-    # 19jr: AND THE 19jp STASH COUNTERS. They were not here, so in a warm Streamlit process the
+    # 19jr: AND THE 19jp STASH FACTS. They were not here, so in a warm Streamlit process the
     # [stash-q] A/B accumulated across RUNS: the 2026-09-04 09:51 log reported 422 ON and 422 OFF
     # call(s) against a run that dispatched 378 projections in total, i.e. most of what it counted
     # belonged to an earlier run on a differently-loaded machine. That is precisely the bug this
     # function exists to prevent - see the float32 drift in the docstring above, which printed the
-    # previous run's figure to four decimals. The RATIO survived it (the arms alternate within
-    # every run, so drift is still shared between them), but the call counts and the ms/call
-    # figures did not, and a line that misstates its own sample size invites the wrong conclusion.
+    # previous run's figure to four decimals.
+    #
+    # 19jv retired the A/B, so the timing counters are gone; what is left still has to be per-run,
+    # because the SELF-CHECK is the thing that must re-run on each run's own scaffold.
     #
     # `ok` is NOT cleared, on the same rule as _CB_OK["use"]: a path disabled for cause stays
     # disabled for the process. `checked` IS cleared, so the bit-identity self-check re-runs on
     # THIS run's scaffold rather than resting on the last one's.
     if _STASH_FACT.get("ok") is not False:
         _STASH_FACT["checked"] = False
-    _STASH_FACT.update(armed=False, calls=0, on_ms=0.0, on_n=0, off_ms=0.0, off_n=0,
-                       nA=0, bytes=0, dtype="", lanes=0)
+    _STASH_FACT.update(armed=False, nA=0, bytes=0, dtype="", lanes=0)
     _PROJ_PATH.clear()
     _PROJ_PATH.update({"seen": {}, "calls": 0})
     _PROJ_PAR_SAID.clear()
@@ -1978,14 +1991,9 @@ def stashq_report():
     """
     try:
         f = _STASH_FACT
-        raw = _STASH_Q_RAW or "0"
-        if not (_STASH_Q_ON or _STASH_Q_AB):
-            return ["[stash-q] OFF (ROUTING_STASH_Q=%s). The nA pass re-derives "
-                    "`_pshare[o]/_vpsum[c]` that the age-renormalise pass one loop earlier "
-                    "already computed - three random gathers per aged row, twice. "
-                    "ROUTING_STASH_Q=1 ships the stash; ROUTING_STASH_Q=ab alternates the two "
-                    "arms call by call and times both." % raw]
         if not f.get("armed"):
+            # NOT ARMED is now the interesting case - the stash is unconditional, so this means
+            # something upstream of it did not run. 19jv: there is no OFF branch any more.
             if not _AGE_RENORM:
                 _why = ("the age renormalise is OFF (ROUTING_AGE_RENORM=0), and that pass is "
                         "where the quotient is computed - there is nothing to stash")
@@ -1994,44 +2002,26 @@ def stashq_report():
             else:
                 _why = ("the profile-blocked kernel never ran (ROUTING_PROJ_PROFILEBLOCK=0, or "
                         "it declined), or this scaffold has no aged rows")
-            return [f"[stash-q] ARMED BUT NOT RUNNING (ROUTING_STASH_Q={raw}): {_why}. "
-                    "Nothing was stashed and the answer is the untouched one."]
-        out = []
-        _mb = f.get("bytes", 0) / 1e6
-        out.append(f"[stash-q] ON (ROUTING_STASH_Q={raw}) - {f.get('nA', 0):,} aged row(s) x "
-                   f"{f.get('lanes', 0)} lane(s) of {f.get('dtype', '?')} = {_mb:,.1f} MB of "
-                   "stash, holding the quotient the age-renormalise pass already computed so "
-                   "the nA pass reads it SEQUENTIALLY instead of re-gathering `_pshare[o]`, "
-                   "`vcpos_c[o]` and `_vpsum[c]`.")
+            return [f"[stash-q] NOT RUNNING: {_why}. The nA pass re-derived the quotient the "
+                    "age-renormalise pass had already computed, which is correct and slower."]
         _ok = f.get("ok")
-        if _ok is True:
-            out.append("[stash-q] bit-identity: SELF-CHECK PASSED on the live scaffold (both "
-                       "arms run, np.array_equal on vamp and txn, and every negative stashed "
-                       "value exactly one of the two sentinels).")
-        elif _ok is False:
-            out.append("[stash-q] bit-identity: *** SELF-CHECK FAILED - the stash is DISABLED "
-                       "for this process and the original nA pass is what ran"
-                       + (f" ({f.get('why')})" if f.get("why") else
-                          f", {f.get('bad', 0):,} sentinel collision(s)") + ".")
-        else:
-            out.append("[stash-q] bit-identity: NOT YET CHECKED - the armed path has not "
-                       "completed a call, so no result here came from it.")
-        _on, _off = f.get("on_n", 0), f.get("off_n", 0)
-        if _on and _off:
-            _a = f["on_ms"] / _on
-            _b = f["off_ms"] / _off
-            out.append(f"[stash-q] INTERLEAVED A/B over {_on:,} ON call(s) and {_off:,} OFF "
-                       f"call(s), alternating so machine drift is shared between the arms: "
-                       f"ON {_a:,.1f} ms/call vs OFF {_b:,.1f} ms/call -> "
-                       f"{(_b / _a) if _a > 0 else 0.0:.3f}x.")
-            out.append("[stash-q] the arms alternate CALLS, so the two means are over different "
-                       "populations - read the RATIO, not either number on its own. Shipping an "
-                       "alternating answer is only safe because the self-check above proved the "
-                       "two arms bit-identical before either was used.")
-        elif _STASH_Q_AB:
-            out.append(f"[stash-q] INTERLEAVED A/B requested but only one arm has timings "
-                       f"(ON {_on:,}, OFF {_off:,}) - too few projections to compare.")
-        return out
+        if _ok is False:
+            return ["[stash-q] *** SELF-CHECK FAILED - the stash is DISABLED for this process "
+                    "and the ORIGINAL nA pass is what ran"
+                    + (f" ({f.get('why')})" if f.get("why") else
+                       f", {f.get('bad', 0):,} sentinel collision(s)") + ". Report this."]
+        if _ok is not True:
+            return ["[stash-q] NOT YET CHECKED - the stash is armed but has not completed a "
+                    "call, so no result reported here came from it."]
+        # 19jv: ONE LINE on the ordinary path. The switch is gone and the A/B is retired, so what
+        # is left to say is the size of the buffer this run allocated and that the check passed -
+        # both facts about THIS run. The measured 1.561x lives in the source note, not the log:
+        # it cannot be re-measured now that there is no second arm to alternate with.
+        return [f"[stash-q] ON (unconditional since 19jv, measured 1.561x) - "
+                f"{f.get('nA', 0):,} aged row(s) x {f.get('lanes', 0)} lane(s) of "
+                f"{f.get('dtype', '?')} = {f.get('bytes', 0) / 1e6:,.1f} MB of stash. "
+                "SELF-CHECK PASSED on this run's scaffold: bit-identical to the original nA "
+                "pass on vamp and txn, every sentinel valid."]
     except Exception as _e:                        # noqa: BLE001
         return [f"[stash-q] NOT REPORTED ({type(_e).__name__}: {_e}) - MEASUREMENT ONLY, the "
                 "run and the projector are unaffected."]
@@ -3835,14 +3825,11 @@ class PopulationBandProjector:
         # (lanes, nA) buffer are the same numba type - 2-D, C-contiguous, same dtype - so
         # neither arming nor alternating triggers a recompile.
         _nA_st = int(np.asarray(cb["pc_orgc"]).shape[0])
-        _stash_armed = bool((_STASH_Q_ON or _STASH_Q_AB) and _AGE_RENORM and _nA_st > 0
-                            and _STASH_FACT["ok"] is not False)
+        # 19jv: no switch. Armed whenever the renormalise pass that computes the quotient runs,
+        # the scaffold has aged rows, and no self-check has failed in this process.
+        _stash_armed = bool(_AGE_RENORM and _nA_st > 0 and _STASH_FACT["ok"] is not False)
         _qst = self._stashq_buf(_lanes, _nA_st, pshare.dtype, _stash_armed)
-        if _stash_armed and _STASH_Q_AB:
-            _STASH_FACT["calls"] += 1
-            _use_stash = (_STASH_FACT["calls"] % 2) == 0
-        else:
-            _use_stash = _stash_armed
+        _use_stash = _stash_armed
         _base_tail = (_ef_in, _sfl_efl, _sfl_use, _sfl_pshf, _blk_c, _blk_use)
         _tail_on = _base_tail + (_qst, 1)
         _tail_off = _base_tail + (_qst, 0)
@@ -3879,14 +3866,10 @@ class PopulationBandProjector:
         try:
             if _stash_armed and not _STASH_FACT["checked"]:
                 _v, _t = self._stashq_selfcheck(_run, _tail_on, _tail_off, _qst, _use_stash)
-            elif _stash_armed and _STASH_Q_AB:
-                # 19jp: time the WHOLE call, chunks included, and bill it to the arm that ran.
-                _st0 = _time_mod.perf_counter()
-                _v, _t = _run()
-                _sms = (_time_mod.perf_counter() - _st0) * 1e3
-                _STASH_FACT["on_ms" if _use_stash else "off_ms"] += _sms
-                _STASH_FACT["on_n" if _use_stash else "off_n"] += 1
             else:
+                # 19jv: no timing wrapper. The A/B it fed is retired - it answered its question
+                # twice (1.521x, then 1.561x on clean per-run counters) and an alternating arm
+                # costs half the win on every run it measures.
                 _v, _t = _run()
         except Exception as _cbe:                  # noqa: BLE001
             _CB_OK["use"] = False

@@ -240,17 +240,34 @@ check("5  no name bound ONLY inside a `usestash` branch is read outside it (the 
 check("5  the lane view uses an INT ternary, never an array one",
       "qs = q if usestash > 0 else 0" in BP_SRC and "_qst = qst[qs]" in BP_SRC)
 
-# ═══ 6. default OFF, and it only arms when it can actually work ══════════════════════════
+# ═══ 6. 19jv: UNCONDITIONAL. The switch and the A/B are gone ═════════════════════════════
+# 19jp shipped this default OFF behind ROUTING_STASH_Q because it was unproven. Two interleaved
+# A/B runs on the live scaffold proved it - 1.521x, then 1.561x on clean per-run counters - so
+# the switch was only a way to forget to set it. What did NOT go is the kernel's OFF path: it is
+# the reference the self-check diffs against, and deleting it would delete the proof.
 import os
-check("6  default OFF - an unset ROUTING_STASH_Q ships the original kernel",
-      not bp._STASH_Q_ON and not bp._STASH_Q_AB and not os.environ.get("ROUTING_STASH_Q"))
-check("6  ...and OFF means the (1, 1) dummy, not a 100 MB buffer nobody reads",
+check("6  the switch is GONE - no env read, no ON/AB flags",
+      not hasattr(bp, "_STASH_Q_ON") and not hasattr(bp, "_STASH_Q_AB")
+      and not hasattr(bp, "_STASH_Q_RAW")
+      and not any("ROUTING_STASH_Q" in _l and not _l.lstrip().startswith("#")
+                  for _l in BP_SRC.splitlines()))
+check("6  arming now needs only what the stash actually depends on",
+      "_stash_armed = bool(_AGE_RENORM and _nA_st > 0 and _STASH_FACT[\"ok\"] is not False)"
+      in BP_SRC)
+check("6  ...so an armed call always USES it - no alternation left",
+      "_use_stash = _stash_armed" in BP_SRC
+      and '_use_stash = (_STASH_FACT["calls"] % 2) == 0' not in BP_SRC)
+check("6  the A/B timing counters are gone with it",
+      "on_ms" not in BP_SRC and "off_n" not in BP_SRC)
+check("6  the OFF ARM SURVIVES, reachable from the self-check and nowhere else",
+      BP_SRC.count("_tail_off") == 3 and "usestash" in BP_SRC,
+      "built, passed to _stashq_selfcheck, used inside it - deleting it would delete the proof")
+check("6  ...and the reason it survives is written down, not just done",
+      "Deleting the slow path would have deleted the proof" in BP_SRC)
+check("6  the measured ratio is recorded at the change, since it can no longer be re-measured",
+      "1.561x" in BP_SRC and "1.521x" in BP_SRC and "177 ON / 177 OFF" in BP_SRC)
+check("6  unarmed still means the (1, 1) dummy, not a 100 MB buffer nobody reads",
       "np.zeros((int(lanes), int(nA)), dtype) if armed else np.zeros((1, 1), dtype)" in BP_SRC)
-check("6  arming needs the switch AND the renormalise AND aged rows AND no failed check",
-      "(_STASH_Q_ON or _STASH_Q_AB) and _AGE_RENORM and _nA_st > 0" in BP_SRC
-      and '_STASH_FACT["ok"] is not False' in BP_SRC)
-check("6  the A/B alternates call by call, so machine drift is shared between the arms",
-      '_use_stash = (_STASH_FACT["calls"] % 2) == 0' in BP_SRC)
 
 class _Proj:
     pass
@@ -277,28 +294,28 @@ check("7  a broken self-check cannot take the run down - it falls back and says 
       "except Exception as _se" in _sc and "return run(tail_off)" in _sc)
 
 # ═══ 8. [stash-q] reports in EVERY state and cannot break a run ═══════════════════════════
-_lines = bp.stashq_report()
-check("8  OFF still prints a line - silence is indistinguishable from broken wiring",
-      bool(_lines) and "[stash-q] OFF" in _lines[0] and "ROUTING_STASH_Q=1" in _lines[0])
 _saved = dict(bp._STASH_FACT)
 try:
-    bp._STASH_Q_ON = True
-    check("8  armed-but-never-run says WHY", "ARMED BUT NOT RUNNING" in bp.stashq_report()[0])
-    bp._STASH_FACT.update(armed=True, ok=True, nA=845790, lanes=16, dtype="float32",
-                          bytes=845790 * 16 * 4, on_ms=1000.0, on_n=10,
-                          off_ms=1440.0, off_n=10)
+    bp._STASH_FACT.update(armed=False, ok=None, why="")
+    check("8  NOT RUNNING says WHY - the stash is unconditional, so this means something upstream"
+          " did not run", "[stash-q] NOT RUNNING: " in bp.stashq_report()[0])
+    bp._STASH_FACT.update(armed=True, ok=True, nA=845790, lanes=35, dtype="float32",
+                          bytes=845790 * 35 * 4)
     _r = "\n".join(bp.stashq_report())
-    check("8  ON prints the real MB, the bit-identity verdict and the A/B ratio",
-          "54.1 MB" in _r and "SELF-CHECK PASSED" in _r and "1.440x" in _r
-          and "read the RATIO" in _r)
+    check("8  ON is ONE line: the buffer this run allocated and the verdict",
+          len(bp.stashq_report()) == 1 and "118.4 MB" in _r
+          and "SELF-CHECK PASSED" in _r and "unconditional since 19jv" in _r)
+    check("8  ...and it does NOT pretend to have measured a ratio this run",
+          "INTERLEAVED A/B" not in _r and "read the RATIO" not in _r,
+          "there is no second arm to alternate with any more")
     bp._STASH_FACT.update(ok=False, bad=3, why="")
     check("8  a failed self-check is stated in the log, not just in the process",
           "SELF-CHECK FAILED" in "\n".join(bp.stashq_report()))
-    bp._STASH_FACT["on_n"] = "not a number"
+    bp._STASH_FACT["bytes"] = "not a number"
+    bp._STASH_FACT.update(ok=True)
     check("8  ...and a broken report returns a line instead of raising",
           "NOT REPORTED" in "\n".join(bp.stashq_report()))
 finally:
-    bp._STASH_Q_ON = False
     bp._STASH_FACT.clear(); bp._STASH_FACT.update(_saved)
 
 # ═══ 9. wiring ═══════════════════════════════════════════════════════════════════════════
@@ -314,15 +331,17 @@ check("9  the existing profile-blocked vs flat self-check still guards this",
 # the LAST run's. 19jp missed that: the 2026-09-04 09:51 log reported 422 ON and 422 OFF
 # call(s) on a run that dispatched 378 projections in total. The ratio survived - the arms
 # alternate within every run, so drift is still shared - but the sample size did not.
-bp._STASH_FACT.update(armed=True, checked=True, ok=True, calls=99,
-                      on_ms=500.0, on_n=42, off_ms=800.0, off_n=42,
+# 19jv retired the A/B, so the timing counters no longer exist. What remains still has to be
+# per-run, because the SELF-CHECK is the thing that must re-run on each run's own scaffold.
+bp._STASH_FACT.update(armed=True, checked=True, ok=True,
                       nA=845790, bytes=118_410_600, dtype="float32", lanes=35)
 bp.proj_new_run()
-check("9b the A/B counters are cleared by proj_new_run, like every other per-run measurement",
-      (bp._STASH_FACT["on_n"] == 0 and bp._STASH_FACT["off_n"] == 0
-       and bp._STASH_FACT["on_ms"] == 0.0 and bp._STASH_FACT["off_ms"] == 0.0
-       and bp._STASH_FACT["calls"] == 0 and bp._STASH_FACT["nA"] == 0
-       and bp._STASH_FACT["bytes"] == 0 and not bp._STASH_FACT["armed"]))
+check("9b the per-run facts are cleared by proj_new_run, like every other measurement",
+      (bp._STASH_FACT["nA"] == 0 and bp._STASH_FACT["bytes"] == 0
+       and bp._STASH_FACT["dtype"] == "" and bp._STASH_FACT["lanes"] == 0
+       and not bp._STASH_FACT["armed"]))
+check("9b ...and the retired A/B counters are not silently still there",
+      not any(_k in bp._STASH_FACT for _k in ("on_ms", "on_n", "off_ms", "off_n", "calls")))
 check("9b ...and the self-check re-runs on the NEW run's scaffold",
       bp._STASH_FACT["checked"] is False)
 check("9b ...and proj_new_run still clears what it cleared before",
@@ -333,21 +352,25 @@ bp.proj_new_run()
 check("9b a self-check that FAILED stays failed - a new run does not re-arm a broken path",
       bp._STASH_FACT["ok"] is False and bp._STASH_FACT["checked"] is True)
 bp._STASH_FACT.update(ok=None, checked=False)
-check("9b band_projection records 19jr", "19jr-stashq-per-run" in BP_SRC)
+check("9b band_projection records 19jr and 19jv",
+      "19jr-stashq-per-run" in BP_SRC and "19jv-stashq-unconditional" in BP_SRC)
 
 
 # ═══ 10. END TO END, through `_project_cb` - the wiring, not just the kernel ══════════════
-# 19jf is why this section exists. That bug was a WIRING bug: the kernel was right and the
-# unit tests passed, and the run died hundreds of lines away on a name the change had made
+# 19jf is why this section exists. That bug was a WIRING bug: the kernel was right and the unit
+# tests passed, and the run died hundreds of lines away on a name the change had made
 # conditional. So this runs a REAL projector - real constructor, real aged rows, real
-# `project_pop_numba` - in a subprocess per arm, and diffs the RESULT HASHES. The switch is
-# read at import, so it can only be selected by a fresh process.
+# `project_pop_numba` - in a subprocess, and reads back what the projector says about itself.
+#
+# 19jv: there is no ARM to select any more, so this no longer diffs two subprocesses. The
+# ON-vs-OFF comparison still happens - it happens INSIDE the run, on the live scaffold, in
+# `_stashq_selfcheck`, which is the stricter place for it. `ok is True` IS that diff's verdict.
+# Run twice instead, because a stash out of step with the population would show up as a hash
+# that moves.
 _E2E = r"""
 import hashlib, os, sys
 import numpy as np, pandas as pd
-sys.path.insert(0, sys.argv[2])
-if sys.argv[1] != "off":
-    os.environ["ROUTING_STASH_Q"] = sys.argv[1]
+sys.path.insert(0, sys.argv[1])
 from routing_optimiser.s4_search import band_projection as bp
 rng = np.random.default_rng(7)
 MIDS = ("adyen_tav", "braintree_tav", "woodforest_tav", "paysafe_tav")
@@ -370,50 +393,54 @@ for _ in range(9):
 h = hashlib.sha256(np.ascontiguousarray(v).tobytes()
                    + np.ascontiguousarray(t).tobytes()).hexdigest()[:16]
 f = bp._STASH_FACT
-print("RESULT|%d|%s|%s|%s|%d|%d" % (nA, h, f["armed"], f["ok"], f["on_n"], f["off_n"]))
+print("RESULT|%d|%s|%s|%s|%s" % (nA, h, f["armed"], f["ok"],
+                                 os.environ.get("ROUTING_STASH_Q", "<unset>")))
 print("REPORT|" + " ~ ".join(bp.stashq_report()))
 """
 import subprocess, tempfile
-_res = {}
+_res = []
 with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as _fh:
     _fh.write(_E2E); _E2E_PATH = _fh.name
 # NOT RUN without numba, and SAID rather than skipped silently: `project_pop_numba` takes the
-# pure-NumPy reference path when numba is absent, so `_project_cb` - the wiring under test here
-# - never executes and every assertion below would pass or fail for the wrong reason.
+# pure-NumPy reference path when numba is absent, so `_project_cb` - the wiring under test -
+# never executes and every assertion below would pass or fail for the wrong reason.
 if not _COMPILED:
     print("  ..    10 NOT RUN: " + _MODE + ". `_project_cb` only runs on the numba path, so "
           "there is no wiring to exercise. Section 0 is already red about this.")
-for _arm in (("off", "ab") if _COMPILED else ()):
+_env = {_k: _v for _k, _v in os.environ.items() if _k != "ROUTING_STASH_Q"}
+for _i in (1, 2) if _COMPILED else ():
     try:
-        _o = subprocess.run([sys.executable, _E2E_PATH, _arm, str(ROOT / "src")],
-                            capture_output=True, text=True, timeout=900)
-        _res[_arm] = dict(
+        _o = subprocess.run([sys.executable, _E2E_PATH, str(ROOT / "src")],
+                            capture_output=True, text=True, timeout=900, env=_env)
+        _res.append(dict(
             line=next((l for l in _o.stdout.splitlines() if l.startswith("RESULT|")), ""),
             rep=next((l for l in _o.stdout.splitlines() if l.startswith("REPORT|")), ""),
-            err=(_o.stderr or "").strip().splitlines()[-1:] )
+            err=(_o.stderr or "").strip().splitlines()[-1:]))
     except Exception as _e:                    # noqa: BLE001
-        _res[_arm] = {"line": "", "rep": "", "err": [f"{type(_e).__name__}: {_e}"]}
+        _res.append({"line": "", "rep": "", "err": [f"{type(_e).__name__}: {_e}"]})
 
-_ok = bool(_res) and all(r["line"] for r in _res.values())
 if _COMPILED:
-    check("10 a real projector runs end to end under both arms", _ok,
-          "" if _ok else str({k: v["err"] for k, v in _res.items()}))
-if _ok:
-    _off = _res["off"]["line"].split("|")
-    _ab = _res["ab"]["line"].split("|")
-    check("10 the scaffold really has aged rows, or this section proves nothing",
-          int(_off[1]) > 0, f"nA={_off[1]}")
-    check("10 the ARMED run's answer hashes identically to the untouched run's",
-          _off[2] == _ab[2] and len(_off[2]) == 16, f"{_off[2]} vs {_ab[2]}")
-    check("10 the stash armed, self-checked itself on the live scaffold, and PASSED",
-          _ab[3] == "True" and _ab[4] == "True", f"armed={_ab[3]} ok={_ab[4]}")
-    check("10 the A/B really alternated - both arms carry timings",
-          int(_ab[5]) > 0 and int(_ab[6]) > 0, f"ON {_ab[5]} call(s), OFF {_ab[6]} call(s)")
-    check("10 ...and [stash-q] said so in the log the run would have printed",
-          "INTERLEAVED A/B over" in _res["ab"]["rep"]
-          and "SELF-CHECK PASSED" in _res["ab"]["rep"])
-    check("10 the OFF run stays OFF - a default build arms nothing",
-          "|False|None|" in _res["off"]["line"])
+    _ok = bool(_res) and all(r["line"] for r in _res)
+    check("10 a real projector runs end to end, twice", _ok,
+          "" if _ok else str([r["err"] for r in _res]))
+    if _ok:
+        _a = _res[0]["line"].split("|")
+        _b = _res[1]["line"].split("|")
+        check("10 the scaffold really has aged rows, or this section proves nothing",
+              int(_a[1]) > 0, f"nA={_a[1]}")
+        # RESULT|nA|hash|armed|ok|env  -> 0 is the tag, so nA is 1, hash 2, armed 3, ok 4, env 5
+        check("10 the stash armed with NO env var set at all - it is unconditional now",
+              _a[5] == "<unset>" and _a[3] == "True",
+              f"ROUTING_STASH_Q={_a[5]}, armed={_a[3]}")
+        check("10 it self-checked itself against the OFF arm on the live scaffold and PASSED",
+              _a[4] == "True",
+              "that verdict IS the ON-vs-OFF diff, run on real data inside the run")
+        check("10 the answer is deterministic across processes",
+              _a[2] == _b[2] and len(_a[2]) == 16, f"{_a[2]} vs {_b[2]}")
+        check("10 [stash-q] prints ONE line, with the buffer size and the verdict",
+              "SELF-CHECK PASSED" in _res[0]["rep"]
+              and "unconditional since 19jv" in _res[0]["rep"]
+              and "INTERLEAVED A/B" not in _res[0]["rep"])
 
 print()
 print("FAILURES: " + (", ".join(FAIL) if FAIL else "none"))
