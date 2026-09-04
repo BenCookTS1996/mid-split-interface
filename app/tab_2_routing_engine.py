@@ -569,7 +569,7 @@ def render():
                              "roughly linear cost. IPOP: reseed from the best-so-far and DOUBLE the "
                              "population (λ) each restart — more thorough on bumpy/multimodal problems, "
                              "but the doubling makes each restart cost more than the last. A/B them using "
-                             "the ④ efficiency readout in the run log. Applies to both Genetic and "
+                             "the SEARCH EFFICIENCY readout in the run log. Applies to both Genetic and "
                              "GA - Numba.")
                     # Re-projection budget input + the post-GA correction removed entirely — band scoring
                     # is EXACT in-search, so the search satisfies the true bands directly. The delivered
@@ -1255,7 +1255,35 @@ def render():
                 _log_n: dict = {}
 
                 # [FN-304]
-                _sub_depth = [0]        # 19hp: extra indent while a ④·N substep is open
+                _sub_depth = [0]        # 19hp: extra indent while a SUB-SECTION is open
+                # ── 19kc: SECTIONS AND SUB-SECTIONS ARE NUMBERED BY THE LOG, NOT BY HAND ──
+                # The five stages used to carry their own numeral in the string passed to
+                # `_stage()` - "① Fetch attempts/success data" - and each sub-step carried
+                # "④·1  " in its label. Hand-written numbers rot: `④·diag ROUTING PROFILES`
+                # printed inside stage ③ for who knows how many builds, because the numeral was
+                # typed into a string 100 lines from the `_stage()` call that set the number.
+                #
+                # `_sec` is [section, sub-section]. `_stage()` bumps [0] and RESETS [1]; each
+                # `_substep()` bumps [1]. Nothing else writes it, so a section cannot be
+                # mis-numbered by editing a label, and inserting a stage renumbers everything
+                # after it for free.
+                _sec = [0, 0]
+
+                # [FN-304a]
+                def _sec_ref():
+                    """"4" or "4.1" - the section a line is currently inside. For the handful of
+                    lines that need to name their own position; anything pointing at a DIFFERENT
+                    section names it by NAME, because a cross-reference by number is the thing
+                    that rots."""
+                    return f"{_sec[0]}.{_sec[1]}" if _sec[1] else f"{_sec[0]}"
+
+                # [FN-304c]
+                def _banner(label, ch="\u2550", width=79):
+                    """`label` centred in a rule of `ch`, to a fixed width so every banner in the
+                    log lines up down the page whatever the label's length."""
+                    _t = f" {label} "
+                    _pad = max(4, width - len(_t))
+                    return ch * (_pad // 2) + _t + ch * (_pad - _pad // 2)
 
                 def _log_emit(msg):
                     # Keep the FULL log in log_lines (shown in the expandable panel and copyable);
@@ -1376,30 +1404,37 @@ def render():
                                 "warning marker; the blocks still RAN, so nothing here was left "
                                 "unmeasured. ROUTING_LOG_ALL=1 shows them.")
 
-                # Stage timer: logs "▶ … started" and, when the next stage begins (or the run
+                # Section timer: logs the "SECTION n  NAME" banner and, when the next section begins (or the run
                 # ends), "✓ … finished in Ns" for the previous stage.
                 _stage_state = {"name": None, "t": None}
                 # [FN-305]
                 def _stage(name):
+                    """Open SECTION n. `name` carries no number - see `_sec`."""
                     _now = _pt.time()
                     # 19hp: a stage boundary closes any open substep, and the ✓ close sits at the
                     # SAME depth as its ▶ open — it ends the section, so indenting it read as if
                     # it belonged inside it.
                     _sub_depth[0] = 0
                     if _stage_state["name"] is not None:
-                        log(f"✓ {_stage_state['name']} — finished in {_now - _stage_state['t']:.1f}s")
+                        log(f"\u2713 SECTION {_sec[0]}  {_stage_state['name']} "
+                            f"\u2014 finished in {_now - _stage_state['t']:.1f}s")
+                    _sec[0] += 1
+                    _sec[1] = 0            # sub-sections number from 1 WITHIN each section
                     _stage_state["name"] = name
                     _stage_state["t"] = _now
                     # 19gy: a blank line before every stage header. The finish line of one stage
                     # and the start line of the next sat flush against each other, so the six
                     # top-level sections of the run read as one wall.
+                    # 19kc: and the header is a full-width ═ banner rather than "▶ name — started",
+                    # so the top-level divisions of a 1,400-line log are findable by scrolling.
                     log("")
-                    log(f"▶ {name} — started")
+                    log(_banner(f"SECTION {_sec[0]}  {name}"))
                 # [FN-306]
                 def _stage_end():
                     _sub_depth[0] = 0
                     if _stage_state["name"] is not None:
-                        log(f"✓ {_stage_state['name']} — finished in {_pt.time() - _stage_state['t']:.1f}s")
+                        log(f"\u2713 SECTION {_sec[0]}  {_stage_state['name']} \u2014 finished in "
+                            f"{_pt.time() - _stage_state['t']:.1f}s")
                         _stage_state["name"] = None
 
                 # 19dv — RETIRING A SETTLED MEASUREMENT. A block whose question is decided prints its
@@ -1443,16 +1478,23 @@ def render():
                 
                 # [FN-306c]
                 def _substep(label):
-                    """A named division INSIDE a stage. Stage ④ is 95% of the run and contains the
-                    scaffold, the seed, the search, delivery and every diagnostic; without these a
-                    reader has no way to tell which part they are looking at.
+                    """Open SUB-SECTION n.m INSIDE the current section. `label` carries no number.
 
-                    19hp: the rule itself sits ONE level in from the stage header, and everything
-                    printed until the next substep or stage boundary sits one level deeper again —
-                    so the five ④·N divisions are visibly inside ④ instead of beside it."""
+                    The search section is 95% of the run and contains the scaffold, the seed, the
+                    search, delivery and every diagnostic; without these divisions a reader has no
+                    way to tell which part they are looking at.
+
+                    19hp/19kc: the banner sits ONE level in from the section header and everything
+                    printed until the next sub-section or section boundary sits one level deeper
+                    again — so a sub-section is visibly INSIDE its section rather than beside it.
+                    That indent is `_sub_depth`, applied in `_log_emit`, and it is why every log
+                    line's own leading spaces still read correctly: it shifts the whole block."""
+                    _sec[1] += 1
                     _sub_depth[0] = 0
                     log("")
-                    log(f"   ── {label} " + "─" * max(4, 71 - len(label)))
+                    # 3 spaces in, and 6 narrower than the section rule, so the nesting is visible
+                    # at a glance rather than having to be read off the words.
+                    log("   " + _banner(f"SUB-SECTION {_sec[0]}.{_sec[1]}  {label}", width=73))
                     _sub_depth[0] = 3
                 
                 # [FN-307]
@@ -1799,7 +1841,7 @@ def render():
                         _diag(f"   [diagnostics header partial/failed: {_e}]")
 
                     _progress(0.01, "Fetching attempts…")
-                    _stage("① Fetch attempts/success data")
+                    _stage("FETCH ATTEMPTS & SUCCESS DATA")
                     sql_params = {
                         "START_DATE": str(attempts_start),
                         "END_DATE": str(attempts_end),
@@ -1852,7 +1894,7 @@ def render():
                                 "use same-brand sibling / profile average.")
 
                     _progress(0.02, "Pre-processing…")
-                    _stage("② Pre-processing")
+                    _stage("PRE-PROCESSING")
                     # Cache the parsed attempts in-memory (keyed on path + mtime) so switching
                     # engine / re-running doesn't re-parse the same ~700k-row file every time.
                     _adf_k = (attempts_path, _mtime(attempts_path))
@@ -1951,7 +1993,7 @@ def render():
                                 "over every (rpgt × currency × BIN × gateway) rate in the run - "
                                 "not a pooled average at any grain of its own")
                             log("             how many gateway-rows actually took it: the "
-                                "'gateway-rows on POOLED prior' row of the ④ ROUTING PROFILES "
+                                "'gateway-rows on POOLED prior' row of the ROUTING PROFILES "
                                 "table below")
 
                     mid_list_path = os.path.join(PROJECT_ROOT, "data", "mappings", "Master_MID_List.csv")
@@ -2267,7 +2309,7 @@ def render():
                             _diag(f"      {name}: " + " · ".join(_bits))
                         _diag("")            # 19hd: separate this from the section above
                         _diag("")
-                        _diag("   ②·diag DATA SHAPES after pre-processing/filters:")
+                        _diag("   [diag] DATA SHAPES after pre-processing/filters:")
                         # 19gy: the two `rows=… · currencies=… · gateways=…` shape lines are
                         # deleted. Every figure on them is stated with context somewhere else —
                         # the profile counts in ④·diag, the RPGT split in the RPGT-scope table, the
@@ -2564,9 +2606,13 @@ def render():
                                     _drop_brand += 1; continue
                                 _cand.add(_g)
                             _explore |= _cand
-                            log(f"   {len(_cand)} available gateway(s) "
-                                f"(from {_n0}; dropped {_drop_inact} inactive, {_drop_pp} PayPal, "
-                                f"{_drop_brand} other-brand vs '{sr_company}').")
+                            # 19kc: the drop breakdown - "(from 501; dropped 387 inactive, 0
+                            # PayPal, 77 other-brand vs 'TotalAV')" - is OUT on Ben's instruction.
+                            # The count is the number anyone acts on; the three reasons a gateway
+                            # was not in it are a property of Master_MID_List.csv, not of this run,
+                            # so they said the same thing on every run and moved for reasons
+                            # nothing in this log can explain.
+                            log(f"   {len(_cand)} available gateway(s)")
                         if _explore:
                             # PER-PROFILE presence: a gateway present in ONE bank of a currency must still
                             # be injected into OTHER banks of that currency where it's absent (the old
@@ -2994,7 +3040,7 @@ def render():
                                 "for history-derived gateways this run.")
 
                     _progress(_f_profiles, "Assembling profiles…")
-                    _stage("③ Assemble routing profiles from attempts data")
+                    _stage("ASSEMBLE ROUTING PROFILES FROM ATTEMPTS DATA")
                     if _opt_profile:
                         # PROFILE decision grain: apportion each profile's forecast volume across its
                         # (pmp, Country) profiles by the pro-rata export's VI-Txn fractions (volume
@@ -3094,7 +3140,7 @@ def render():
                             return float(np.quantile(a, x)) if len(a) else 0.0
                         _diag("")
                         _diag("")
-                        _diag("   ④·diag ROUTING PROFILES assembled:")
+                        _diag("   [diag] ROUTING PROFILES assembled:")
                         _diag(f"      {'measure':<44}{'count':>16}")
                         _diag(f"      {'-' * 44}{'-' * 16}")
                         _diag(f"      {'profiles':<44}{len(agg_problems):>16,}")
@@ -3161,7 +3207,7 @@ def render():
                     # 19gs: there is no axis. The Risk<->Conversion DIAL was removed with
                     # enforcement — the engine runs ONE search and ships one split. The
                     # header outlived the thing it described by several months.
-                    _stage("④ Search for the split that ships")
+                    _stage("SEARCH FOR THE SPLIT THAT SHIPS")
                     # 19gj: the "N dials: 0" line is deleted — the multi-dial slider and the Pareto
                     # frontier were removed long ago, so it printed "1 dials: 0" every run.
 
@@ -3456,7 +3502,7 @@ def render():
                     # measurement fault can never reach the run.
                     import time as _sc_time
                     _sctm = {"t0": _sc_time.perf_counter(), "t": _sc_time.perf_counter(),
-                             "rows": []}
+                             "rows": [], "sec": ""}
 
                     # [FN-330]
                     def _sc_mark(_lbl, _st=_sctm, _tm=_sc_time):
@@ -3478,9 +3524,11 @@ def render():
                             _rows.sort(key=lambda _r: -_r[1])
                             log("")
                             log("")
-                            log(f"   [scaffold-timing] ④·1 = {_tot:.1f}s, largest first. Timed "
-                                "from the pro-rata rate load, so it starts a few seconds before "
-                                "the ④·1 header prints. Rows SUM to the total.")
+                            _ref = f"section {_st['sec']} " if _st.get("sec") else ""
+                            log(f"   [scaffold-timing] {_ref}BUILD THE PROJECTION SCAFFOLD = "
+                                f"{_tot:.1f}s, largest first. Timed from the pro-rata rate load, "
+                                "so it starts a few seconds before the sub-section banner prints. "
+                                "Rows SUM to the total.")
                             log(f"      {'step':<62}{'seconds':>10}{'share':>8}")
                             log(f"      {'-' * 62}{'-' * 10}{'-' * 8}")
                             for _l, _d in _rows:
@@ -3505,7 +3553,12 @@ def render():
                             _g = _pp.groupby(["Currency", "parent", "vampMid"]).agg(vc=("vampCount", "sum"), vt=("VI_Txn_Count", "sum"))
                             _g["rate"] = _g["vc"] / _g["vt"].replace(0, np.nan)
                             mid_rate = _g["rate"].dropna().to_dict()
-                            _substep("④·1  BUILD THE PROJECTION SCAFFOLD")
+                            _substep("BUILD THE PROJECTION SCAFFOLD")
+                            # 19kc: stamp the number the banner just printed, so
+                            # [scaffold-timing] can name its own sub-section instead of a
+                            # hard-coded "④·1" that would rot the moment a stage is inserted.
+                            # A dict WRITE, not a name binding - the 19jf trap does not apply.
+                            _sctm["sec"] = _sec_ref()
                             log(f"   MID VAMP rates from pro-rata export ({len(mid_rate):,} MID×profile rates).")
                             _sc_mark("pro-rata export -> MID VAMP rates (5 cols + 3-key groupby)")
                         except Exception as e:
@@ -7462,7 +7515,7 @@ def render():
                                 # stage 1 — the first thing the seed chain does — appeared outside
                                 # the section titled "BUILD THE WARM-START SEED".
                                 _sc_report()
-                                _substep("④·2  BUILD THE WARM-START SEED")
+                                _substep("BUILD THE WARM-START SEED")
                                 try:
                                     from routing_optimiser.s4_search.band_scoring import shares_to_prop_raw as _s2pr_seed
                                     _inc_seed = ctx["_exact_bands_selfcheck"]["inc"]
@@ -8046,7 +8099,8 @@ def render():
                                 _eff_spm = (_eff_best / (_eff_ssecs / 60.0)) if (_eff_ssecs > 0
                                             and _eff_best == _eff_best) else float("nan")   # nan-safe
                                 _eff_mode = str((_inf2 or {}).get("restart_mode", "ipop"))
-                                log("   ④ EFFICIENCY (how much search these settings bought, and how fast):")
+                                log("   SEARCH EFFICIENCY (how much search these settings bought, "
+                                    "and how fast):")
                                 log(f"      settings   : {int(_N_SEED)} seeds × {_eff_rst} restarts × "
                                     f"{int(_ga_gen)} gens × λ{int(_ga_pop)} · restart-mode={_eff_mode}")
                                 log(f"      best score : {_eff_best:,.0f}" if _eff_best == _eff_best
@@ -8061,7 +8115,7 @@ def render():
                                     log(f"      EFFICIENCY : {_eff_spm:,.0f} score/min "
                                         "— compare across runs on the SAME data (higher = better settings)")
                         except Exception as _effe:  # noqa: BLE001 - a readout must never break a run
-                            log(f"   [Warning] ④ efficiency self-report skipped ({_effe}).")
+                            log(f"   [Warning] SEARCH EFFICIENCY self-report skipped ({_effe}).")
                         # Use the risk-min GA for dial 0 only if it is compliant; else fall back to the
                         # revenue-max endpoint (dial 0 == dial 99, frontier collapses but never regresses).
                         _safe_endpoint_G = _safe_G if _agg_mid_ok(_safe_G) else _comp_endpoint_G
@@ -8918,82 +8972,36 @@ def render():
                                                         "is what ships. Report this.")
                                                     _d = _ref
                                                 log("   " + _FUSE_DELIV["msg"])
-                                                # ── 19hx [deliv-fixed] ───────────────────────
-                                                # CAN RAW AND DELIVERED EVER RECONCILE EXACTLY?
-                                                # Only if a candidate can be a FIXED POINT of the
-                                                # delivery transform - deliver(deliver(x)) ==
-                                                # deliver(x) - because "RAW" is the candidate and
-                                                # "DELIVERED" is deliver(candidate). If it is
-                                                # idempotent, a seed that EMITS its delivered split
-                                                # makes the two identical by construction. If it is
-                                                # not, no seeding closes the gap, and the search is
-                                                # scoring a transform whose own output the
-                                                # transform would change again - which is worth
-                                                # knowing on its own account.
+                                                # ── 19hx [deliv-fixed], RETIRED 19kc ────────
+                                                # It asked whether the delivery transform is
+                                                # IDEMPOTENT - whether deliver(deliver(x)) ==
+                                                # deliver(x) - because if it were, a seed that
+                                                # EMITS its delivered split would make [seed-basis]'s
+                                                # RAW and DELIVERED identical by construction.
                                                 #
-                                                # THE RULE SAYS IT IS NOT. `_fm_block` caps blocked
-                                                # rows to the exploration floor; the 0.97 water-fill
-                                                # that runs AFTER it hands excess to every row with
-                                                # share > 1e-12 that is under the cap - which
-                                                # includes a blocked row sitting at the floor. So
-                                                # the cap lifts rows the block just pinned, and a
-                                                # second pass would pin them again. Measured here
-                                                # rather than argued: one extra transform, once per
-                                                # process, on the live population.
-                                                try:
-                                                    _fx1 = np.asarray(_fm_deliv_serial(
-                                                        np.asarray(_d, float)), float)
-                                                    _fx2 = np.asarray(_fm_deliv_serial(_fx1), float)
-                                                    _fxd = float(np.abs(_fx2 - _fx1).max())
-                                                    _fxn = int(np.count_nonzero(
-                                                        np.abs(_fx2 - _fx1) > 1e-12))
-                                                    if _fxn == 0:
-                                                        log("   [deliv-fixed] the delivery transform "
-                                                            "IS IDEMPOTENT on this population: "
-                                                            "deliver(deliver(x)) == deliver(x), bit "
-                                                            f"for bit over {_fx1.size:,} entr(ies). "
-                                                            "So a seed that EMITS its delivered "
-                                                            "split would make [seed-basis]'s RAW and "
-                                                            "DELIVERED identical by construction - "
-                                                            "the remaining gap is the seed handing "
-                                                            "over its pre-transform candidate, and "
-                                                            "that is fixable.")
-                                                    else:
-                                                        log("   [deliv-fixed] the delivery transform "
-                                                            "is NOT idempotent: applying it twice "
-                                                            f"moves {_fxn:,} of {_fx1.size:,} "
-                                                            f"entr(ies), worst |Δ| {_fxd:.3e}. RAW "
-                                                            "and DELIVERED therefore CANNOT be made "
-                                                            "to agree exactly by emitting the "
-                                                            "delivered split - there is no fixed "
-                                                            "point to emit. Expected cause: "
-                                                            "blocked-caps pins rows to the "
-                                                            "exploration floor and the 0.97 "
-                                                            "water-fill that runs after it lifts "
-                                                            "them off it again ([deliv-cap] counts "
-                                                            "the same effect). "
-                                                            "19ih ANSWERED THE OPEN QUESTION AND "
-                                                            "THE ANSWER IS 'DO NOT FIX THIS': "
-                                                            "impact_calcs._cap_rows - the LIVE "
-                                                            "engine's water-fill - picks recipients "
-                                                            "with (W > 1e-12) & (~over) & "
-                                                            "(W < cap - 1e-12) and has NO "
-                                                            "blocked-row clause, and "
-                                                            "_apply_blocked_caps runs BEFORE it, so "
-                                                            "the live engine lifts a floored "
-                                                            "blocked row exactly as the search "
-                                                            "does. This non-idempotence is "
-                                                            "FAITHFUL TO DELIVERY. Excluding "
-                                                            "blocked rows here would make the "
-                                                            "search DIVERGE from what ships - the "
-                                                            "opposite of the goal. If the lift is "
-                                                            "wrong it is wrong in the live engine "
-                                                            "first, and _cap_rows is where to "
-                                                            "change it.")
-                                                except Exception as _fxe:  # noqa: BLE001
-                                                    log("   [deliv-fixed] idempotence probe skipped "
-                                                        f"({type(_fxe).__name__}: {_fxe}) - "
-                                                        "measurement only, nothing else affected.")
+                                                # ANSWERED, AND THE ANSWER IS 'DO NOT FIX IT'. It is
+                                                # NOT idempotent: `_fm_block` pins blocked rows to
+                                                # the exploration floor and the 0.97 water-fill that
+                                                # runs AFTER it hands excess to every row under the
+                                                # cap with share > 1e-12 - a floored blocked row
+                                                # included - so the cap lifts rows the block just
+                                                # pinned. 19ih established that this is FAITHFUL:
+                                                # impact_calcs._cap_rows, the LIVE engine's
+                                                # water-fill, picks recipients with (W > 1e-12) &
+                                                # (~over) & (W < cap - 1e-12) and has NO blocked-row
+                                                # clause, and _apply_blocked_caps runs before it. The
+                                                # live engine lifts a floored blocked row exactly as
+                                                # the search does. Excluding blocked rows here would
+                                                # make the search DIVERGE from what ships.
+                                                #
+                                                # So the probe was re-proving a settled answer once
+                                                # per process and printing 130 words of it, and it
+                                                # cost TWO extra full delivery transforms to do so.
+                                                # Both are gone on Ben's instruction. The verdict
+                                                # stays HERE, at the code it is about, so nobody
+                                                # re-discovers the question and re-writes the probe.
+                                                # If the lift is ever wrong it is wrong in the live
+                                                # engine first, and `_cap_rows` is where to change it.
                                                 return _d[0] if _one else _d
                                             _fm_block_into(_f, _fm_blk_row, _fm_bfloor,
                                                            _fm_blk_rows, _fm_blk_scs, _fm_blk_scc)
@@ -9319,7 +9327,7 @@ def render():
                                 _fm_nseeds = max(1, int(ss.get("ga_n_seeds", 1) or 1))
                                 _fm_restarts = max(1, int(ss.get("ga_restarts", 1) or 1))
                                 _fm_rmode = str(ss.get("ga_restart_mode", "lean") or "lean")
-                                _substep("④·3  RUN THE GENETIC SEARCH")
+                                _substep("RUN THE GENETIC SEARCH")
                                 # 19hu: as a table, and it is the ONE statement of the budget.
                                 # `④ EFFICIENCY` restated the same five numbers ~2,900 lines later
                                 # in its own `settings :` line; that one is deleted, because the
@@ -10802,15 +10810,34 @@ def render():
                                         # block reports itself instead of having to be inferred
                                         # from timestamps.
                                         import time as _nw_time
-                                        _substep("④·4  CHOOSE WHAT SHIPS")
-                                        log("   ── [never-worse] projecting BOTH candidates through "
+                                        _substep("CHOOSE WHAT SHIPS")
+                                        # 19kc - THE OLD HEADER WAS OUT OF DATE, and Ben asked.
+                                        # It said "Two full projections — and as of 19fi the
+                                        # reconcile REUSES whichever of the two belongs to the split
+                                        # that ships, so the run pays for two in total rather than
+                                        # three." The [proj-memo] half is still true. The "two"
+                                        # stopped being true when [nw-skip] landed: if the GA
+                                        # delivers 0 breach the seed is NOT projected at all,
+                                        # because nothing can beat 0. On the 2026-09-04 15:25 run
+                                        # that is exactly what happened - one [proj-memo] line, for
+                                        # 'GA output', and [nw-skip] saying the seed was skipped -
+                                        # so the run paid for ONE projection while this header
+                                        # announced two.
+                                        #
+                                        # It now states the RULE instead of a count, because the
+                                        # count is not knowable here: this line prints BEFORE either
+                                        # projection runs, and which branch is taken depends on a
+                                        # breach that has not been computed yet. [nw-skip] and
+                                        # [proj-memo] report what actually happened, below.
+                                        log("   ── [never-worse] projecting the candidates through "
                                             "the FULL delivery chain (the same one the authoritative "
                                             "reconcile uses). This is the slow, honest basis: the "
                                             "GA's own fitness is blind to delivery drift, so the two "
-                                            "cannot be compared on it. Two full projections — and "
-                                            "as of 19fi the reconcile REUSES whichever of the two "
-                                            "belongs to the split that ships, so the run pays for "
-                                            "two in total rather than three. ──")
+                                            "cannot be compared on it. At most two projections, and "
+                                            "the run never pays for three: the reconcile REUSES "
+                                            "whichever one belongs to the split that ships "
+                                            "([proj-memo]), and if the GA already delivers 0 breach "
+                                            "the seed is not projected at all ([nw-skip]). ──")
                                         # ── [forensic] 19gt: EXPLAIN THE ERROR ONLY WHEN THERE IS ONE ──
                                         # compute_vamp_prepost_granular builds four read-only stashes —
                                         # [passthru], [pshare-why], [vterms], [move-gate] — whose ONLY job is
@@ -12680,7 +12707,7 @@ def render():
                                                     f"{int(_got):,}" for _k, _want, _got in _bud_bad)
                                         + ". Every throughput and efficiency number below is for "
                                           "the budget the engine RAN, not the one above.")
-                                log("   ④ EFFICIENCY (full-matrix GA — the delivered search):")
+                                log("   SEARCH EFFICIENCY (full-matrix GA \u2014 the delivered search):")
                                 # 19hu: the `settings :` line is gone - [full-matrix] search
                                 # budget states these five numbers as a table where the search
                                 # starts, which is where they are actionable.
@@ -13006,7 +13033,7 @@ def render():
                                 _rec_ke, _rec_m0 = _pj["ke"], _pj["m0"]
                                 _rec_notes.append(f"{len(_rec_excl)} switched-off vampMid(s), "
                                                   f"month_0={_rec_m0}, scoped_rpgts={len(_rec_scoped)}")
-                                _substep("④·5  DELIVER AND RECONCILE")
+                                _substep("DELIVER AND RECONCILE")
                                 log("   [reconcile] tab-3 parity: " + " · ".join(_rec_notes))
                                 # Ask impact_calcs to stash the per-row numerator / per-profile
                                 # denominator for the banded TXN MIDs (see the [denom] block).
@@ -14890,7 +14917,7 @@ def render():
                                                             "profiles carry actual transaction history, "
                                                             "and the routing profiles were built from that "
                                                             "same attempts frame — the pipeline ADMITS "
-                                                            "them at stage ③ and the export merge "
+                                                            "them at ASSEMBLE ROUTING PROFILES "
                                                             "discards them afterwards. So OPTION 1 (let "
                                                             "them through) is aimed at a real population. "
                                                             "It CHANGES LIVE ROUTING, so it still needs "
@@ -16625,7 +16652,7 @@ def render():
 
                     # --- CACHING UPGRADE: Pre-calculate the impact frames for instant sliders ---
                     _progress(_f_eng_end, "Pre-calculating impact…")
-                    _stage("⑤ Pre-calculate impact frames for all variations")
+                    _stage("PRE-CALCULATE IMPACT FRAMES FOR ALL VARIATIONS")
                     _ensure_base_30d_metrics()
                     if "cached_base_30d_metrics" in ss:
                         _c30d = ss["cached_base_30d_metrics"]

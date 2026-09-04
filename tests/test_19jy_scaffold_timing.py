@@ -237,9 +237,11 @@ for _w in WANT:
 _n_marks = sum(1 for l in T2L if l.strip().startswith('_sc_mark("'))
 check("3  every mark is a bare statement, never part of an expression",
       _n_marks == T2C.count('_sc_mark("'), "%d mark(s)" % _n_marks)
-check("3  exactly one report call, immediately before the 4.2 header",
+# 19kc: the sub-section labels lost their hand-typed "④·2  " prefix when the log started
+# numbering itself, so this anchors on the LABEL, which is what it always meant.
+check("3  exactly one report call, immediately before the warm-start-seed banner",
       T2C.count("_sc_report()") == 1
-      and T2.index("_sc_report()") < T2.index('_substep("④·2'))
+      and T2.index("_sc_report()") < T2.index('_substep("BUILD THE WARM-START SEED"'))
 
 
 # === 4. [feas-par] AND THE SEED CHECKSUM ARE REACHABLE AGAIN ============================
@@ -289,8 +291,16 @@ check("4  tab_2's checksum block is gated on _bg_par, which is now filled",
 check("5  no mark or report result is ever assigned or tested",
       "= _sc_mark(" not in T2C and "= _sc_report(" not in T2C
       and "if _sc_mark(" not in T2C and "if _sc_report(" not in T2C)
-check("5  the harness state is only ever reached through the two closures",
-      T2C.count("_sctm") == 3, "the dict literal + the two default args")
+# 19kc: 4, not 3. The fourth is `_sctm["sec"] = _sec_ref()` at the sub-section call site,
+# which stamps the number the banner just printed so [scaffold-timing] can name its own
+# sub-section instead of the hard-coded "④·1" it used to print. It is a dict WRITE on an
+# already-bound dict, not a rebinding of `_sctm`, so the closures still see the same object -
+# which is the property this check is really about.
+check("5  the harness state is only ever reached through the closures and one dict write",
+      T2C.count("_sctm") == 4 and T2C.count("_sctm = ") == 1,
+      "the dict literal + two default args + the sub-section stamp")
+check("5  ...and the stamp is a dict write, so the closures keep the same object",
+      '_sctm["sec"] = _sec_ref()' in T2C)
 check("5  the _n <= 1 path calls _greedy(base) exactly once, as before",
       _n1.count("_greedy(base)") == 1)
 check("5  nothing in seed_search's shipped arithmetic changed",
