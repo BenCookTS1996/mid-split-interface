@@ -1269,6 +1269,31 @@ def render():
                 # after it for free.
                 _sec = [0, 0]
 
+                # ── 19ke: HOW MUCH AIR AROUND A BANNER. THIS IS THE WHOLE KNOB ────────────
+                # Ben asked for more space between sections. One blank line before a banner was
+                # not enough to break a 700-line log into blocks the eye can find while
+                # scrolling - and a "blank" line here is not blank, it still carries the
+                # timestamp prefix, so it reads as a rule rather than as emptiness.
+                #
+                # Raise these to open the log up further; lower them to tighten it. Nothing else
+                # needs touching, and nothing reads the log's shape, so this is safe to tune.
+                #
+                # WHY BLANKS ARE SAFE AT A BOUNDARY, and not in general: the [muted] verbosity
+                # gate tracks a "sticky family" - a muted tagged header, plus the deeper-indented
+                # untagged lines under it. A blank line has indent 0, so it ENDS that run. At a
+                # section boundary that is exactly right (the block is over). Inside one it would
+                # orphan the detail lines from the header that explains them, which is worse than
+                # printing or hiding the pair - so do not scatter these elsewhere.
+                _SEC_GAP = 2       # blank lines BEFORE a SECTION banner
+                _SEC_GAP_AFTER = 1 # blank lines AFTER it, before the section's first output
+                _SUB_GAP = 1       # blank lines BEFORE a SUB-SECTION banner
+                _SUB_GAP_AFTER = 1 # and after it
+
+                # [FN-304d]
+                def _gap(k):
+                    for _ in range(int(k)):
+                        log("")
+
                 # [FN-304a]
                 def _sec_ref():
                     """"4" or "4.1" - the section a line is currently inside. For the handful of
@@ -1416,6 +1441,9 @@ def render():
                     # it belonged inside it.
                     _sub_depth[0] = 0
                     if _stage_state["name"] is not None:
+                        # 19ke: and a blank BEFORE the ✓, so the finish line reads as the end of
+                        # the section rather than as one more of its output lines.
+                        log("")
                         log(f"\u2713 SECTION {_sec[0]}  {_stage_state['name']} "
                             f"\u2014 finished in {_now - _stage_state['t']:.1f}s")
                     _sec[0] += 1
@@ -1427,12 +1455,15 @@ def render():
                     # top-level sections of the run read as one wall.
                     # 19kc: and the header is a full-width ═ banner rather than "▶ name — started",
                     # so the top-level divisions of a 1,400-line log are findable by scrolling.
-                    log("")
+                    # 19ke: with `_SEC_GAP` above it and `_SEC_GAP_AFTER` below.
+                    _gap(_SEC_GAP)
                     log(_banner(f"SECTION {_sec[0]}  {name}"))
+                    _gap(_SEC_GAP_AFTER)
                 # [FN-306]
                 def _stage_end():
                     _sub_depth[0] = 0
                     if _stage_state["name"] is not None:
+                        log("")          # 19ke: same air before the ✓ as a roll-over gets
                         log(f"\u2713 SECTION {_sec[0]}  {_stage_state['name']} \u2014 finished in "
                             f"{_pt.time() - _stage_state['t']:.1f}s")
                         _stage_state["name"] = None
@@ -1491,10 +1522,11 @@ def render():
                     line's own leading spaces still read correctly: it shifts the whole block."""
                     _sec[1] += 1
                     _sub_depth[0] = 0
-                    log("")
+                    _gap(_SUB_GAP)
                     # 3 spaces in, and 6 narrower than the section rule, so the nesting is visible
                     # at a glance rather than having to be read off the words.
                     log("   " + _banner(f"SUB-SECTION {_sec[0]}.{_sec[1]}  {label}", width=73))
+                    _gap(_SUB_GAP_AFTER)
                     _sub_depth[0] = 3
                 
                 # [FN-307]

@@ -35,6 +35,10 @@ THREE LINES REMOVED OR CORRECTED, all on Ben's instruction:
     [proj-memo] line and [nw-skip] saying the seed was skipped - so the run paid for ONE while
     the header announced two. It states the RULE now, because the count is not knowable at the
     point the line prints: the branch depends on a breach not yet computed.
+
+19ke IS COVERED HERE TOO (section 7), rather than in a file of its own: it only changes how
+much air sits around the banners this test already builds and renders, and the runtime harness
+in section 3 is exactly what proves it. Grep 19ke to find it.
 """
 import ast
 import io
@@ -147,6 +151,7 @@ for _nm in _stages:
                 check("3  _sec_ref() inside the first sub-section reads 4.1",
                       _ns["_sec_ref"]() == "4.1", _ns["_sec_ref"]())
 _ns["_stage_end"]()
+_ALL = list(_ns["OUT"])                       # 19ke: blanks INCLUDED - section 7 counts them
 _out = [l for l in _ns["OUT"] if str(l).strip()]
 
 check("3  sections are numbered 1..5 in order",
@@ -211,6 +216,71 @@ check("5  [scaffold-timing] names its own sub-section from _sec_ref()",
       '_sctm["sec"] = _sec_ref()' in T2C
       and 'f"section {_st[\'sec\']} "' in T2C
       and "[scaffold-timing] ④" not in T2C)
+
+
+# === 7. 19ke: THE AIR AROUND A BANNER =================================================
+# Ben asked for more spacing between sections. A "blank" line still carries the timestamp
+# prefix, so it reads as a rule rather than as emptiness - which is why more of them help.
+check("7  the spacing is ONE knob, not repeated log() calls",
+      all(_k in T2C for _k in ("_SEC_GAP = ", "_SEC_GAP_AFTER = ",
+                               "_SUB_GAP = ", "_SUB_GAP_AFTER = "))
+      and "_gap(_SEC_GAP)" in T2C and "_gap(_SUB_GAP)" in T2C)
+_SECG = int(T2C.split("_SEC_GAP = ")[1].split()[0])
+_SECGA = int(T2C.split("_SEC_GAP_AFTER = ")[1].split()[0])
+_SUBGA = int(T2C.split("_SUB_GAP_AFTER = ")[1].split()[0])
+check("7  a section gets more than the single blank line it used to",
+      _SECG >= 2, "_SEC_GAP = %d" % _SECG)
+
+
+def _runs_before(lines, pred):
+    """How many consecutive blanks sit immediately before each line matching `pred`."""
+    _out = []
+    for _i, _l in enumerate(lines):
+        if not pred(_l):
+            continue
+        _c, _j = 0, _i - 1
+        while _j >= 0 and not str(lines[_j]).strip():
+            _c += 1
+            _j -= 1
+        _out.append(_c)
+    return _out
+
+
+def _blanks_after(lines, pred):
+    _out = []
+    for _i, _l in enumerate(lines):
+        if not pred(_l):
+            continue
+        _c, _j = 0, _i + 1
+        while _j < len(lines) and not str(lines[_j]).strip():
+            _c += 1
+            _j += 1
+        _out.append(_c)
+    return _out
+
+
+_is_sec = lambda l: str(l).startswith("\u2550")
+_before_sec = _runs_before(_ALL, _is_sec)
+check("7  every SECTION banner has _SEC_GAP blanks above it",
+      _before_sec and all(_c == _SECG for _c in _before_sec), "runs: %s" % _before_sec)
+_before_tick = _runs_before(_ALL, lambda l: str(l).startswith("\u2713 SECTION"))
+check("7  every \u2713 finish line has a blank above it, so it ends the section",
+      _before_tick and all(_c >= 1 for _c in _before_tick), str(_before_tick))
+check("7  a SECTION banner is followed by _SEC_GAP_AFTER blank(s)",
+      all(_c >= _SECGA for _c in _blanks_after(_ALL, _is_sec)))
+check("7  a SUB-SECTION banner is followed by _SUB_GAP_AFTER blank(s)",
+      all(_c >= _SUBGA for _c in _blanks_after(_ALL, lambda l: "SUB-SECTION" in str(l))))
+_i2 = next(_i for _i, _l in enumerate(_ALL) if _is_sec(_l) and "SECTION 2 " in str(_l))
+_boundary = sum(1 for _l in _ALL[max(_i2 - 4, 0):_i2] if not str(_l).strip())
+check("7  a section BOUNDARY is several spacer lines wide now, not one",
+      _boundary >= 3,
+      "%d blank(s) in the 4 lines above the SECTION 2 banner" % _boundary)
+
+# THE SAFETY PROPERTY. A blank has indent 0, which ENDS the [muted] gate's sticky family.
+# Right at a boundary (the block is over), wrong inside one - so it is asserted, not assumed.
+check("7  a blank line has indent 0, so it terminates a muted family run",
+      any("return len(msg) - len(msg.lstrip" in l for l in T2L),
+      "scattering blanks INSIDE a block would orphan detail lines from their header")
 
 
 # === 6. THE FILE STILL LOADS ===========================================================
