@@ -4,11 +4,17 @@ Originally split out of streamlit_app.py into its own file (since evolved) so th
 script stays small. streamlit_app.py calls `render()` from inside `with tab_fc:`.
 
 TWO JOBS, which is why the filename says 1_1 and this docstring says more than that:
-  1. `render()` creates tab 1's three sub-tabs — Build Baseline / Validate Split / Config
-     Validation — and delegates 1·2 to tab_1_2_validate_split.render() and 1·3 to
-     tab_1_3_config_validation.render() at the bottom of this file.
-  2. Everything ABOVE those two calls is sub-tab 1's own body: run identity, data sources,
+  1. `render()` creates tab 1's TWO sub-tabs — Build Baseline / Validate Split — and delegates
+     1·2 to tab_1_2_validate_split.render() at the bottom of this file.
+  2. Everything ABOVE that call is sub-tab 1's own body: run identity, data sources,
      assumptions, configs & overrides, the green Calculate/Load Forecast button and the run log.
+
+19jz: there WAS a third sub-tab, 'Config Validation'. Its left column embedded tab 4's config
+generator and its right column held a profile lookup — i.e. tab 4's two jobs, in tab 1, with a
+second set of widget keys. Ben removed it as duplication and tab 4 (now '4 · Config Files')
+took the layout whole. It is also what fixed the whiteout: Streamlit builds tab panels in
+script order and the generator BLOCKS that run, so while it worked from in here, tabs 2, 3 and
+4 had not been built yet and showed blank.
 """
 from __future__ import annotations
 
@@ -33,7 +39,7 @@ from app_common import (ss, PROJECT_ROOT, GCP_PROJECT, input_json_path,
 
 # [FN-293]
 def render():
-    _bb, _vs, _cv = st.tabs(["Build Baseline", "Validate Split", "Config Validation"])
+    _bb, _vs = st.tabs(["Build Baseline", "Validate Split"])
     with _bb:
         # --- Highly targeted CSS: applies card shadow ONLY to the 6 section containers ---
         # --- Also aggressively squashes vertical margins specifically inside these cards ---
@@ -229,17 +235,15 @@ def render():
                              + f".  Looked in: {prev_dir}")
 
         _fc_log_slot = None   # forecast run-log slot (assigned in ROW 2 right column)
-        # 19eq: positions RESERVED in the row-2 right column and written to further down. A
-        # widget renders where it is created, and neither of these can be created there — the
-        # button needs `actuals_valid` / `forecast_settings`, the preview needs the assembled
-        # config.
-        # `_yaml_slot` stays None in previous-forecast mode (ROW 2 never renders, and that mode
-        # has no settings.yaml to preview), and its write site falls back to full-width `st`.
+        # 19eq: a position RESERVED in the row-2 right column and written to further down. A
+        # widget renders where it is created, and the log cannot be created there.
+        # 19jz: `_yaml_slot` is GONE with it. It reserved a spot for the settings.yaml preview
+        # inside that same row; the preview now renders at the bottom of the tab, where it
+        # needs no slot because nothing follows it.
         # `_calc_btn_slot` is DELIBERATELY NOT RESET HERE (19fa): it is declared above the
         # previous-forecast block, and in that mode it already holds the left-column slot the
         # block reserved. Resetting it to None here would send the green button back to
         # full-width below the row, which is the bug 19fa fixed.
-        _yaml_slot = None       # "Preview assembled settings.yaml" expander
 
         if not use_prev:
             # --- ROW 1: Run Identity & Data Sources ---
@@ -537,8 +541,15 @@ def render():
                     # inside; this caps the region they share.
                     # 19gg: created in `_grow_col` — the RIGHT half of the Gateway-Volume-Overrides
                     # row — instead of full width below it. Same container, same reserve, one row up.
+                    # 19jz: the settings.yaml preview LEFT this reserve. It now renders below
+                    # the pre/post table at the bottom of the tab (Ben's instruction: column
+                    # width, beneath that table), so the box holds the run log alone.
+                    #
+                    # THE RESERVE STILL EARNS ITS KEEP, for the same reason as before: the log
+                    # scrolls inside a fixed height instead of growing row 2 and shoving the
+                    # pre/post table down. Nothing needs re-tuning — one occupant in a reserve
+                    # sized for two just means the log gets all of it, which is more log.
                     _grow_box = _grow_col.container(height=_GROW_BOX_PX)
-                    _yaml_slot = _grow_box.container()
                     _fc_log_slot = _grow_box.container()
 
                 # The forecast run log used to render HERE, in the row-2 right column - i.e.
@@ -604,23 +615,14 @@ def render():
             "Load forecast" if use_prev else "Calculate Forecast",
             type="primary", key="calc_cache_btn",
             disabled=(not settings_hidden) if use_prev else (not actuals_valid))
-        # Preview the assembled settings.yaml — build mode only (hidden when loading a previous
-        # forecast). Rendered BELOW the Calculate Forecast button.
-        if not use_prev:
-            _yaml_ctx = _yaml_slot if _yaml_slot is not None else st
-            # 19eu: `expanded=False` stated rather than relied on. It is st.expander's default,
-            # but a default is not a decision — this one is, so it is written down.
-            with _yaml_ctx.expander("Preview assembled settings.yaml (VAMP pipeline schema)",
-                                    expanded=False):
-                pipeline_config = build_pipeline_config(forecast_settings)
-                # 19et: the YAML scrolls INSIDE a fixed-height box (~10 lines) instead of
-                # rendering its full length. The download button stays OUTSIDE the box so it is
-                # always reachable without scrolling to the bottom of the config.
-                st.container(height=_CODE_BOX_PX).code(
-                    yaml.safe_dump(pipeline_config, sort_keys=False), language="yaml")
-                st.download_button("Download settings.yaml",
-                                   yaml.safe_dump(pipeline_config, sort_keys=False),
-                                   file_name="vamp_settings.yaml", mime="text/yaml")
+        # 19jz: the settings.yaml preview USED TO RENDER HERE, just below the Calculate
+        # Forecast button and inside row 2's shared reserve — so it was ~48% of the right
+        # column, about a quarter of the page, and the YAML wrapped badly in it. It now renders
+        # at the very BOTTOM of this sub-tab, one COLUMN wide and beneath the pre/post table
+        # (Ben's instruction). Search for "SETTINGS.YAML PREVIEW, LAST" below.
+        #
+        # Moving it DOWN is what makes the width free: 19fc's rule is that a thing which can
+        # grow must come after everything it could push, and nothing follows the preview now.
         # ── RUN LOG ───────────────────────────────────────────────────────────────────────────
         # 19eq: the container is created UP IN THE ROW-2 RIGHT COLUMN, next to the config
         # captions — that is what makes it one column wide rather than full page, and it takes
@@ -831,11 +833,34 @@ def render():
             except Exception as _e:  # noqa: BLE001
                 st.caption(f"(baseline VI/VAMP table unavailable: {type(_e).__name__}: {_e})")
 
+        # ── SETTINGS.YAML PREVIEW, LAST ──────────────────────────────────────────────────
+        # 19jz, on Ben's instruction: BENEATH the pre/post table, and one COLUMN wide rather
+        # than the quarter-page slice it had inside row 2's reserve.
+        #
+        # Build mode only. In previous-forecast mode there is no assembled settings.yaml to
+        # preview — that mode runs from a folder of outputs someone else's run produced — so
+        # the expander is absent rather than empty.
+        #
+        # Being last is deliberate and is the whole reason it can be this wide: expanding it
+        # can only push things BELOW it, and there is nothing below it. That is 19fc's ordering
+        # rule, which is also why the pre/post table's slot is reserved above.
+        if not use_prev:
+            _yaml_col = st.columns(2)[0]
+            # 19eu: `expanded=False` stated rather than relied on. It is st.expander's default,
+            # but a default is not a decision — this one is, so it is written down.
+            with _yaml_col.expander("Preview assembled settings.yaml (VAMP pipeline schema)",
+                                    expanded=False):
+                pipeline_config = build_pipeline_config(forecast_settings)
+                # 19et: the YAML scrolls INSIDE a fixed-height box (~10 lines) instead of
+                # rendering its full length. The download button stays OUTSIDE the box so it is
+                # always reachable without scrolling to the bottom of the config.
+                st.container(height=_CODE_BOX_PX).code(
+                    yaml.safe_dump(pipeline_config, sort_keys=False), language="yaml")
+                st.download_button("Download settings.yaml",
+                                   yaml.safe_dump(pipeline_config, sort_keys=False),
+                                   file_name="vamp_settings.yaml", mime="text/yaml")
+
 
     with _vs:
         import tab_1_2_validate_split
         tab_1_2_validate_split.render(ss, PROJECT_ROOT, GCP_PROJECT)
-
-    with _cv:
-        import tab_1_3_config_validation
-        tab_1_3_config_validation.render(ss, PROJECT_ROOT)

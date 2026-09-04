@@ -1,4 +1,16 @@
-"""Baseline & Validate → 'Config Validation' sub-tab.
+"""Config profile LOOKUP - the matching engine and its UI panel.
+
+Was `tab_1_3_config_validation.py`, the 'Config Validation' sub-tab of Baseline & Validate.
+19jz: that sub-tab was pure duplication of tab 4 (it embedded tab 4's own generator in its left
+column), so on Ben's instruction the whole layout moved to tab 4 - now '4 - Config Files' - and
+the sub-tab is gone. What is left here is not a tab: it is the library tab 4 renders. The file
+is renamed to match, because a module called `tab_1_3_...` when no such tab exists is a lie the
+next reader has to disprove.
+
+TWO ENTRY POINTS:
+  * `render_lookup_panel(ss, PROJECT_ROOT)` - the whole 'Look up configs by profile' column:
+    folder input, Load Configs, then the lookup below it.
+  * `render_profile_lookup(named_pools)`   - the lookup itself over pools you already hold.
 
 Load a folder of generated ConnectorPool config JSONs and LOOK UP which config(s) would route a
 given transaction profile (currency / BIN / country / provider / payment-scheme / RPGT / connector).
@@ -125,9 +137,10 @@ def _matches(pool, want):
 
 # [FN-433b]
 def render_profile_lookup(named_pools, key_prefix="cfgval_"):
-    """Profile-lookup UI over `named_pools` (list of (filename, pool_dict)): profile filters → scatter
-    charts of the matches → a dropdown + single JSON viewer. Widget keys are prefixed so it can render
-    in more than one place (Config Validation and the '4 · Generate configs' tab)."""
+    """Profile-lookup UI over `named_pools` (list of (filename, pool_dict)): profile filters →
+    charts of the matches → a dropdown + single JSON viewer. Widget keys are prefixed so it can
+    render in more than one place on the '4 · Config Files' tab (the folder-loaded configs, and
+    the ones just generated)."""
     from app_common import render_config_profile_charts as _rcpc
     if not named_pools:
         st.markdown("<div style='font-size:12px; color:#0B1F3A;'>No configs to look up yet.</div>",
@@ -182,62 +195,71 @@ def render_profile_lookup(named_pools, key_prefix="cfgval_"):
 
 
 # [FN-433]
-def render(ss, PROJECT_ROOT):
+def render_lookup_panel(ss, PROJECT_ROOT, key_prefix="cfgval_"):
+    """The 'Look up configs by profile' COLUMN: folder input + Load Configs, then the lookup.
+
+    19jz: this was the right-hand column of the deleted Config Validation sub-tab. Its left-hand
+    column embedded tab 4's generator, which is exactly the duplication Ben removed - tab 4 now
+    owns the two-column layout and calls this for the right one, so there is one copy of each.
+    """
     from app_common import green_button_css
 
-    _gen_col, _lookup_col = st.columns(2)
+    # DEFAULT folder: data/config_validation/config_lookup/<COMPANY>/<SCHEME>, which is the real
+    # layout on disk (see data/config_validation/config_lookup/TotalAV/visa). Company comes from
+    # the forecast; scheme from the Validate Split selection if one has been made, else the
+    # baseline scheme - the same derivation tab 4 uses for its rules folder, so the two inputs
+    # never disagree about which run you are looking at.
+    #
+    # setdefault, NOT an assignment: a programmatic session_state write on every rerun makes the
+    # top-level st.tabs lose the active tab (the reason tab 4's own default is a setdefault too).
+    # So this is a FIRST-RUN default - switch company or scheme later and you edit the path.
+    _fs = ss.get("forecast_settings", {}) or {}
+    _co = str(_fs.get("company", "TotalAV"))
+    _sch = str(ss.get("validate_card_scheme") or _fs.get("card_scheme", "visa") or "visa").strip().lower()
+    ss.setdefault(key_prefix + "folder",
+                  os.path.join("data", "config_validation", "config_lookup", _co, _sch))
 
-    # LEFT column: the full config generator (which contains the 'Exported rules folder' input).
-    # A distinct key_prefix keeps its widgets/results independent of the '4 · Generate configs' tab;
-    # its own per-config find panel is suppressed here (the profile lookup on the right replaces it).
-    with _gen_col:
-        st.markdown("##### Generate Configs")   # in-line with 'Look up configs by profile' (same h5)
-        import tab_4_generate_configs
-        tab_4_generate_configs.render(ss, PROJECT_ROOT, key_prefix="cv_", show_find=False)
+    _fc, _bc = st.columns([5, 1], vertical_alignment="bottom")
+    folder = (_fc.text_input(
+        "Configs folder", key=key_prefix + "folder",
+        help="Folder of exported ConnectorPool .json configs (searched recursively). Each file "
+             "may hold one pool or a list of pools. Defaults to "
+             "data/config_validation/config_lookup/<COMPANY>/<SCHEME>.") or "").strip()
+    green_button_css(key_prefix + "reload")
+    _reload = _bc.button("Load Configs", key=key_prefix + "reload")
 
-    # RIGHT column: profile lookup over a loaded folder of configs — side by side with the generator.
-    with _lookup_col:
-        st.markdown("##### Look up configs by profile")
-        _fc, _bc = st.columns([5, 1], vertical_alignment="bottom")
-        folder = (_fc.text_input(
-            "Configs folder", key="cfgval_folder",
-            help="Folder of exported ConnectorPool .json configs (searched recursively). Each file "
-                 "may hold one pool or a list of pools.") or "").strip()
-        green_button_css("cfgval_reload")
-        _reload = _bc.button("Load Configs", key="cfgval_reload")
-
-        _ck = ss.get("_cfgval_cache") or {}
-        if folder and (_reload or _ck.get("folder") != folder):
-            # Resolve the path: use it as-is if it's a folder; otherwise try it relative to the project
-            # root (also fixes a stray leading '/', e.g. '/data/...' which Python reads as an absolute
-            # filesystem path, not a project-relative one).
-            _resolved = folder
-            _alt = os.path.join(PROJECT_ROOT, folder.lstrip("/\\"))   # project-relative fallback
-            if not os.path.isdir(_resolved) and os.path.isdir(_alt):
-                _resolved = _alt
-            if not os.path.isdir(_resolved):
-                st.error(f"Not a folder: {folder or '(empty)'} "
-                         f"(also tried under the project root: {_alt})")
-                return
-            _ck = {"folder": folder, "resolved": _resolved, "pools": _load_configs(_resolved)}
-            ss["_cfgval_cache"] = _ck
-
-        # Source of configs to look up: a loaded folder wins; otherwise the configs just GENERATED on
-        # the left (key_prefix 'cv_' → ss['cv_configs']) auto-populate here.
-        if folder:
-            _pools = _ck.get("pools") or []
-            if not _pools:
-                st.warning(f"No ConnectorPool .json configs found in: {folder}")
-                return
-            _named = [(os.path.basename(fp), p) for fp, p in _pools]
-            st.caption(f"Loaded **{len(_named)}** config(s) from `{_ck.get('resolved', folder)}`.")
-        elif ss.get("cv_configs"):
-            _gen = ss["cv_configs"]
-            _named = [(f"{_n}.json", _p) for _n, _p in _gen.items()]
-            st.caption(f"Showing the **{len(_named)}** config(s) generated on the left.")
-        else:
-            st.markdown("<div style='font-size:12px; color:#0B1F3A;'>Enter a configs folder and click "
-                        "<b>Load Configs</b>, or generate configs on the left.</div>",
-                        unsafe_allow_html=True)
+    _ck = ss.get("_cfgval_cache") or {}
+    if folder and (_reload or _ck.get("folder") != folder):
+        # Resolve the path: use it as-is if it's a folder; otherwise try it relative to the project
+        # root (also fixes a stray leading '/', e.g. '/data/...' which Python reads as an absolute
+        # filesystem path, not a project-relative one).
+        _resolved = folder
+        _alt = os.path.join(PROJECT_ROOT, folder.lstrip("/\\"))   # project-relative fallback
+        if not os.path.isdir(_resolved) and os.path.isdir(_alt):
+            _resolved = _alt
+        if not os.path.isdir(_resolved):
+            st.error(f"Not a folder: {folder or '(empty)'} "
+                     f"(also tried under the project root: {_alt})")
             return
-        render_profile_lookup(_named, key_prefix="cfgval_")
+        _ck = {"folder": folder, "resolved": _resolved, "pools": _load_configs(_resolved)}
+        ss["_cfgval_cache"] = _ck
+
+    # Source of configs to look up: a loaded folder wins; otherwise the configs just GENERATED in
+    # the left column (ss['configs']) auto-populate here.
+    if folder:
+        _pools = _ck.get("pools") or []
+        if not _pools:
+            st.warning(f"No ConnectorPool .json configs found in: {folder}")
+            return
+        _named = [(os.path.basename(fp), p) for fp, p in _pools]
+        st.caption(f"Loaded **{len(_named)}** config(s) from `{_ck.get('resolved', folder)}`.")
+    elif ss.get("configs"):
+        _gen = ss["configs"]
+        _named = [(f"{_n}.json", _p) for _n, _p in _gen.items()]
+        st.caption(f"Showing the **{len(_named)}** config(s) generated on the left.")
+    else:
+        st.markdown("<div style='font-size:12px; color:#0B1F3A;'>Enter a configs folder and click "
+                    "<b>Load Configs</b>, or generate configs on the left.</div>",
+                    unsafe_allow_html=True)
+        return
+    render_profile_lookup(_named, key_prefix=key_prefix)

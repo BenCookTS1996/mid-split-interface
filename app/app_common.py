@@ -1697,11 +1697,80 @@ except Exception as _gfe:  # noqa: BLE001 — a broken sheet must not stop the a
         "with them. Fix the sheet rather than reading past this.")
 
 
-_LOST_IN_OVERWRITE_2026_08_26 = {
-    "render_config_profile_charts":
-        "Renders the profile-match scatter charts for the config-lookup UI "
-        "(tab_1_3_config_validation.py:131, imported lazily inside render_profile_lookup).",
-}
+# ── PROFILE-MATCH CHARTS for the config lookup (tab 4 · Config Files) ────────────────────
+# 19jz: THIS IS NEW CODE, NOT A RECOVERY, and it matters that the difference is written down.
+# The original `render_config_profile_charts` was destroyed on 2026-08-26 by a force-push that
+# discarded uncommitted working-tree edits. It is in NO commit, NO .pyc and no backup on this
+# machine - every commit's copy of this file was checked - so nothing here reproduces it. This
+# answers the two questions the lookup is actually for; if the original ever turns up, the
+# difference between them is a design difference, not a bug.
+#
+# WHY WRITING IT FRESH IS SAFE, where the stub's warning says a guess would not be: this
+# function only DRAWS. It is handed the ALREADY-MATCHED pools, returns nothing, and nothing
+# downstream reads anything it computes. A wrong choice here is a worse chart, never a moved
+# number. That is the whole distinction - the symbol the warning was written about
+# (`active_gateway_fids`) fed the gateway set the optimiser may use; this one feeds a picture.
+#
+# The lookup helpers are imported LAZILY from config_profile_lookup: this module must stay
+# importable on its own (every tab imports it at module level), and that one imports this.
+def render_config_profile_charts(named_pools, height=300):
+    """Two charts over the configs that match the current profile filter.
+
+    `named_pools` is [(filename, pool_dict)] - the MATCHES, already filtered by the caller.
+    Draws only; returns None. A chart that cannot be drawn says so and the lookup below it
+    still works, because a broken picture must not cost anyone the JSON viewer."""
+    _pools = list(named_pools or [])
+    if not _pools:
+        st.markdown("<div style='font-size:12px; color:#0B1F3A;'>No matching configs to "
+                    "chart.</div>", unsafe_allow_html=True)
+        return
+    try:
+        from config_profile_lookup import (_profile_of, _rpgt_of, _connectors_of)
+        _rows = []
+        for _fn, _p in _pools:
+            _sel = _p.get("selector") or {}
+            _rows.append({
+                "config": str(_fn),
+                "priority": int(_sel.get("priority", 0) or 0),
+                "connectors": len(_connectors_of(_p)),
+                "RPGT": _rpgt_of(_p) or "(unidentified)",
+                # BIN-specific vs catch-all is the distinction that decides which pool WINS a
+                # transaction at equal priority, so it is the split worth colouring by.
+                "grain": "BIN-specific" if _profile_of(_p)["bins"] else "catch-all",
+            })
+        _df = pd.DataFrame(_rows)
+        st.markdown("<div style='font-size:12px; color:#0B1F3A; font-weight:700;'>"
+                    "Matching pools · priority × connector count</div>",
+                    unsafe_allow_html=True)
+        st.scatter_chart(_df, x="priority", y="connectors", color="grain",
+                         height=int(height), use_container_width=True)
+        # WHICH GATEWAYS THIS PROFILE CAN ACTUALLY REACH, counted over the matching pools. This
+        # is the operational question the lookup gets opened for: not "does a config exist" but
+        # "which connectors would this transaction be allowed to go to".
+        _cc = {}
+        for _fn, _p in _pools:
+            for _c in _connectors_of(_p):
+                _cc[str(_c)] = _cc.get(str(_c), 0) + 1
+        st.markdown("<div style='font-size:12px; color:#0B1F3A; font-weight:700;'>"
+                    "Pools per connector (which gateways this profile can reach)</div>",
+                    unsafe_allow_html=True)
+        if _cc:
+            _cdf = (pd.DataFrame({"connector": list(_cc.keys()), "pools": list(_cc.values())})
+                    .sort_values("pools", ascending=False).set_index("connector"))
+            st.bar_chart(_cdf, height=int(height), use_container_width=True)
+        else:
+            st.markdown("<div style='font-size:12px; color:#0B1F3A;'>The matching pools name "
+                        "no connectors.</div>", unsafe_allow_html=True)
+    except Exception as _ce:  # noqa: BLE001
+        # NOT a silent skip: the reason is printed, and the lookup below continues.
+        st.caption(f"(profile charts skipped: {type(_ce).__name__}: {_ce})")
+
+
+# EMPTY as of 19jz, and the mechanism stays. `render_config_profile_charts` was the last
+# entry; it is now DEFINED above - re-implemented from scratch, not recovered - so listing it
+# here would install a stub over a working function. The record of what happened is in that
+# function's own comment, which is where someone reading the code will be.
+_LOST_IN_OVERWRITE_2026_08_26 = {}
 
 
 def _lost_symbol(_name):
@@ -1713,10 +1782,11 @@ def _lost_symbol(_name):
             f"working-tree edits. It is not in git HEAD or in either app_common .pyc, so there is "
             f"no copy on this machine.\n\n"
             f"WHAT IT DID: {_LOST_IN_OVERWRITE_2026_08_26.get(_name, '(unknown)')}\n\n"
-            f"THIS IS A DELIBERATE FAILURE, NOT A BUG TO ROUTE AROUND. A reconstructed version "
-            f"would be a guess, and for active_gateway_fids a wrong guess silently changes the "
-            f"gateway set the optimiser may use. Paste the real definition into app_common.py "
-            f"(anywhere) and this stub disappears on its own.\n\n"
+            f"THIS IS A DELIBERATE FAILURE, NOT A BUG TO ROUTE AROUND. A reconstructed "
+            f"version would be a guess, and a guess is only acceptable where a wrong one cannot "
+            f"move a number - for anything that feeds the gateway set or the split it is not. "
+            f"Paste the real definition into app_common.py (anywhere) and this stub disappears "
+            f"on its own.\n\n"
             f"Everything that does NOT use this function is unaffected \u2014 tab 2 and the "
             f"engine run normally.")
     _raise.__name__ = _name
@@ -1725,7 +1795,10 @@ def _lost_symbol(_name):
     return _raise
 
 
+# 19jz: `del _lost` sat below this loop, and `for _lost in {}` never BINDS `_lost` - so the
+# moment the dict emptied (today) importing app_common would have died on NameError, taking
+# every tab with it. The loop variable is pre-bound instead of deleted.
+_lost = None
 for _lost in _LOST_IN_OVERWRITE_2026_08_26:
     if _lost not in globals():
         globals()[_lost] = _lost_symbol(_lost)
-del _lost

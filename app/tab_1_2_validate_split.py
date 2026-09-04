@@ -323,17 +323,39 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
             # brand's rule files in one folder, so exporting a second brand overwrote the first's
             # templates with no warning — the folder name is the only thing that separated them.
             def _v_rules_default(_co, _sc):
+                # 19jz: `.replace(" ", "")` REMOVED. The folders on disk are
+                # data/exported_rules/Total Drive/visa - WITH the space - so stripping it
+                # produced `TotalDrive`, a path that does not exist, and every multi-word
+                # company arrived on this tab with a broken default. (TotalAV has no space,
+                # which is why it never showed.) Not asked for; found because 19jz sets the
+                # same default in two more places and they have to agree with each other.
                 return os.path.join("data", "exported_rules",
-                                    str(_co or "").replace(" ", ""),
+                                    str(_co or ""),
                                     str(_sc or "visa").strip().lower())
 
             ss.setdefault("validate_rules_dir", _v_rules_default(_company, _scheme))
+
+            # [FN-vs-prevdir]
+            def _v_prev_default(_co, _sc):
+                """data/outputs/_validate/<MONTH>/<COMPANY>/<SCHEME> - the layout on disk (see
+                data/outputs/_validate/AUG/TotalAV/visa). MONTH is derived from Month 0, the
+                same way the pipeline names its own output folder, so the default points at the
+                run this tab is about to validate rather than at today's month."""
+                return os.path.join("data", "outputs", "_validate", _month,
+                                    str(_co or ""),
+                                    str(_sc or "visa").strip().lower())
+
+            ss.setdefault("validate_prev_dir", _v_prev_default(_company, _scheme))
 
             # Rules folder follows the scheme via an on_change CALLBACK (a programmatic write in the
             # render body would make st.tabs jump back to 'Build Baseline').
             def _v_scheme_changed():
                 _sc = str(ss.get("validate_card_scheme", "visa") or "visa").strip().lower()
                 ss["validate_rules_dir"] = _v_rules_default(_company, _sc)
+                # 19jz: the forecast-outputs folder follows the scheme too. Both paths end in
+                # the scheme segment, so leaving one behind is how you end up validating a Visa
+                # split against a Mastercard forecast and seeing it in neither box.
+                ss["validate_prev_dir"] = _v_prev_default(_company, _sc)
 
             rules_dir = _ri1.text_input(
                 "Exported rules folder", key="validate_rules_dir",
@@ -431,9 +453,25 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
         v_use_prev = st.checkbox(
             "Load a previously-run forecast (skip the live pipeline)",
             value=bool(ss.get("validate_use_prev", False)), key="validate_use_prev",
-            help="Reuse an existing data/outputs/<MONTH>/<COMPANY>/ folder from a prior run "
-                 "instead of re-running the pipeline. The rules folder above is still parsed "
-                 "for the impact split.")
+            help="Reuse an existing data/outputs/_validate/<MONTH>/<COMPANY>/<SCHEME> folder "
+                 "from a prior run instead of re-running the pipeline. The rules folder above "
+                 "is still parsed for the impact split.")
+        # 19jz: THE FOLDER INPUT LIVES HERE NOW, on Ben's instruction - directly below the
+        # tickbox that reveals it, in the same column. It used to appear at the BOTTOM of the
+        # '4 · Inputs & Assumptions' form in the OTHER column, so ticking a box on the left made
+        # a field appear on the right, under four unrelated inputs, and you had to hunt for it.
+        #
+        # Outside the form, like the tickbox: the tickbox has to be outside (a form defers its
+        # effect to submit, so the field would not appear until you had already run), and a
+        # field that appears with it belongs with it. Cost: typing in it reruns the tab. That is
+        # what the tickbox already did.
+        v_prev_dir = ss.get("validate_prev_dir", "")
+        if v_use_prev:
+            v_prev_dir = st.text_input(
+                "Forecast outputs folder", key="validate_prev_dir",
+                help="The data/outputs/_validate/<MONTH>/<COMPANY>/<SCHEME> folder containing "
+                     "mid_level.csv (and the other export CSVs) from a previous run. Defaults "
+                     "to this run's own Month 0 / Company / Card Scheme.")
     with _gR:
         v_use_live = True   # always on — the 'Use Live Actuals' toggle was removed
         # Header + date pair share ONE bordered container (mirrors section 2 and the section-4 form).
@@ -494,15 +532,10 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
                 "Force Actuals for", options=_force_opts, key="validate_force_actuals",
                 help="These transaction types use live actuals instead of the forecast for "
                      "month 0. Leave empty to force none.", **_ms_kw)
-            # Forecast outputs folder only appears when the load-previous box (above, outside
-            # the form) is ticked. Default to the stored path when hidden so `if run:` is safe.
-            v_prev_dir = ss.get("validate_prev_dir", "")
-            if v_use_prev:
-                v_prev_dir = st.text_input(
-                    "Forecast outputs folder", value=ss.get("validate_prev_dir", ""),
-                    key="validate_prev_dir",
-                    help="The data/outputs/<MONTH>/<COMPANY>/ folder containing mid_level.csv "
-                         "(and the other export CSVs) from a previous run.")
+            # 19jz: the Forecast outputs folder was HERE, at the bottom of this form in the
+            # right column, while the tickbox that reveals it is in the left one. It now renders
+            # directly under that tickbox - search for "THE FOLDER INPUT LIVES HERE NOW" above.
+            # `v_prev_dir` is already bound there, on both branches, so `if run:` below is safe.
             run = st.form_submit_button("Run Validation", type="primary")
 
     # 5. Attempts & success data — its own row, below Inputs & Assumptions + the run log
@@ -553,7 +586,7 @@ def render(ss, PROJECT_ROOT, GCP_PROJECT):
             _mid = os.path.join(v_prev_dir, "mid_level.csv")
             if not os.path.exists(_mid):
                 st.error(f"mid_level.csv not found in: {v_prev_dir} — is this a completed "
-                         "data/outputs/<MONTH>/<COMPANY>/ run folder?")
+                         "data/outputs/_validate/<MONTH>/<COMPANY>/<SCHEME> run folder?")
                 return
             try:
                 _df = pd.read_csv(_mid)

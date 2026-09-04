@@ -1,4 +1,4 @@
-"""Tab: Generate ConnectorPool JSON configs from the proposed split.
+"""Tab 4 - Config Files: generate ConnectorPool JSON configs, and look them up.
 
 This is the LAST-MILE tab: it turns the chosen split variation into the actual
 ConnectorPool JSON files production deploys — optionally COMPRESSED to a target
@@ -7,6 +7,17 @@ then zipped for download, with a search box to inspect a single config.
 
 ANALOGY: the split is the "recipe"; this tab prints the "shopping list" the kitchen
 (production) actually follows. Call render(ss, PROJECT_ROOT) from inside `with tab_cfg:`.
+
+19jz - TWO COLUMNS, ONE COPY OF EACH. The 'Config Validation' sub-tab of Baseline & Validate
+used to put this generator in its LEFT column and a profile lookup in its RIGHT one; this tab
+put the generator full-width with the lookup underneath. Same two things, two layouts, two sets
+of widget keys. Ben removed the sub-tab, so `render()` below is now that sub-tab's layout -
+generator left, lookup right - and `render_generator()` is the body that used to be `render()`.
+
+THAT IS ALSO THE WHITEOUT FIX. Streamlit builds every tab panel in ONE script run, in script
+order, and generation blocks that run. The generator used to live inside tab 1, so while it
+worked, tabs 2, 3 and 4 had not been created yet and rendered blank. This tab is the LAST one
+built, so tabs 1-3 are already on the page before the first pool is written.
 
 Originally split out of streamlit_app.py (since evolved) as the first step of the
 per-tab split."""
@@ -54,16 +65,17 @@ __build__ = "2026-07-29-cfg-json-viewer-bin-filter+single-variation-dial-guard"
 
 
 # [FN-386]
-def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
-    """Render the config-generation tab.
+def render_generator(ss, PROJECT_ROOT, key_prefix="", show_find=True):
+    """Render the config GENERATOR (the left column of this tab; `render()` is the page).
 
     Flow: if no split has been computed yet, show a placeholder. Otherwise pick the split
     variation (brand + go-live come from earlier tabs), optionally compress it to the pool
     target, build the per-Brand×RPGT templates, run the ConnectorPool generator, and offer the
     results as a zip plus a per-config search/download. `ss` is Streamlit's session_state.
     """
-    _kp = key_prefix   # widget/result-key prefix so this generator can render in >1 place (tab 4 AND
-                       # the Config Validation sub-tab) without Streamlit duplicate-key clashes.
+    _kp = key_prefix   # widget/result-key prefix. 19jz: there is only ONE place left (this tab's
+                       # left column, prefix ""), but the parameter stays - it is what let the
+                       # generator be embedded twice, and removing it would hard-code the keys.
     _variations = ss.get("variations") or []
     # Never locked: configs are generated from the exported-rules FOLDER below, so a computed split is
     # NOT required. The dial is only shown when variations exist. (`if True:` keeps the body indent.)
@@ -78,11 +90,15 @@ def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
         # scheme_filter is RE-DERIVED at generate time from the folder you point at, so a Mastercard
         # split emits Mastercard configs even when the baseline was Visa.
         _active_scheme = str(ss.get("validate_card_scheme") or _fs_c.get("card_scheme", "visa") or "visa").strip().lower()
-        # Rules folder defaults to that scheme's subfolder (data/exported_rules/<scheme>). FIRST-RUN
-        # default only (setdefault): a programmatic session_state write on every rerun would make the
-        # top-level st.tabs lose the active tab. If you switch scheme later, just edit the folder path.
-        ss.setdefault((_kp + "cfg_rules_folder"), os.path.join("data", "exported_rules", _active_scheme))
+        # Rules folder defaults to data/exported_rules/<COMPANY>/<SCHEME> - the layout that is
+        # actually on disk. 19jz: it used to default to data/exported_rules/<SCHEME>, a folder that
+        # does not exist, so the box arrived wrong on every first load AND the brand inference below
+        # (which reads the folder's PARENT segment) got "exported_rules" instead of a company name.
+        # FIRST-RUN default only (setdefault): a programmatic session_state write on every rerun
+        # would make the top-level st.tabs lose the active tab. Switch scheme later and you edit it.
         _company_c = str(_fs_c.get("company", "TotalAV"))
+        ss.setdefault((_kp + "cfg_rules_folder"),
+                      os.path.join("data", "exported_rules", _company_c, _active_scheme))
         _def_brand = _co2brand(_company_c)
         _gl_c = ss.get("split_go_live_date", date.today())
         try:
@@ -136,7 +152,7 @@ def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
             _cfg_folder = (_erfc.text_input(
                 "Exported rules folder", key=(_kp + "cfg_rules_folder"),
                 help="Folder of exported rule sheets (.xlsx / .csv), the same ones used in Validate "
-                     "Split. Defaults to data/exported_rules/<scheme>.") or "").strip()
+                     "Split. Defaults to data/exported_rules/<COMPANY>/<SCHEME>.") or "").strip()
             # Go-live cut-off, to the RIGHT of the folder input: only generate configs for rule
             # files whose GO LIVE date is on or after this. Default = yesterday (skip retired rules).
             _cfg_min_golive = _erdc.date_input(
@@ -150,15 +166,37 @@ def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
                 "Extra priority boost", 0, 2_000_000, 0, step=50000, key=(_kp + "cfg_extra_priority"),
                 help="Added to every pool's priority (script's EXTRA_PRIORITY_AMOUNT).")
             # Control-group bucket: when ticked, every generated pool gets a
-            # `bucket.bpid Lt <value>` selector expression (default 9,900).
+            # `bucket.bpid Lt <value>` selector expression.
+            #
+            # 19jz - THE INPUT IS THE TEST-GROUP PERCENTAGE NOW, not the raw bpid ceiling. bpid
+            # runs 0-9,999, so a ceiling of 9,900 routes 9,900 of 10,000 buckets through these
+            # pools and leaves 100 - 1% - OUTSIDE them as the test group. Nobody types 9,900
+            # meaning 9,900; they type it meaning "1%", and had to do the arithmetic backwards
+            # every time to check. So: type the percentage, and the ceiling is derived as
+            #     bucket.bpid < 10000 - (pct x 100)
+            # 1% -> 9,900, exactly what the old default emitted. WHOLE percentages only, on
+            # Ben's instruction, so 1 is the smallest test group.
             _cgc, _cgv, _cgsp = st.columns([1.5, 1.1, 3.4], vertical_alignment="bottom")
             _ctrl_on = _cgc.checkbox(
                 "Add Control-Group", value=False, key=(_kp + "cfg_ctrl_on"),
                 help="Adds a `bucket.bpid` (operator Lt) expression to every generated config so only "
                      "transactions whose bucket.bpid is below the value route through these pools.")
-            _ctrl_bpid = _cgv.number_input(
-                "bucket.bpid <", min_value=0, max_value=10000, value=9900, step=100,
-                key=(_kp + "cfg_ctrl_bpid"), help="The bucket.bpid ceiling for the control group.")
+            # max 99, not 100: at 100% the derived ceiling is `bucket.bpid Lt 0`, which matches
+            # NOTHING - so the tab would happily emit a full set of configs that route zero
+            # traffic and say nothing about it. 0% is allowed and means the opposite (Lt 10000,
+            # everything routed, no test group held back), which is a real setting.
+            _ctrl_pct = _cgv.number_input(
+                "Test group %", min_value=0, max_value=99, value=1, step=1,
+                key=(_kp + "cfg_ctrl_pct"),
+                help="Percentage of traffic held OUT of these pools as the test group. The "
+                     "generated selector is `bucket.bpid Lt (10000 - pct x 100)`, so 1% emits "
+                     "9,900 - the value this input used to take directly.")
+            # Derived here, once, so the number that reaches generate_configs is never a
+            # percentage by accident.
+            _ctrl_bpid = 10000 - (int(_ctrl_pct) * 100)
+            _cgv.markdown(f"<div style='font-size:12px; color:var(--tav-muted); margin-top:-6px;'>"
+                          f"selector: <code>bucket.bpid Lt {_ctrl_bpid:,}</code></div>",
+                          unsafe_allow_html=True)
             # Green submit — applies all the settings above (width ≈ 25%).
             _gbc, _gbsp = st.columns([1.5, 4.5])
             _do_generate = _gbc.form_submit_button(
@@ -171,6 +209,10 @@ def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
         _find_slot = st.container()
 
         if _do_generate:
+            # 19jz: a spinner so THIS column says it is working. The whiteout Ben saw on the other
+            # tabs was a script-order problem, fixed by this tab being last (see the module
+            # docstring); the spinner is the other half - tab 4's own panel used to sit blank for
+            # the whole generation with nothing to say it had started.
             try:
                 _brand_name = _POOL_BRANDS[brand_key]["name"]
                 _wc_c = ss.get("wallet_ctx") or {}
@@ -274,18 +316,25 @@ def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
                     _seg = os.path.basename(os.path.normpath(str(_cfg_folder or ""))).lower()
                     _gen_scheme_name = _seg if (_from_folder and _seg in ("visa", "mastercard")) else _active_scheme
                     _cfg_scheme = _scheme_code(_gen_scheme_name)
-                    _pools, _counts = _gen_cfgs(
-                        _exports_c, brand_key, date_tag, scheme=_cfg_scheme, mode=_gen_mode,
-                        extra_priority_amount=int(extra_priority), emit_generic=bool(emit_generic),
-                        control_bpid=(int(_ctrl_bpid) if _ctrl_on else None))
+                    with st.spinner(f"Generating ConnectorPool configs from "
+                                    f"{len(_exports_c):,} Brand\u00d7RPGT template(s)\u2026"):
+                        _pools, _counts = _gen_cfgs(
+                            _exports_c, brand_key, date_tag, scheme=_cfg_scheme, mode=_gen_mode,
+                            extra_priority_amount=int(extra_priority),
+                            emit_generic=bool(emit_generic),
+                            control_bpid=(int(_ctrl_bpid) if _ctrl_on else None))
                     ss[(_kp + "configs")] = _pools
                     ss[(_kp + "configs_counts")] = _counts
                     ss[(_kp + "configs_meta")] = {"brand_key": brand_key, "date": date_tag,
                                           "pool_dir": _counts.get("pool_dir", ""),
                                           "rules_source": _src_lbl, "variation": _dial_lbl,
                                           "scheme": _gen_scheme_name, "scheme_filter": _cfg_scheme}
-                    st.caption(f"Generated as **{_gen_scheme_name}** (scheme filter `{_cfg_scheme}`) "
-                               f"from `{_cfg_folder if _from_folder else _src_lbl}`.")
+                    # 19jz: the "Generated as <scheme> (scheme filter `<code>`) from `<folder>`"
+                    # caption is DELETED on Ben's instruction. Every part of it is already on the
+                    # screen - the scheme and the folder are the inputs two rows up, and the
+                    # scheme filter is derived from the folder - so it restated the form back at
+                    # you. It is still recorded in ss[..."configs_meta"], which is where the
+                    # download filename and the tests read it from.
                     if not _pools:
                         st.warning("No pools generated — check the rules have mapped gateways and "
                                    "recognised RPGTs.")
@@ -301,8 +350,14 @@ def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
                                 _tgt_note += f"; from {_pool_stats_c.get('raw_pools', '?') if _pool_stats_c else '?'} ideal)"
                             _note = (f"Generated {len(_pools)} ConnectorPool config(s) from "
                                      f"**{_src_lbl}** rules at dial **{_dial_lbl}**{_tgt_note}.")
+                        # 19jz: st.success renders at body size and 3 lines tall for one
+                        # sentence. Same words, same green, at the 12px the input values use, so
+                        # it reads as a result beside them instead of a banner over them.
                         _sbc, _sbsp = st.columns([1.5, 4.5])   # match the Download button's width
-                        _sbc.success(_note)
+                        _sbc.markdown(
+                            "<div style='font-size:12px; color:#1D9E75; font-weight:700; "
+                            "line-height:1.35; padding:4px 0;'>\u2713 "
+                            + _note.replace("**", "") + "</div>", unsafe_allow_html=True)
                         if _counts.get("skipped_rpgts"):
                             st.warning("Skipped unrecognised RPGT(s): " + ", ".join(_counts["skipped_rpgts"]))
             except Exception as _ce:  # noqa: BLE001
@@ -363,9 +418,35 @@ def render(ss, PROJECT_ROOT, key_prefix="", show_find=True):
         if not show_find:
             return   # lookup is the last block; the embedded (Config Validation) generator suppresses it
         with _find_slot:
-            from tab_1_3_config_validation import render_profile_lookup as _rpl
+            from config_profile_lookup import render_profile_lookup as _rpl
             _gen0 = ss.get((_kp + "configs")) or {}
             if _gen0:
                 _rpl([(f"{_n0}.json", _p0) for _n0, _p0 in _gen0.items()], key_prefix=(_kp + "lk_"))
             else:
                 st.caption("Generate configs above, then look them up by profile here.")
+
+
+# [FN-434]
+def render(ss, PROJECT_ROOT):
+    """The '4 · Config Files' tab: generator on the left, profile lookup on the right.
+
+    19jz: this IS the deleted Config Validation sub-tab's layout, moved here whole - same two
+    columns, same two h5 headings, same widget prefixes - because that sub-tab and this tab were
+    doing the same two jobs in two places. `show_find=False` suppresses the generator's own
+    lookup panel: the right column is that panel now, so leaving it on would put two of them on
+    one screen, which is the duplication this change removes.
+
+    NEVER LOCKED. There is no readiness gate here and there is no `if ss.get("variations")`
+    guard: configs are generated from the exported-rules FOLDER, so a computed split is not
+    required, and neither is a forecast. Tab 4 is also removed from streamlit_app's dimming CSS.
+    """
+    _gen_col, _lookup_col = st.columns(2)
+
+    with _gen_col:
+        st.markdown("##### Generate Configs")   # in-line with 'Look up configs by profile'
+        render_generator(ss, PROJECT_ROOT, key_prefix="", show_find=False)
+
+    with _lookup_col:
+        st.markdown("##### Look up configs by profile")
+        from config_profile_lookup import render_lookup_panel as _rlp
+        _rlp(ss, PROJECT_ROOT, key_prefix="cfgval_")

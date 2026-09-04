@@ -70,9 +70,10 @@ itself rewritten by a later sweep into "an HTML TABLE PROFILE". That is how an e
 `_PK_SPEC_CELL` keeps the word because it is CORRECT — that spec is the 6-part prop-key, which
 is a cell.
 
-`app/tab_1_3_config_validation.py` DOES use the word in this document's sense — a pool's
-"profile dimensions" are currency / BIN / country / provider, no gateway — so it needed no
-change. An earlier note in this file claimed otherwise; that was wrong.
+`app/config_profile_lookup.py` (was `tab_1_3_config_validation.py` until 19jz) DOES use the
+word in this document's sense — a pool's "profile dimensions" are currency / BIN / country /
+provider, no gateway — so it needed no change. An earlier note in this file claimed otherwise;
+that was wrong.
 
 The 6-part row is still called `prop_key` / `propidx` / `prop_raw` in the code. That is a
 mechanism name rather than a grain name, so it was left alone.
@@ -93,10 +94,15 @@ app/app_common.py                    shared constants, log handler, path resolve
 app/impact_calcs.py                  before -> after impact projection + config templates
 app/tab_1_1_build_baseline.py        Tab 1 · 1 — Build Baseline  (+ hosts tab 1's sub-tab bar)
 app/tab_1_2_validate_split.py        Tab 1 · 2 — Validate Split
-app/tab_1_3_config_validation.py     Tab 1 · 3 — Config Validation
 app/tab_2_routing_engine.py          Tab 2     — Routing engine
 app/tab_3_split_outputs_impact.py    Tab 3     — Split, outputs & impact
-app/tab_4_generate_configs.py        Tab 4     — Generate configs
+app/tab_4_generate_configs.py        Tab 4     — Config Files (generator + profile lookup)
+app/config_profile_lookup.py         ConnectorPool profile matching + the lookup column
+                                     (19jz: was tab_1_3_config_validation.py. Tab 1's third
+                                      sub-tab, 'Config Validation', embedded tab 4's generator
+                                      beside a lookup — tab 4's job done twice — so it was
+                                      removed and tab 4 took the two-column layout. This file
+                                      is the library it calls, not a tab.)
 src/routing_optimiser/               the engines + all the maths (the "brains")
 ```
 

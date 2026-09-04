@@ -12,7 +12,7 @@ line — one Streamlit tab per station (labels exactly as shown in the UI):
   1 · Baseline & Validate      build & cache the baseline "pre" forecast (and validate a split).
   2 · Routing engine           choose the engine + risk constraints; SEARCH for the split.
   3 · Split, outputs & impact  inspect the split, its VAMP/revenue before→after, dashboards.
-  4 · Generate configs         compress to a pool budget and generate/download the JSON configs.
+  4 · Config Files             generate/download the JSON configs, and look one up by profile.
 
 DATA FLOW (state is carried between stations in st.session_state, aliased `ss`)
 ------------------------------------------------------------------------------
@@ -41,11 +41,14 @@ labels the user sees, not an import order.
     app/tab_1_1_build_baseline.py        Tab 1 · sub-tab 1  Build Baseline
                                          ALSO hosts tab 1's sub-tab bar and delegates 1·2 / 1·3
     app/tab_1_2_validate_split.py        Tab 1 · sub-tab 2  Validate Split
-    app/tab_1_3_config_validation.py     Tab 1 · sub-tab 3  Config Validation
     app/tab_2_routing_engine.py          Tab 2             Routing engine
     app/tab_3_split_outputs_impact.py    Tab 3             Split, outputs & impact
-    app/tab_4_generate_configs.py        Tab 4             Generate configs
-                                         (also rendered INSIDE 1·3 with key_prefix="cv_")
+    app/tab_4_generate_configs.py        Tab 4             Config Files
+                                         (generator LEFT, profile lookup RIGHT)
+  19jz: tab 1 had a third sub-tab, 'Config Validation', which embedded tab 4's generator in
+  its left column and a profile lookup in its right. It was tab 4's job done twice, so it is
+  gone and tab 4 took its layout. `app/tab_1_3_config_validation.py` is renamed
+  `app/config_profile_lookup.py` - it is the lookup LIBRARY now, not a tab.
 
   SUPPORT FILES — no `render()`, deliberately unnumbered because they belong to no one tab
     app/streamlit_app.py    THIS FILE — imports, CSS, session setup, st.tabs(), the render() calls
@@ -60,7 +63,8 @@ WHERE THE HEAVY LIFTING LIVES (this file is mostly ORCHESTRATION + UI glue)
   src/routing_optimiser/…    engines (softmax/thompson/portfolio/genetic), optimiser, band
                              scoring/projection, numba kernels, success rates, eligibility.
   app/impact_calcs.py        VAMP pre/post projection + production split-template builder.
-  app/tab_4_generate_configs.py         the Configs-tab body (builds ss["configs"]).
+  app/tab_4_generate_configs.py         the Config-Files tab (builds ss["configs"]).
+  app/config_profile_lookup.py          ConnectorPool profile matching + the lookup column.
 
 CURRENT-BEHAVIOUR NOTE (post-simplification)
 --------------------------------------------
@@ -114,11 +118,34 @@ except Exception:  # noqa: BLE001 - a read-only dir must never stop the app load
 # Engine / optimiser / impact functions are imported by the tab modules that use them —
 # this orchestrator intentionally pulls in almost nothing from the backend.
 
-# Shared brand mark (favicon + red-banner logo).
-_BRAND_ICON = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAASFBMVEVHcEzILDfJLDi2JS21JS68KDHfNETmN0jmN0jkNkfmN0isIiqsIirDKjThNUW4Jy3KLDivIyu8KDHEKzTmN0jEKzS0Ji3KLTfpm+j9AAAAGHRSTlMAFTKMsMD7/8y0jtz/9OQGd/I9/2LkIteIBpNuAAABKklEQVR4AWXTWaKDMAgFUDLXhpiBRve/0xcnGl7Pn4JecIAvpY11PryWt1bwS5uImHw4rW8NUi4RuX62FHEXZXGoYbZMHTqedR+EtfH1Zx0p/LOqO99edR+YTCl4Ste5JUwKDzCM49cHhs/rG3Jsa/DU77JsefOE6ObF1WflOTVeNAj67tBPAoKkaL0zHDcIG6WzY4GIFwVCI+r+WAwqXhoIhYj24IPnBgOCo2H13nNEFBm607B7v/KQWGBi6JBWv/CaGLW8wZB2X6Dhw3HI5uiSSPOjHmyGk7J0S7uCbJDZDQbNdUolA7SILDaA0ol1fU6ME9tpUq7Ie9NasSaaPUNttcZYiascwGu1TkwOIBeXrPy1SiehjwWlZqaW3Wj4kVUzbk+pO9MUsD95+yDzjpcQNgAAAABJRU5ErkJggg=="
+# ── Shared brand mark (favicon + red-banner logo) ───────────────────────────────────────
+# 19jz: the official TSC roundel, on Ben's instruction. It is a RED mark on a transparent
+# background (checked by loading it), which is why the white `.tav-badge` square it sits in
+# stays - on the red banner itself a red logo would disappear.
+#
+# FETCHED BY THE BROWSER, not embedded: neither this machine nor the cloud sandbox can reach
+# totalsecurity.com to inline it as a data URI, so the app serves the URL and the browser
+# loads it. Consequence worth knowing: with no network to that host the mark does not render.
+# `_BRAND_ICON_PNG` below is the previous embedded roundel, kept for exactly that case -
+# swapping the two names back is a one-line revert.
+_BRAND_ICON = ("https://www.totalsecurity.com/_r/c/6/_ptd/Core/Brand/Logos/TSCLogo/TSCLogo/"
+               "5877366561a7/img/logo-alt.svg")
+_BRAND_ICON_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAASFBMVEVHcEzILDfJLDi2JS21JS68KDHfNETmN0jmN0jkNkfmN0isIiqsIirDKjThNUW4Jy3KLDivIyu8KDHEKzTmN0jEKzS0Ji3KLTfpm+j9AAAAGHRSTlMAFTKMsMD7/8y0jtz/9OQGd/I9/2LkIteIBpNuAAABKklEQVR4AWXTWaKDMAgFUDLXhpiBRve/0xcnGl7Pn4JecIAvpY11PryWt1bwS5uImHw4rW8NUi4RuX62FHEXZXGoYbZMHTqedR+EtfH1Zx0p/LOqO99edR+YTCl4Ste5JUwKDzCM49cHhs/rG3Jsa/DU77JsefOE6ObF1WflOTVeNAj67tBPAoKkaL0zHDcIG6WzY4GIFwVCI+r+WAwqXhoIhYj24IPnBgOCo2H13nNEFBm607B7v/KQWGBi6JBWv/CaGLW8wZB2X6Dhw3HI5uiSSPOjHmyGk7J0S7uCbJDZDQbNdUolA7SILDaA0ol1fU6ME9tpUq7Ie9NasSaaPUNttcZYiascwGu1TkwOIBeXrPy1SiehjwWlZqaW3Wj4kVUzbk+pO9MUsD95+yDzjpcQNgAAAABJRU5ErkJggg=="
 
-st.set_page_config(page_title="Routing Optimiser", layout="wide",
-                   initial_sidebar_state="collapsed", page_icon=_BRAND_ICON)
+# 19jz: guarded. `page_icon` is now a remote SVG URL, and set_page_config is the FIRST
+# Streamlit call in the app - if a Streamlit version rejects that value the whole app dies at
+# import with a stack trace instead of a page. The embedded PNG is the fallback, so the worst
+# case is the old favicon rather than no app. Retrying without `page_icon` is the last resort.
+try:
+    st.set_page_config(page_title="Routing Optimiser", layout="wide",
+                       initial_sidebar_state="collapsed", page_icon=_BRAND_ICON)
+except Exception:  # noqa: BLE001
+    try:
+        st.set_page_config(page_title="Routing Optimiser", layout="wide",
+                           initial_sidebar_state="collapsed", page_icon=_BRAND_ICON_PNG)
+    except Exception:  # noqa: BLE001
+        st.set_page_config(page_title="Routing Optimiser", layout="wide",
+                           initial_sidebar_state="collapsed")
 
 # Theme: green primary, light header with black text, red metric cards.
 st.markdown("""
@@ -721,27 +748,31 @@ tab_fc, tab_eng, tab_imp, tab_cfg = st.tabs([
     "1 · Baseline & Validate",
     "2 · Routing engine",
     "3 · Split, outputs & impact",
-    "4 · Generate configs",
+    "4 · Config Files",
 ])
 
-# --- Readiness gate: tabs 3 (impact) & 4 (configs) only have anything to show once a run
-# (or a validated split) has produced `variations`. Until then, dim the two top-level tab
-# labels (with a hover tooltip) so they LOOK inactive, and show a calm placeholder inside
-# them instead of an empty page / a raw "compute first" info box. ---
+# --- Readiness gate: tab 3 (impact) only has anything to show once a run (or a validated
+# split) has produced `variations`. Until then, dim that top-level tab label (with a hover
+# tooltip) so it LOOKS inactive, and show a calm placeholder inside it instead of an empty
+# page / a raw "compute first" info box.
+#
+# 19jz - TAB 4 IS OUT OF THIS GATE, on Ben's instruction, and it was already wrong to be in
+# it. Config Files generates from the exported-rules FOLDER on disk: it needs no split, no
+# forecast and no engine run, and `tab_4_generate_configs.render_generator` has had no
+# variations guard for several builds. So the gate was dimming a tab that worked, and
+# "Run the engine first" was an instruction nobody needed to follow. ---
 _HAS_RUN = bool(ss.get("variations"))
 
 
 if not _HAS_RUN:
     # Scope to TOP-LEVEL tabs only: `:not([tab-panel] …)` excludes every nested tab-list
     # (tab 1's and tab 3's sub-tabs live inside a tab-panel). nth-of-type counts the tab
-    # buttons, so (3) and (4) are the Impact and Configs tabs.
+    # buttons, so (3) is the Impact tab. (4) - Config Files - is deliberately NOT listed.
     st.markdown("""<style>
-      button[data-baseweb="tab"]:not([data-baseweb="tab-panel"] button[data-baseweb="tab"]):nth-of-type(3),
-      button[data-baseweb="tab"]:not([data-baseweb="tab-panel"] button[data-baseweb="tab"]):nth-of-type(4) {
+      button[data-baseweb="tab"]:not([data-baseweb="tab-panel"] button[data-baseweb="tab"]):nth-of-type(3) {
           opacity: 0.4 !important; cursor: not-allowed; position: relative;
       }
-      button[data-baseweb="tab"]:not([data-baseweb="tab-panel"] button[data-baseweb="tab"]):nth-of-type(3):hover::after,
-      button[data-baseweb="tab"]:not([data-baseweb="tab-panel"] button[data-baseweb="tab"]):nth-of-type(4):hover::after {
+      button[data-baseweb="tab"]:not([data-baseweb="tab-panel"] button[data-baseweb="tab"]):nth-of-type(3):hover::after {
           content: "Run the engine first"; position: absolute; top: 100%; left: 0;
           white-space: nowrap; background: #0B1F3A; color: #fff; font-size: 0.72rem;
           font-weight: 600; padding: 3px 8px; margin-top: 4px; z-index: 1000;
@@ -771,10 +802,13 @@ with tab_imp:
 
 
 # ============================================================================
-# TAB 4 - Generate ConnectorPool JSON configs from the proposed split
+# TAB 4 - Config Files: generate the ConnectorPool JSON configs, and look one up
 # ============================================================================
+# LAST on purpose. Streamlit builds every tab panel in one script run, in script order, and
+# generation blocks that run - so anything built AFTER the generator is blank while it works.
+# That was the whiteout: the generator used to also run inside tab 1, leaving tabs 2-4 empty.
 with tab_cfg:
-    # Config-generator tab body lives in tab_4_generate_configs.py (per-tab split).
+    # The whole tab (both columns) lives in tab_4_generate_configs.py.
     import tab_4_generate_configs
     tab_4_generate_configs.render(ss, PROJECT_ROOT)
 
